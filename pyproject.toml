@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openkapsel"
+version = "1.44.2"
+description = "Token-scoped remote workspace infrastructure for AI clients"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "beautifulsoup4>=4.12,<5",
+  "cryptography>=41,<50",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "jinja2>=3.1,<4",
+  "lxml>=4.9,<7",
+  "matplotlib>=3.7,<4",
+  "numba>=0.57,<1",
+  "numpy>=1.24,<3",
+  "pandas>=2.0,<4",
+  "pillow>=10,<13",
+  "python-multipart>=0.0.20,<1",
+  "PyYAML>=6,<7",
+  "scipy>=1.10,<2",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[project.scripts]
+openkapsel = "openkapsel.server:main"
+
+[tool.setuptools.packages.find]
+include = ["openkapsel*", "openkapsel_runtime*"]

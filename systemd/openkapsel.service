@@ -1,0 +1,53 @@
+[Unit]
+Description=OpenKapsel workspace service
+After=network-online.target
+Wants=network-online.target
+Requires=openkapsel-images.service
+After=openkapsel-images.service
+
+[Service]
+Type=simple
+User=openkapsel
+Group=openkapsel
+WorkingDirectory=/opt/openkapsel
+ExecStart=/opt/openkapsel/venv/bin/python -m openkapsel --config /var/lib/openkapsel/config.json
+Restart=on-failure
+RestartSec=3s
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/openkapsel/home
+Environment=XDG_RUNTIME_DIR=/var/lib/openkapsel/run
+UMask=0077
+Delegate=cpu memory pids
+
+# The API process is deliberately non-root. Namespace restrictions are applied
+# by Bubblewrap/RootlessKit to restricted-shell tasks and FastAPI workers.
+PrivateTmp=true
+# RootlessKit/slirp4netns needs TUN. Keep a closed device cgroup and allow only
+# that device in addition to systemd's standard API pseudo-devices.
+PrivateDevices=false
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/openkapsel
+InaccessiblePaths=/root/.ssh
+# A nested user/PID namespace can mount its own procfs only when the parent
+# procfs has no ProtectKernelTunables over-mounts. The main process is non-root,
+# workers do not mount sysfs, and each restricted sandbox gets a private procfs.
+ProtectKernelTunables=false
+ProtectKernelModules=true
+# ProtectKernelLogs similarly over-mounts /proc/kmsg and prevents a nested
+# procfs mount. The non-root service and user-namespace workers have no
+# CAP_SYSLOG in the host user namespace, so they cannot read kernel logs.
+ProtectKernelLogs=false
+# Delegate only this service's subtree so OpenKapsel can create per-Token cgroups.
+ProtectControlGroups=false
+ProtectProc=invisible
+ProtectClock=true
+LockPersonality=true
+RestrictRealtime=true
+KeyringMode=private
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

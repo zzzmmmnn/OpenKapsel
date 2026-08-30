@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenKapsel REST"
+  short_description: "Operate OpenKapsel workspaces through compact REST workflows"
+  default_prompt: "Use $openkapsel-rest to inspect and modify this OpenKapsel workspace through its REST API."

@@ -1,0 +1,26 @@
+[Unit]
+Description=OpenKapsel privileged workspace image helper
+Before=openkapsel.service
+
+[Service]
+Type=simple
+User=root
+Group=openkapsel
+ExecStart=/opt/openkapsel/venv/bin/python -m openkapsel.workspace_image_helper --workspace-root /var/lib/openkapsel/workspace --image-dir /var/lib/openkapsel-images --socket /run/openkapsel-images/control.sock --service-user openkapsel --service-group openkapsel
+Restart=on-failure
+RestartSec=3s
+RuntimeDirectory=openkapsel-images
+RuntimeDirectoryMode=0750
+UMask=0077
+# This service must remain in the host mount namespace so its mounts are visible
+# to the non-root OpenKapsel service. Network syscalls are still limited to AF_UNIX.
+PrivateMounts=false
+PrivateDevices=false
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_MKNOD CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
