@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openkapsel.api_workers import ApiWorkerManager
 from openkapsel.cgroups import TokenCgroupManager
@@ -49,13 +50,17 @@ class ApiWorkerSandboxTests(unittest.TestCase):
                 cgroups=TokenCgroupManager(enabled=False),
             )
             try:
-                argv = manager._sandbox_argv(
-                    record,
-                    workspace,
-                    worker_dir,
-                    worker_dir / "app.sock",
-                    "/preview/api",
-                )
+                with patch(
+                    "openkapsel.api_workers.apparmor_restricts_user_namespaces",
+                    return_value=False,
+                ):
+                    argv = manager._sandbox_argv(
+                        record,
+                        workspace,
+                        worker_dir,
+                        worker_dir / "app.sock",
+                        "/preview/api",
+                    )
             finally:
                 manager.close()
 
