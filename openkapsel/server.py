@@ -48,6 +48,7 @@ from .context_store import (
 )
 from .discovery import DiscoveryMixin
 from .errors import ApiError
+from .environment_handlers import EnvironmentHandlersMixin
 from .file_handlers import FileHandlersMixin
 from .mcp_handlers import McpHandlersMixin
 from .memory_handlers import MemoryHandlersMixin
@@ -62,6 +63,7 @@ from .preview_handlers import PreviewHandlersMixin
 from .recycle import RecycleBin, RecycleError
 from .routes import EndpointSpec, match_endpoint
 from .sandbox import SandboxMixin
+from .schedule_handlers import ScheduleHandlersMixin
 from .sandbox_backends import SandboxRegistry
 from .safe_paths import ParentHandle, SafePathAccess, SafePathError
 from .security import (
@@ -70,12 +72,16 @@ from .security import (
     password_hash_needs_upgrade,
     verify_password,
 )
+from .scheduler import SchedulerManager
+from .scheduler_store import ScheduleStore
+from .shell_execution import start_shell_task
 from .share_handlers import ShareHandlersMixin
 from .share_store import ShareStore
 from .skill_handlers import SkillHandlersMixin
 from .tasks import TaskRegistry
 from .tokens import CONTAINER_IMAGE_RE, CredentialRenewalNotDue, TokenStore
 from .uploads import UploadRegistry
+from .workspace_layout import INTERNAL_DIRECTORY
 from .workspace_images import WorkspaceImageClient
 
 
@@ -145,6 +151,7 @@ class ServerConfig:
     share_ttl_seconds: int = 24 * 60 * 60
     max_share_entries: int = 10
     max_share_bytes: int = 256 * 1024 * 1024
+    schedule_misfire_grace_seconds: int = 300
 
     def __post_init__(self) -> None:
         resolved = self.root.expanduser().resolve()
@@ -223,6 +230,7 @@ class ServerConfig:
             self.share_ttl_seconds,
             self.max_share_entries,
             self.max_share_bytes,
+            self.schedule_misfire_grace_seconds,
         ) < 1:
             raise ValueError("size and task limits must be positive")
         if min(
@@ -518,6 +526,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         )
         self.transfer_slots = threading.BoundedSemaphore(config.max_concurrent_transfers)
         super().__init__(address, WorkspaceRequestHandler)
+        self.scheduler = SchedulerManager(self)
 
     def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
         if not self.connection_slots.acquire(blocking=False):
@@ -574,6 +583,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
     def server_close(self) -> None:
         self.api_workers.close()
+        self.scheduler.close()
         self.tasks.close()
         super().server_close()
 
@@ -623,6 +633,9 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
                     ) from None
                 self.memory_stores[scope_root] = store
             return store
+
+    def schedules_for(self, scope_root: Path) -> ScheduleStore:
+        return self.scheduler.store_for(scope_root)
 
     def change_admin_password(self, old_password: str, new_password: str) -> None:
         with self.admin_password_lock:
@@ -683,12 +696,14 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 class WorkspaceRequestHandler(
     AdminHandlersMixin,
     DiscoveryMixin,
+    EnvironmentHandlersMixin,
     FileHandlersMixin,
     McpHandlersMixin,
     MemoryHandlersMixin,
     ShareHandlersMixin,
     SkillHandlersMixin,
     PreviewHandlersMixin,
+    ScheduleHandlersMixin,
     SandboxMixin,
     BaseHTTPRequestHandler,
 ):
@@ -1142,7 +1157,7 @@ class WorkspaceRequestHandler(
                 "operation",
                 message,
                 taskname=taskname,
-                actor_id=hashlib.sha256(self.token_record.token.encode("utf-8")).hexdigest(),
+                actor_id=self.token_record.actor_id,
                 operation=operation,
                 status="running",
                 plan_id=parsed_plan_id,
@@ -1239,6 +1254,8 @@ class WorkspaceRequestHandler(
             "data_base64",
             "control_token",
             "token",
+            "variables",
+            "rc",
         }
         return {
             str(key): cls._context_safe_value(item)
@@ -1419,9 +1436,7 @@ class WorkspaceRequestHandler(
                 entry_type,
                 content,
                 taskname=taskname,
-                actor_id=hashlib.sha256(
-                    self.token_record.token.encode("utf-8")
-                ).hexdigest(),
+                actor_id=self.token_record.actor_id,
                 plan_status=plan_status,
                 plan_id=plan_id,
             )
@@ -1504,9 +1519,7 @@ class WorkspaceRequestHandler(
                     body.get("debrief"),
                 )
                 changes["debrief"] = completed_debrief
-                changes["actor_id"] = hashlib.sha256(
-                    self.token_record.token.encode("utf-8")
-                ).hexdigest()
+                changes["actor_id"] = self.token_record.actor_id
             elif "debrief" in body:
                 raise ValueError("plan debrief is only valid when status is completed")
             if "plan_id" in body:
@@ -1552,9 +1565,7 @@ class WorkspaceRequestHandler(
                 entry_id,
                 taskname=taskname,
                 content=content,
-                actor_id=hashlib.sha256(
-                    self.token_record.token.encode("utf-8")
-                ).hexdigest(),
+                actor_id=self.token_record.actor_id,
                 plan_id=plan_id,
             )
         except KeyError as exc:
@@ -1612,66 +1623,40 @@ class WorkspaceRequestHandler(
         self._send_json(HTTPStatus.OK, payload)
 
     def _handle_shell_exec(self) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
         body = self._read_json()
         command = self._required_string(body, "command")
-        if len(command) > 100_000:
-            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "command_too_large", "command is too long")
         cwd_value = body.get("cwd", "")
-        if not isinstance(cwd_value, str):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_request", "cwd must be a string")
-        cwd = self._resolve_path(cwd_value)
-        if not cwd.is_dir():
-            raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_directory", "cwd is not a directory")
         timeout = body.get("timeout_seconds", self.server.config.default_command_timeout)
-        if timeout is not None:
-            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0.1 <= timeout <= 86_400:
-                raise ApiError(
-                    HTTPStatus.BAD_REQUEST,
-                    "invalid_request",
-                    "timeout_seconds must be null or a number between 0.1 and 86400",
-                )
-            timeout = float(timeout)
         interactive = self._optional_bool(body, "interactive", False)
-        sandboxed = self.token_record.shell_mode == "restricted"
-        network_access = self.token_record.shell_mode == "full" or self.token_record.network_mode != "none"
-        argv = None
-        stdin_data = None
-        sandbox_backend = None
-        sandbox_controller = None
-        if sandboxed:
-            launch = self._sandbox_launch(command, cwd)
-            argv = launch.argv
-            stdin_data = launch.stdin_data
-            sandbox_backend = launch.backend
-            sandbox_controller = launch.controller
-        resource_limits = None
-        if sandboxed and self.server.config.sandbox_cgroup_enabled:
-            resource_limits = self._sandbox_limits(backend=sandbox_backend)
-        try:
-            task = self.server.tasks.start(
-                command,
-                cwd,
-                timeout,
-                owner_token=self.token_record.token,
-                argv=argv,
-                stdin_data=stdin_data,
-                interactive=interactive,
-                sandboxed=sandboxed,
-                sandbox_backend=sandbox_backend,
-                sandbox_controller=sandbox_controller,
-                network_access=network_access,
-                resource_limits=resource_limits,
-            )
-        except Exception:
-            if sandbox_controller is not None:
-                sandbox_controller.cleanup()
-            raise
+        task = start_shell_task(
+            self.server,
+            self.token_record,
+            self.token_scope_root,
+            command=command,
+            cwd_value=cwd_value,
+            timeout_seconds=timeout,
+            interactive=interactive,
+        )
         self._send_json(
             HTTPStatus.ACCEPTED,
             {"task_id": task.id, "status": task.status, "status_url": f"{self._base_path()}/tasks/{task.id}"},
         )
+
+    def _full_shell_process_environment(self) -> dict[str, str]:
+        environment = {
+            "PATH": os.environ.get(
+                "PATH",
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            ),
+            "HOME": str(self.token_scope_root),
+            "TMPDIR": "/tmp",
+            "OPENKAPSEL_WORKSPACE": str(self.token_scope_root),
+        }
+        for name in ("LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"):
+            value = os.environ.get(name)
+            if value and "\x00" not in value:
+                environment[name] = value
+        return environment
 
     def _handle_task(self, task_id: str) -> None:
         if self.token_record.shell_mode == "none":
@@ -1917,7 +1902,7 @@ class WorkspaceRequestHandler(
                 relative_to_workspace = checked.relative_to(self.token_scope_root)
             except ValueError:
                 continue
-            if any(part in {".recycle", ".sql", ".context"} for part in relative_to_workspace.parts):
+            if INTERNAL_DIRECTORY in relative_to_workspace.parts:
                 raise ApiError(
                     HTTPStatus.FORBIDDEN,
                     "reserved_path",
@@ -2386,7 +2371,7 @@ class WorkspaceRequestHandler(
         except ValueError:
             workspace_internal = False
         else:
-            workspace_internal = entry.name in {".recycle", ".sql", ".context"}
+            workspace_internal = entry.name == INTERNAL_DIRECTORY
         return (
             workspace_internal
             or self._is_internal_transfer_name(entry.name)
@@ -2809,6 +2794,9 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
         share_ttl_seconds=int(payload.get("share_ttl_hours", 24)) * 60 * 60,
         max_share_entries=int(payload.get("max_share_entries", 10)),
         max_share_bytes=int(payload.get("max_share_mb", 256)) * 1024 * 1024,
+        schedule_misfire_grace_seconds=int(
+            payload.get("schedule_misfire_grace_seconds", 300)
+        ),
     )
     return host, port, config
 

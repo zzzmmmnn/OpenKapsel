@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import hmac
 import io
 import json
@@ -13,6 +12,7 @@ import mimetypes
 import os
 import secrets
 import stat
+import traceback
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -151,6 +151,7 @@ class McpHandlersMixin:
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
                 "delete_path is recoverable through list_recycle and restore_recycle. "
                 "run_shell returns a task_id; poll get_task until status is finished. "
+                "When schedule tools are available, use create_schedule for persistent once, interval, or strict six-field cron Shell work; use run_schedule_now for explicit immediate execution. "
                 "Use interrupt_task for normal termination and kill_task only for immediate forced termination."
             ),
         }
@@ -342,9 +343,7 @@ class McpHandlersMixin:
                     entry_type,
                     str(arguments["content"]),
                     taskname=str(arguments["taskname"]),
-                    actor_id=hashlib.sha256(
-                        self.token_record.token.encode("utf-8")
-                    ).hexdigest(),
+                    actor_id=self.token_record.actor_id,
                     plan_status=plan_status,
                     plan_id=plan_id,
                 )
@@ -405,9 +404,7 @@ class McpHandlersMixin:
                         arguments.get("debrief"),
                     )
                     changes["debrief"] = completed_debrief
-                    changes["actor_id"] = hashlib.sha256(
-                        self.token_record.token.encode("utf-8")
-                    ).hexdigest()
+                    changes["actor_id"] = self.token_record.actor_id
                 elif "debrief" in arguments:
                     raise ValueError("plan debrief is only valid when status is completed")
                 if "plan_id" in arguments:
@@ -437,9 +434,7 @@ class McpHandlersMixin:
                     int(arguments["id"]),
                     taskname=str(arguments["taskname"]),
                     content=str(arguments["content"]),
-                    actor_id=hashlib.sha256(
-                        self.token_record.token.encode("utf-8")
-                    ).hexdigest(),
+                    actor_id=self.token_record.actor_id,
                     plan_id=int(arguments["plan_id"]),
                 )
             except KeyError as exc:
@@ -565,6 +560,7 @@ class McpHandlersMixin:
             "delete_path": self._handle_fs_delete,
             "restore_recycle": self._handle_recycle_restore,
             "run_shell": self._handle_shell_exec,
+            "create_schedule": self._handle_schedule_create,
             "start_upload": self._handle_upload_create,
             "create_share": self._handle_share_create,
         }
@@ -612,6 +608,30 @@ class McpHandlersMixin:
                 except UploadError as exc:
                     self._raise_upload_error(exc)
                 return {"upload_id": upload_id, "cancelled": True}
+            elif name == "list_schedules":
+                self._handle_schedule_list({})
+            elif name == "get_schedule":
+                self._handle_schedule_get(str(arguments["schedule_id"]))
+            elif name == "update_schedule":
+                self._mcp_tool_arguments = arguments
+                self._handle_schedule_update(str(arguments["schedule_id"]))
+            elif name == "delete_schedule":
+                self._mcp_tool_arguments = arguments
+                self._handle_schedule_delete(str(arguments["schedule_id"]))
+            elif name == "run_schedule_now":
+                self._mcp_tool_arguments = arguments
+                self._handle_schedule_run(str(arguments["schedule_id"]))
+            elif name == "pause_schedule":
+                self._mcp_tool_arguments = arguments
+                self._handle_schedule_pause(str(arguments["schedule_id"]))
+            elif name == "resume_schedule":
+                self._mcp_tool_arguments = arguments
+                self._handle_schedule_resume(str(arguments["schedule_id"]))
+            elif name == "list_schedule_runs":
+                query = {"limit": [str(arguments.get("limit", 50))]}
+                self._handle_schedule_runs(str(arguments["schedule_id"]), query)
+            elif name == "get_schedule_run":
+                self._handle_schedule_run_get(str(arguments["run_id"]))
             elif name == "list_tasks":
                 query = {key: [str(value)] for key, value in arguments.items()}
                 self._handle_task_list(query)

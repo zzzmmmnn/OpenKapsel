@@ -27,6 +27,15 @@ from .discovery_sections import (
     SECTION_WORKFLOWS,
 )
 from .errors import ApiError
+from .environment_store import (
+    EnvironmentStore,
+    MAX_ENVIRONMENT_NAME_CHARS,
+    MAX_ENVIRONMENT_RC_CHARS,
+    MAX_ENVIRONMENT_TOTAL_CHARS,
+    MAX_ENVIRONMENT_VALUE_CHARS,
+    MAX_ENVIRONMENT_VARIABLES,
+    RESERVED_ENVIRONMENT_NAMES,
+)
 from .mcp import (
     MCP_PROTOCOL_VERSION,
     PUBLIC_SERVER_VERSION,
@@ -42,6 +51,12 @@ from .memory_store import (
     MEMORY_STATUSES,
 )
 from .routes import discovery_keys
+from .scheduler_store import (
+    MAX_ACTIVE_SCHEDULES_PER_APP,
+    MAX_SCHEDULE_RUNS_PER_SCHEDULE,
+    MIN_SCHEDULE_INTERVAL_MINUTES,
+    SCHEDULE_RUN_RETENTION_DAYS,
+)
 from .skill_handlers import skill_discovery
 from .workspace_images import WorkspaceImageError
 
@@ -144,6 +159,7 @@ class DiscoveryMixin:
             "context": capabilities["context"]["enabled"],
             "memory": capabilities["memory"]["enabled"],
             "shell": capabilities["shell"] != "none",
+            "schedules": capabilities["schedules"]["enabled"],
             "web": capabilities["web_preview"]["enabled"],
             "sharing": capabilities["sharing"]["enabled"],
         }
@@ -164,7 +180,7 @@ class DiscoveryMixin:
                 "path_rules": {
                     "relative_paths_from": full["path_rules"]["relative_paths_from"],
                     "symlink_escape": full["path_rules"]["symlink_escape"],
-                    "private_directories": [".recycle", ".sql", ".context"],
+                    "private_directories": [".openkapsel"],
                 },
                 "capabilities": {
                     "files": capabilities["files"],
@@ -176,6 +192,12 @@ class DiscoveryMixin:
                         for key in ("enabled", "create", "inspect_by_id", "import", "delete_own")
                     },
                     "shell": capabilities["shell"],
+                    "schedules": {"enabled": capabilities["schedules"]["enabled"]},
+                    "environment": {
+                        "enabled": capabilities["environment"]["enabled"],
+                        "configured": capabilities["environment"]["configured"],
+                        "scope": capabilities["environment"]["scope"],
+                    },
                     "network": capabilities["network"],
                     "web_preview": {"enabled": capabilities["web_preview"]["enabled"]},
                     "web_app_api": {"enabled": capabilities["web_app_api"]["enabled"]},
@@ -195,6 +217,9 @@ class DiscoveryMixin:
                         "max_batch_file_operations",
                         "share_ttl_seconds", "max_share_entries", "max_share_bytes",
                         "max_operation_message_characters", "max_taskname_characters",
+                        "max_environment_variables", "max_environment_name_characters",
+                        "max_environment_value_characters", "max_environment_total_characters",
+                        "max_environment_rc_characters",
                     )
                 },
                 "sections": sections,
@@ -205,11 +230,23 @@ class DiscoveryMixin:
                     },
                     "discovery_section": {
                         **full["endpoints"]["discovery_section"],
-                        "url": "./discovery/<files|context|memory|shell|web|sharing|full>",
+                        "url": "./discovery/<files|context|memory|shell|schedules|web|sharing|full>",
                     },
                     "credentials_renew": {
                         **full["endpoints"]["credentials_renew"],
                         "url": "./credentials/renew",
+                    },
+                    "environment_get": {
+                        **full["endpoints"]["environment_get"],
+                        "url": "./env",
+                    },
+                    "environment_replace": {
+                        **full["endpoints"]["environment_replace"],
+                        "url": "./env",
+                    },
+                    "environment_clear": {
+                        **full["endpoints"]["environment_clear"],
+                        "url": "./env",
                     },
                     "mcp": {
                         **full["endpoints"]["mcp"],
@@ -217,12 +254,13 @@ class DiscoveryMixin:
                     },
                 },
                 "workflow": [
-                    "The URL token is read-only. Send Authorization: Bearer <CONTROL_TOKEN> for mutations, Context, Memory, MCP, Shell, and task control.",
+                    "The URL token is read-only. Send Authorization: Bearer <CONTROL_TOKEN> for mutations, Context, Memory, MCP, Shell, schedules, and task control.",
                     "REST Skill clients should first invoke the installed scripts/openkapsel_config.py init <workspace-url> <control-token> by its Skill path while the working directory is the local controlling project; it creates a mode-0600 .openkapsel.env there. The nearest file follows the current working directory; explicit helper arguments and legacy process environment variables remain supported.",
                     "The bundled REST helpers automatically renew and atomically update directory-scoped credentials when less than two days remain; renewal rotates both workspace credentials for three more days and leaves the preview token unchanged.",
                     "Skill-capable REST clients should inspect skills.openkapsel_rest and may install its token-free SHA-256-verified archive or read the linked SKILL.md remotely before loading detailed endpoint contracts.",
                     "Read only the relevant discovery section before acting; use discovery/full only for compatibility or comprehensive inspection.",
                     "Before modifying a workspace, create or reuse a Context plan. Every modifying REST or MCP operation requires plan_id, taskname, and a brief message.",
+                    "Configure app-identity-scoped Shell variables and POSIX initialization with the control-authenticated env endpoint; configured values are injected into full, Bubblewrap, and Podman Shell tasks without appearing in launcher arguments.",
                     "Start ordinary workspace work with discovery/files; use discovery/context and discovery/memory when coordinating or retaining project knowledge.",
                     "MCP clients should call tools/list for authoritative tool input schemas; workspace_info returns this compact index by default and accepts a section parameter.",
                     "Use discovery/sharing for temporary cross-workspace transfer by random share ID.",
@@ -294,6 +332,7 @@ class DiscoveryMixin:
         read_enabled = self.token_record.can_read
         write_enabled = control_authorized and self.token_record.can_write
         shell_enabled = control_authorized and self.token_record.shell_mode != "none"
+        schedules_enabled = shell_enabled and self.token_record.can_schedule
         recycle_enabled = self.token_scope_root != self.server.config.root
         mcp_tool_names = (
             [
@@ -350,9 +389,8 @@ class DiscoveryMixin:
                 "relative_paths_from": str(self.token_scope_root),
                 "absolute_paths": "allowed inside the token workspace or an authorized extra directory",
                 "symlink_escape": "rejected",
-                "recycle_directory": ".recycle is private and only accessible through recycle endpoints",
-                "context_directory": ".context is private and only accessible through context endpoints",
-                "memory_database": ".context/memory.sqlite3 is private and only accessible through Memory endpoints",
+                "private_directory": ".openkapsel is reserved for runtime-managed recycle, database, Context, Memory, Shell-environment, and scheduler state",
+                "private_directory_access": "hidden from file APIs, preview, application source mounts, restricted Shell, and sharing",
             },
             "token": {
                 "name": self.token_record.name,
@@ -424,7 +462,7 @@ class DiscoveryMixin:
                     "plan_creation_returns_unfinished_root_plans": True,
                     "unfinished_root_plan_hint_limit": MAX_UNFINISHED_ROOT_PLAN_HINTS,
                     "note_edits_create_new_id_and_delete_old": True,
-                    "database": ".context/context.sqlite3",
+                    "storage": "private OpenKapsel Context storage",
                     "database_file_api_access": False,
                     "database_preview_access": False,
                     "database_worker_access": False,
@@ -440,7 +478,7 @@ class DiscoveryMixin:
                     "type": "memory",
                     "identifier_field": "memory_id",
                     "part_of_workspace_context": True,
-                    "database": ".context/memory.sqlite3",
+                    "storage": "private OpenKapsel Memory storage",
                     "separate_from_operation_log": True,
                     "categories": sorted(MEMORY_CATEGORIES),
                     "statuses": sorted(MEMORY_STATUSES),
@@ -481,6 +519,45 @@ class DiscoveryMixin:
                     "available_tools": mcp_tool_names,
                 },
                 "shell": self.token_record.shell_mode if control_authorized else "none",
+                "schedules": {
+                    "enabled": schedules_enabled,
+                    "authentication": "Bearer control token",
+                    "separate_permission": True,
+                    "types": ["once", "interval", "cron"],
+                    "cron_fields": ["second", "minute", "hour", "day", "month", "weekday"],
+                    "cron_second": "one explicit integer from 0 through 59",
+                    "timezone": "IANA timezone name",
+                    "overlap_policy": "skip",
+                    "misfire_policies": ["skip", "coalesce"],
+                    "context_per_run": True,
+                    "credential_rotation_preserves_schedules": True,
+                    "read_control_credential_expiry_stops_schedules": False,
+                    "workspace_expiry_or_permission_revocation_stops_schedules": True,
+                    "once_claimed_before_shell_start": True,
+                    "same_once_id_cannot_be_reactivated_by_its_command": True,
+                    "run_now_available": True,
+                    "control_tokens_injected_into_shell": False,
+                },
+                "environment": {
+                    "enabled": control_authorized,
+                    "authentication": "Bearer control token",
+                    "configured": (
+                        EnvironmentStore(self.token_scope_root)
+                        .load(self.token_record.app_id)
+                        .configured
+                        if control_authorized
+                        else False
+                    ),
+                    "scope": "stable app_id within this token record",
+                    "shared_by_tokens_for_same_workspace": False,
+                    "credential_rotation_preserves_configuration": True,
+                    "injected_into": ["full", "bubblewrap", "podman"],
+                    "posix_rc": True,
+                    "service_environment_inherited": False,
+                    "values_in_launcher_arguments": False,
+                    "reserved_names": sorted(RESERVED_ENVIRONMENT_NAMES),
+                    "reserved_prefixes": ["OPENKAPSEL_"],
+                },
                 "shell_sandbox": (
                     (
                         self.server.config.sandbox_default_backend
@@ -655,7 +732,7 @@ class DiscoveryMixin:
                             "no direct database endpoint; define a workspace FastAPI "
                             "route and access it through /<app-path>/api/<route>"
                         ),
-                        "scope": "each app uses its parent directory's private .sql storage",
+                        "scope": "each app uses private runtime-managed storage scoped to its parent directory",
                         "runtime_module": "openkapsel_runtime.database",
                         "library": "SQLAlchemy",
                         "storage": {
@@ -750,6 +827,16 @@ class DiscoveryMixin:
                 "max_task_input_bytes_per_request": 262144,
                 "max_task_wait_seconds": 30,
                 "max_command_characters": 100000,
+                "min_schedule_interval_minutes": MIN_SCHEDULE_INTERVAL_MINUTES,
+                "max_schedules_per_token": MAX_ACTIVE_SCHEDULES_PER_APP,
+                "schedule_misfire_grace_seconds": self.server.config.schedule_misfire_grace_seconds,
+                "max_schedule_runs_per_schedule": MAX_SCHEDULE_RUNS_PER_SCHEDULE,
+                "schedule_run_retention_days": SCHEDULE_RUN_RETENTION_DAYS,
+                "max_environment_variables": MAX_ENVIRONMENT_VARIABLES,
+                "max_environment_name_characters": MAX_ENVIRONMENT_NAME_CHARS,
+                "max_environment_value_characters": MAX_ENVIRONMENT_VALUE_CHARS,
+                "max_environment_total_characters": MAX_ENVIRONMENT_TOTAL_CHARS,
+                "max_environment_rc_characters": MAX_ENVIRONMENT_RC_CHARS,
                 "max_context_query_entries": MAX_CONTEXT_QUERY_LIMIT,
                 "max_context_entries": MAX_CONTEXT_ENTRIES,
                 "context_trim_oldest_entries": CONTEXT_TRIM_ENTRIES,
@@ -787,7 +874,7 @@ class DiscoveryMixin:
                 "discovery": {"method": "GET", "url": f"{base}/"},
                 "discovery_section": {
                     "method": "GET",
-                    "url": f"{base}/discovery/<files|context|memory|shell|web|sharing|full>",
+                    "url": f"{base}/discovery/<files|context|memory|shell|schedules|web|sharing|full>",
                     "notes": "main discovery is a compact index; section documents contain domain-specific details and full preserves the complete compatibility document",
                 },
                 "credentials_renew": {
@@ -803,6 +890,36 @@ class DiscoveryMixin:
                         "workspace_url": "<new full workspace URL>",
                         "credentials_expires_at": "<UTC timestamp>",
                     },
+                },
+                "environment_get": {
+                    "method": "GET",
+                    "url": f"{base}/env",
+                    "authentication": "Bearer control token",
+                    "notes": "returns this stable app identity's persisted Shell variables and POSIX rc content; responses contain secrets and are never cached",
+                },
+                "environment_replace": {
+                    "method": "PUT",
+                    "url": f"{base}/env",
+                    "authentication": "Bearer control token",
+                    "json": {
+                        "variables": {"NAME": "string value"},
+                        "rc": "optional POSIX Shell initialization commands",
+                        "plan_id": "required plan id",
+                        "taskname": "required task grouping name",
+                        "message": "required short operation message",
+                    },
+                    "notes": "atomically replaces the complete app-identity-scoped environment configuration; values are injected into full, Bubblewrap, and Podman Shell tasks; reserved launcher and proxy variables are rejected",
+                },
+                "environment_clear": {
+                    "method": "DELETE",
+                    "url": f"{base}/env",
+                    "authentication": "Bearer control token",
+                    "json": {
+                        "plan_id": "required plan id",
+                        "taskname": "required task grouping name",
+                        "message": "required short operation message",
+                    },
+                    "notes": "removes the complete per-app environment configuration",
                 },
                 "context_query": {
                     "method": "GET",
@@ -904,7 +1021,7 @@ class DiscoveryMixin:
                         "revision": 1,
                         "etag_header": "current revision validator",
                     },
-                    "notes": "returns a stable memory_id, revision 1, and ETag; Memory is stored in .context/memory.sqlite3 rather than the operation-log database",
+                    "notes": "returns a stable memory_id, revision 1, and ETag; Memory uses separate private runtime-managed storage from the operation log",
                 },
                 "memory_item": {
                     "method": "GET, PATCH, or DELETE",
@@ -1100,7 +1217,7 @@ class DiscoveryMixin:
                     "method": "POST",
                     "url": f"{base}/fs/delete",
                     "json": {"path": "<path>", "plan_id": "<required owning plan id>", "taskname": "<required task grouping name>", "message": "<required brief operation summary>"},
-                    "notes": "moves the path into this child workspace's .recycle directory; the token root cannot be deleted",
+                    "notes": "moves the path into this child workspace's private recycle storage; the token root cannot be deleted",
                 },
                 "fs_delete_batch": {
                     "method": "POST",
@@ -1111,7 +1228,7 @@ class DiscoveryMixin:
                         "taskname": "<required task grouping name>",
                         "message": "<required brief operation summary>",
                     },
-                    "notes": "preflights every unique non-overlapping path before moving each item into .recycle; ordinary precondition errors delete nothing; a post-preflight race can return 207 with per-item results",
+                    "notes": "preflights every unique non-overlapping path before moving each item into private recycle storage; ordinary precondition errors delete nothing; a post-preflight race can return 207 with per-item results",
                 },
                 "fs_move": {
                     "method": "POST",
@@ -1235,6 +1352,98 @@ class DiscoveryMixin:
                         "message": "<required brief operation summary>",
                     },
                 },
+                "schedule_list": {
+                    "method": "GET",
+                    "url": f"{base}/schedules",
+                },
+                "schedule_create": {
+                    "method": "POST",
+                    "url": f"{base}/schedules",
+                    "json": {
+                        "name": "nightly build",
+                        "schedule": {
+                            "type": "cron",
+                            "expression": "0 0 2 * * *",
+                            "timezone": "UTC",
+                        },
+                        "command": "make test",
+                        "cwd": ".",
+                        "timeout_seconds": 3600,
+                        "overlap_policy": "skip",
+                        "misfire_policy": "skip",
+                        "plan_id": "<required owning plan id>",
+                        "taskname": "<required task grouping name>",
+                        "message": "<required brief operation summary>",
+                        "run_context": {
+                            "plan_id": "<optional; defaults to the mutation plan_id>",
+                            "taskname": "<optional; defaults to the mutation taskname>",
+                            "message": "<optional; defaults to the mutation message>",
+                        },
+                    },
+                    "schedule_variants": {
+                        "interval": {"type": "interval", "minutes": 3, "timezone": "UTC"},
+                        "once": {"type": "once", "run_at": "<timezone-aware ISO 8601 timestamp at least 3 minutes ahead>", "timezone": "UTC"},
+                    },
+                    "notes": "cron has exactly six required fields and occurrences must never be less than 3 minutes apart",
+                },
+                "schedule_get": {
+                    "method": "GET",
+                    "url": f"{base}/schedules/<schedule_id>",
+                },
+                "schedule_update": {
+                    "method": "PATCH",
+                    "url": f"{base}/schedules/<schedule_id>",
+                    "json": {
+                        "expected_revision": 1,
+                        "name": "<optional>",
+                        "schedule": "<optional complete schedule object>",
+                        "command": "<optional>",
+                        "cwd": "<optional>",
+                        "timeout_seconds": "<optional number or null>",
+                        "run_context": "<optional complete plan_id/taskname/message for future runs>",
+                        "plan_id": "<required owning plan id for this API mutation>",
+                        "taskname": "<required task grouping name>",
+                        "message": "<required brief operation summary>",
+                    },
+                },
+                "schedule_delete": {
+                    "method": "DELETE",
+                    "url": f"{base}/schedules/<schedule_id>",
+                    "json": {
+                        "plan_id": "<required owning plan id>",
+                        "taskname": "<required task grouping name>",
+                        "message": "<required brief operation summary>",
+                    },
+                },
+                "schedule_run": {
+                    "method": "POST",
+                    "url": f"{base}/schedules/<schedule_id>/run",
+                    "json": {
+                        "plan_id": "<required owning plan id>",
+                        "taskname": "<required task grouping name>",
+                        "message": "<required brief operation summary>",
+                    },
+                    "notes": "explicit immediate run; task capacity and overlap limits still apply",
+                },
+                "schedule_pause": {
+                    "method": "POST",
+                    "url": f"{base}/schedules/<schedule_id>/pause",
+                    "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
+                },
+                "schedule_resume": {
+                    "method": "POST",
+                    "url": f"{base}/schedules/<schedule_id>/resume",
+                    "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
+                },
+                "schedule_runs": {
+                    "method": "GET",
+                    "url": f"{base}/schedules/<schedule_id>/runs?limit=50",
+                },
+                "schedule_run_item": {
+                    "method": "GET",
+                    "url": f"{base}/schedule-runs/<run_id>",
+                    "notes": "task_id links to ordinary Shell task status and output while retained",
+                },
                 "task_list": {
                     "method": "GET",
                     "url": f"{base}/tasks?offset=0&limit=100&status=running",
@@ -1325,17 +1534,19 @@ class DiscoveryMixin:
                 "Inspect the workspace first with list_files/fs_list and read_file/fs_read.",
                 "Open the web_preview endpoint URL to preview workspace HTML and its relative CSS, JavaScript, images, fonts, or media in a sandboxed browser document.",
                 "Implement registration, login, roles, cookies, sessions, CSRF, and access control directly in the workspace FastAPI application when the site needs them; OpenKapsel does not add an authentication layer.",
-                "For persistent application data, define a FastAPI route in <app-directory>/api/app.py and use openkapsel_runtime.database.engine('main') or database.session('main') with portable SQLAlchemy APIs; each app gets private .sql storage in its parent directory, while browser code calls /<app-path>/api/* and never accesses database storage directly.",
+                "For persistent application data, define a FastAPI route in <app-directory>/api/app.py and use openkapsel_runtime.database.engine('main') or database.session('main') with portable SQLAlchemy APIs; each app gets private runtime-managed storage, while browser code calls /<app-path>/api/* and never accesses database storage directly.",
                 "Use list_tree/fs_tree for a bounded recursive overview and search_files/fs_search for cross-file text search.",
                 "Request sha256 explicitly from stat_file/fs_stat only when content verification is needed.",
                 "Use fs_stat before transferring files; MCP clients can call prepare_download for a token-free control-authenticated fs_content URL, then stream binary or large downloads with HTTP Range.",
                 "Use direct fs_content PUT for small binary files, or create an upload session for large files; MCP start_upload returns raw_transfer URLs so bytes do not need Base64 encoding.",
-                "Uploads never overwrite. To replace a file, first use delete_path/fs_delete so its previous version is retained in .recycle, then upload the new file.",
+                "Uploads never overwrite. To replace a file, first use delete_path/fs_delete so its previous version is retained in private recycle storage, then upload the new file.",
                 "Create directories with create_directory/fs_mkdir, and move or rename paths with move_path/fs_move.",
                 "Prefer replace_text/fs_replace for one focused edit. Use fs_replace_batch for multiple exact non-overlapping replacements in one or more files; all rules match each file's original text. Use write_file/fs_write for complete file creation or replacement, and pass expected_etag to prevent overwriting a concurrent change.",
                 "Use delete_path/fs_delete for recoverable deletion, list_recycle/recycle_list to inspect deleted items, and restore_recycle/recycle_restore to recover them.",
                 "For cross-workspace transfer, create_share/share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with import_share/share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
                 "Run tests or builds with run_shell/shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
+                "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id; use run-now instead of creating sub-three-minute schedules.",
+                "Use GET, PUT, or DELETE env to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization. PUT and DELETE require mutation Context; secrets are injected without appearing in sandbox launcher arguments.",
                 "For restricted Shell, inspect this token's live sandbox processes and aggregate resource usage with list_sandbox_processes/sandbox_processes.",
                 "Use interrupt_task/task_interrupt for normal termination; reserve kill_task/task_kill for an unresponsive task that must stop immediately.",
             ],
@@ -1350,6 +1561,9 @@ class DiscoveryMixin:
         endpoint_permissions = {
             "discovery_section": ("URL token", True),
             "credentials_renew": ("Bearer control token", control_authorized),
+            "environment_get": ("Bearer control token", control_authorized),
+            "environment_replace": ("Bearer control token", control_authorized),
+            "environment_clear": ("Bearer control token", control_authorized),
             "context_query": (
                 "Bearer control token + files.read",
                 control_authorized and read_enabled,
@@ -1420,6 +1634,16 @@ class DiscoveryMixin:
             "share_delete": ("creator Bearer control token", control_authorized),
             "mcp": ("Bearer control token", control_authorized),
             "shell_exec": ("Bearer control token + shell", shell_enabled),
+            "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_create": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_get": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_update": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_delete": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_run": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_pause": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_resume": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_runs": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_run_item": ("Bearer control token + schedules + shell", schedules_enabled),
             "task_list": ("Bearer control token + shell", shell_enabled),
             "task_status": ("Bearer control token + shell", shell_enabled),
             "task_output": ("Bearer control token + shell", shell_enabled),
@@ -1439,6 +1663,9 @@ class DiscoveryMixin:
         if not control_authorized:
             privileged_endpoints = {
                 "credentials_renew",
+                "environment_get",
+                "environment_replace",
+                "environment_clear",
                 "fs_content_put",
                 "context_query",
                 "context_plan_tree",
@@ -1468,6 +1695,16 @@ class DiscoveryMixin:
                 "share_delete",
                 "mcp",
                 "shell_exec",
+                "schedule_list",
+                "schedule_create",
+                "schedule_get",
+                "schedule_update",
+                "schedule_delete",
+                "schedule_run",
+                "schedule_pause",
+                "schedule_resume",
+                "schedule_runs",
+                "schedule_run_item",
                 "task_list",
                 "task_status",
                 "task_output",

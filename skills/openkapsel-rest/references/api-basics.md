@@ -12,6 +12,8 @@ Normalize `workspace_url` by removing its trailing slash. Workspace endpoints ar
 
 Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, public share URL, or workspace application's own route.
 
+The workspace-relative `.openkapsel` directory is reserved private runtime state. File, preview, sharing, application-worker, and restricted-Shell surfaces do not expose it. Use the dedicated recycle, Context, Memory, database-runtime, and environment interfaces instead.
+
 ## Directory-scoped configuration and renewal
 
 Initialize a controlling project from its directory:

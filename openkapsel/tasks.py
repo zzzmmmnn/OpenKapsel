@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
@@ -103,6 +104,8 @@ class ShellTask:
     resource_limited: bool = False
     cgroup_procs_file: Path | None = field(default=None, repr=False)
     sandbox_controller: Any | None = field(default=None, repr=False)
+    environment_file: Path | None = field(default=None, repr=False)
+    process_environment: dict[str, str] | None = field(default=None, repr=False)
     status: str = "running"
     exit_code: int | None = None
     error: str | None = None
@@ -115,6 +118,9 @@ class ShellTask:
     stdout: BoundedOutput = field(init=False, repr=False)
     stderr: BoundedOutput = field(init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _finished_event: threading.Event = field(
+        default_factory=threading.Event, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.stdout = BoundedOutput(self.output_limit)
@@ -220,6 +226,8 @@ class TaskRegistry:
         sandboxed: bool = False,
         sandbox_backend: str | None = None,
         sandbox_controller: Any | None = None,
+        environment_file: Path | None = None,
+        process_environment: dict[str, str] | None = None,
         network_access: bool = True,
         resource_limits: SandboxLimits | None = None,
     ) -> ShellTask:
@@ -260,6 +268,8 @@ class TaskRegistry:
             sandboxed=sandboxed,
             sandbox_backend=sandbox_backend,
             sandbox_controller=sandbox_controller,
+            environment_file=environment_file,
+            process_environment=process_environment,
             network_access=network_access,
             resource_limited=cgroup_procs_file is not None,
             cgroup_procs_file=cgroup_procs_file,
@@ -451,6 +461,11 @@ class TaskRegistry:
         injected_file = None
         try:
             command: str | tuple[str, ...] = task.argv if task.argv is not None else task.command
+            if task.argv is None and task.environment_file is not None:
+                command = (
+                    f". {shlex.quote(str(task.environment_file))}\n"
+                    f"{task.command}"
+                )
             pass_fds: tuple[int, ...] = ()
             if task.stdin_data is not None:
                 injected_file = tempfile.TemporaryFile()
@@ -483,6 +498,7 @@ class TaskRegistry:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
                 pass_fds=pass_fds,
+                env=task.process_environment,
             )
             if injected_file is not None:
                 injected_file.close()
@@ -539,6 +555,7 @@ class TaskRegistry:
             except (OSError, ValueError):
                 LOGGER.exception("could not archive completed shell task %s", task.id)
             finally:
+                task._finished_event.set()
                 with self._lock:
                     if self._tasks.get(task.id) is task:
                         self._tasks.pop(task.id, None)

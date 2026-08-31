@@ -8,15 +8,17 @@ from pathlib import Path
 
 from .cgroups import SandboxLimits
 from .errors import ApiError
-from .recycle import RecycleError
 from .sandbox_backends import SandboxBackend, SandboxLaunch, SandboxSpec
 from .tokens import PathGrant
+from .workspace_layout import INTERNAL_DIRECTORY, ensure_workspace_layout
 
 
 class SandboxMixin:
     """Validate token policy and delegate command construction to a backend."""
 
-    def _sandbox_spec(self, command: str, cwd: Path) -> SandboxSpec:
+    def _sandbox_spec(
+        self, command: str, cwd: Path, environment_file: Path | None = None
+    ) -> SandboxSpec:
         return SandboxSpec(
             command=command,
             cwd=cwd,
@@ -34,13 +36,20 @@ class SandboxMixin:
             ),
             owner_token=self.token_record.token,
             sandbox_image=self.token_record.sandbox_image,
+            environment_file=environment_file,
         )
 
     def _build_with_backend(
-        self, backend: SandboxBackend, command: str, cwd: Path
+        self,
+        backend: SandboxBackend,
+        command: str,
+        cwd: Path,
+        environment_file: Path | None = None,
     ) -> SandboxLaunch:
         try:
-            return backend.build_shell(self._sandbox_spec(command, cwd))
+            return backend.build_shell(
+                self._sandbox_spec(command, cwd, environment_file)
+            )
         except RuntimeError as exc:
             raise ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -48,7 +57,9 @@ class SandboxMixin:
                 str(exc),
             ) from None
 
-    def _sandbox_launch(self, command: str, cwd: Path) -> SandboxLaunch:
+    def _sandbox_launch(
+        self, command: str, cwd: Path, environment_file: Path | None = None
+    ) -> SandboxLaunch:
         try:
             backend = self.server.sandboxes.resolve(self.token_record.sandbox_backend)
         except LookupError as exc:
@@ -63,7 +74,7 @@ class SandboxMixin:
                 "sandbox_unavailable",
                 str(exc),
             ) from None
-        return self._build_with_backend(backend, command, cwd)
+        return self._build_with_backend(backend, command, cwd, environment_file)
 
     def _bubblewrap_argv(self, command: str, cwd: Path) -> tuple[tuple[str, ...], bytes | None]:
         """Compatibility shim for older extensions and tests."""
@@ -78,23 +89,14 @@ class SandboxMixin:
         return launch.argv, launch.stdin_data
 
     def _sandbox_hidden_paths(self) -> tuple[Path, ...]:
-        hidden: list[Path] = []
-        context_root = self.token_scope_root / ".context"
-        if context_root.is_dir() and not context_root.is_symlink():
-            hidden.append(context_root)
-        if self.token_scope_root == self.server.config.root:
-            return tuple(hidden)
-        try:
-            hidden.append(self.server.recycle_for(self.token_scope_root).root)
-        except RecycleError as exc:
-            raise ApiError(exc.status, exc.code, exc.message) from None
+        hidden: list[Path] = [ensure_workspace_layout(self.token_scope_root).root]
         for current, directories, _files in os.walk(self.token_scope_root, followlinks=False):
             parent = Path(current)
             for name in tuple(directories):
                 path = parent / name
-                if path.is_symlink() or name in {".sql", ".recycle", ".context"}:
+                if path.is_symlink() or name == INTERNAL_DIRECTORY:
                     directories.remove(name)
-                if name == ".sql" and path.is_dir() and not path.is_symlink():
+                if name == INTERNAL_DIRECTORY and path.is_dir() and not path.is_symlink():
                     hidden.append(path)
         return tuple(sorted(set(hidden), key=lambda path: len(path.parts)))
 

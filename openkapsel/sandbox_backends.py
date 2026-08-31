@@ -18,6 +18,9 @@ from .tasks import RESOLVER_FD_MARKER
 from .tokens import PathGrant
 
 
+ENVIRONMENT_MOUNT = "/run/openkapsel-environment.rc"
+
+
 @dataclass(frozen=True)
 class SandboxCapabilities:
     filesystem_isolation: bool = True
@@ -68,6 +71,7 @@ class SandboxSpec:
     limits: SandboxLimits
     owner_token: str
     sandbox_image: str | None = None
+    environment_file: Path | None = None
 
 
 class SandboxBackend(Protocol):
@@ -147,6 +151,10 @@ class BubblewrapBackend:
             argv.extend(["--file", RESOLVER_FD_MARKER, "/etc/resolv.conf"])
         self._append_parent_dirs(argv, spec.scope_root.parent)
         argv.extend(["--bind" if spec.can_write else "--ro-bind", scope, scope])
+        if spec.environment_file is not None:
+            argv.extend(
+                ["--ro-bind", str(spec.environment_file), ENVIRONMENT_MOUNT]
+            )
         for hidden in spec.hidden_paths:
             argv.extend(["--tmpfs", str(hidden)])
         for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
@@ -154,7 +162,10 @@ class BubblewrapBackend:
             self._append_parent_dirs(argv, Path(grant.path).parent)
             argv.extend([mode, grant.path, grant.path])
         controller = None
-        command = ["/bin/sh", "-c", spec.command]
+        shell_command = spec.command
+        if spec.environment_file is not None:
+            shell_command = f". {ENVIRONMENT_MOUNT}\n{shell_command}"
+        command = ["/bin/sh", "-c", shell_command]
         proxy = None
         try:
             if spec.network_mode == "domain_allowlist":
@@ -166,13 +177,13 @@ class BubblewrapBackend:
                 command = [
                     "/usr/bin/python3", "/run/openkapsel-proxy-relay.py",
                     "--socket", f"{PROXY_MOUNT}/proxy.sock", "--port", str(PROXY_PORT),
-                    "--", "/bin/sh", "-c", spec.command,
+                    "--", "/bin/sh", "-c", shell_command,
                 ]
                 controller = ProxyController(proxy)
             argv.extend(
                 [
                     "--clearenv", "--setenv", "PATH", path_value, "--setenv", "HOME", scope,
-                    "--setenv", "TMPDIR", "/tmp",
+                    "--setenv", "TMPDIR", "/tmp", "--setenv", "OPENKAPSEL_WORKSPACE", scope,
                 ]
             )
             if spec.network_mode == "domain_allowlist":
@@ -366,6 +377,10 @@ class PodmanBackend:
             "--tmpfs", "/run:rw,nosuid,nodev,noexec,mode=755",
             "--volume", f"{spec.scope_root}:{spec.scope_root}:{'rw' if spec.can_write else 'ro'}",
         ])
+        if spec.environment_file is not None:
+            argv.extend(
+                ["--volume", f"{spec.environment_file}:{ENVIRONMENT_MOUNT}:ro"]
+            )
         for hidden in spec.hidden_paths:
             argv.extend(["--tmpfs", f"{hidden}:rw,nosuid,nodev,noexec,mode=700"])
         for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
@@ -374,7 +389,10 @@ class PodmanBackend:
         podman_controller = PodmanController(self.executable, container_name)
         proxy = None
         try:
-            command = ["/bin/sh", "-c", spec.command]
+            shell_command = spec.command
+            if spec.environment_file is not None:
+                shell_command = f". {ENVIRONMENT_MOUNT}\n{shell_command}"
+            command = ["/bin/sh", "-c", shell_command]
             if spec.network_mode == "domain_allowlist":
                 proxy = DomainProxy.start(spec.proxy_root, spec.allowed_domains)
                 relay = Path(__file__).with_name("proxy_relay.py").resolve()
@@ -387,12 +405,13 @@ class PodmanBackend:
                 command = [
                     "python3", "/run/openkapsel-proxy-relay.py",
                     "--socket", f"{PROXY_MOUNT}/proxy.sock", "--port", str(PROXY_PORT),
-                    "--", "/bin/sh", "-c", spec.command,
+                    "--", "/bin/sh", "-c", shell_command,
                 ]
             argv.extend(
                 [
                     "--workdir", str(spec.cwd), "--env", f"HOME={spec.scope_root}",
-                    "--env", "TMPDIR=/tmp", "--pull=never", image, *command,
+                    "--env", "TMPDIR=/tmp", "--env", f"OPENKAPSEL_WORKSPACE={spec.scope_root}",
+                    "--pull=never", image, *command,
                 ]
             )
             controller: SandboxController = podman_controller

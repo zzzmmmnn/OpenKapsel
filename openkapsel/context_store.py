@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .workspace_layout import CONTEXT_DIRECTORY, ensure_workspace_directory, ensure_workspace_layout
 
-CONTEXT_DIRECTORY = ".context"
+
 CONTEXT_DATABASE = "context.sqlite3"
 CONTEXT_TYPES = {"operation", "plan", "note"}
 OPERATION_STATUSES = {"running", "succeeded", "failed"}
@@ -42,18 +43,13 @@ class ContextStore:
 
     def __init__(self, workspace: Path):
         self.workspace = workspace.resolve(strict=True)
-        self.directory = self.workspace / CONTEXT_DIRECTORY
+        self.directory = ensure_workspace_layout(self.workspace).context
         self.database = self.directory / CONTEXT_DATABASE
         self._lock = threading.RLock()
         self._initialize()
 
     def _prepare_storage(self) -> None:
-        if self.directory.is_symlink() or (
-            self.directory.exists() and not self.directory.is_dir()
-        ):
-            raise ValueError("Workspace .context must be a real directory")
-        self.directory.mkdir(mode=0o700, exist_ok=True)
-        self.directory.chmod(0o700)
+        self.directory = ensure_workspace_directory(self.workspace, CONTEXT_DIRECTORY)
         if self.database.is_symlink():
             raise ValueError("Workspace context database must not be a symlink")
 

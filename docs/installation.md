@@ -2,6 +2,12 @@
 
 [Back to README](../README.md)
 
+## Workspace-private layout
+
+OpenKapsel reserves one `.openkapsel` directory inside every Workspace. Its `recycle`, `sql`, `context`, and `env` children hold runtime-managed private state and are hidden from file APIs, preview, application source mounts, restricted Shell, and sharing. Do not create project files under this directory.
+
+On service startup, an existing Workspace referenced by a token is initialized automatically. Legacy top-level `.recycle`, `.sql`, and `.context` directories are moved into `.openkapsel` without copying. Startup refuses symlinks or conflicting old/new entries instead of guessing which data to discard. Back up production Workspace data before an upgrade that introduces this migration.
+
 ## Production layout
 
 The installer uses the following layout:
@@ -130,6 +136,7 @@ OpenKapsel also has application-side limits:
 | `max_network_proxy_connections` | `64` | Global connections through restricted-domain proxies |
 | `max_network_proxy_connections_per_instance` | `16` | Connections through one task or worker proxy instance |
 | `network_proxy_header_timeout_seconds` | `15` | Time allowed to finish a restricted-proxy request header |
+| `schedule_misfire_grace_seconds` | `300` | Maximum lateness before a `misfire_policy: skip` occurrence is recorded as missed |
 
 Do not confuse the one-hour SSE rotation with the Shell task runtime. The stream can reconnect without losing output, while the task follows its own configured runtime limit.
 
@@ -149,4 +156,3 @@ curl -I https://preview.example.com/
 ```
 
 Open `https://ws.example.com/kapsel/admin`, sign in, and create a token. Begin additional path grants as read-only and enable writes only when required.
-

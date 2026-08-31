@@ -4,6 +4,33 @@ Read `GET /discovery/shell` before use. It states whether Shell is `none`, `rest
 
 Restricted Shell and full Shell have different boundaries. Restricted Shell is confined by its configured backend, mounts, network setting, and available cgroup limits. Full Shell runs as the OpenKapsel service user and is not constrained by token path grants or the network flag.
 
+## Persistent Shell environment
+
+The control-authenticated `/env` endpoint stores Shell configuration for the stable app identity behind the current token record. It is distinct from the local `.openkapsel.env` file used by this Skill to find a server and credentials. Two token records may share one Workspace while retaining different Shell environments; rotating either record's read/control credentials preserves its configuration.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/env` | Return the complete variables and POSIX rc content; treat the response as secret and do not log it |
+| `PUT` | `/env` | Completely replace variables and rc; include `plan_id`, `taskname`, and `message` |
+| `DELETE` | `/env` | Clear the configuration; include mutation Context |
+
+Example replacement:
+
+```json
+{
+  "variables": {
+    "API_KEY": "secret",
+    "BUILD_MODE": "release"
+  },
+  "rc": "umask 077\nalias ll='ls -la'",
+  "plan_id": 42,
+  "taskname": "shell-config",
+  "message": "Configure build environment"
+}
+```
+
+Variables and rc are injected into later full, Bubblewrap, and Podman Shell tasks. The rc contract is POSIX `/bin/sh`, not Bash-only syntax. OpenKapsel-owned launcher, path, proxy, loader, and `OPENKAPSEL_*` names are reserved; inspect Discovery for the exact list and size limits. Service-process environment variables are not inherited wholesale, and configured values are not placed in sandbox launcher arguments. The rc is executable Shell code with the same authority as that token's Shell mode, so do not treat it as a safer permission boundary.
+
 ## Start and inspect tasks
 
 `POST /shell/exec` returns `202` with `task_id`:

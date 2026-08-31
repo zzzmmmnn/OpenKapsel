@@ -56,10 +56,11 @@ class DatabaseRuntimeTests(unittest.TestCase):
             database_id = "test_" + uuid.uuid4().hex
             value = database.engine(database_id)
             try:
-                self.assertTrue((root / ".sql").is_dir())
-                self.assertEqual(0o700, (root / ".sql").stat().st_mode & 0o777)
+                storage = root / ".openkapsel" / "sql"
+                self.assertTrue(storage.is_dir())
+                self.assertEqual(0o700, storage.stat().st_mode & 0o777)
                 self.assertIs(value, database.engine(database_id))
-                self.assertEqual(root / ".sql" / f"{database_id}.sqlite3", Path(value.url.database))
+                self.assertEqual(storage / f"{database_id}.sqlite3", Path(value.url.database))
                 with value.connect() as connection:
                     self.assertEqual(1, connection.exec_driver_sql("PRAGMA foreign_keys").scalar())
                     self.assertEqual(5000, connection.exec_driver_sql("PRAGMA busy_timeout").scalar())

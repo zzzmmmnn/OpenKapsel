@@ -15,6 +15,7 @@ from urllib.parse import quote, unquote
 
 from .api_workers import ApiWorkerError
 from .errors import ApiError
+from .workspace_layout import INTERNAL_DIRECTORY
 
 
 LOGGER = logging.getLogger("openkapsel")
@@ -49,7 +50,7 @@ class PreviewHandlersMixin:
         relative = unquote(encoded_relative)
         if "\x00" in relative or Path(relative).is_absolute():
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_preview_path", "preview path is invalid")
-        if any(part in {".sql", ".recycle", ".context", "api"} for part in Path(relative).parts):
+        if any(part in {INTERNAL_DIRECTORY, "api"} for part in Path(relative).parts):
             raise ApiError(HTTPStatus.NOT_FOUND, "preview_not_found", "preview file does not exist")
         try:
             target = self._resolve_path(relative)
@@ -189,9 +190,7 @@ class PreviewHandlersMixin:
             return None
         if "\x00" in relative or path.is_absolute():
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_api_path", "API path is invalid")
-        if ".." in parts[:api_index] or any(
-            part in {".sql", ".recycle", ".context"} for part in parts[:api_index]
-        ):
+        if ".." in parts[:api_index] or INTERNAL_DIRECTORY in parts[:api_index]:
             raise ApiError(HTTPStatus.NOT_FOUND, "api_not_found", "Workspace API does not exist")
 
         app_relative = Path(*parts[:api_index]) if api_index else Path(".")

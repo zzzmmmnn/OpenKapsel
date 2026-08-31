@@ -107,8 +107,8 @@ class ShareStoreTests(unittest.TestCase):
         self.assertEqual("share_too_large", too_large.exception.code)
 
         private = self.root / "private"
-        (private / ".context").mkdir(parents=True)
-        (private / ".context" / "secret").write_text("secret")
+        (private / ".openkapsel").mkdir(parents=True)
+        (private / ".openkapsel" / "secret").write_text("secret")
         with self.assertRaises(ShareError) as reserved:
             self._create(private)
         self.assertEqual("reserved_path", reserved.exception.code)

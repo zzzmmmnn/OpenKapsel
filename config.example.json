@@ -45,6 +45,7 @@
   "http_socket_timeout_seconds": 30,
   "max_sse_streams": 16,
   "max_sse_streams_per_token": 4,
+  "schedule_misfire_grace_seconds": 300,
   "max_sse_duration_seconds": 3600,
   "max_network_proxy_connections": 64,
   "max_network_proxy_connections_per_instance": 16,

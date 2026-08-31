@@ -19,9 +19,11 @@ from http import HTTPStatus
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .workspace_layout import INTERNAL_DIRECTORY
+
 
 SHARE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{22}")
-RESERVED_NAMES = {".recycle", ".sql", ".context"}
+RESERVED_NAMES = {INTERNAL_DIRECTORY}
 DIRECTORY_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_DIRECTORY", 0)

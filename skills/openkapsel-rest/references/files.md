@@ -4,7 +4,7 @@ Read `GET /discovery/files` first when server-specific limits or availability ma
 
 ## Read operations
 
-All paths are workspace-relative unless they are absolute paths inside the workspace or an administrator-granted extra path. Symlink escapes are rejected. `.recycle`, `.sql`, and `.context` are private.
+All paths are workspace-relative unless they are absolute paths inside the workspace or an administrator-granted extra path. Symlink escapes are rejected. `.openkapsel` is private.
 
 | Method | Path | Inputs and result |
 |---|---|---|
@@ -60,7 +60,7 @@ These require the matching Bearer token, write permission, and JSON Context fiel
 
 Every rule is located against that file's original text, and every matched occurrence is replaced. Rules may therefore modify several independent places in one file without earlier replacements changing later match targets. Source ranges must not overlap. The server validates every file, match count, range, permission, size, and optional ETag before publishing the first file; it also uses each observed ETag internally when publishing. Ordinary validation failures modify nothing. A post-preflight race can return `207 Multi-Status` with per-file results. The configured batch limit bounds file items, replacement rules, and total matched replacements.
 
-Deletion is recoverable and recreates `.recycle` safely if a Shell command removed it. The workspace root cannot be deleted. Full Shell deletion does not use the recycle mechanism.
+Deletion is recoverable and recreates private recycle storage safely if a full Shell command removed it. The workspace root cannot be deleted. Full Shell deletion does not use the recycle mechanism.
 
 Batch deletion rejects duplicate paths and parent/child overlaps. It validates every path before the first recycle move, so ordinary precondition failures change none of the requested paths. A race after preflight can produce `207 Multi-Status`; inspect every item and retry only failures after checking current state.
 
@@ -74,7 +74,7 @@ Batch deletion rejects duplicate paths and parent/child overlaps. It validates e
 - optional `X-Content-SHA256`
 - all three `OpenKapsel-*` Context headers
 
-It is atomic and create-only. It never overwrites. If the destination exists, call `fs/delete` first so the prior version enters `.recycle`, then upload the new file. Use this route only up to `limits.max_direct_upload_bytes`.
+It is atomic and create-only. It never overwrites. If the destination exists, call `fs/delete` first so the prior version enters private recycle storage, then upload the new file. Use this route only up to `limits.max_direct_upload_bytes`.
 
 ## Resumable upload
 
@@ -93,7 +93,7 @@ python3 scripts/openkapsel_upload.py ./artifact.zip releases/artifact.zip \
   --plan-id 42 --taskname release --message 'Upload the release artifact'
 ```
 
-The server never overwrites through an upload request. Passing `--overwrite` explicitly makes the helper call `fs/delete` first, preserving the old destination in `.recycle`, and then starts a create-only upload. Without that flag an existing destination is reported as a failure.
+The server never overwrites through an upload request. Passing `--overwrite` explicitly makes the helper call `fs/delete` first, preserving the old destination in private recycle storage, and then starts a create-only upload. Without that flag an existing destination is reported as a failure.
 
 ## Multiple files and directory trees
 

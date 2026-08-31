@@ -4,7 +4,7 @@
 
 ## Context
 
-Each Workspace owns `.context/context.sqlite3`. Context is an append-oriented operation history and Plan tracker; it is not a session that must be opened or closed. IDs are auto-incrementing integers.
+Each Workspace owns private Context storage under its reserved `.openkapsel` directory. Context is an append-oriented operation history and Plan tracker; it is not a session that must be opened or closed. IDs are auto-incrementing integers.
 
 Entry types:
 
@@ -18,7 +18,7 @@ Every mutation requires a valid `plan_id`, `taskname`, and `message`. Task names
 
 Reads are not recorded by default. To record a read, supply both task name and message; a Plan ID is optional but recommended.
 
-`actor_id` is a SHA-256 pseudonymous identifier derived from the URL token. It distinguishes multiple token records sharing a Workspace without storing raw credentials.
+`actor_id` is a SHA-256 pseudonymous identifier derived from the stable internal application ID. It distinguishes multiple token records sharing a Workspace without storing raw credentials and remains unchanged when read or control credentials rotate.
 
 Creating a Plan returns up to twenty previously existing, unfinished root Plans in `unfinished_root_plans`. It excludes Sub Plans and the newly created Plan. Counts and truncation fields describe the complete result.
 
@@ -30,7 +30,7 @@ Each Workspace retains up to 100,000 Context entries. Overflow removes the oldes
 
 ## Project Memory
 
-Long-lived Memory uses the separate `.context/memory.sqlite3`. It retains cross-task overview, architecture, conventions, decisions, and known issues without counting toward Context retention.
+Long-lived Memory uses a separate private store under `.openkapsel`. It retains cross-task overview, architecture, conventions, decisions, and known issues without counting toward Context retention.
 
 Categories are:
 
@@ -59,4 +59,4 @@ Plan completion accepts up to twenty ordered `memory_actions`:
 
 An empty array explicitly retains no new long-lived Memory. Discovery and MCP share the same discriminated action schema. Responses consistently use `memory_id`.
 
-`.context` is private from file APIs, preview, application workers, and restricted Shell. Full Shell is outside the sandbox boundary and can alter Workspace-private files.
+`.openkapsel` is private from file APIs, preview, application workers, sharing, and restricted Shell. Full Shell is outside the sandbox boundary and can alter Workspace-private files.

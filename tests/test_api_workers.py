@@ -29,7 +29,6 @@ class ApiWorkerSandboxTests(unittest.TestCase):
             sibling = root / "workspace" / "site-b"
             worker_dir = root / "workers" / "site-a"
             (workspace / "api").mkdir(parents=True)
-            (workspace / ".context").mkdir()
             sibling.mkdir(parents=True)
             worker_dir.mkdir(parents=True)
             (sibling / "secret.txt").write_text("private", encoding="utf-8")
@@ -87,10 +86,19 @@ class ApiWorkerSandboxTests(unittest.TestCase):
             self.assertIn(
                 (
                     "--tmpfs",
-                    str(workspace / ".context"),
+                    str(workspace.resolve() / ".openkapsel"),
                 ),
                 pairs,
             )
+            self.assertIn(
+                (
+                    "--bind",
+                    str(workspace.resolve() / ".openkapsel" / "sql"),
+                    "/run/openkapsel-sql",
+                ),
+                triples,
+            )
+            self.assertIn("OPENKAPSEL_SQL_ROOT", sandbox_argv)
             self.assertNotIn(str(sibling), sandbox_argv)
             self.assertNotIn("PYTHONPATH", sandbox_argv)
 

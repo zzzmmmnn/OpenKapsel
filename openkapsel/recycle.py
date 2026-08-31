@@ -14,9 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from .safe_paths import DIRECTORY_FLAGS, NOFOLLOW_FLAGS, SafePathAccess, SafePathError
+from .workspace_layout import (
+    INTERNAL_DIRECTORY,
+    RECYCLE_DIRECTORY,
+    ensure_workspace_directory,
+    ensure_workspace_layout,
+)
 
 
-RECYCLE_DIRECTORY = ".recycle"
 METADATA_FILE = ".openkapsel_recycle.json"
 RECYCLE_ID_PATTERN = re.compile(r"\A\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{8}\Z")
 
@@ -30,11 +35,11 @@ class RecycleError(Exception):
 
 
 class RecycleBin:
-    """Moves deleted paths into ``<child workspace>/.recycle`` safely."""
+    """Moves deleted paths into the child workspace's private recycle store."""
 
     def __init__(self, workspace_root: Path):
         self.workspace_root = workspace_root.resolve()
-        self.root = self.workspace_root / RECYCLE_DIRECTORY
+        self.root = ensure_workspace_layout(self.workspace_root).recycle
         self._paths = SafePathAccess((self.workspace_root,))
         self._lock = threading.RLock()
         try:
@@ -44,38 +49,21 @@ class RecycleBin:
         else:
             os.close(descriptor)
 
-    def _open_workspace(self) -> int:
-        try:
-            return os.open(self.workspace_root, DIRECTORY_FLAGS)
-        except OSError as exc:
-            raise RecycleError(
-                HTTPStatus.CONFLICT,
-                "recycle_unavailable",
-                f"cannot open the workspace root: {exc}",
-            ) from None
-
     def _open_root(self) -> int:
-        """Create and open the recycle directory relative to the workspace fd."""
-        workspace_fd = self._open_workspace()
+        """Recreate and open the private recycle directory without following links."""
         try:
-            try:
-                details = os.stat(RECYCLE_DIRECTORY, dir_fd=workspace_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                os.mkdir(RECYCLE_DIRECTORY, mode=0o700, dir_fd=workspace_fd)
-                details = os.stat(RECYCLE_DIRECTORY, dir_fd=workspace_fd, follow_symlinks=False)
-            if not stat.S_ISDIR(details.st_mode):
-                raise OSError(f"{self.root} is not a real directory")
-            descriptor = os.open(RECYCLE_DIRECTORY, DIRECTORY_FLAGS, dir_fd=workspace_fd)
+            self.root = ensure_workspace_directory(
+                self.workspace_root, RECYCLE_DIRECTORY
+            )
+            descriptor = os.open(self.root, DIRECTORY_FLAGS)
             os.fchmod(descriptor, 0o700)
             return descriptor
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             raise RecycleError(
                 HTTPStatus.CONFLICT,
                 "recycle_unavailable",
                 f"{self.root} must be a real directory, not a file or symlink: {exc}",
             ) from None
-        finally:
-            os.close(workspace_fd)
 
     def recycle(self, path: Path) -> dict[str, Any]:
         with self._lock:
@@ -310,7 +298,12 @@ class RecycleBin:
             "recycle_id": str(metadata["id"]),
             "deleted_at": str(metadata["deleted_at"]),
             "original_path": str(original),
-            "stored_path": str(Path(RECYCLE_DIRECTORY) / str(metadata["id"]) / original),
+            "stored_path": str(
+                Path(INTERNAL_DIRECTORY)
+                / RECYCLE_DIRECTORY
+                / str(metadata["id"])
+                / original
+            ),
             "type": str(metadata["type"]),
             "size": int(metadata["size"]),
         }

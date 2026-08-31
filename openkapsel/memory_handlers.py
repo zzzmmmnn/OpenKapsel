@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from http import HTTPStatus
 from typing import Any
@@ -15,7 +14,7 @@ class MemoryHandlersMixin:
     """Memory-domain methods mixed into the main request handler."""
 
     def _memory_actor_id(self) -> str:
-        return hashlib.sha256(self.token_record.token.encode("utf-8")).hexdigest()
+        return self.token_record.actor_id
 
     def _require_existing_plan(self, value: Any) -> int:
         try:

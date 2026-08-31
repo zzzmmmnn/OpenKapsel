@@ -4,6 +4,22 @@
 
 ## Shell task lifecycle
 
+### Persistent environment
+
+Each token record has a stable internal `app_id`. It is not a credential: read/control token rotation keeps it unchanged, and `actor_id` is a one-way SHA-256 pseudonym derived from it. OpenKapsel uses the stable ID to keep Shell environment configuration separate when multiple token records point at the same Workspace.
+
+The control-authenticated environment API is:
+
+- `GET /env`: return all configured variables and POSIX rc content with `Cache-Control: no-store`
+- `PUT /env`: completely replace variables and rc
+- `DELETE /env`: clear them
+
+`PUT` and `DELETE` are mutations and require `plan_id`, `taskname`, and `message`. `GET` returns secret values, so clients should avoid logging its response. Configuration is stored in private `.openkapsel/env` state, deleted with its token record, and injected into later full, Bubblewrap, and Podman Shell tasks. Values are passed through a mode-0600 file rather than sandbox-launcher arguments.
+
+The rc language is POSIX `/bin/sh`; Bash-only startup syntax is not portable across backends. It runs with the same authority as the selected Shell mode. OpenKapsel blocks names that could replace its workspace, path, proxy, loader, or startup controls, including `HOME`, `PATH`, proxy variables, loader variables, and the `OPENKAPSEL_` prefix. Discovery publishes the exact reserved names and configured size limits.
+
+Full Shell receives a deliberately small base environment instead of inheriting the complete service environment. Restricted backends also establish their own base environment before sourcing the generated file. Every backend exposes `OPENKAPSEL_WORKSPACE` as the task's workspace path.
+
 `POST /shell/exec` creates an asynchronous task and returns `task_id`. Defaults are eight concurrent tasks per token and sixteen globally. Each task has a maximum runtime, one hour by default. These values are service configuration, while process, memory, and CPU limits belong to the token.
 
 Interactive tasks accept stdin. Output can be consumed by:
@@ -57,4 +73,3 @@ Tool families include:
 MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated `/transfer/...` URLs containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
 
 `workspace_info` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
-

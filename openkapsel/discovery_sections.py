@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SECTION_NAMES = ("files", "context", "memory", "shell", "web", "sharing")
+SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sharing")
 
 SECTION_ENDPOINTS = {
     "files": {
@@ -23,6 +23,12 @@ SECTION_ENDPOINTS = {
     "shell": {
         "shell_exec", "task_list", "task_status", "task_output", "task_stream",
         "task_stdin", "task_interrupt", "task_kill", "sandbox_processes",
+        "environment_get", "environment_replace", "environment_clear",
+    },
+    "schedules": {
+        "schedule_list", "schedule_create", "schedule_get", "schedule_update",
+        "schedule_delete", "schedule_run", "schedule_pause", "schedule_resume",
+        "schedule_runs", "schedule_run_item",
     },
     "web": {"web_preview", "web_app_api"},
     "sharing": {"share_create", "share_query", "share_import", "share_delete"},
@@ -40,8 +46,9 @@ SECTION_CAPABILITIES = {
         "shell_pid_namespace", "shell_sandbox_image", "shell_sandbox_image_requested",
         "network", "network_mode", "network_domains",
         "network_protocols", "shell_outside_workspace", "tasks",
-        "task_control", "process", "extra_paths", "extra_paths_redacted",
+        "task_control", "process", "environment", "extra_paths", "extra_paths_redacted",
     },
+    "schedules": {"schedules", "shell", "tasks", "environment"},
     "web": {"web_preview", "web_app_api", "network", "network_mode", "network_domains", "network_protocols"},
     "sharing": {"sharing"},
 }
@@ -72,6 +79,15 @@ SECTION_LIMITS = {
         "max_task_output_chunk_bytes", "max_task_input_bytes_per_request",
         "max_task_wait_seconds", "max_command_characters", "sandbox_max_processes",
         "sandbox_memory_bytes", "sandbox_cpu_percent",
+        "max_environment_variables", "max_environment_name_characters",
+        "max_environment_value_characters", "max_environment_total_characters",
+        "max_environment_rc_characters",
+    },
+    "schedules": {
+        "min_schedule_interval_minutes", "max_schedules_per_token",
+        "schedule_misfire_grace_seconds", "max_concurrent_shell_tasks",
+        "max_concurrent_shell_tasks_per_token", "max_schedule_runs_per_schedule",
+        "schedule_run_retention_days",
     },
     "web": {"workspace_storage", "max_request_body_bytes"},
     "sharing": {
@@ -85,6 +101,7 @@ SECTION_SUMMARIES = {
     "context": "Operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
     "shell": "Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
+    "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
     "sharing": "Temporary ID-addressed transfer of one file or directory between workspaces.",
 }
@@ -109,9 +126,16 @@ SECTION_WORKFLOWS = {
         "On plan completion, create, update, resolve, archive, or explicitly retain no Memory through memory_actions.",
     ],
     "shell": [
+        "Use the env endpoint to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization; writes require mutation Context.",
         "Start asynchronous Shell tasks, then poll status or read output incrementally; use SSE when the client supports it.",
         "Send stdin only to interactive tasks. Interrupt normally before using force-kill.",
         "Restricted Shell runs inside the configured sandbox and token resource limits; inspect sandbox processes when available.",
+    ],
+    "schedules": [
+        "Create schedules only when background execution is needed; use run-now for an explicit immediate execution.",
+        "Use interval minutes of at least 3, a once timestamp at least 3 minutes ahead, or strict six-field cron with an explicit second and IANA timezone.",
+        "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically.",
+        "Pause before editing operational intent, use expected_revision for updates, and inspect run history plus the linked Shell task for output.",
     ],
     "web": [
         "Use the independent preview URL for static files and relative browser assets.",

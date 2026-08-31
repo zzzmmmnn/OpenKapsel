@@ -6,7 +6,7 @@ Read `GET /discovery/web` with the Bearer token. Use its `web_preview.url` rathe
 
 `GET|HEAD <preview-base>/<workspace-relative-path>` serves files inline. Directories redirect to a trailing slash and resolve `index.html`. Range requests and ETags are supported.
 
-Preview requires read and preview permissions. `.recycle`, `.sql`, `.context`, and any `api` directory are not served as static files. A dedicated preview origin permits same-origin JavaScript modules inside the preview while preventing cross-origin reads from unrelated sites. OpenKapsel does not add permissive CORS headers.
+Preview requires read and preview permissions. `.openkapsel` and any `api` directory are not served as static files. A dedicated preview origin permits same-origin JavaScript modules inside the preview while preventing cross-origin reads from unrelated sites. OpenKapsel does not add permissive CORS headers.
 
 Never send the OpenKapsel control token to a preview URL. Static code can know the preview URL but cannot derive the read or control token from it.
 
@@ -48,4 +48,4 @@ with database.session("main") as session:
 
 Normal session exit commits and closes; exceptions roll back, close, and re-raise. Database IDs use 1-64 ASCII letters, digits, underscores, or hyphens. Do not construct storage paths or depend on backend-specific SQL.
 
-Each application gets private runtime-managed `.sql` storage. It is unavailable through file APIs, static preview, restricted Shell, and other applications. Missing private storage is created automatically for an older workspace.
+Each application gets private runtime-managed database storage inside `.openkapsel`. It is unavailable through file APIs, static preview, restricted Shell, and other applications. Missing private storage is created automatically for an older workspace.

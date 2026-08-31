@@ -1,6 +1,6 @@
 ---
 name: openkapsel-rest
-description: Operate an OpenKapsel workspace through its REST, raw-transfer, sharing, preview, and FastAPI HTTP surfaces. Use when a task provides an OpenKapsel workspace URL or asks to inspect files, modify a workspace, manage Context or Memory, run Shell tasks, transfer data, share content, or test a workspace web app; this skill covers neither MCP nor administrator operations.
+description: Operate an OpenKapsel workspace through its REST, raw-transfer, sharing, preview, and FastAPI HTTP surfaces. Use when a task provides an OpenKapsel workspace URL or asks to inspect files, modify a workspace, manage Context or Memory, run or schedule Shell tasks, transfer data, share content, or test a workspace web app; this skill covers neither MCP nor administrator operations.
 ---
 
 # OpenKapsel REST
@@ -35,7 +35,7 @@ For directory-scoped credentials, the helpers cache the published expiration in 
 
 1. Fetch `GET /` once. Add the matching Bearer token when privileged capability availability matters. Runtime Discovery is authoritative for permissions, limits, URLs, and version differences.
 2. Load only the relevant Discovery section and matching reference below. Avoid `discovery/full` unless auditing compatibility across the entire server.
-3. Before changing workspace state, query for a suitable active root Plan or create one. Every ordinary modifying endpoint requires `plan_id`, `taskname`, and `message`.
+3. Before changing workspace state, query for a suitable active root Plan or create one. Every ordinary modifying endpoint requires `plan_id`, `taskname`, and `message`. Configure persistent Shell variables or POSIX initialization through `/env`, not the local credential file.
 4. Keep `taskname` stable for one task and messages brief. Ordinary reads should omit Context fields unless recording the read is genuinely useful.
 5. Use ETags for concurrent text or Memory updates. For several exact edits in one or more files, prefer the replace-only batch endpoint so every rule is checked against original text before publication. Binary destinations are create-only: recycle an existing file before uploading its replacement.
 6. On completion, update the Plan with a debrief and explicit `memory_actions`, using `[]` when nothing deserves long-term retention.
@@ -48,7 +48,8 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the top-level objec
 - For file listing, reading, metadata, search, trees, text edits, recycle, direct binary transfer, and resumable uploads, read [references/files.md](references/files.md).
 - For operation history, hierarchical Plans, Notes, mutation attribution, and Plan completion, read [references/context.md](references/context.md).
 - For durable project knowledge, revision checks, tags, paths, and Memory actions, read [references/memory.md](references/memory.md).
-- For Shell tasks, output polling or SSE, interactive stdin, interruption, force-kill, and process inspection, read [references/shell.md](references/shell.md).
+- For persistent Shell environments, tasks, output polling or SSE, interactive stdin, interruption, force-kill, and process inspection, read [references/shell.md](references/shell.md).
+- For persistent once, interval, or six-field cron Shell schedules and their run history, read [references/schedules.md](references/schedules.md).
 - For static preview and workspace FastAPI applications, read [references/web-and-apps.md](references/web-and-apps.md).
 - For temporary cross-workspace transfer by share ID, read [references/sharing.md](references/sharing.md).
 - For a compact inventory of every non-MCP HTTP surface, read [references/endpoint-index.md](references/endpoint-index.md).

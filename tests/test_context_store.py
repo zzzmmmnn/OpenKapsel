@@ -99,10 +99,13 @@ class ContextStoreTests(unittest.TestCase):
                 result={"path": "app.py", "bytes_written": 12},
             )
 
-            self.assertTrue((workspace / ".context" / "context.sqlite3").is_file())
+            self.assertTrue(
+                (workspace / ".openkapsel" / "context" / "context.sqlite3").is_file()
+            )
             self.assertEqual(
                 0o600,
-                (workspace / ".context" / "context.sqlite3").stat().st_mode & 0o777,
+                (workspace / ".openkapsel" / "context" / "context.sqlite3").stat().st_mode
+                & 0o777,
             )
             entries, total = store.query(query="app.py", limit=200)
             self.assertEqual(1, total)
@@ -267,7 +270,7 @@ class ContextStoreTests(unittest.TestCase):
                 "This record will be removed with the database",
                 taskname="recreate-test",
             )
-            shutil.rmtree(workspace / ".context")
+            shutil.rmtree(workspace / ".openkapsel")
 
             new_id = store.add(
                 "note",
@@ -282,7 +285,7 @@ class ContextStoreTests(unittest.TestCase):
     def test_legacy_database_adds_taskname_plan_status_and_plan_id_columns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
-            context = workspace / ".context"
+            context = workspace / ".openkapsel" / "context"
             context.mkdir(parents=True)
             database = context / "context.sqlite3"
             connection = sqlite3.connect(database)

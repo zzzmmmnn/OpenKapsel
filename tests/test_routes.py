@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from openkapsel.mcp import ALL_TOOLS
+from openkapsel.mcp import ALL_TOOLS, tools_for
 from openkapsel.memory_contracts import memory_actions_schema
 from openkapsel.routes import ENDPOINTS, discovery_keys, match_endpoint
+from openkapsel.tokens import TokenRecord
 
 
 class EndpointContractTests(unittest.TestCase):
@@ -30,6 +31,7 @@ class EndpointContractTests(unittest.TestCase):
                 {"section": "files"},
             ),
             ("GET", "/fs/read"): ("fs_read", {}),
+            ("PUT", "/env"): ("environment_replace", {}),
             ("PUT", "/fs/content"): ("fs_content_put", {}),
             ("PATCH", "/uploads/upload_123"): (
                 "upload_chunk",
@@ -55,6 +57,14 @@ class EndpointContractTests(unittest.TestCase):
             ("POST", "/tasks/task_abc/kill"): (
                 "task_kill",
                 {"task_id": "task_abc"},
+            ),
+            ("POST", "/schedules/schedule_abc/run"): (
+                "schedule_run",
+                {"schedule_id": "schedule_abc"},
+            ),
+            ("GET", "/schedule-runs/run_abc"): (
+                "schedule_run_item",
+                {"run_id": "run_abc"},
             ),
         }
         for request, expected in cases.items():
@@ -82,9 +92,28 @@ class EndpointContractTests(unittest.TestCase):
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "workspace_info")
         section = tool["inputSchema"]["properties"]["section"]
         self.assertEqual(
-            {"main", "files", "context", "memory", "shell", "web", "sharing", "full"},
+            {"main", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},
             set(section["enum"]),
         )
+
+    def test_schedule_mcp_tools_require_separate_permission_and_shell(self) -> None:
+        base = dict(token="read", name="test", created_at="2026-01-01T00:00:00+00:00")
+        names = {
+            tool["name"]
+            for tool in tools_for(
+                TokenRecord(**base, shell_mode="restricted", can_schedule=True),
+                True,
+            )
+        }
+        self.assertIn("create_schedule", names)
+        disabled = {
+            tool["name"]
+            for tool in tools_for(
+                TokenRecord(**base, shell_mode="restricted", can_schedule=False),
+                True,
+            )
+        }
+        self.assertNotIn("create_schedule", disabled)
 
 
 if __name__ == "__main__":

@@ -84,7 +84,6 @@ from openkapsel_runtime import database
 
 Database IDs contain 1–64 ASCII letters, digits, underscores, or hyphens. Use SQLAlchemy ORM, Core, schema, and transaction APIs. Do not construct storage paths or depend on backend-specific SQL.
 
-Storage is private to the application under its `.sql` area. Missing private directories are recreated for older workspaces. Raw database files are unavailable through file APIs, preview, restricted Shell, and other applications.
+Storage is private to the application inside runtime-managed `.openkapsel` state. Missing private directories are recreated for older workspaces. Raw database files are unavailable through file APIs, preview, restricted Shell, and other applications.
 
-Workers have private PID namespaces and see only their application workspace and read-only runtime venv. They do not receive the complete application source, host `/proc`, token registry, configuration, another workspace, `.context`, or raw database paths.
-
+Workers have private PID namespaces and see only their application workspace and read-only runtime venv. They do not receive the complete application source, host `/proc`, token registry, configuration, another workspace, `.openkapsel`, or raw database paths.

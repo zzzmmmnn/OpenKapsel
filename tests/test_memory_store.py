@@ -27,7 +27,9 @@ class MemoryStoreTests(unittest.TestCase):
             self.assertTrue(created["memory_id"].startswith("mem_"))
             self.assertEqual(1, created["revision"])
             self.assertEqual("open", created["status"])
-            self.assertTrue((workspace / ".context" / "memory.sqlite3").is_file())
+            self.assertTrue(
+                (workspace / ".openkapsel" / "context" / "memory.sqlite3").is_file()
+            )
 
             by_tag, total = store.query(tag="auth")
             self.assertEqual(1, total)

@@ -80,9 +80,9 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the body. Raw-byte 
 
 ## Recycle and overwrite policy
 
-File API deletion moves paths into the workspace-local `.recycle` directory. If that directory was removed, OpenKapsel recreates it safely before moving the path. Restore operations return an item to its prior location.
+File API deletion moves paths into workspace-local private recycle storage under `.openkapsel`. If that storage was removed, OpenKapsel recreates it safely before moving the path. Restore operations return an item to its prior location.
 
-Uploads only create new files. Direct, resumable, and MCP uploads all reject an existing destination. To replace a binary file, first call `fs/delete` so the previous version enters `.recycle`, then upload the replacement.
+Uploads only create new files. Direct, resumable, and MCP uploads all reject an existing destination. To replace a binary file, first call `fs/delete` so the previous version enters private recycle storage, then upload the replacement.
 
 Full Shell deletion is direct and is not recoverable through the recycle API.
 
@@ -103,9 +103,8 @@ Downloads support GET, HEAD, ETag, and one HTTP Range. MCP can return authentica
 
 ## Temporary cross-workspace sharing
 
-A source token can copy exactly one file or directory into the service share store and receive a random `share_id`. Workspace Root, host-path grants, symlinks, `.recycle`, `.sql`, and `.context` cannot be shared.
+A source token can copy exactly one file or directory into the service share store and receive a random `share_id`. Workspace Root, host-path grants, symlinks, and `.openkapsel` cannot be shared.
 
 Anyone holding the ID can inspect the immutable share without a Workspace token. A destination token imports it with its own credentials and mutation context. Import requires a new destination and never overwrites.
 
 Shares expire after 24 hours by default. At most ten are retained; creating another evicts the oldest. Creators may delete their shares early. Invalid, expired, evicted, and deleted IDs all return `404 share_not_found`.
-

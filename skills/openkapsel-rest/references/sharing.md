@@ -15,7 +15,7 @@ Read `GET /discovery/sharing` for current size, count, and expiry limits. A shar
 }
 ```
 
-The source must be inside the token workspace. The workspace root, extra granted host paths, symlinks, and private `.recycle`, `.sql`, or `.context` content are rejected. The response provides `share_id`, public `query_url`, and `expires_at`.
+The source must be inside the token workspace. The workspace root, extra granted host paths, symlinks, and private `.openkapsel` content are rejected. The response provides `share_id`, public `query_url`, and `expires_at`.
 
 ## Inspect without a workspace token
 

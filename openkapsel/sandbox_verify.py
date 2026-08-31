@@ -46,10 +46,10 @@ def verify_api_worker_isolation(
             other_workspace.mkdir(mode=0o700)
             own_marker = own_workspace / "visible.txt"
             other_marker = other_workspace / "secret.txt"
-            context_marker = own_workspace / ".context" / "private.txt"
+            context_marker = own_workspace / ".openkapsel" / "context" / "private.txt"
             own_marker.write_text("own-workspace", encoding="utf-8")
             other_marker.write_text("other-workspace", encoding="utf-8")
-            context_marker.parent.mkdir(mode=0o700)
+            context_marker.parent.mkdir(mode=0o700, parents=True)
             context_marker.write_text("private-context", encoding="utf-8")
             worker_dir = Path(temporary_worker)
             host_pid = os.getpid()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .environment_store import EnvironmentStore
 from .network_proxy import NETWORK_MODES, normalize_domain_rules
+from .workspace_layout import ensure_workspace_layout, remove_empty_workspace_layout
 
 
 SHELL_MODES = {"none", "restricted", "full"}
@@ -101,6 +104,7 @@ class TokenRecord:
     can_read: bool = True
     can_write: bool = True
     can_preview: bool = False
+    can_schedule: bool = False
     shell_mode: str = "full"
     sandbox_backend: str = "auto"
     sandbox_image: str | None = None
@@ -110,6 +114,12 @@ class TokenRecord:
     sandbox_max_processes: int = DEFAULT_SANDBOX_MAX_PROCESSES
     sandbox_memory_mb: int = DEFAULT_SANDBOX_MEMORY_MB
     sandbox_cpu_percent: int = DEFAULT_SANDBOX_CPU_PERCENT
+
+    @property
+    def actor_id(self) -> str:
+        """Stable pseudonymous identity for Context and Memory attribution."""
+        material = f"openkapsel-actor:{self.app_id}".encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
 
     @property
     def expired(self) -> bool:
@@ -153,6 +163,7 @@ class TokenRecord:
             can_read=bool(data.get("can_read", True)),
             can_write=bool(data.get("can_write", True)),
             can_preview=bool(data.get("can_preview", False)),
+            can_schedule=bool(data.get("can_schedule", False)),
             shell_mode=str(data.get("shell_mode", "none")),
             sandbox_backend=str(data.get("sandbox_backend", "auto")),
             sandbox_image=(
@@ -216,6 +227,8 @@ class TokenStore:
             self._preview_records[record.preview_token] = record
             self._control_records[record.control_token] = record
             self._save_locked()
+        for path_prefix in {record.path_prefix for record in self._records.values()}:
+            ensure_workspace_layout(self.root / path_prefix)
 
     def authenticate(self, supplied: str) -> TokenRecord | None:
         # Iteration plus constant-time comparison avoids exposing token equality
@@ -259,6 +272,14 @@ class TokenStore:
                 reverse=True,
             )
 
+    def get_by_app_id(self, app_id: str) -> TokenRecord | None:
+        """Resolve a stable app identity independently of rotated credentials."""
+        with self._lock:
+            for record in self._records.values():
+                if secrets.compare_digest(record.app_id, app_id):
+                    return record
+        return None
+
     def create(
         self,
         *,
@@ -272,6 +293,7 @@ class TokenStore:
         sandbox_backend: str = "auto",
         sandbox_image: str | None = None,
         can_preview: bool = False,
+        can_schedule: bool = False,
         allowed_commands: tuple[str, ...] = (),
         network_mode: str = "none",
         allowed_domains: tuple[str, ...] = (),
@@ -302,6 +324,7 @@ class TokenStore:
                         can_read=can_read,
                         can_write=can_write,
                         can_preview=can_preview,
+                        can_schedule=can_schedule,
                         shell_mode=shell_mode,
                         sandbox_backend=sandbox_backend,
                         sandbox_image=sandbox_image,
@@ -493,7 +516,7 @@ class TokenStore:
         candidate = Path(name)
         if (
             not name
-            or name in {".", "..", ".recycle", ".sql", ".context"}
+            or name in {".", "..", ".recycle", ".sql", ".context", ".openkapsel"}
             or candidate.is_absolute()
             or len(candidate.parts) != 1
             or "/" in name
@@ -508,40 +531,22 @@ class TokenStore:
         created = not workspace.exists()
         if created:
             workspace.mkdir()
-        recycle = workspace / ".recycle"
-        if recycle.is_symlink() or (recycle.exists() and not recycle.is_dir()):
+        try:
+            ensure_workspace_layout(workspace)
+        except Exception:
             if created:
-                workspace.rmdir()
-            raise ValueError("workspace .recycle must be a real directory")
-        recycle.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(recycle, 0o700)
-        sql_root = workspace / ".sql"
-        if sql_root.is_symlink() or (sql_root.exists() and not sql_root.is_dir()):
-            if created:
-                recycle.rmdir()
-                workspace.rmdir()
-            raise ValueError("workspace .sql must be a real directory")
-        sql_root.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(sql_root, 0o700)
-        context_root = workspace / ".context"
-        if context_root.is_symlink() or (
-            context_root.exists() and not context_root.is_dir()
-        ):
-            if created:
-                sql_root.rmdir()
-                recycle.rmdir()
-                workspace.rmdir()
-            raise ValueError("workspace .context must be a real directory")
-        context_root.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(context_root, 0o700)
+                try:
+                    remove_empty_workspace_layout(workspace)
+                    workspace.rmdir()
+                except OSError:
+                    pass
+            raise
         return name, created
 
     def _remove_new_workspace(self, name: str) -> None:
         workspace = self.root / name
         try:
-            (workspace / ".context").rmdir()
-            (workspace / ".sql").rmdir()
-            (workspace / ".recycle").rmdir()
+            remove_empty_workspace_layout(workspace)
             workspace.rmdir()
         except OSError:
             # Never remove a directory if another process populated it while
@@ -552,7 +557,9 @@ class TokenStore:
         with self._lock:
             if token not in self._records:
                 raise KeyError("token does not exist")
-            record = self._records.pop(token)
+            record = self._records[token]
+            EnvironmentStore(self.root / record.path_prefix).clear(record.app_id)
+            self._records.pop(token)
             self._preview_records.pop(record.preview_token, None)
             self._control_records.pop(record.control_token, None)
             self._save_locked()
@@ -585,6 +592,8 @@ class TokenStore:
             raise ValueError("token name must contain 1 to 200 characters")
         if record.shell_mode not in SHELL_MODES:
             raise ValueError("invalid shell mode")
+        if record.can_schedule and record.shell_mode == "none":
+            raise ValueError("scheduled tasks require Shell permission")
         if record.sandbox_backend not in SANDBOX_BACKENDS:
             raise ValueError("invalid sandbox backend")
         sandbox_image = (

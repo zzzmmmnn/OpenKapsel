@@ -11,7 +11,7 @@ from .tokens import TokenRecord
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOL_VERSIONS = {"2025-03-26", "2025-06-18", MCP_PROTOCOL_VERSION}
-SERVER_VERSION = "1.46.1"
+SERVER_VERSION = "1.48.0"
 PUBLIC_SERVER_VERSION = SERVER_VERSION.split(".", 1)[0]
 
 
@@ -104,7 +104,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             {
                 "section": {
                     "type": "string",
-                    "enum": ["main", "files", "context", "memory", "shell", "web", "sharing", "full"],
+                    "enum": ["main", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"],
                     "default": "main",
                     "description": "Discovery section to return. Use full only for compatibility or comprehensive inspection.",
                 }
@@ -703,6 +703,119 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         destructive=True,
     ),
     _tool(
+        "list_schedules",
+        "List schedules",
+        "List persistent Shell schedules owned by this stable token application.",
+        _object_schema({}),
+        read_only=True,
+        idempotent=True,
+    ),
+    _tool(
+        "get_schedule",
+        "Get schedule",
+        "Return one persistent Shell schedule and its current revision.",
+        _object_schema({"schedule_id": {"type": "string"}}, ("schedule_id",)),
+        read_only=True,
+        idempotent=True,
+    ),
+    _tool(
+        "create_schedule",
+        "Create schedule",
+        "Create a once, interval, or strict six-field cron Shell schedule. The configured run context defaults to this mutation's plan, task name, and message.",
+        _object_schema(
+            {
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "schedule": {"type": "object"},
+                "command": {"type": "string", "minLength": 1, "maxLength": 100000},
+                "cwd": {"type": "string", "default": "."},
+                "timeout_seconds": {"type": ["number", "null"], "minimum": 0.1, "maximum": 86400, "default": None},
+                "overlap_policy": {"type": "string", "enum": ["skip"], "default": "skip"},
+                "misfire_policy": {"type": "string", "enum": ["skip", "coalesce"], "default": "skip"},
+                "run_context": {"type": "object"},
+            },
+            ("name", "schedule", "command"),
+        ),
+        read_only=False,
+        destructive=True,
+        open_world=True,
+    ),
+    _tool(
+        "update_schedule",
+        "Update schedule",
+        "Conditionally update a non-running schedule. Supply run_context only when changing the Context attached to future runs.",
+        _object_schema(
+            {
+                "schedule_id": {"type": "string"},
+                "expected_revision": {"type": "integer", "minimum": 1},
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "schedule": {"type": "object"},
+                "command": {"type": "string", "minLength": 1, "maxLength": 100000},
+                "cwd": {"type": "string"},
+                "timeout_seconds": {"type": ["number", "null"], "minimum": 0.1, "maximum": 86400},
+                "overlap_policy": {"type": "string", "enum": ["skip"]},
+                "misfire_policy": {"type": "string", "enum": ["skip", "coalesce"]},
+                "run_context": {"type": "object"},
+            },
+            ("schedule_id", "expected_revision"),
+        ),
+        read_only=False,
+        destructive=True,
+        open_world=True,
+    ),
+    _tool(
+        "delete_schedule",
+        "Delete schedule",
+        "Delete a schedule that is not currently running.",
+        _object_schema({"schedule_id": {"type": "string"}}, ("schedule_id",)),
+        read_only=False,
+        destructive=True,
+    ),
+    _tool(
+        "run_schedule_now",
+        "Run schedule now",
+        "Explicitly dispatch one schedule immediately while preserving its next planned occurrence.",
+        _object_schema({"schedule_id": {"type": "string"}}, ("schedule_id",)),
+        read_only=False,
+        destructive=True,
+        open_world=True,
+    ),
+    _tool(
+        "pause_schedule",
+        "Pause schedule",
+        "Pause future dispatches without terminating an already running task.",
+        _object_schema({"schedule_id": {"type": "string"}}, ("schedule_id",)),
+        read_only=False,
+    ),
+    _tool(
+        "resume_schedule",
+        "Resume schedule",
+        "Resume a paused schedule and compute its next occurrence from now.",
+        _object_schema({"schedule_id": {"type": "string"}}, ("schedule_id",)),
+        read_only=False,
+    ),
+    _tool(
+        "list_schedule_runs",
+        "List schedule runs",
+        "List recent dispatch records for one schedule.",
+        _object_schema(
+            {
+                "schedule_id": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            },
+            ("schedule_id",),
+        ),
+        read_only=True,
+        idempotent=True,
+    ),
+    _tool(
+        "get_schedule_run",
+        "Get schedule run",
+        "Return one schedule dispatch record and its linked Shell task id.",
+        _object_schema({"run_id": {"type": "string"}}, ("run_id",)),
+        read_only=True,
+        idempotent=True,
+    ),
+    _tool(
         "run_shell",
         "Run shell command",
         "Start an asynchronous shell task. Restricted mode supports normal shell syntax inside Bubblewrap; full mode inherits the OpenKapsel process. Poll get_task for completion and output.",
@@ -884,6 +997,21 @@ def tools_for(
                 "kill_task",
             }
         )
+        if record.can_schedule:
+            readable.update(
+                {
+                    "list_schedules",
+                    "get_schedule",
+                    "create_schedule",
+                    "update_schedule",
+                    "delete_schedule",
+                    "run_schedule_now",
+                    "pause_schedule",
+                    "resume_schedule",
+                    "list_schedule_runs",
+                    "get_schedule_run",
+                }
+            )
     if record.shell_mode == "restricted":
         readable.add("list_sandbox_processes")
     selected = [copy.deepcopy(tool) for tool in ALL_TOOLS if tool["name"] in readable]

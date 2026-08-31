@@ -21,6 +21,7 @@ from .cgroups import (
 )
 from .network_proxy import DomainProxy, PROXY_MOUNT, PROXY_PORT
 from .tokens import TokenRecord
+from .workspace_layout import ensure_workspace_layout
 
 
 class ApiWorkerError(RuntimeError):
@@ -248,11 +249,8 @@ class ApiWorkerManager:
     ) -> list[str]:
         executable = str(self.bubblewrap_path)
         workspace_text = str(workspace)
-        sql_root = workspace / ".sql"
-        if sql_root.is_symlink() or (sql_root.exists() and not sql_root.is_dir()):
-            raise ApiWorkerError("Workspace .sql must be a real directory")
-        sql_root.mkdir(mode=0o700, exist_ok=True)
-        sql_root.chmod(0o700)
+        layout = ensure_workspace_layout(workspace)
+        sql_root = layout.sql
         mounts = [
             executable,
             "--die-with-parent", "--new-session", "--unshare-user", "--unshare-ipc",
@@ -286,13 +284,8 @@ class ApiWorkerManager:
         self._append_parent_dirs(mounts, workspace.parent)
         scope_mode = "--bind" if record.can_write else "--ro-bind"
         mounts.extend([scope_mode, workspace_text, workspace_text])
-        mounts.extend(["--bind", str(sql_root), str(sql_root)])
-        recycle = workspace / ".recycle"
-        if recycle.is_dir():
-            mounts.extend(["--tmpfs", str(recycle)])
-        context_root = workspace / ".context"
-        if context_root.is_dir():
-            mounts.extend(["--tmpfs", str(context_root)])
+        mounts.extend(["--bind", str(sql_root), "/run/openkapsel-sql"])
+        mounts.extend(["--tmpfs", str(layout.root)])
         self._append_parent_dirs(mounts, worker_dir.parent)
         mounts.extend(["--bind", str(worker_dir), str(worker_dir)])
         python = "/opt/openkapsel/venv/bin/python"
@@ -319,6 +312,7 @@ class ApiWorkerManager:
             "--setenv", "HOME", workspace_text,
             "--setenv", "TMPDIR", "/tmp",
             "--setenv", "OPENKAPSEL_WORKSPACE", workspace_text,
+            "--setenv", "OPENKAPSEL_SQL_ROOT", "/run/openkapsel-sql",
         ])
         if record.network_mode == "domain_allowlist":
             for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):

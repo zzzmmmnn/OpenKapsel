@@ -17,7 +17,7 @@
 - Paths are normalized and constrained to the token workspace or explicit grants.
 - Each additional path independently selects read-only or writable access.
 - Symlink escapes are rejected.
-- `.recycle`, `.sql`, and `.context` are private reserved directories.
+- `.openkapsel` is the single private reserved directory for recycle, databases, Context, Memory, and Shell environments.
 - Deleting through the API moves data to workspace-local recycle storage.
 - Application workers cannot read raw databases, Context, Memory, tokens, configuration, or another workspace.
 - Workspace image capacity is enforced by its mounted ext4 filesystem.
@@ -50,4 +50,3 @@ Full Shell is the explicit exception. It has all filesystem and network privileg
 OpenKapsel isolates Workspace infrastructure, not application business logic. A project FastAPI application is responsible for its own users, authorization, password reset, cookies, sessions, CSRF, abuse controls, and data model.
 
 Allowed public domains can host user-controlled content. Prefer exact domains over broad suffixes. The network proxy does not inspect encrypted HTTPS content; it limits destinations, while TLS certificate validation remains end-to-end.
-

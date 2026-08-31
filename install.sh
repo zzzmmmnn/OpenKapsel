@@ -359,6 +359,7 @@ payload.setdefault("max_http_connections", 128)
 payload.setdefault("http_socket_timeout_seconds", 30)
 payload.setdefault("max_sse_streams", 16)
 payload.setdefault("max_sse_streams_per_token", 4)
+payload.setdefault("schedule_misfire_grace_seconds", 300)
 payload.setdefault("max_sse_duration_seconds", 3600)
 payload.setdefault("max_network_proxy_connections", 64)
 payload.setdefault("max_network_proxy_connections_per_instance", 16)
@@ -459,6 +460,10 @@ if ((START_SERVICE)); then
     systemctl start "$SERVICE_NAME"
     systemctl is-active --quiet "${SERVICE_NAME}-images"
     systemctl is-active --quiet "$SERVICE_NAME"
+    if [[ -n ${backup:-} ]]; then
+        find /opt -maxdepth 1 -type d -name 'openkapsel.previous.*' \
+            ! -path "$backup" -exec rm -rf -- {} +
+    fi
     printf 'OpenKapsel is active. Admin URL path: /kapsel/admin\n'
 else
     printf 'Installation completed without starting OpenKapsel.\n'

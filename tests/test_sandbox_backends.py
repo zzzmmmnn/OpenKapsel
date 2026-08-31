@@ -39,6 +39,8 @@ class PodmanBackendTests(unittest.TestCase):
             workspace.mkdir()
             context = workspace / ".context"
             context.mkdir()
+            environment_file = root / "token.rc"
+            environment_file.write_text("export API_KEY=container-secret\n", encoding="utf-8")
             extra = root / "published"
             extra.mkdir()
             spec = SandboxSpec(
@@ -54,6 +56,7 @@ class PodmanBackendTests(unittest.TestCase):
                 limits=SandboxLimits(64, 256 * 1024 * 1024, 150),
                 owner_token="secret-control-token",
                 sandbox_image="registry.example.test/python:3.14-slim",
+                environment_file=environment_file,
             )
             probe = subprocess.CompletedProcess([], 0, "crun\n", "")
             with patch("openkapsel.sandbox_backends.subprocess.run", return_value=probe):
@@ -73,9 +76,15 @@ class PodmanBackendTests(unittest.TestCase):
             volume_values = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--volume"]
             self.assertIn(f"{workspace}:{workspace}:rw", volume_values)
             self.assertIn(f"{extra}:{extra}:ro", volume_values)
+            self.assertIn(
+                f"{environment_file}:/run/openkapsel-environment.rc:ro",
+                volume_values,
+            )
             tmpfs_values = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--tmpfs"]
             self.assertTrue(any(value.startswith(f"{context}:") for value in tmpfs_values))
             self.assertNotIn("secret-control-token", " ".join(argv))
+            self.assertNotIn("container-secret", " ".join(argv))
+            self.assertIn(". /run/openkapsel-environment.rc", argv[-1])
             self.assertIn("--pull=never", argv)
             self.assertIn("registry.example.test/python:3.14-slim", argv)
             self.assertIsInstance(launch.controller, PodmanController)
@@ -168,6 +177,8 @@ class PodmanBackendTests(unittest.TestCase):
                 path.chmod(0o755)
             workspace = root / "workspace"
             workspace.mkdir()
+            environment_file = root / "token.rc"
+            environment_file.write_text("export API_KEY=bubble-secret\n", encoding="utf-8")
             spec = SandboxSpec(
                 command="git clone https://github.com/example/project.git",
                 cwd=workspace,
@@ -180,6 +191,7 @@ class PodmanBackendTests(unittest.TestCase):
                 hidden_paths=(),
                 limits=SandboxLimits(64, 256 * 1024 * 1024, 100),
                 owner_token="token",
+                environment_file=environment_file,
             )
             with patch(
                 "openkapsel.sandbox_backends.apparmor_restricts_user_namespaces",
@@ -197,6 +209,17 @@ class PodmanBackendTests(unittest.TestCase):
                 self.assertIn("HTTP_PROXY", argv)
                 self.assertIn("http://127.0.0.1:18080", argv)
                 self.assertIn("/run/openkapsel-proxy-relay.py", argv)
+                triples = set(zip(argv, argv[1:], argv[2:]))
+                self.assertIn(
+                    (
+                        "--ro-bind",
+                        str(environment_file),
+                        "/run/openkapsel-environment.rc",
+                    ),
+                    triples,
+                )
+                self.assertNotIn("bubble-secret", " ".join(argv))
+                self.assertIn(". /run/openkapsel-environment.rc", argv[-1])
                 self.assertIsInstance(launch.controller, ProxyController)
                 proxy_directory = launch.controller.proxy.directory
                 self.assertTrue(proxy_directory.is_dir())

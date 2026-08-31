@@ -16,6 +16,7 @@ import time
 import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -150,7 +151,7 @@ class WorkspaceServerTests(unittest.TestCase):
             "plan",
             "Test operation root plan",
             taskname="test-task",
-            actor_id=hashlib.sha256(record.token.encode("utf-8")).hexdigest(),
+            actor_id=record.actor_id,
         )
         self._test_plan_ids[token] = plan_id
         return plan_id
@@ -241,6 +242,53 @@ class WorkspaceServerTests(unittest.TestCase):
         status, raw, _ = self.raw_preview_request(method, suffix, token=token)
         return status, json.loads(raw.decode("utf-8"))
 
+    def test_schedule_rest_and_mcp_use_separate_permission(self) -> None:
+        denied_status, denied = self.request("GET", self.endpoint("/schedules"))
+        self.assertEqual(HTTPStatus.FORBIDDEN, denied_status)
+        self.assertEqual("schedule_permission_denied", denied["error"]["code"])
+
+        self.server.tokens.update("test-token", can_schedule=True)
+        plan_id = self._ensure_test_plan("test-token")
+        create_status, created = self.request(
+            "POST",
+            self.endpoint("/schedules"),
+            {
+                "name": "test schedule",
+                "schedule": {"type": "interval", "minutes": 3, "timezone": "UTC"},
+                "command": "printf scheduled",
+                "cwd": ".",
+                "plan_id": plan_id,
+                "taskname": "scheduler",
+                "message": "Create test schedule",
+            },
+        )
+        self.assertEqual(HTTPStatus.CREATED, create_status)
+        schedule_id = created["schedule_id"]
+        self.assertEqual(3, created["schedule"]["minutes"])
+
+        run_status, run = self.request(
+            "POST", self.endpoint(f"/schedules/{schedule_id}/run"), {}
+        )
+        self.assertEqual(HTTPStatus.ACCEPTED, run_status)
+        self.assertIsNotNone(run["task_id"])
+        deadline = time.monotonic() + 3
+        while run["status"] in {"claimed", "running"} and time.monotonic() < deadline:
+            time.sleep(0.02)
+            item_status, run = self.request(
+                "GET", self.endpoint(f"/schedule-runs/{run['run_id']}")
+            )
+            self.assertEqual(HTTPStatus.OK, item_status)
+        self.assertEqual("succeeded", run["status"])
+
+        list_status, runs = self.request(
+            "GET", self.endpoint(f"/schedules/{schedule_id}/runs")
+        )
+        self.assertEqual(HTTPStatus.OK, list_status)
+        self.assertEqual(1, runs["count"])
+
+        tools = self.mcp_request("test-token", 90, "tools/list")[1]["result"]["tools"]
+        self.assertIn("create_schedule", {tool["name"] for tool in tools})
+
     def mcp_request(
         self,
         token: str,
@@ -299,13 +347,17 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("main", main["section"])
         self.assertEqual(
-            {"files", "context", "memory", "shell", "web", "sharing", "full"},
+            {"files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},
             set(main["sections"]),
         )
         self.assertEqual(
-            {"discovery", "discovery_section", "credentials_renew", "mcp"},
+            {
+                "discovery", "discovery_section", "credentials_renew",
+                "environment_get", "environment_replace", "environment_clear", "mcp",
+            },
             set(main["endpoints"]),
         )
+        self.assertEqual([".openkapsel"], main["path_rules"]["private_directories"])
         self.assertNotIn("available_tools", main["capabilities"]["mcp"])
         skill = main["skills"]["openkapsel_rest"]
         self.assertEqual("openkapsel-rest", skill["name"])
@@ -336,7 +388,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("full", payload["section"])
         self.assertLess(len(json.dumps(main)) * 3, len(json.dumps(payload)))
         section_endpoint_sets = []
-        for section_name in ("files", "context", "memory", "shell", "web", "sharing"):
+        for section_name in ("files", "context", "memory", "shell", "schedules", "web", "sharing"):
             section_status, section_payload = self.request(
                 "GET", self.endpoint(f"/discovery/{section_name}")
             )
@@ -345,7 +397,9 @@ class WorkspaceServerTests(unittest.TestCase):
             section_endpoint_sets.append(set(section_payload["endpoints"]))
         self.assertEqual(
             set(payload["endpoints"])
-            - {"discovery", "discovery_section", "credentials_renew", "mcp"},
+            - {
+                "discovery", "discovery_section", "credentials_renew", "mcp",
+            },
             set().union(*section_endpoint_sets),
         )
         self.assertEqual(
@@ -565,6 +619,21 @@ class WorkspaceServerTests(unittest.TestCase):
             payload["endpoints"]["web_preview"]["url"],
         )
         self.assertEqual("rejected", payload["path_rules"]["symlink_escape"])
+        self.assertIn(".openkapsel", payload["path_rules"]["private_directory"])
+        environment = payload["capabilities"]["environment"]
+        self.assertTrue(environment["enabled"])
+        self.assertFalse(environment["configured"])
+        self.assertEqual("stable app_id within this token record", environment["scope"])
+        self.assertEqual(["full", "bubblewrap", "podman"], environment["injected_into"])
+        self.assertFalse(environment["service_environment_inherited"])
+        self.assertFalse(environment["values_in_launcher_arguments"])
+        self.assertIn("PATH", environment["reserved_names"])
+        self.assertEqual(["OPENKAPSEL_"], environment["reserved_prefixes"])
+        self.assertEqual(256, payload["limits"]["max_environment_variables"])
+        self.assertEqual(128, payload["limits"]["max_environment_name_characters"])
+        self.assertEqual(65536, payload["limits"]["max_environment_value_characters"])
+        self.assertEqual(262144, payload["limits"]["max_environment_total_characters"])
+        self.assertEqual(131072, payload["limits"]["max_environment_rc_characters"])
         self.assertTrue(payload["capabilities"]["task_control"]["force_kill"])
         self.assertIn("kill_task", payload["capabilities"]["mcp"]["available_tools"])
         self.assertIn("shell_task_token_limit_reached", payload["errors"]["shell_limit_codes"])
@@ -579,6 +648,9 @@ class WorkspaceServerTests(unittest.TestCase):
                 "discovery",
                 "discovery_section",
                 "credentials_renew",
+                "environment_get",
+                "environment_replace",
+                "environment_clear",
                 "context_query",
                 "context_plan_tree",
                 "context_add",
@@ -619,6 +691,16 @@ class WorkspaceServerTests(unittest.TestCase):
                 "upload_cancel",
                 "mcp",
                 "shell_exec",
+                "schedule_list",
+                "schedule_create",
+                "schedule_get",
+                "schedule_update",
+                "schedule_delete",
+                "schedule_run",
+                "schedule_pause",
+                "schedule_resume",
+                "schedule_runs",
+                "schedule_run_item",
                 "task_list",
                 "task_status",
                 "task_output",
@@ -883,6 +965,7 @@ class WorkspaceServerTests(unittest.TestCase):
         old_read = current.token
         old_control = current.control_token
         old_preview = current.preview_token
+        old_actor = current.actor_id
 
         status, payload = self.request(
             "POST", self.endpoint("/credentials/renew")
@@ -904,6 +987,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual("no-store", headers["Cache-Control"])
+
         renewed = json.loads(raw)
         self.assertNotEqual(old_read, renewed["read_token"])
         self.assertNotEqual(old_control, renewed["control_token"])
@@ -914,6 +998,7 @@ class WorkspaceServerTests(unittest.TestCase):
         renewed_record = self.server.tokens.get(renewed["read_token"])
         self.assertEqual(old_preview, renewed_record.preview_token)
         self.assertEqual(renewed["control_token"], renewed_record.control_token)
+        self.assertEqual(old_actor, renewed_record.actor_id)
         expiry = datetime.fromisoformat(renewed["credentials_expires_at"])
         remaining = expiry - datetime.now(timezone.utc)
         self.assertGreater(remaining, timedelta(days=2, hours=23, minutes=59))
@@ -930,6 +1015,156 @@ class WorkspaceServerTests(unittest.TestCase):
             authorize=False,
         )
         self.assertEqual(200, status)
+
+    def test_per_token_environment_rest_storage_validation_and_context_redaction(self) -> None:
+        record = self.server.tokens.get("test-token")
+        plan_id = self._ensure_test_plan(record.token)
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
+
+        status, raw, _ = self.raw_request(
+            "GET", endpoint("/env"), authorize=False
+        )
+        self.assertEqual(401, status)
+        self.assertEqual("control_token_required", json.loads(raw)["error"]["code"])
+
+        status, replaced = self.request(
+            "PUT",
+            endpoint("/env"),
+            {
+                "variables": {"API_KEY": "very-secret", "APP_MODE": "test"},
+                "rc": "export PROJECT_READY=yes\n",
+                "plan_id": plan_id,
+                "taskname": "environment-test",
+                "message": "Configure the test Shell environment",
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(["API_KEY", "APP_MODE"], replaced["variable_names"])
+        self.assertNotIn("variables", replaced)
+        self.assertNotIn("rc", replaced)
+        path = (
+            self.root
+            / ".openkapsel"
+            / "env"
+            / f"{record.app_id}.json"
+        )
+        self.assertTrue(path.is_file())
+        self.assertEqual(0o600, path.stat().st_mode & 0o777)
+
+        status, discovery = self.request("GET", endpoint("/discovery/shell"))
+        self.assertEqual(200, status)
+        self.assertTrue(discovery["capabilities"]["environment"]["configured"])
+        self.assertNotIn("very-secret", json.dumps(discovery))
+        self.assertIn("environment_get", discovery["endpoints"])
+        self.assertIn("environment_replace", discovery["endpoints"])
+        self.assertIn("environment_clear", discovery["endpoints"])
+
+        context_entries, total = self.server.context_for(self.root).query(
+            entry_id=replaced["context_id"]
+        )
+        self.assertEqual(1, total)
+        self.assertNotIn("variables", context_entries[0]["request"])
+        self.assertNotIn("rc", context_entries[0]["request"])
+        self.assertNotIn("very-secret", json.dumps(context_entries[0]))
+
+        status, raw, headers = self.raw_request("GET", endpoint("/env"))
+        self.assertEqual(200, status)
+        loaded = json.loads(raw)
+        self.assertEqual("very-secret", loaded["variables"]["API_KEY"])
+        self.assertEqual("export PROJECT_READY=yes\n", loaded["rc"])
+        self.assertEqual("no-store", headers["Cache-Control"])
+
+        previous_host_secret = os.environ.get("OPENKAPSEL_HOST_SECRET")
+        os.environ["OPENKAPSEL_HOST_SECRET"] = "must-not-leak"
+        try:
+            status, task = self.request(
+                "POST",
+                endpoint("/shell/exec"),
+                {
+                    "command": (
+                        "printf '%s|%s|%s|%s' \"$API_KEY\" \"$PROJECT_READY\" "
+                        "\"$OPENKAPSEL_HOST_SECRET\" \"$OPENKAPSEL_WORKSPACE\""
+                    ),
+                    "plan_id": plan_id,
+                    "taskname": "environment-test",
+                    "message": "Verify Shell environment injection",
+                },
+            )
+            self.assertEqual(202, status)
+            finished = self.wait_for_task(task["task_id"])
+        finally:
+            if previous_host_secret is None:
+                os.environ.pop("OPENKAPSEL_HOST_SECRET", None)
+            else:
+                os.environ["OPENKAPSEL_HOST_SECRET"] = previous_host_secret
+        self.assertEqual(0, finished["exit_code"])
+        self.assertEqual(
+            f"very-secret|yes||{self.root.resolve()}",
+            finished["stdout"],
+        )
+
+        status, invalid = self.request(
+            "PUT",
+            endpoint("/env"),
+            {
+                "variables": {"HTTP_PROXY": "http://bypass.invalid"},
+                "rc": "",
+                "plan_id": plan_id,
+                "taskname": "environment-test",
+                "message": "Verify reserved environment validation",
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_environment", invalid["error"]["code"])
+
+        status, cleared = self.request(
+            "DELETE",
+            endpoint("/env"),
+            {
+                "plan_id": plan_id,
+                "taskname": "environment-test",
+                "message": "Clear the test Shell environment",
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(cleared["cleared"])
+        self.assertFalse(path.exists())
+        status, empty = self.request("GET", endpoint("/env"))
+        self.assertEqual(200, status)
+        self.assertFalse(empty["configured"])
+
+        secondary = self.server.tokens.create(
+            name="Environment deletion token",
+            expires_at=None,
+            path_prefix="environment-delete",
+            can_read=True,
+            can_write=True,
+            shell_mode="none",
+        )
+        secondary_plan = self._ensure_test_plan(secondary.token)
+        secondary_endpoint = f"/kapsel/w/{secondary.token}/env"
+        status, _ = self.request(
+            "PUT",
+            secondary_endpoint,
+            {
+                "variables": {"DELETE_WITH_TOKEN": "yes"},
+                "rc": "",
+                "plan_id": secondary_plan,
+                "taskname": "environment-test",
+                "message": "Create environment slated for token deletion",
+            },
+        )
+        self.assertEqual(200, status)
+        secondary_path = (
+            self.root
+            / "environment-delete"
+            / ".openkapsel"
+            / "env"
+            / f"{secondary.app_id}.json"
+        )
+        self.assertTrue(secondary_path.is_file())
+        self.server.tokens.delete(secondary.token)
+        self.assertFalse(secondary_path.exists())
 
     def test_bodyless_endpoints_drain_unexpected_body_on_keepalive(self) -> None:
         def request_then_discovery(method: str, path: str, expected_status: int) -> None:
@@ -2550,7 +2785,9 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(201, status)
         operation_id = written["context_id"]
-        self.assertTrue((scope / ".context" / "context.sqlite3").is_file())
+        self.assertTrue(
+            (scope / ".openkapsel" / "context" / "context.sqlite3").is_file()
+        )
 
         unicode_taskname = "résumé-integration"
         unicode_message = "Upload the naïve binary fixture"
@@ -2698,7 +2935,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("fs.write", exact["entries"][0]["operation"])
         self.assertEqual("context-integration", exact["entries"][0]["taskname"])
         self.assertEqual(sub_plan["id"], exact["entries"][0]["plan_id"])
-        actor_id = hashlib.sha256(record.token.encode("utf-8")).hexdigest()
+        actor_id = record.actor_id
         self.assertEqual(actor_id, exact["entries"][0]["actor_id"])
         self.assertNotIn("content", exact["entries"][0]["request"])
 
@@ -2721,14 +2958,16 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", too_many["error"]["code"])
 
-        status, blocked = self.request("GET", endpoint("/fs/read?path=.context/context.sqlite3"))
+        status, blocked = self.request(
+            "GET", endpoint("/fs/read?path=.openkapsel/context/context.sqlite3")
+        )
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", blocked["error"]["code"])
         status, listing = self.request("GET", endpoint("/fs/list?path=."))
-        self.assertNotIn(".context", {entry["name"] for entry in listing["entries"]})
+        self.assertNotIn(".openkapsel", {entry["name"] for entry in listing["entries"]})
         status, preview = self.preview_request(
             "GET",
-            "/.context/context.sqlite3",
+            "/.openkapsel/context/context.sqlite3",
             token=record.token,
         )
         self.assertEqual(404, status)
@@ -3372,8 +3611,8 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         scope = self.root / "operations"
         endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
-        self.assertTrue((scope / ".recycle").is_dir())
-        self.assertTrue((scope / ".context").is_dir())
+        self.assertTrue((scope / ".openkapsel" / "recycle").is_dir())
+        self.assertTrue((scope / ".openkapsel" / "context").is_dir())
 
         status, payload = self.request(
             "POST",
@@ -3441,14 +3680,14 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(0, listing["total"])
         status, listing = self.request("GET", endpoint("/fs/list?path="))
         self.assertEqual(200, status)
-        self.assertNotIn(".recycle", [item["name"] for item in listing["entries"]])
-        status, payload = self.request("GET", endpoint("/fs/list?path=.recycle"))
+        self.assertNotIn(".openkapsel", [item["name"] for item in listing["entries"]])
+        status, payload = self.request("GET", endpoint("/fs/list?path=.openkapsel"))
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", payload["error"]["code"])
 
         # A cached recycle bin must recover if a trusted host/full Shell removes
         # its directory. A replacement file or symlink must never be followed.
-        recycle_root = scope / ".recycle"
+        recycle_root = scope / ".openkapsel" / "recycle"
         recycle_root.rmdir()
         status, listing = self.request("GET", endpoint("/recycle/list"))
         self.assertEqual(200, status)
@@ -3955,8 +4194,8 @@ class WorkspaceServerTests(unittest.TestCase):
             (PathGrant(path=str(admin_read_only.resolve()), read_only=True),),
             record.allowed_paths,
         )
-        self.assertTrue((self.root / "new-project" / ".recycle").is_dir())
-        self.assertTrue((self.root / "new-project" / ".context").is_dir())
+        self.assertTrue((self.root / "new-project" / ".openkapsel" / "recycle").is_dir())
+        self.assertTrue((self.root / "new-project" / ".openkapsel" / "context").is_dir())
         token_file = Path(self.temp.name) / "tokens.json"
         self.assertEqual(0o600, token_file.stat().st_mode & 0o777)
         self.assertNotIn("correct-horse-battery", token_file.read_text(encoding="utf-8"))
@@ -4201,11 +4440,7 @@ class WorkspaceServerTests(unittest.TestCase):
             launch_mounts,
         )
         self.assertIn(
-            ("--tmpfs", str((self.root / "new-project" / ".recycle").resolve())),
-            tuple(zip(launch_argv, launch_argv[1:])),
-        )
-        self.assertIn(
-            ("--tmpfs", str((self.root / "new-project" / ".context").resolve())),
+            ("--tmpfs", str((self.root / "new-project" / ".openkapsel").resolve())),
             tuple(zip(launch_argv, launch_argv[1:])),
         )
 
@@ -4495,9 +4730,9 @@ class WorkspaceServerTests(unittest.TestCase):
             (site / "api").mkdir(parents=True)
             (site / "api" / "app.py").write_text("app = object()\n", encoding="utf-8")
             (site / "index.html").write_text(site.name, encoding="utf-8")
-        (site_a / ".sql").mkdir()
-        (site_a / ".sql" / "secret.txt").write_text("private", encoding="utf-8")
-        (site_a / "database-alias").symlink_to(".sql", target_is_directory=True)
+        (site_a / ".openkapsel" / "sql").mkdir(parents=True)
+        (site_a / ".openkapsel" / "sql" / "secret.txt").write_text("private", encoding="utf-8")
+        (site_a / "database-alias").symlink_to(".openkapsel/sql", target_is_directory=True)
         (self.root / "project" / "orphan" / "api").mkdir(parents=True)
         (self.root / "api").mkdir()
         (self.root / "api" / "app.py").write_text("app = object()\n", encoding="utf-8")
@@ -4633,7 +4868,9 @@ class WorkspaceServerTests(unittest.TestCase):
         status, payload = self.preview_request("GET", "/project/orphan/api/value")
         self.assertEqual(404, status)
         self.assertEqual("api_not_found", payload["error"]["code"])
-        status, payload = self.preview_request("GET", "/project/site-a/.sql/secret.txt")
+        status, payload = self.preview_request(
+            "GET", "/project/site-a/.openkapsel/sql/secret.txt"
+        )
         self.assertEqual(404, status)
         self.assertEqual("preview_not_found", payload["error"]["code"])
         status, payload = self.preview_request(
@@ -4643,7 +4880,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("preview_not_found", payload["error"]["code"])
         status, payload = self.request(
             "GET",
-            self.endpoint("/fs/read?path=project/site-a/.sql/secret.txt"),
+            self.endpoint("/fs/read?path=project/site-a/.openkapsel/sql/secret.txt"),
         )
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", payload["error"]["code"])
@@ -4657,7 +4894,7 @@ class WorkspaceServerTests(unittest.TestCase):
             "GET", self.endpoint("/fs/list?path=project/site-a")
         )
         self.assertEqual(200, status)
-        self.assertNotIn(".sql", [entry["name"] for entry in listing["entries"]])
+        self.assertNotIn(".openkapsel", [entry["name"] for entry in listing["entries"]])
         status, body, _ = self.raw_preview_request("GET", "/project/site-a/index.html")
         self.assertEqual(200, status)
         self.assertEqual(b"site-a", body)
@@ -5234,7 +5471,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("memory_id", memory)
         self.assertNotIn("id", memory)
         self.assertTrue(
-            (self.root / "memory-workspace" / ".context" / "memory.sqlite3").is_file()
+            (
+                self.root
+                / "memory-workspace"
+                / ".openkapsel"
+                / "context"
+                / "memory.sqlite3"
+            ).is_file()
         )
 
         status, tagged = self.request("GET", endpoint("/memory?tag=auth"))

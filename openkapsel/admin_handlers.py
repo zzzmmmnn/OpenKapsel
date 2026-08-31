@@ -214,6 +214,7 @@ class AdminHandlersMixin:
                 can_read="can_read" in form,
                 can_write="can_write" in form,
                 can_preview="can_preview" in form,
+                can_schedule="can_schedule" in form,
                 shell_mode=self._form_one(form, "shell_mode"),
                 sandbox_backend=sandbox_backend,
                 sandbox_image=sandbox_image,
@@ -232,12 +233,19 @@ class AdminHandlersMixin:
         elif action == "update":
             token = self._form_one(form, "token")
             current = self.server.tokens.get(token)
+            previous_scope = self.server.tokens.scope_root(current)
             path_prefix, workspace_image = self._workspace_selection(form, current)
             sandbox_backend, sandbox_image = self._sandbox_selection(form, current)
             expires_raw = self._form_one(form, "expires_at").strip()
             # datetime-local has no timezone; the admin UI labels it UTC and
             # TokenStore normalizes naive values accordingly.
             expires_at = expires_raw or None
+            if path_prefix != current.path_prefix and self.server.schedules_for(
+                previous_scope
+            ).list(current.app_id):
+                raise ValueError(
+                    "delete this token's schedules before changing its workspace directory"
+                )
             record = self.server.tokens.update(
                 token,
                 name=self._form_one(form, "name"),
@@ -248,6 +256,7 @@ class AdminHandlersMixin:
                 can_read="can_read" in form,
                 can_write="can_write" in form,
                 can_preview="can_preview" in form,
+                can_schedule="can_schedule" in form,
                 shell_mode=self._form_one(form, "shell_mode"),
                 sandbox_backend=sandbox_backend,
                 sandbox_image=sandbox_image,
@@ -263,10 +272,15 @@ class AdminHandlersMixin:
                 ),
             )
             self.server.api_workers.stop(record.app_id)
+            if not record.can_schedule or not record.valid:
+                self.server.scheduler.pause_app(previous_scope, record.app_id)
             self._refresh_cgroup_limits(record)
         elif action == "delete":
             current = self.server.tokens.get(self._form_one(form, "token"))
             self.server.api_workers.stop(current.app_id)
+            self.server.scheduler.delete_app(
+                self.server.tokens.scope_root(current), current.app_id
+            )
             self.server.tokens.delete(current.token)
         elif action == "rotate_read":
             record = self.server.tokens.rotate_read_token(self._form_one(form, "token"))

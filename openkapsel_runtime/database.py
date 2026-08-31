@@ -19,7 +19,16 @@ def _path(database_id: str) -> Path:
     if not _DATABASE_ID.fullmatch(database_id):
         raise ValueError("database id must use 1-64 letters, numbers, '_' or '-'")
     workspace = Path(os.environ.get("OPENKAPSEL_WORKSPACE", "/workspace"))
-    storage = workspace / ".sql"
+    configured_storage = os.environ.get("OPENKAPSEL_SQL_ROOT")
+    if configured_storage:
+        storage = Path(configured_storage)
+    else:
+        internal = workspace / ".openkapsel"
+        if internal.is_symlink() or (internal.exists() and not internal.is_dir()):
+            raise ValueError("workspace private storage must be a real directory")
+        internal.mkdir(mode=0o700, exist_ok=True)
+        internal.chmod(0o700)
+        storage = internal / "sql"
     if storage.is_symlink() or (storage.exists() and not storage.is_dir()):
         raise ValueError("workspace database storage must be a real directory")
     storage.mkdir(mode=0o700, exist_ok=True)

@@ -164,6 +164,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(24 * 60 * 60, defaults.share_ttl_seconds)
             self.assertEqual(10, defaults.max_share_entries)
             self.assertEqual(256 * 1024 * 1024, defaults.max_share_bytes)
+            self.assertEqual(300, defaults.schedule_misfire_grace_seconds)
             self.assertIn("github.com", defaults.default_network_domains)
             self.assertIn("npm.pkg.github.com", defaults.default_network_domains)
             self.assertIn("pypi.org", defaults.default_network_domains)

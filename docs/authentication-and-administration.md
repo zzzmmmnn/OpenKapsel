@@ -28,6 +28,7 @@ The Workspace root returns a compact Discovery index with authentication rules, 
 - `./discovery/context`
 - `./discovery/memory`
 - `./discovery/shell`
+- `./discovery/schedules`
 - `./discovery/web`
 - `./discovery/sharing`
 - `./discovery/full`
@@ -51,6 +52,7 @@ Each token controls:
 - independent preview permission
 - network mode: disabled, allowed domains, or full network
 - Shell mode: none, restricted, or full
+- independent scheduled-task permission; Shell permission is also required
 - restricted backend: automatic, Bubblewrap, or one installed Podman image
 - process/thread, aggregate memory, and aggregate CPU limits
 - additional absolute host paths, each read-only or writable
@@ -78,4 +80,3 @@ The privileged `openkapsel-images` helper creates sparse ext4 files. `name.img` 
 - Deletion is permanent and is refused while any token references the image; the error identifies those records.
 
 Regular-directory mode remains available when the image helper is not installed.
-

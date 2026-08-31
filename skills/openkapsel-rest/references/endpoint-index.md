@@ -7,7 +7,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | Method | Route |
 |---|---|
 | `GET` | `<workspace_url>/` |
-| `GET` | `<workspace_url>/discovery/{files,context,memory,shell,web,sharing,full}` |
+| `GET` | `<workspace_url>/discovery/{files,context,memory,shell,schedules,web,sharing,full}` |
 | `POST` | `<workspace_url>/credentials/renew` |
 | `GET` | `<workspace_url>/fs/list` |
 | `GET` | `<workspace_url>/fs/read` |
@@ -54,6 +54,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 
 | Method | Route |
 |---|---|
+| `GET|PUT|DELETE` | `<workspace_url>/env` |
 | `POST` | `<workspace_url>/shell/exec` |
 | `GET` | `<workspace_url>/tasks` |
 | `GET` | `<workspace_url>/tasks/<task_id>` |
@@ -63,6 +64,18 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `POST` | `<workspace_url>/tasks/<task_id>/interrupt` |
 | `POST` | `<workspace_url>/tasks/<task_id>/kill` |
 | `GET` | `<workspace_url>/sandbox/processes` |
+
+## Schedules
+
+| Method | Route |
+|---|---|
+| `GET|POST` | `<workspace_url>/schedules` |
+| `GET|PATCH|DELETE` | `<workspace_url>/schedules/<schedule_id>` |
+| `POST` | `<workspace_url>/schedules/<schedule_id>/run` |
+| `POST` | `<workspace_url>/schedules/<schedule_id>/pause` |
+| `POST` | `<workspace_url>/schedules/<schedule_id>/resume` |
+| `GET` | `<workspace_url>/schedules/<schedule_id>/runs` |
+| `GET` | `<workspace_url>/schedule-runs/<run_id>` |
 
 ## Sharing, preview, and applications
 
