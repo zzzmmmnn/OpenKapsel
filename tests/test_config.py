@@ -151,6 +151,14 @@ class ConfigurationTests(unittest.TestCase):
             defaults = ServerConfig(root=workspace)
             self.assertEqual(16, defaults.max_concurrent_shell_tasks)
             self.assertEqual(8, defaults.max_concurrent_shell_tasks_per_token)
+            self.assertEqual(128, defaults.max_http_connections)
+            self.assertEqual(30, defaults.http_socket_timeout_seconds)
+            self.assertEqual(16, defaults.max_sse_streams)
+            self.assertEqual(4, defaults.max_sse_streams_per_token)
+            self.assertEqual(3600, defaults.max_sse_duration_seconds)
+            self.assertEqual(64, defaults.max_network_proxy_connections)
+            self.assertEqual(16, defaults.max_network_proxy_connections_per_instance)
+            self.assertEqual(15, defaults.network_proxy_header_timeout_seconds)
             self.assertEqual(60 * 60, defaults.finished_task_retention_seconds)
             self.assertEqual(4, defaults.max_finished_tasks_per_token)
             self.assertEqual(24 * 60 * 60, defaults.share_ttl_seconds)
@@ -175,7 +183,7 @@ class ConfigurationTests(unittest.TestCase):
                         "workspace_root": "workspace",
                         "listen_host": "127.0.0.1",
                         "listen_port": 9010,
-                        "url_base_path": "/agent",
+                        "url_base_path": "/kapsel",
                         "preview_base_url": "https://preview.example.test",
                         "token_data_file": "state/tokens.json",
                         "upload_state_dir": "state/uploads",
@@ -200,6 +208,14 @@ class ConfigurationTests(unittest.TestCase):
                         "max_concurrent_transfers": 3,
                         "max_concurrent_shell_tasks": 6,
                         "max_concurrent_shell_tasks_per_token": 4,
+                        "max_http_connections": 96,
+                        "http_socket_timeout_seconds": 25,
+                        "max_sse_streams": 12,
+                        "max_sse_streams_per_token": 3,
+                        "max_sse_duration_seconds": 1800,
+                        "max_network_proxy_connections": 48,
+                        "max_network_proxy_connections_per_instance": 12,
+                        "network_proxy_header_timeout_seconds": 10,
                         "sandbox_cgroup_enabled": True,
                         "max_search_results": 250,
                         "max_search_file_mb": 6,
@@ -231,7 +247,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual("127.0.0.1", host)
             self.assertEqual(9010, port)
             self.assertEqual(workspace.resolve(), config.root)
-            self.assertEqual("/agent", config.url_base_path)
+            self.assertEqual("/kapsel", config.url_base_path)
             self.assertEqual("https://preview.example.test", config.preview_base_url)
             self.assertEqual((base / "state" / "tokens.json").resolve(), config.token_data_file)
             self.assertEqual((base / "state" / "uploads").resolve(), config.upload_state_dir)
@@ -255,6 +271,14 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(3, config.max_concurrent_transfers)
             self.assertEqual(6, config.max_concurrent_shell_tasks)
             self.assertEqual(4, config.max_concurrent_shell_tasks_per_token)
+            self.assertEqual(96, config.max_http_connections)
+            self.assertEqual(25, config.http_socket_timeout_seconds)
+            self.assertEqual(12, config.max_sse_streams)
+            self.assertEqual(3, config.max_sse_streams_per_token)
+            self.assertEqual(1800, config.max_sse_duration_seconds)
+            self.assertEqual(48, config.max_network_proxy_connections)
+            self.assertEqual(12, config.max_network_proxy_connections_per_instance)
+            self.assertEqual(10, config.network_proxy_header_timeout_seconds)
             self.assertTrue(config.sandbox_cgroup_enabled)
             self.assertEqual(250, config.max_search_results)
             self.assertEqual(6 * 1024 * 1024, config.max_search_file_bytes)

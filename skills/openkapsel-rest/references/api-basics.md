@@ -18,7 +18,7 @@ Initialize a controlling project from its directory:
 
 ```bash
 python3 <openkapsel-rest-skill-directory>/scripts/openkapsel_config.py init \
-  'https://host.example/agent/w/<READ_TOKEN>' '<CONTROL_TOKEN>'
+  'https://host.example/kapsel/w/<READ_TOKEN>' '<CONTROL_TOKEN>'
 ```
 
 Invoke the installed script by its actual path while keeping the working directory at the controlling project. The command writes `.openkapsel.env` in that current directory with mode `0600`, returns only its path/action/mode, is idempotent for identical credentials, and requires `--force` to replace a different existing configuration. Exclude it from version control and do not place it in or upload it to the controlled workspace. The bundled helpers first use explicit CLI values, then the nearest `.openkapsel.env`, then the legacy process environment. `OPENKAPSEL_ENV_FILE` or `--env-file` selects a non-default file. The helpers do not Shell-source this file; they parse only the documented keys without expansion.

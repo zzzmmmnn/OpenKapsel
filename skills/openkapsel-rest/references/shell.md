@@ -27,7 +27,7 @@ The command runs asynchronously. `timeout_seconds` may be `null` or within the p
 | `GET` | `/tasks?offset=0&limit=100&status=running` | List this token's running/finished tasks; omit `status` for all |
 | `GET` | `/tasks/<task_id>` | Current state and exit metadata |
 | `GET` | `/tasks/<task_id>/output` | Incremental stdout/stderr by byte cursor |
-| `GET` | `/tasks/<task_id>/stream` | SSE output until `done` |
+| `GET` | `/tasks/<task_id>/stream` | Bounded SSE output until `done` or `reconnect` |
 | `POST` | `/tasks/<task_id>/stdin` | Send UTF-8/Base64 input or close stdin |
 | `POST` | `/tasks/<task_id>/interrupt` | SIGTERM, then SIGKILL after grace period |
 | `POST` | `/tasks/<task_id>/kill` | Immediate SIGKILL of the process group |
@@ -43,11 +43,13 @@ GET /tasks/<id>/output?stdout_offset=0&stderr_offset=0&limit=65536&wait_seconds=
 
 Advance each cursor to its returned `next_offset`. A `gap` means older bytes fell outside the bounded stream and the response tells where retained output begins. `wait_seconds` supports long polling up to the published maximum.
 
-SSE uses `text/event-stream` with `output` and `done` events:
+SSE uses `text/event-stream` with `output`, `done`, and `reconnect` events:
 
 ```text
 GET /tasks/<id>/stream?stdout_offset=<n>&stderr_offset=<n>
 ```
+
+`reconnect` means the maximum stream duration was reached while the task is still running. Reconnect using its exact `stdout_offset` and `stderr_offset`. Concurrent streams are limited globally and per token; `429 too_many_streams` includes `Retry-After` and the published limits.
 
 The generic helper writes SSE directly rather than buffering it:
 

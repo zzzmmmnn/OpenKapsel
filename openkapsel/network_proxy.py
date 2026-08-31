@@ -44,7 +44,33 @@ DEFAULT_NETWORK_PORTS = (80, 443)
 PROXY_PORT = 18080
 PROXY_MOUNT = "/run/openkapsel-proxy"
 MAX_PROXY_HEADER_BYTES = 64 * 1024
+DEFAULT_MAX_PROXY_CONNECTIONS = 64
+DEFAULT_MAX_PROXY_CONNECTIONS_PER_INSTANCE = 16
+DEFAULT_PROXY_HEADER_TIMEOUT_SECONDS = 15.0
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+_PROXY_CONFIG_LOCK = threading.Lock()
+_PROXY_GLOBAL_SLOTS = threading.BoundedSemaphore(DEFAULT_MAX_PROXY_CONNECTIONS)
+_PROXY_PER_INSTANCE_LIMIT = DEFAULT_MAX_PROXY_CONNECTIONS_PER_INSTANCE
+_PROXY_HEADER_TIMEOUT_SECONDS = DEFAULT_PROXY_HEADER_TIMEOUT_SECONDS
+
+
+def configure_proxy_limits(
+    max_connections: int,
+    max_connections_per_instance: int,
+    header_timeout_seconds: float,
+) -> None:
+    if min(max_connections, max_connections_per_instance, header_timeout_seconds) <= 0:
+        raise ValueError("proxy connection limits and timeout must be positive")
+    if max_connections_per_instance > max_connections:
+        raise ValueError("per-instance proxy connection limit cannot exceed global limit")
+    if header_timeout_seconds > 300:
+        raise ValueError("proxy header timeout cannot exceed 300 seconds")
+    global _PROXY_GLOBAL_SLOTS, _PROXY_PER_INSTANCE_LIMIT, _PROXY_HEADER_TIMEOUT_SECONDS
+    with _PROXY_CONFIG_LOCK:
+        _PROXY_GLOBAL_SLOTS = threading.BoundedSemaphore(max_connections)
+        _PROXY_PER_INSTANCE_LIMIT = max_connections_per_instance
+        _PROXY_HEADER_TIMEOUT_SECONDS = float(header_timeout_seconds)
 
 
 def prepare_proxy_root(root: Path) -> None:
@@ -126,16 +152,34 @@ class _ProxyHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         proxy: DomainProxy = self.server.proxy  # type: ignore[attr-defined]
         client: socket.socket = self.request
-        if not proxy._slots.acquire(blocking=False):
+        if not proxy._global_slots.acquire(blocking=False):
             self._error(429, "Too Many Requests")
             return
+        local_acquired = proxy._slots.acquire(blocking=False)
+        if not local_acquired:
+            proxy._global_slots.release()
+            self._error(429, "Too Many Requests")
+            return
+        upstream: socket.socket | None = None
         try:
             header, remainder = proxy.read_header(client)
             first, headers = proxy.parse_header(header)
             method, target, version = first
+            content_length, had_content_length = proxy.request_content_length(headers)
+            upgrade = proxy.request_upgrade(headers)
             if method == "CONNECT":
                 host, port = _split_authority(target, 443)
-                outgoing_header = None
+                if port != 443:
+                    raise ProxyPolicyError("CONNECT is allowed only for HTTPS port 443")
+                proxy.validate_host_header(headers, host, port, 443)
+                if content_length or proxy.header_values(headers, "transfer-encoding"):
+                    raise ProxyPolicyError("CONNECT request bodies are not supported")
+                upstream = proxy.connect(host, port)
+                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                if remainder:
+                    upstream.sendall(remainder)
+                proxy.tunnel(client, upstream)
+                return
             else:
                 parsed = urlsplit(target)
                 if (
@@ -151,14 +195,7 @@ class _ProxyHandler(socketserver.BaseRequestHandler):
                     port = parsed.port or 80
                 except ValueError:
                     raise ProxyPolicyError("invalid proxy destination port") from None
-                supplied_host, supplied_port = _split_authority(
-                    headers.get("host", "").strip(), 80
-                )
-                if (
-                    supplied_host.lower().rstrip(".") != host.lower().rstrip(".")
-                    or supplied_port != port
-                ):
-                    raise ProxyPolicyError("Host header does not match the proxy target")
+                proxy.validate_host_header(headers, host, port, 80)
                 path = parsed.path or "/"
                 if parsed.query:
                     path += f"?{parsed.query}"
@@ -166,19 +203,34 @@ class _ProxyHandler(socketserver.BaseRequestHandler):
                     method,
                     path,
                     version,
-                    header,
+                    headers,
                     host,
                     port,
+                    content_length,
+                    had_content_length,
+                    upgrade,
                 )
+                if upgrade is not None and (remainder or content_length):
+                    raise ProxyPolicyError("WebSocket upgrade requests cannot have a body")
+                if upgrade is None and len(remainder) > content_length:
+                    raise ProxyPolicyError("HTTP pipelining is not supported")
             upstream = proxy.connect(host, port)
-            if method == "CONNECT":
-                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            else:
-                assert outgoing_header is not None
-                upstream.sendall(outgoing_header)
+            upstream.sendall(outgoing_header)
+            if upgrade is not None:
+                proxy.upgrade_tunnel(client, upstream)
+                return
             if remainder:
                 upstream.sendall(remainder)
-            proxy.tunnel(client, upstream)
+            proxy.forward_request_body(
+                client,
+                upstream,
+                content_length - len(remainder),
+            )
+            try:
+                upstream.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            proxy.relay_response(upstream, client)
         except ProxyPolicyError as exc:
             LOGGER.info("denied sandbox proxy request: %s", exc)
             self._error(403, "Forbidden")
@@ -186,7 +238,10 @@ class _ProxyHandler(socketserver.BaseRequestHandler):
             LOGGER.info("sandbox proxy request failed: %s", exc)
             self._error(502, "Bad Gateway")
         finally:
+            if upstream is not None:
+                upstream.close()
             proxy._slots.release()
+            proxy._global_slots.release()
 
     def _error(self, status: int, reason: str) -> None:
         try:
@@ -213,6 +268,8 @@ class DomainProxy:
     _server: _ThreadingUnixServer
     _thread: threading.Thread
     _slots: threading.BoundedSemaphore
+    _global_slots: threading.BoundedSemaphore
+    _header_timeout_seconds: float
 
     @classmethod
     def start(
@@ -226,6 +283,10 @@ class DomainProxy:
             raise ValueError("domain_allowlist network mode requires at least one domain")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root.chmod(0o700)
+        with _PROXY_CONFIG_LOCK:
+            global_slots = _PROXY_GLOBAL_SLOTS
+            per_instance_limit = _PROXY_PER_INSTANCE_LIMIT
+            header_timeout_seconds = _PROXY_HEADER_TIMEOUT_SECONDS
         directory = Path(tempfile.mkdtemp(prefix="proxy-", dir=root))
         directory.chmod(0o700)
         socket_path = directory / "proxy.sock"
@@ -238,7 +299,9 @@ class DomainProxy:
             tuple(ports),
             server,
             None,  # type: ignore[arg-type]
-            threading.BoundedSemaphore(16),
+            threading.BoundedSemaphore(per_instance_limit),
+            global_slots,
+            header_timeout_seconds,
         )
         server.proxy = proxy  # type: ignore[attr-defined]
         thread = threading.Thread(
@@ -257,10 +320,14 @@ class DomainProxy:
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def read_header(self, client: socket.socket) -> tuple[bytes, bytes]:
-        client.settimeout(300)
+        client.settimeout(self._header_timeout_seconds)
+        return self._read_header_bytes(client)
+
+    @staticmethod
+    def _read_header_bytes(stream: socket.socket) -> tuple[bytes, bytes]:
         data = bytearray()
         while b"\r\n\r\n" not in data:
-            chunk = client.recv(16 * 1024)
+            chunk = stream.recv(16 * 1024)
             if not chunk:
                 raise ValueError("incomplete proxy request")
             data.extend(chunk)
@@ -270,48 +337,151 @@ class DomainProxy:
         return bytes(data[:end]), bytes(data[end:])
 
     @staticmethod
-    def parse_header(header: bytes) -> tuple[tuple[str, str, str], dict[str, str]]:
+    def parse_header(
+        header: bytes,
+    ) -> tuple[tuple[str, str, str], tuple[tuple[str, str], ...]]:
         try:
             lines = header.decode("iso-8859-1").split("\r\n")
-            method, target, version = lines[0].split(" ", 2)
-        except (UnicodeDecodeError, ValueError):
+        except UnicodeDecodeError:
             raise ProxyPolicyError("malformed proxy request") from None
-        if not re.fullmatch(r"[A-Z!#$%&'*+.^_`|~-]+", method) or not version.startswith("HTTP/1."):
+        request_line = re.fullmatch(
+            r"([A-Z!#$%&'*+.^_`|~-]+) ([^ ]+) (HTTP/1\.[01])",
+            lines[0],
+        )
+        if request_line is None:
             raise ProxyPolicyError("malformed proxy request line")
-        headers: dict[str, str] = {}
+        method, target, version = request_line.groups()
+        if any(ord(char) < 33 or ord(char) == 127 for char in target):
+            raise ProxyPolicyError("malformed proxy request target")
+        headers: list[tuple[str, str]] = []
         for line in lines[1:]:
             if not line:
                 continue
             if ":" not in line or line[:1].isspace():
                 raise ProxyPolicyError("malformed proxy header")
             name, value = line.split(":", 1)
-            headers[name.strip().lower()] = value.strip()
-        return (method, target, version), headers
+            if name != name.strip() or not _HEADER_NAME.fullmatch(name):
+                raise ProxyPolicyError("malformed proxy header name")
+            value = value.strip(" \t")
+            if any(ord(char) < 32 and char != "\t" or ord(char) == 127 for char in value):
+                raise ProxyPolicyError("malformed proxy header value")
+            headers.append((name.lower(), value))
+        return (method, target, version), tuple(headers)
 
     @staticmethod
+    def header_values(headers: tuple[tuple[str, str], ...], name: str) -> list[str]:
+        normalized = name.lower()
+        return [value for header_name, value in headers if header_name == normalized]
+
+    @classmethod
+    def request_content_length(
+        cls,
+        headers: tuple[tuple[str, str], ...],
+    ) -> tuple[int, bool]:
+        transfer_encoding = cls.header_values(headers, "transfer-encoding")
+        content_lengths = cls.header_values(headers, "content-length")
+        if transfer_encoding:
+            raise ProxyPolicyError("Transfer-Encoding request bodies are not supported")
+        if len(content_lengths) > 1:
+            raise ProxyPolicyError("multiple Content-Length headers are not supported")
+        if not content_lengths:
+            return 0, False
+        raw = content_lengths[0]
+        if len(raw) > 20 or re.fullmatch(r"0|[1-9][0-9]*", raw) is None:
+            raise ProxyPolicyError("invalid Content-Length header")
+        return int(raw), True
+
+    @classmethod
+    def request_upgrade(
+        cls,
+        headers: tuple[tuple[str, str], ...],
+    ) -> str | None:
+        upgrades = cls.header_values(headers, "upgrade")
+        connection_tokens = cls.connection_tokens(headers)
+        if not upgrades:
+            return None
+        if (
+            len(upgrades) != 1
+            or upgrades[0].lower() != "websocket"
+            or "upgrade" not in connection_tokens
+        ):
+            raise ProxyPolicyError("only WebSocket HTTP upgrades are supported")
+        return upgrades[0]
+
+    @classmethod
+    def connection_tokens(
+        cls,
+        headers: tuple[tuple[str, str], ...],
+    ) -> set[str]:
+        result: set[str] = set()
+        for value in cls.header_values(headers, "connection"):
+            for item in value.split(","):
+                token = item.strip().lower()
+                if not token or _HEADER_NAME.fullmatch(token) is None:
+                    raise ProxyPolicyError("invalid Connection header")
+                result.add(token)
+        return result
+
+    @classmethod
+    def validate_host_header(
+        cls,
+        headers: tuple[tuple[str, str], ...],
+        hostname: str,
+        port: int,
+        default_port: int,
+    ) -> None:
+        hosts = cls.header_values(headers, "host")
+        if len(hosts) != 1:
+            raise ProxyPolicyError("exactly one Host header is required")
+        supplied_host, supplied_port = _split_authority(hosts[0], default_port)
+        if (
+            supplied_host.lower().rstrip(".") != hostname.lower().rstrip(".")
+            or supplied_port != port
+        ):
+            raise ProxyPolicyError("Host header does not match the proxy target")
+
+    @classmethod
     def origin_header(
+        cls,
         method: str,
         path: str,
         version: str,
-        header: bytes,
+        headers: tuple[tuple[str, str], ...],
         hostname: str,
         port: int,
+        content_length: int,
+        had_content_length: bool,
+        upgrade: str | None,
     ) -> bytes:
-        lines = header.decode("iso-8859-1").split("\r\n")
         result = [f"{method} {path} {version}"]
-        has_upgrade = any(
-            line.lower().startswith("upgrade:")
-            for line in lines[1:]
-        )
-        for line in lines[1:]:
-            if not line:
+        connection_tokens = cls.connection_tokens(headers)
+        blocked = {
+            "host",
+            "proxy-authorization",
+            "proxy-connection",
+            "connection",
+            "keep-alive",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "content-length",
+            *connection_tokens,
+        }
+        if cls.header_values(headers, "expect"):
+            raise ProxyPolicyError("Expect requests are not supported by the HTTP proxy")
+        for name, value in headers:
+            if name in blocked:
                 continue
-            name = line.split(":", 1)[0].strip().lower()
-            if name in {"host", "proxy-authorization", "proxy-connection", "connection"}:
-                continue
-            result.append(line)
+            result.append(f"{name}: {value}")
         result.append(f"Host: {hostname}" if port == 80 else f"Host: {hostname}:{port}")
-        result.append("Connection: Upgrade" if has_upgrade else "Connection: close")
+        if had_content_length:
+            result.append(f"Content-Length: {content_length}")
+        if upgrade is not None:
+            result.append(f"Upgrade: {upgrade}")
+            result.append("Connection: Upgrade")
+        else:
+            result.append("Connection: close")
         return ("\r\n".join(result) + "\r\n\r\n").encode("iso-8859-1")
 
     def connect(self, hostname: str, port: int) -> socket.socket:
@@ -345,6 +515,56 @@ class DomainProxy:
                 last_error = exc
                 value.close()
         raise ValueError(f"cannot connect to destination {hostname!r}: {last_error}")
+
+    @staticmethod
+    def forward_request_body(
+        client: socket.socket,
+        upstream: socket.socket,
+        remaining: int,
+    ) -> None:
+        client.settimeout(300)
+        while remaining:
+            chunk = client.recv(min(64 * 1024, remaining))
+            if not chunk:
+                raise ValueError("request body ended before Content-Length")
+            upstream.sendall(chunk)
+            remaining -= len(chunk)
+
+    @staticmethod
+    def relay_response(upstream: socket.socket, client: socket.socket) -> None:
+        upstream.settimeout(300)
+        client.settimeout(300)
+        try:
+            while True:
+                chunk = upstream.recv(64 * 1024)
+                if not chunk:
+                    return
+                client.sendall(chunk)
+        finally:
+            upstream.close()
+
+    @classmethod
+    def upgrade_tunnel(
+        cls,
+        client: socket.socket,
+        upstream: socket.socket,
+    ) -> None:
+        upstream.settimeout(30)
+        header, remainder = cls._read_header_bytes(upstream)
+        try:
+            status_line = header.split(b"\r\n", 1)[0].decode("ascii")
+        except UnicodeDecodeError:
+            raise ValueError("malformed WebSocket upgrade response") from None
+        match = re.fullmatch(r"HTTP/1\.[01] ([0-9]{3})(?: .*)?", status_line)
+        if match is None:
+            raise ValueError("malformed WebSocket upgrade response")
+        client.sendall(header)
+        if remainder:
+            client.sendall(remainder)
+        if match.group(1) != "101":
+            cls.relay_response(upstream, client)
+            return
+        cls.tunnel(client, upstream)
 
     @staticmethod
     def tunnel(client: socket.socket, upstream: socket.socket) -> None:

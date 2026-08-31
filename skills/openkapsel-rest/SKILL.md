@@ -22,7 +22,7 @@ From the local controlling project directory, initialize the directory-scoped co
 
 ```bash
 python3 <openkapsel-rest-skill-directory>/scripts/openkapsel_config.py init \
-  'https://host.example/agent/w/<READ_TOKEN>' '<CONTROL_TOKEN>'
+  'https://host.example/kapsel/w/<READ_TOKEN>' '<CONTROL_TOKEN>'
 ```
 
 Invoke the script by its actual installed path while keeping the process working directory at the controlling project. `init` writes `.openkapsel.env` in that current directory with mode `0600` and does not echo either credential. It is idempotent for the same pair and refuses to replace different existing credentials unless `--force` is explicit. Exclude the file from version control. The helpers search from the current directory upward through the nearest Git repository, so changing project directories selects a different OpenKapsel workspace. Never upload or copy this file into the controlled workspace; the tree uploader excludes it automatically.

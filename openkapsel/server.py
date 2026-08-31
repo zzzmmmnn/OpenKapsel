@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import sqlite3
 import stat
 import tempfile
@@ -51,7 +52,12 @@ from .file_handlers import FileHandlersMixin
 from .mcp_handlers import McpHandlersMixin
 from .memory_handlers import MemoryHandlersMixin
 from .memory_store import MemoryStore
-from .network_proxy import DEFAULT_NETWORK_DOMAINS, normalize_domain_rules, prepare_proxy_root
+from .network_proxy import (
+    DEFAULT_NETWORK_DOMAINS,
+    configure_proxy_limits,
+    normalize_domain_rules,
+    prepare_proxy_root,
+)
 from .preview_handlers import PreviewHandlersMixin
 from .recycle import RecycleBin, RecycleError
 from .routes import EndpointSpec, match_endpoint
@@ -101,6 +107,11 @@ class ServerConfig:
     max_task_output_bytes: int = 2 * 1024 * 1024
     max_concurrent_shell_tasks: int = 16
     max_concurrent_shell_tasks_per_token: int = 8
+    max_http_connections: int = 128
+    http_socket_timeout_seconds: float = 30.0
+    max_sse_streams: int = 16
+    max_sse_streams_per_token: int = 4
+    max_sse_duration_seconds: float = 60 * 60
     task_history_dir: Path | None = None
     finished_task_retention_seconds: int = 60 * 60
     max_finished_tasks_per_token: int = 4
@@ -123,6 +134,9 @@ class ServerConfig:
     upload_state_dir: Path | None = None
     api_worker_dir: Path | None = None
     network_proxy_dir: Path | None = None
+    max_network_proxy_connections: int = 64
+    max_network_proxy_connections_per_instance: int = 16
+    network_proxy_header_timeout_seconds: float = 15.0
     default_network_domains: tuple[str, ...] = DEFAULT_NETWORK_DOMAINS
     api_worker_idle_seconds: int = 600
     api_max_body_bytes: int = 16 * 1024 * 1024
@@ -150,7 +164,7 @@ class ServerConfig:
         elif not base_path.startswith("/") or base_path.endswith("/") or any(
             item in base_path for item in {"?", "#", ".."}
         ):
-            raise ValueError("url_base_path must look like '/agent' without a trailing slash")
+            raise ValueError("url_base_path must look like '/kapsel' without a trailing slash")
         if self.public_base_url is not None:
             public = urlsplit(self.public_base_url)
             if (
@@ -183,6 +197,9 @@ class ServerConfig:
             self.max_task_output_bytes,
             self.max_concurrent_shell_tasks,
             self.max_concurrent_shell_tasks_per_token,
+            self.max_http_connections,
+            self.max_sse_streams,
+            self.max_sse_streams_per_token,
             self.finished_task_retention_seconds,
             self.max_finished_tasks_per_token,
             self.max_direct_upload_bytes,
@@ -199,6 +216,8 @@ class ServerConfig:
             self.max_tree_nodes,
             self.max_recursion_depth,
             self.max_batch_file_operations,
+            self.max_network_proxy_connections,
+            self.max_network_proxy_connections_per_instance,
             self.api_worker_idle_seconds,
             self.api_max_body_bytes,
             self.share_ttl_seconds,
@@ -206,8 +225,27 @@ class ServerConfig:
             self.max_share_bytes,
         ) < 1:
             raise ValueError("size and task limits must be positive")
+        if min(
+            self.http_socket_timeout_seconds,
+            self.max_sse_duration_seconds,
+            self.network_proxy_header_timeout_seconds,
+        ) <= 0:
+            raise ValueError("HTTP and proxy timeout limits must be positive")
         if self.default_read_chars > self.max_read_chars:
             raise ValueError("default_read_chars cannot exceed max_read_chars")
+        if self.max_sse_streams_per_token > self.max_sse_streams:
+            raise ValueError("max_sse_streams_per_token cannot exceed max_sse_streams")
+        if self.max_network_proxy_connections_per_instance > self.max_network_proxy_connections:
+            raise ValueError(
+                "max_network_proxy_connections_per_instance cannot exceed "
+                "max_network_proxy_connections"
+            )
+        if self.http_socket_timeout_seconds > 300:
+            raise ValueError("http_socket_timeout_seconds cannot exceed 300 seconds")
+        if self.max_sse_duration_seconds > 86_400:
+            raise ValueError("max_sse_duration_seconds cannot exceed 86400 seconds")
+        if self.network_proxy_header_timeout_seconds > 300:
+            raise ValueError("network_proxy_header_timeout_seconds cannot exceed 300 seconds")
         if self.finished_task_retention_seconds > 60 * 60:
             raise ValueError("finished task retention cannot exceed 3600 seconds")
         if self.max_finished_tasks_per_token > 4:
@@ -419,6 +457,11 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], config: ServerConfig):
         self.config = config
+        self.request_queue_size = min(config.max_http_connections, 128)
+        self.connection_slots = threading.BoundedSemaphore(config.max_http_connections)
+        self.sse_slots = threading.BoundedSemaphore(config.max_sse_streams)
+        self.sse_lock = threading.Lock()
+        self.sse_streams_by_token: dict[str, int] = {}
         self.admin_password_hash = config.admin_password_hash or ""
         self.admin_password_lock = threading.Lock()
         self.recycle_bins: dict[Path, RecycleBin] = {}
@@ -432,6 +475,11 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.workspace_admin_lock = threading.RLock()
         self.admin_sessions = AdminSessions()
         self.admin_login_limiter = AdminLoginLimiter()
+        configure_proxy_limits(
+            config.max_network_proxy_connections,
+            config.max_network_proxy_connections_per_instance,
+            config.network_proxy_header_timeout_seconds,
+        )
         prepare_proxy_root(config.network_proxy_dir)
         self.cgroups = TokenCgroupManager(enabled=config.sandbox_cgroup_enabled)
         self.sandboxes = SandboxRegistry(
@@ -470,6 +518,59 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         )
         self.transfer_slots = threading.BoundedSemaphore(config.max_concurrent_transfers)
         super().__init__(address, WorkspaceRequestHandler)
+
+    def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        if not self.connection_slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Type: text/plain; charset=utf-8\r\n"
+                    b"Content-Length: 20\r\n"
+                    b"Retry-After: 1\r\n\r\n"
+                    b"service unavailable\n"
+                )
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            request.settimeout(self.config.http_socket_timeout_seconds)
+            super().process_request(request, client_address)
+        except BaseException:
+            self.connection_slots.release()
+            raise
+
+    def process_request_thread(
+        self,
+        request: socket.socket,
+        client_address: tuple[str, int],
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.connection_slots.release()
+
+    def acquire_sse_stream(self, token: str) -> str | None:
+        if not self.sse_slots.acquire(blocking=False):
+            return "global"
+        with self.sse_lock:
+            current = self.sse_streams_by_token.get(token, 0)
+            if current >= self.config.max_sse_streams_per_token:
+                self.sse_slots.release()
+                return "token"
+            self.sse_streams_by_token[token] = current + 1
+        return None
+
+    def release_sse_stream(self, token: str) -> None:
+        with self.sse_lock:
+            current = self.sse_streams_by_token.get(token, 0)
+            if current <= 1:
+                self.sse_streams_by_token.pop(token, None)
+            else:
+                self.sse_streams_by_token[token] = current - 1
+        self.sse_slots.release()
 
     def server_close(self) -> None:
         self.api_workers.close()
@@ -1725,39 +1826,69 @@ class WorkspaceRequestHandler(
         stdout_offset = self._query_int(query, "stdout_offset", 0, minimum=0)
         stderr_offset = self._query_int(query, "stderr_offset", 0, minimum=0)
         task = self.server.tasks.get(task_id, self.token_record.token)
-        context_id = self._finalize_context_operation(
-            HTTPStatus.OK,
-            {"task_id": task.id, "status": task.status, "stream": True},
-        )
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Connection", "close")
-        if context_id is not None:
-            self.send_header("OpenKapsel-Context-ID", str(context_id))
-        self.end_headers()
-        self.close_connection = True
-        last_heartbeat = time.monotonic()
-        while True:
-            stdout = task.stdout.read_from(stdout_offset, 65536)
-            stderr = task.stderr.read_from(stderr_offset, 65536)
-            if stdout["data"] or stderr["data"] or stdout["gap"] or stderr["gap"]:
-                stdout_offset = stdout["next_offset"]
-                stderr_offset = stderr["next_offset"]
-                self._send_sse(
-                    "output",
-                    {"task_id": task.id, "status": task.status, "stdout": stdout, "stderr": stderr},
-                )
-                last_heartbeat = time.monotonic()
-            if task.status == "finished":
-                self._send_sse("done", task.summary())
-                return
-            if time.monotonic() - last_heartbeat >= 10:
-                self.wfile.write(b": keep-alive\n\n")
-                self.wfile.flush()
-                last_heartbeat = time.monotonic()
-            time.sleep(0.05)
+        limited_by = self.server.acquire_sse_stream(self.token_record.token)
+        if limited_by is not None:
+            raise ApiError(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "too_many_streams",
+                "the concurrent SSE stream limit has been reached",
+                details={
+                    "scope": limited_by,
+                    "max_global": self.server.config.max_sse_streams,
+                    "max_per_token": self.server.config.max_sse_streams_per_token,
+                },
+                headers={"Retry-After": "1"},
+            )
+        try:
+            context_id = self._finalize_context_operation(
+                HTTPStatus.OK,
+                {"task_id": task.id, "status": task.status, "stream": True},
+            )
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            if context_id is not None:
+                self.send_header("OpenKapsel-Context-ID", str(context_id))
+            self.end_headers()
+            self.close_connection = True
+            started_at = time.monotonic()
+            last_heartbeat = started_at
+            while True:
+                stdout = task.stdout.read_from(stdout_offset, 65536)
+                stderr = task.stderr.read_from(stderr_offset, 65536)
+                if stdout["data"] or stderr["data"] or stdout["gap"] or stderr["gap"]:
+                    stdout_offset = stdout["next_offset"]
+                    stderr_offset = stderr["next_offset"]
+                    self._send_sse(
+                        "output",
+                        {"task_id": task.id, "status": task.status, "stdout": stdout, "stderr": stderr},
+                    )
+                    last_heartbeat = time.monotonic()
+                if task.status == "finished":
+                    self._send_sse("done", task.summary())
+                    return
+                now = time.monotonic()
+                if now - started_at >= self.server.config.max_sse_duration_seconds:
+                    self._send_sse(
+                        "reconnect",
+                        {
+                            "task_id": task.id,
+                            "status": task.status,
+                            "reason": "stream_duration_limit",
+                            "stdout_offset": stdout_offset,
+                            "stderr_offset": stderr_offset,
+                        },
+                    )
+                    return
+                if now - last_heartbeat >= 10:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    last_heartbeat = now
+                time.sleep(0.05)
+        finally:
+            self.server.release_sse_stream(self.token_record.token)
 
     def _send_sse(self, event: str, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -2625,6 +2756,13 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
         max_concurrent_shell_tasks_per_token=int(
             payload.get("max_concurrent_shell_tasks_per_token", 8)
         ),
+        max_http_connections=int(payload.get("max_http_connections", 128)),
+        http_socket_timeout_seconds=float(
+            payload.get("http_socket_timeout_seconds", 30)
+        ),
+        max_sse_streams=int(payload.get("max_sse_streams", 16)),
+        max_sse_streams_per_token=int(payload.get("max_sse_streams_per_token", 4)),
+        max_sse_duration_seconds=float(payload.get("max_sse_duration_seconds", 3600)),
         task_history_dir=task_history_dir,
         finished_task_retention_seconds=finished_task_retention_minutes * 60,
         max_finished_tasks_per_token=max_finished_tasks_per_token,
@@ -2649,6 +2787,15 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
         ),
         network_proxy_dir=config_path_value(
             payload.get("network_proxy_dir", "network-proxies"), "network_proxy_dir"
+        ),
+        max_network_proxy_connections=int(
+            payload.get("max_network_proxy_connections", 64)
+        ),
+        max_network_proxy_connections_per_instance=int(
+            payload.get("max_network_proxy_connections_per_instance", 16)
+        ),
+        network_proxy_header_timeout_seconds=float(
+            payload.get("network_proxy_header_timeout_seconds", 15)
         ),
         default_network_domains=tuple(default_network_domains_value),
         api_worker_idle_seconds=int(payload.get("api_worker_idle_seconds", 600)),

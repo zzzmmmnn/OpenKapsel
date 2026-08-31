@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openkapsel"
-version = "1.44.2"
+version = "1.46.1"
 description = "Token-scoped remote workspace infrastructure for AI clients"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -68,6 +68,7 @@ SECTION_LIMITS = {
         "max_task_output_bytes_per_stream", "max_finished_tasks_per_token",
         "finished_task_retention_seconds", "finished_task_storage",
         "max_concurrent_shell_tasks", "max_concurrent_shell_tasks_per_token",
+        "max_sse_streams", "max_sse_streams_per_token", "max_sse_duration_seconds",
         "max_task_output_chunk_bytes", "max_task_input_bytes_per_request",
         "max_task_wait_seconds", "max_command_characters", "sandbox_max_processes",
         "sandbox_memory_bytes", "sandbox_cpu_percent",

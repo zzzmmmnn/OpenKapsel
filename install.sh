@@ -108,6 +108,7 @@ verify_installation() {
     }
     [[ -f $INSTALL_DIR/openkapsel/server.py ]] || { printf 'missing installed code\n' >&2; failed=1; }
     [[ -f $INSTALL_DIR/skills/openkapsel-rest/SKILL.md ]] || { printf 'missing installed OpenKapsel REST skill\n' >&2; failed=1; }
+    [[ -f $INSTALL_DIR/docs/installation.md ]] || { printf 'missing installed documentation\n' >&2; failed=1; }
     [[ -x $INSTALL_DIR/venv/bin/python ]] || { printf 'missing installed Python environment\n' >&2; failed=1; }
     [[ -f $CONFIG_FILE ]] || { printf 'missing config: %s\n' "$CONFIG_FILE" >&2; failed=1; }
     [[ -d $WORKSPACE_ROOT ]] || { printf 'missing workspace: %s\n' "$WORKSPACE_ROOT" >&2; failed=1; }
@@ -255,7 +256,7 @@ cleanup() {
 trap cleanup EXIT
 install -d -m 0755 "$STAGING_DIR/systemd"
 cp -a -- "$SOURCE_DIR/openkapsel" "$SOURCE_DIR/openkapsel_runtime" "$SOURCE_DIR/tests" \
-    "$SOURCE_DIR/skills" "$STAGING_DIR/"
+    "$SOURCE_DIR/skills" "$SOURCE_DIR/docs" "$STAGING_DIR/"
 cp -a -- "$SOURCE_DIR/README.md" "$SOURCE_DIR/config.example.json" \
     "$SOURCE_DIR/pyproject.toml" "$SOURCE_DIR/set_password.py" "$SOURCE_DIR/install.sh" \
     "$STAGING_DIR/"
@@ -354,6 +355,14 @@ payload["task_history_dir"] = "/var/lib/openkapsel/tasks"
 payload["workspace_image_socket"] = "/run/openkapsel-images/control.sock"
 payload.setdefault("finished_task_retention_minutes", 60)
 payload.setdefault("max_finished_tasks_per_token", 4)
+payload.setdefault("max_http_connections", 128)
+payload.setdefault("http_socket_timeout_seconds", 30)
+payload.setdefault("max_sse_streams", 16)
+payload.setdefault("max_sse_streams_per_token", 4)
+payload.setdefault("max_sse_duration_seconds", 3600)
+payload.setdefault("max_network_proxy_connections", 64)
+payload.setdefault("max_network_proxy_connections_per_instance", 16)
+payload.setdefault("network_proxy_header_timeout_seconds", 15)
 payload["bubblewrap_path"] = "/usr/bin/bwrap"
 payload["rootlesskit_path"] = "/usr/bin/rootlesskit"
 payload["podman_path"] = "/usr/bin/podman"
@@ -366,7 +375,7 @@ payload.setdefault("sandbox_default_backend", "bubblewrap")
 payload.setdefault("sandbox_cgroup_enabled", True)
 payload.setdefault("listen_host", "127.0.0.1")
 payload.setdefault("listen_port", 8765)
-payload.setdefault("url_base_path", "/agent")
+payload.setdefault("url_base_path", "/kapsel")
 admin = payload.setdefault("admin", {})
 admin.setdefault("username", "admin")
 fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -450,7 +459,7 @@ if ((START_SERVICE)); then
     systemctl start "$SERVICE_NAME"
     systemctl is-active --quiet "${SERVICE_NAME}-images"
     systemctl is-active --quiet "$SERVICE_NAME"
-    printf 'OpenKapsel is active. Admin URL path: /agent/admin\n'
+    printf 'OpenKapsel is active. Admin URL path: /kapsel/admin\n'
 else
     printf 'Installation completed without starting OpenKapsel.\n'
 fi

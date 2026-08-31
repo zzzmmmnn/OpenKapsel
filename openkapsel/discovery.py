@@ -191,6 +191,7 @@ class DiscoveryMixin:
                     for key in (
                         "workspace_storage", "max_request_body_bytes", "max_file_bytes",
                         "max_concurrent_transfers", "max_concurrent_shell_tasks_per_token",
+                        "max_sse_streams_per_token", "max_sse_duration_seconds",
                         "max_batch_file_operations",
                         "share_ttl_seconds", "max_share_entries", "max_share_bytes",
                         "max_operation_message_characters", "max_taskname_characters",
@@ -726,6 +727,9 @@ class DiscoveryMixin:
                 "max_concurrent_shell_tasks_per_token": (
                     self.server.config.max_concurrent_shell_tasks_per_token
                 ),
+                "max_sse_streams": self.server.config.max_sse_streams,
+                "max_sse_streams_per_token": self.server.config.max_sse_streams_per_token,
+                "max_sse_duration_seconds": self.server.config.max_sse_duration_seconds,
                 "max_direct_upload_bytes": self.server.config.max_direct_upload_bytes,
                 "max_file_bytes": self.server.config.max_file_bytes,
                 "recommended_upload_chunk_bytes": self.server.config.upload_chunk_bytes,
@@ -776,6 +780,7 @@ class DiscoveryMixin:
                     "shell_task_token_limit_reached",
                     "shell_task_global_limit_reached",
                     "sandbox_process_limit_reached",
+                    "too_many_streams",
                 ],
             },
             "endpoints": {
@@ -1260,7 +1265,8 @@ class DiscoveryMixin:
                     "method": "GET",
                     "url": f"{base}/tasks/<task_id>/stream?stdout_offset=0&stderr_offset=0",
                     "content_type": "text/event-stream",
-                    "events": ["output", "done"],
+                    "events": ["output", "done", "reconnect"],
+                    "notes": "reconnect closes a duration-limited stream and returns the exact stdout/stderr offsets to use for the next request; concurrent streams are bounded globally and per token",
                     "query": {
                         "stdout_offset": 0,
                         "stderr_offset": 0,

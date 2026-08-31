@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -105,12 +106,15 @@ class WorkspaceServerTests(unittest.TestCase):
             admin_password_hash=admin_hash,
             public_base_url="https://ws.example.test",
             preview_base_url="https://preview.ws.example.test",
-            url_base_path="/agent",
+            url_base_path="/kapsel",
             config_file=self.config_path,
             bubblewrap_path=self.fake_bwrap,
             rootlesskit_path=self.fake_rootlesskit,
             max_concurrent_shell_tasks=3,
             max_concurrent_shell_tasks_per_token=2,
+            max_sse_streams=2,
+            max_sse_streams_per_token=1,
+            max_sse_duration_seconds=0.2,
             mcp_binary_chunk_bytes=128 * 1024,
         )
         self.server = create_server("127.0.0.1", 0, config)
@@ -165,14 +169,14 @@ class WorkspaceServerTests(unittest.TestCase):
         if (
             method in {"POST", "PUT", "PATCH", "DELETE"}
             and (
-                route_path.startswith("/agent/w/")
-                or route_path.startswith("/agent/transfer/")
+                route_path.startswith("/kapsel/w/")
+                or route_path.startswith("/kapsel/transfer/")
             )
             and not route_path.endswith("/mcp")
             and "/context" not in route_path
         ):
             record = None
-            if route_path.startswith("/agent/w/"):
+            if route_path.startswith("/kapsel/w/"):
                 read_token = route_path.split("/", 4)[3]
                 try:
                     record = self.server.tokens.get(read_token)
@@ -191,7 +195,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 )
             request_headers.setdefault("OpenKapsel-Taskname", "test-task")
             request_headers.setdefault("OpenKapsel-Message", "test operation")
-        if authorize and "Authorization" not in request_headers and path.startswith("/agent/w/"):
+        if authorize and "Authorization" not in request_headers and path.startswith("/kapsel/w/"):
             read_token = path.split("?", 1)[0].split("/", 4)[3]
             try:
                 record = self.server.tokens.get(read_token)
@@ -209,7 +213,7 @@ class WorkspaceServerTests(unittest.TestCase):
         return status, payload, response_headers
 
     def endpoint(self, suffix: str = "") -> str:
-        return f"/agent/w/test-token{suffix}"
+        return f"/kapsel/w/test-token{suffix}"
 
     def preview_endpoint(self, suffix: str = "", token: str = "test-token") -> str:
         preview_token = self.server.tokens.get(token).preview_token
@@ -284,7 +288,7 @@ class WorkspaceServerTests(unittest.TestCase):
         headers.update(extra_headers or {})
         status, raw, response_headers = self.raw_request(
             "POST",
-            f"/agent/w/{token}/mcp",
+            f"/kapsel/w/{token}/mcp",
             json.dumps(body).encode("utf-8"),
             headers,
         )
@@ -307,7 +311,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("openkapsel-rest", skill["name"])
         self.assertEqual("none", skill["authentication"])
         self.assertEqual(
-            "https://ws.example.test/agent/skills/openkapsel-rest/SKILL.md",
+            "https://ws.example.test/kapsel/skills/openkapsel-rest/SKILL.md",
             skill["entrypoint_url"],
         )
         self.assertNotIn("test-token", json.dumps(skill))
@@ -632,6 +636,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(payload["capabilities"]["shell_outside_workspace"])
         self.assertEqual(3, payload["limits"]["max_concurrent_shell_tasks"])
         self.assertEqual(2, payload["limits"]["max_concurrent_shell_tasks_per_token"])
+        self.assertEqual(2, payload["limits"]["max_sse_streams"])
+        self.assertEqual(1, payload["limits"]["max_sse_streams_per_token"])
+        self.assertEqual(0.2, payload["limits"]["max_sse_duration_seconds"])
+        self.assertEqual(
+            ["output", "done", "reconnect"],
+            payload["endpoints"]["task_stream"]["events"],
+        )
         self.assertEqual(64, payload["limits"]["sandbox_max_processes"])
         self.assertEqual(256 * 1024 * 1024, payload["limits"]["sandbox_memory_bytes"])
         self.assertEqual(100, payload["limits"]["sandbox_cpu_percent"])
@@ -651,13 +662,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("never accesses database storage directly", workflow)
         self.assertIn("OpenKapsel does not add an authentication layer", workflow)
 
-        status, payload = self.request("GET", "/agent/w/wrong-token/")
+        status, payload = self.request("GET", "/kapsel/w/wrong-token/")
         self.assertEqual(404, status)
         self.assertEqual("not_found", payload["error"]["code"])
 
     def test_public_rest_skill_manifest_files_and_dynamic_archive(self) -> None:
         status, raw_manifest, _ = self.raw_request(
-            "GET", "/agent/skills/openkapsel-rest", authorize=False
+            "GET", "/kapsel/skills/openkapsel-rest", authorize=False
         )
         self.assertEqual(200, status)
         manifest = json.loads(raw_manifest.decode("utf-8"))
@@ -666,7 +677,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotIn("administration", manifest["description"].lower())
         self.assertIn("except MCP and administration", manifest["scope"])
         self.assertEqual(
-            "https://ws.example.test/agent/skills/openkapsel-rest/archive.zip"
+            "https://ws.example.test/kapsel/skills/openkapsel-rest/archive.zip"
             f"?sha256={manifest['archive_sha256']}",
             manifest["archive_url"],
         )
@@ -690,7 +701,7 @@ class WorkspaceServerTests(unittest.TestCase):
             expected_names.add(f"openkapsel-rest/{item['path']}")
 
         archive_status, archive, archive_headers = self.raw_request(
-            "GET", "/agent/skills/openkapsel-rest/archive.zip", authorize=False
+            "GET", "/kapsel/skills/openkapsel-rest/archive.zip", authorize=False
         )
         self.assertEqual(200, archive_status)
         self.assertEqual("application/zip", archive_headers["Content-Type"])
@@ -710,14 +721,14 @@ class WorkspaceServerTests(unittest.TestCase):
             )
 
         head_status, head_body, head_headers = self.raw_request(
-            "HEAD", "/agent/skills/openkapsel-rest/archive.zip", authorize=False
+            "HEAD", "/kapsel/skills/openkapsel-rest/archive.zip", authorize=False
         )
         self.assertEqual(200, head_status)
         self.assertEqual(b"", head_body)
         self.assertEqual(str(len(archive)), head_headers["Content-Length"])
         cached_status, cached_body, _ = self.raw_request(
             "GET",
-            "/agent/skills/openkapsel-rest/archive.zip",
+            "/kapsel/skills/openkapsel-rest/archive.zip",
             headers={"If-None-Match": archive_headers["ETag"]},
             authorize=False,
         )
@@ -725,7 +736,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(b"", cached_body)
 
         missing_status, missing, _ = self.raw_request(
-            "GET", "/agent/skills/openkapsel-rest/../config.json", authorize=False
+            "GET", "/kapsel/skills/openkapsel-rest/../config.json", authorize=False
         )
         self.assertEqual(404, missing_status)
         self.assertEqual(
@@ -887,7 +898,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         status, raw, headers = self.raw_request(
             "POST",
-            f"/agent/w/{old_read}/credentials/renew",
+            f"/kapsel/w/{old_read}/credentials/renew",
             headers={"Authorization": f"Bearer {current.control_token}"},
             authorize=False,
         )
@@ -897,7 +908,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotEqual(old_read, renewed["read_token"])
         self.assertNotEqual(old_control, renewed["control_token"])
         self.assertEqual(
-            f"https://ws.example.test/agent/w/{renewed['read_token']}/",
+            f"https://ws.example.test/kapsel/w/{renewed['read_token']}/",
             renewed["workspace_url"],
         )
         renewed_record = self.server.tokens.get(renewed["read_token"])
@@ -909,12 +920,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertLessEqual(remaining, timedelta(days=3))
 
         status, _raw, _headers = self.raw_request(
-            "GET", f"/agent/w/{old_read}/", authorize=False
+            "GET", f"/kapsel/w/{old_read}/", authorize=False
         )
         self.assertEqual(404, status)
         status, _raw, _headers = self.raw_request(
             "GET",
-            f"/agent/w/{renewed['read_token']}/",
+            f"/kapsel/w/{renewed['read_token']}/",
             headers={"Authorization": f"Bearer {renewed['control_token']}"},
             authorize=False,
         )
@@ -1010,7 +1021,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, body, headers = self.raw_request(
             "GET",
-            "/agent/w/invalid-browser-token/",
+            "/kapsel/w/invalid-browser-token/",
             headers=browser_headers,
         )
         self.assertEqual(404, status)
@@ -1034,7 +1045,7 @@ class WorkspaceServerTests(unittest.TestCase):
             allowed_commands=(),
         )
         scope = self.root / "binary-upload"
-        endpoint = lambda suffix: f"/agent/w/{record.token}{suffix}"
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
         content = bytes(range(256)) * 8
         query = urlencode({"path": "blob.bin"})
         digest = hashlib.sha256(content).hexdigest()
@@ -1255,7 +1266,7 @@ class WorkspaceServerTests(unittest.TestCase):
             can_write=True,
             shell_mode="none",
         )
-        base = f"http://127.0.0.1:{self.port}/agent/w/{record.token}"
+        base = f"http://127.0.0.1:{self.port}/kapsel/w/{record.token}"
         state_file = Path(self.temp.name) / "batch-state.json"
         common = [
             str(local),
@@ -1423,7 +1434,7 @@ class WorkspaceServerTests(unittest.TestCase):
         (scope / "conflict.txt").write_text("remote", encoding="utf-8")
         (scope / "exists.txt").write_text("exists", encoding="utf-8")
         (scope / "folder").mkdir()
-        endpoint = lambda suffix: f"/agent/w/{record.token}{suffix}"
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
 
         manifest_body = {
             "items": [
@@ -1655,6 +1666,76 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("sse-ok", stream)
         self.assertIn("event: done", stream)
 
+    def test_sse_limits_duplicate_token_streams_and_requests_reconnect(self) -> None:
+        status, task = self.request(
+            "POST",
+            self.endpoint("/shell/exec"),
+            {"command": "sleep 30", "timeout_seconds": 60},
+        )
+        self.assertEqual(202, status)
+        task_id = task["task_id"]
+        record = self.server.tokens.get("test-token")
+        first = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        first.request(
+            "GET",
+            self.endpoint(f"/tasks/{task_id}/stream"),
+            headers={"Authorization": f"Bearer {record.control_token}"},
+        )
+        first_response = first.getresponse()
+        self.assertEqual(200, first_response.status)
+
+        status, raw, headers = self.raw_request(
+            "GET",
+            self.endpoint(f"/tasks/{task_id}/stream"),
+        )
+        self.assertEqual(429, status)
+        self.assertEqual("1", headers["Retry-After"])
+        error = json.loads(raw)["error"]
+        self.assertEqual("too_many_streams", error["code"])
+        self.assertEqual("token", error["details"]["scope"])
+
+        stream = first_response.read().decode("utf-8")
+        first.close()
+        self.assertIn("event: reconnect", stream)
+        self.assertIn('"reason":"stream_duration_limit"', stream)
+        self.assertIn('"stdout_offset":0', stream)
+
+        status, _killed = self.request(
+            "POST",
+            self.endpoint(f"/tasks/{task_id}/kill"),
+            {},
+        )
+        self.assertEqual(200, status)
+
+    def test_http_connection_limit_rejects_before_starting_another_thread(self) -> None:
+        isolated_root = Path(self.temp.name) / "http-limit-workspace"
+        isolated_root.mkdir()
+        server = create_server(
+            "127.0.0.1",
+            0,
+            ServerConfig(
+                root=isolated_root,
+                max_http_connections=1,
+                http_socket_timeout_seconds=0.2,
+            ),
+        )
+        first_server, first_client = socket.socketpair()
+        second_server, second_client = socket.socketpair()
+        try:
+            server.process_request(first_server, ("local", 1))
+            server.process_request(second_server, ("local", 2))
+            second_client.settimeout(1)
+            response = second_client.recv(4096)
+            self.assertTrue(
+                response.startswith(b"HTTP/1.1 503 Service Unavailable"),
+                response,
+            )
+            self.assertIn(b"Retry-After: 1\r\n", response)
+        finally:
+            first_client.close()
+            second_client.close()
+            server.server_close()
+
     def test_task_registry_close_terminates_processes_and_rejects_new_tasks(self) -> None:
         config = ServerConfig(
             root=self.root,
@@ -1740,7 +1821,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
             status, started = self.request(
                 "POST",
-                f"/agent/w/{other.token}/shell/exec",
+                f"/kapsel/w/{other.token}/shell/exec",
                 {"command": "sleep 30", "timeout_seconds": 60},
             )
             self.assertEqual(202, status)
@@ -1748,7 +1829,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
             status, rejected = self.request(
                 "POST",
-                f"/agent/w/{other.token}/shell/exec",
+                f"/kapsel/w/{other.token}/shell/exec",
                 {"command": "sleep 30", "timeout_seconds": 60},
             )
             self.assertEqual(429, status)
@@ -1761,7 +1842,7 @@ class WorkspaceServerTests(unittest.TestCase):
             first_token, first_task = task_ids.pop(0)
             status, _ = self.request(
                 "POST",
-                f"/agent/w/{first_token}/tasks/{first_task}/interrupt",
+                f"/kapsel/w/{first_token}/tasks/{first_task}/interrupt",
                 {},
             )
             self.assertEqual(200, status)
@@ -1769,7 +1850,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
             status, started = self.request(
                 "POST",
-                f"/agent/w/{other.token}/shell/exec",
+                f"/kapsel/w/{other.token}/shell/exec",
                 {"command": "sleep 30", "timeout_seconds": 60},
             )
             self.assertEqual(202, status)
@@ -1778,7 +1859,7 @@ class WorkspaceServerTests(unittest.TestCase):
             for token, task_id in task_ids:
                 self.request(
                     "POST",
-                    f"/agent/w/{token}/tasks/{task_id}/interrupt",
+                    f"/kapsel/w/{token}/tasks/{task_id}/interrupt",
                     {},
                 )
             for token, task_id in task_ids:
@@ -1787,7 +1868,7 @@ class WorkspaceServerTests(unittest.TestCase):
     def test_restricted_token_exposes_sandbox_process_discovery_and_mcp(self) -> None:
         record = self.server.tokens.update("test-token", shell_mode="restricted")
         status, payload = self.request(
-            "GET", f"/agent/w/{record.token}/sandbox/processes?offset=0&limit=10"
+            "GET", f"/kapsel/w/{record.token}/sandbox/processes?offset=0&limit=10"
         )
         self.assertEqual(200, status)
         self.assertFalse(payload["available"])
@@ -1851,7 +1932,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode("utf-8")
         status, body, _ = self.raw_request(
             "POST",
-            f"/agent/w/{token}/mcp",
+            f"/kapsel/w/{token}/mcp",
             notification,
             {
                 "Content-Type": "application/json",
@@ -2219,7 +2300,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, body, headers = self.raw_request(
             "GET",
-            f"/agent/w/{token}/mcp",
+            f"/kapsel/w/{token}/mcp",
             headers={"Accept": "text/event-stream"},
         )
         self.assertEqual(405, status)
@@ -2257,7 +2338,7 @@ class WorkspaceServerTests(unittest.TestCase):
             {"write_file", "delete_path", "restore_recycle", "run_shell"}.isdisjoint(read_names)
         )
         status, read_discovery = self.request(
-            "GET", f"/agent/w/{read_only.token}/discovery/full"
+            "GET", f"/kapsel/w/{read_only.token}/discovery/full"
         )
         self.assertEqual(200, status)
         self.assertTrue(read_discovery["endpoints"]["fs_read"]["available"])
@@ -2332,7 +2413,7 @@ class WorkspaceServerTests(unittest.TestCase):
             shell_mode="none",
             allowed_commands=(),
         )
-        endpoint = lambda suffix: f"/agent/w/{record.token}{suffix}"
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
         scope = self.root / "context-workspace"
 
         status, root_plan = self.request(
@@ -2906,7 +2987,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         download = prepared["result"]["structuredContent"]
         self.assertEqual(
-            "https://ws.example.test/agent/transfer/fs/content?path=conditional.txt",
+            "https://ws.example.test/kapsel/transfer/fs/content?path=conditional.txt",
             download["transfer"]["url"],
         )
         self.assertEqual("reuse_mcp_bearer", download["transfer"]["authorization"])
@@ -2914,7 +2995,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotIn(record.control_token, json.dumps(download))
         status, raw, headers = self.raw_request(
             "GET",
-            "/agent/transfer/fs/content?path=conditional.txt",
+            "/kapsel/transfer/fs/content?path=conditional.txt",
             headers={
                 "Authorization": f"Bearer {record.control_token}",
                 "Range": "bytes=1-3",
@@ -2947,7 +3028,7 @@ class WorkspaceServerTests(unittest.TestCase):
             self.server.config.upload_chunk_bytes,
             raw_transfer["recommended_chunk_size"],
         )
-        upload_path = f"/agent/transfer/uploads/{upload['upload_id']}"
+        upload_path = f"/kapsel/transfer/uploads/{upload['upload_id']}"
         status, raw, _ = self.raw_request(
             "PATCH",
             upload_path,
@@ -2974,7 +3055,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, unauthorized, _ = self.raw_request(
             "GET",
-            "/agent/transfer/fs/content?path=conditional.txt",
+            "/kapsel/transfer/fs/content?path=conditional.txt",
             authorize=False,
         )
         self.assertEqual(401, status)
@@ -3024,7 +3105,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, _, headers = self.raw_request(
             "GET",
-            "/agent/w/invalid-token/",
+            "/kapsel/w/invalid-token/",
             authorize=False,
         )
         self.assertEqual(404, status)
@@ -3221,13 +3302,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("directory", created["type"])
         self.assertNotIn("test-token", created["query_url"])
         self.assertEqual(
-            f"https://ws.example.test/agent/shares/{share_id}",
+            f"https://ws.example.test/kapsel/shares/{share_id}",
             created["query_url"],
         )
 
         status, listing = self.request(
             "GET",
-            f"/agent/shares/{share_id}?depth=2",
+            f"/kapsel/shares/{share_id}?depth=2",
         )
         self.assertEqual(200, status)
         self.assertEqual(
@@ -3235,7 +3316,7 @@ class WorkspaceServerTests(unittest.TestCase):
             [item["path"] for item in listing["entries"]],
         )
 
-        destination = f"/agent/w/{destination_token.token}/shares/{share_id}/import"
+        destination = f"/kapsel/w/{destination_token.token}/shares/{share_id}/import"
         status, imported = self.request(
             "POST",
             destination,
@@ -3275,7 +3356,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(204, status)
         self.assertEqual(b"", raw)
-        status, missing = self.request("GET", f"/agent/shares/{share_id}")
+        status, missing = self.request("GET", f"/kapsel/shares/{share_id}")
         self.assertEqual(404, status)
         self.assertEqual("share_not_found", missing["error"]["code"])
 
@@ -3290,7 +3371,7 @@ class WorkspaceServerTests(unittest.TestCase):
             allowed_commands=(),
         )
         scope = self.root / "operations"
-        endpoint = lambda suffix: f"/agent/w/{record.token}{suffix}"
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
         self.assertTrue((scope / ".recycle").is_dir())
         self.assertTrue((scope / ".context").is_dir())
 
@@ -3417,7 +3498,7 @@ class WorkspaceServerTests(unittest.TestCase):
             shell_mode="none",
             allowed_commands=(),
         )
-        status, listing = self.request("GET", f"/agent/w/{other.token}/recycle/list")
+        status, listing = self.request("GET", f"/kapsel/w/{other.token}/recycle/list")
         self.assertEqual(200, status)
         self.assertEqual(0, listing["total"])
 
@@ -3717,14 +3798,14 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("OK", fixed["stderr"])
 
     def test_admin_login_create_permissions_and_expiration(self) -> None:
-        status, body, _ = self.raw_request("GET", "/agent/admin")
+        status, body, _ = self.raw_request("GET", "/kapsel/admin")
         self.assertEqual(200, status)
         self.assertIn("Workspace Administration", body.decode("utf-8"))
 
         bad_form = urlencode({"username": "admin", "password": "wrong-password"}).encode()
         status, _, _ = self.raw_request(
             "POST",
-            "/agent/admin/login",
+            "/kapsel/admin/login",
             bad_form,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -3735,7 +3816,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/login",
+            "/kapsel/admin/login",
             login_form,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -3744,9 +3825,9 @@ class WorkspaceServerTests(unittest.TestCase):
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         self.assertIn("HttpOnly", headers["Set-Cookie"])
         self.assertIn("Secure", headers["Set-Cookie"])
-        self.assertIn("Path=/agent/admin", headers["Set-Cookie"])
+        self.assertIn("Path=/kapsel/admin", headers["Set-Cookie"])
 
-        status, dashboard, _ = self.raw_request("GET", "/agent/admin", headers={"Cookie": cookie})
+        status, dashboard, _ = self.raw_request("GET", "/kapsel/admin", headers={"Cookie": cookie})
         self.assertEqual(200, status)
         dashboard_text = dashboard.decode("utf-8")
         self.assertIn('data-initial-panel="tokens"', dashboard_text)
@@ -3765,8 +3846,8 @@ class WorkspaceServerTests(unittest.TestCase):
             dashboard_text.index("<h2>Create token</h2>"),
         )
 
-        self.assertIn("https://ws.example.test/agent/w/test-token/", dashboard_text)
-        self.assertIn("https://ws.example.test/agent/w/test-token/mcp", dashboard_text)
+        self.assertIn("https://ws.example.test/kapsel/w/test-token/", dashboard_text)
+        self.assertIn("https://ws.example.test/kapsel/w/test-token/mcp", dashboard_text)
         self.assertIn("Copy MCP URL", dashboard_text)
         self.assertIn("Copy MCP URL + control token", dashboard_text)
         self.assertIn(
@@ -3856,7 +3937,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, _ = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             create_form,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -3886,7 +3967,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, _ = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             rotate_form,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -3917,12 +3998,12 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             rotate_control_form,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
-        self.assertEqual("/agent/admin?control_token_rotated=1", headers["Location"])
+        self.assertEqual("/kapsel/admin?control_token_rotated=1", headers["Location"])
         record = self.server.tokens.get(record.token)
         self.assertNotEqual(old_control_token, record.control_token)
         self.assertEqual(old_record.token, record.token)
@@ -3944,17 +4025,17 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             rotate_read_form,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
-        self.assertEqual("/agent/admin?read_token_rotated=1", headers["Location"])
+        self.assertEqual("/kapsel/admin?read_token_rotated=1", headers["Location"])
         record = next(item for item in self.server.tokens.list() if item.name == "Restricted project token")
         self.assertNotEqual(old_token, record.token)
         self.assertEqual(control_token, record.control_token)
         self.assertIsNone(self.server.tokens.authenticate(old_token))
-        status, old_main = self.request("GET", f"/agent/w/{old_token}/")
+        status, old_main = self.request("GET", f"/kapsel/w/{old_token}/")
         self.assertEqual(404, status)
         self.assertEqual("not_found", old_main["error"]["code"])
 
@@ -3972,12 +4053,12 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             renew_form,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
-        self.assertEqual("/agent/admin?credentials_renewed=1", headers["Location"])
+        self.assertEqual("/kapsel/admin?credentials_renewed=1", headers["Location"])
         record = next(
             item
             for item in self.server.tokens.list()
@@ -4005,7 +4086,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, rejected_dashboard, _ = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             rejected_renew,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -4014,7 +4095,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(record, self.server.tokens.get(record.token))
 
         status, discovery = self.request(
-            "GET", f"/agent/w/{record.token}/discovery/full"
+            "GET", f"/kapsel/w/{record.token}/discovery/full"
         )
         self.assertEqual(200, status)
         self.assertEqual(str((self.root / "new-project").resolve()), discovery["root"])
@@ -4046,7 +4127,7 @@ class WorkspaceServerTests(unittest.TestCase):
             sandbox_image="docker.io/library/python:3.14-slim-trixie",
         )
         status, discovery = self.request(
-            "GET", f"/agent/w/{record.token}/discovery/shell"
+            "GET", f"/kapsel/w/{record.token}/discovery/shell"
         )
         self.assertEqual(200, status)
         self.assertEqual("podman", discovery["capabilities"]["shell_sandbox"])
@@ -4070,7 +4151,7 @@ class WorkspaceServerTests(unittest.TestCase):
             allowed_domains=("github.com", ".githubusercontent.com"),
         )
         status, discovery = self.request(
-            "GET", f"/agent/w/{record.token}/discovery/shell"
+            "GET", f"/kapsel/w/{record.token}/discovery/shell"
         )
         self.assertEqual(200, status)
         self.assertTrue(discovery["capabilities"]["network"])
@@ -4085,7 +4166,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            f"/agent/w/{record.token}/fs/write",
+            f"/kapsel/w/{record.token}/fs/write",
             {"path": "blocked.txt", "content": "no"},
         )
         self.assertEqual(403, status)
@@ -4093,7 +4174,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            f"/agent/w/{record.token}/shell/exec",
+            f"/kapsel/w/{record.token}/shell/exec",
             {"command": "python3 --version"},
         )
         self.assertEqual(202, status)
@@ -4143,7 +4224,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         status, payload = self.request(
             "POST",
-            f"/agent/w/{record.token}/shell/exec",
+            f"/kapsel/w/{record.token}/shell/exec",
             {"command": "python3 --version"},
         )
         self.assertEqual(202, status)
@@ -4174,7 +4255,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            f"/agent/w/{record.token}/shell/exec",
+            f"/kapsel/w/{record.token}/shell/exec",
             {"command": "printf first; printf second"},
         )
         self.assertEqual(202, status)
@@ -4184,7 +4265,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            f"/agent/w/{record.token}/shell/exec",
+            f"/kapsel/w/{record.token}/shell/exec",
             {"command": "uname -a"},
         )
         self.assertEqual(202, status)
@@ -4193,7 +4274,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(arbitrary_task["stdout"].strip())
 
         self.server.tokens.update(record.token, expires_at="2000-01-01T00:00:00+00:00")
-        status, payload = self.request("GET", f"/agent/w/{record.token}/")
+        status, payload = self.request("GET", f"/kapsel/w/{record.token}/")
         self.assertEqual(404, status)
         self.assertEqual("not_found", payload["error"]["code"])
 
@@ -4204,7 +4285,7 @@ class WorkspaceServerTests(unittest.TestCase):
         try:
             status, dashboard, _ = self.raw_request(
                 "GET",
-                "/agent/admin",
+                "/kapsel/admin",
                 headers={
                     "Cookie": f"ws_admin={session.id}",
                     "Host": "workspace.example.test",
@@ -4219,7 +4300,7 @@ class WorkspaceServerTests(unittest.TestCase):
             )
         self.assertEqual(200, status)
         self.assertIn(
-            "https://workspace.example.test/agent/w/test-token",
+            "https://workspace.example.test/kapsel/w/test-token",
             dashboard.decode("utf-8"),
         )
 
@@ -4232,7 +4313,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ) as retry_after:
             status, _, _ = self.raw_request(
                 "POST",
-                "/agent/admin/login",
+                "/kapsel/admin/login",
                 body,
                 {
                     "Content-Type": "application/x-www-form-urlencoded",
@@ -4264,14 +4345,14 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertEqual(0, limiter.retry_after(address))
 
     def test_admin_login_rejects_short_password_without_recording_failure(self) -> None:
-        status, login, _ = self.raw_request("GET", "/agent/admin")
+        status, login, _ = self.raw_request("GET", "/kapsel/admin")
         self.assertEqual(200, status)
         self.assertIn('minlength="8"', login.decode("utf-8"))
         body = urlencode({"username": "admin", "password": "short"}).encode("utf-8")
         with patch.object(self.server.admin_login_limiter, "failed") as failed:
             status, _, _ = self.raw_request(
                 "POST",
-                "/agent/admin/login",
+                "/kapsel/admin/login",
                 body,
                 {"Content-Type": "application/x-www-form-urlencoded"},
                 authorize=False,
@@ -4287,11 +4368,11 @@ class WorkspaceServerTests(unittest.TestCase):
         }
         for _ in range(3):
             status, _, _ = self.raw_request(
-                "POST", "/agent/admin/login", body, headers, authorize=False
+                "POST", "/kapsel/admin/login", body, headers, authorize=False
             )
             self.assertEqual(401, status)
         status, _, response_headers = self.raw_request(
-            "POST", "/agent/admin/login", body, headers, authorize=False
+            "POST", "/kapsel/admin/login", body, headers, authorize=False
         )
         self.assertEqual(429, status)
         self.assertGreaterEqual(int(response_headers["Retry-After"]), 1)
@@ -4320,7 +4401,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(404, status)
         self.assertEqual("not_found", hidden["error"]["code"])
         for method, path in (
-            ("GET", "/agent/admin"),
+            ("GET", "/kapsel/admin"),
             ("GET", "/test-token/fs/list"),
             ("POST", self.preview_endpoint("/project/site/index.html")),
         ):
@@ -4333,7 +4414,7 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertEqual("not_found", json.loads(raw)["error"]["code"])
         preview_token = self.server.tokens.get("test-token").preview_token
         status, hidden = self.request(
-            "GET", f"/agent/w/{preview_token}/fs/list?path=."
+            "GET", f"/kapsel/w/{preview_token}/fs/list?path=."
         )
         self.assertEqual(404, status)
         self.assertEqual("not_found", hidden["error"]["code"])
@@ -4587,7 +4668,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         _, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/login",
+            "/kapsel/admin/login",
             login_form,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -4595,7 +4676,7 @@ class WorkspaceServerTests(unittest.TestCase):
         form = urlencode({"action": "delete", "token": "test-token", "csrf": "wrong"}).encode()
         status, _, _ = self.raw_request(
             "POST",
-            "/agent/admin/tokens",
+            "/kapsel/admin/tokens",
             form,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -4619,7 +4700,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/login",
+            "/kapsel/admin/login",
             login_form,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -4630,7 +4711,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(password_hash_needs_upgrade(migrated_admin["password_hash"]))
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         status, dashboard, _ = self.raw_request(
-            "GET", "/agent/admin", headers={"Cookie": cookie}
+            "GET", "/kapsel/admin", headers={"Cookie": cookie}
         )
         self.assertEqual(200, status)
         dashboard_text = dashboard.decode("utf-8")
@@ -4647,7 +4728,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, body, _ = self.raw_request(
             "POST",
-            "/agent/admin/password",
+            "/kapsel/admin/password",
             wrong_old,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -4668,7 +4749,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, body, _ = self.raw_request(
             "POST",
-            "/agent/admin/password",
+            "/kapsel/admin/password",
             mismatch,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -4685,15 +4766,15 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, headers = self.raw_request(
             "POST",
-            "/agent/admin/password",
+            "/kapsel/admin/password",
             valid,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
-        self.assertEqual("/agent/admin?password_changed=1", headers["Location"])
+        self.assertEqual("/kapsel/admin?password_changed=1", headers["Location"])
         status, body, _ = self.raw_request(
             "GET",
-            "/agent/admin?password_changed=1",
+            "/kapsel/admin?password_changed=1",
             headers={"Cookie": cookie},
         )
         self.assertEqual(200, status)
@@ -4713,7 +4794,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, _ = self.raw_request(
             "POST",
-            "/agent/admin/login",
+            "/kapsel/admin/login",
             old_login,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -4723,7 +4804,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode()
         status, _, _ = self.raw_request(
             "POST",
-            "/agent/admin/login",
+            "/kapsel/admin/login",
             new_login,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -4759,13 +4840,13 @@ class WorkspaceServerTests(unittest.TestCase):
             {"username": "admin", "password": "correct-horse-battery"}
         ).encode()
         status, _, headers = self.raw_request(
-            "POST", "/agent/admin/login", login,
+            "POST", "/kapsel/admin/login", login,
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
         self.assertEqual(303, status)
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         status, dashboard, _ = self.raw_request(
-            "GET", "/agent/admin", headers={"Cookie": cookie}
+            "GET", "/kapsel/admin", headers={"Cookie": cookie}
         )
         self.assertEqual(200, status)
         page = dashboard.decode()
@@ -4782,14 +4863,14 @@ class WorkspaceServerTests(unittest.TestCase):
         csrf = match.group(1)
 
         status, _, headers = self.raw_request(
-            "POST", "/agent/admin/images",
+            "POST", "/kapsel/admin/images",
             urlencode({"csrf": csrf, "action": "create", "name": "disk-site", "size_mib": "128"}).encode(),
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
         self.assertIn("image_created=1", headers["Location"])
         status, _, headers = self.raw_request(
-            "POST", "/agent/admin/images",
+            "POST", "/kapsel/admin/images",
             urlencode({"csrf": csrf, "action": "grow", "name": "disk-site", "size_mib": "256"}).encode(),
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
@@ -4805,14 +4886,14 @@ class WorkspaceServerTests(unittest.TestCase):
             "sandbox_memory_mb": "256", "sandbox_cpu_percent": "100",
         }
         status, _, _ = self.raw_request(
-            "POST", "/agent/admin/tokens", urlencode(create_token).encode(),
+            "POST", "/kapsel/admin/tokens", urlencode(create_token).encode(),
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
         record = next(item for item in self.server.tokens.list() if item.name == "Disk site token")
         self.assertEqual("disk-site", record.path_prefix)
         self.assertEqual("disk-site", record.workspace_image)
-        status, discovery = self.request("GET", f"/agent/w/{record.token}/")
+        status, discovery = self.request("GET", f"/kapsel/w/{record.token}/")
         self.assertEqual(200, status)
         storage = discovery["limits"]["workspace_storage"]
         self.assertEqual("ext4_image", storage["backend"])
@@ -4824,7 +4905,7 @@ class WorkspaceServerTests(unittest.TestCase):
             {"csrf": csrf, "action": "delete", "name": "disk-site"}
         ).encode()
         status, error_page, _ = self.raw_request(
-            "POST", "/agent/admin/images", delete_image,
+            "POST", "/kapsel/admin/images", delete_image,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(400, status)
@@ -4832,13 +4913,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("disk-site", self.server.workspace_images.items)
 
         status, _, _ = self.raw_request(
-            "POST", "/agent/admin/tokens",
+            "POST", "/kapsel/admin/tokens",
             urlencode({"csrf": csrf, "action": "delete", "token": record.token}).encode(),
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
         status, _, headers = self.raw_request(
-            "POST", "/agent/admin/images", delete_image,
+            "POST", "/kapsel/admin/images", delete_image,
             {"Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie},
         )
         self.assertEqual(303, status)
@@ -5117,7 +5198,7 @@ class WorkspaceServerTests(unittest.TestCase):
             can_write=True,
             shell_mode="none",
         )
-        endpoint = lambda suffix: f"/agent/w/{record.token}{suffix}"
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
         status, source_plan = self.request(
             "POST",
             endpoint("/context"),
@@ -5296,7 +5377,7 @@ class WorkspaceServerTests(unittest.TestCase):
     def wait_for_task(self, task_id: str, timeout: float = 5, token: str = "test-token") -> dict:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            status, payload = self.request("GET", f"/agent/w/{token}/tasks/{task_id}")
+            status, payload = self.request("GET", f"/kapsel/w/{token}/tasks/{task_id}")
             self.assertEqual(200, status)
             if payload["status"] == "finished":
                 return payload

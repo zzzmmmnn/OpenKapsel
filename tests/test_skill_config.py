@@ -25,7 +25,7 @@ import openkapsel_http  # noqa: E402
 class SkillCredentialConfigTests(unittest.TestCase):
     def _write_env(self, path: Path, *, expiry: str | None = None) -> None:
         lines = [
-            "OPENKAPSEL_BASE_URL=https://file.example/agent/w/read",
+            "OPENKAPSEL_BASE_URL=https://file.example/kapsel/w/read",
             "OPENKAPSEL_CONTROL_TOKEN=file-control",
         ]
         if expiry:
@@ -50,7 +50,7 @@ class SkillCredentialConfigTests(unittest.TestCase):
                 clear=False,
             ):
                 resolved = openkapsel_config.resolve_credentials(cwd=nested)
-            self.assertEqual("https://file.example/agent/w/read", resolved.base_url)
+            self.assertEqual("https://file.example/kapsel/w/read", resolved.base_url)
             self.assertEqual("file-control", resolved.control_token)
             self.assertEqual(env_file.resolve(), resolved.env_file)
 
@@ -110,7 +110,7 @@ class SkillCredentialConfigTests(unittest.TestCase):
                         {
                             "read_token": "new-read",
                             "control_token": "new-control",
-                            "workspace_url": "https://file.example/agent/w/new-read/",
+                            "workspace_url": "https://file.example/kapsel/w/new-read/",
                             "credentials_expires_at": renewed_expiry,
                         }
                     ).encode(),
@@ -121,7 +121,7 @@ class SkillCredentialConfigTests(unittest.TestCase):
             self.assertEqual(2, request.call_count)
             self.assertEqual("", request.call_args_list[0].args[1])
             self.assertEqual("credentials/renew", request.call_args_list[1].args[1])
-            self.assertEqual("https://file.example/agent/w/new-read", renewed.base_url)
+            self.assertEqual("https://file.example/kapsel/w/new-read", renewed.base_url)
             self.assertEqual("new-control", renewed.control_token)
             saved = openkapsel_config.read_env_file(env_file)
             self.assertEqual(renewed.base_url, saved[openkapsel_config.BASE_URL_KEY])
@@ -141,7 +141,7 @@ class SkillCredentialConfigTests(unittest.TestCase):
                     status = openkapsel_config.main(
                         [
                             "init",
-                            "https://workspace.example/agent/w/read-token/",
+                            "https://workspace.example/kapsel/w/read-token/",
                             "control-token",
                         ]
                     )
@@ -156,25 +156,25 @@ class SkillCredentialConfigTests(unittest.TestCase):
             self.assertEqual(0o600, stat.S_IMODE(env_file.stat().st_mode))
             values = openkapsel_config.read_env_file(env_file)
             self.assertEqual(
-                "https://workspace.example/agent/w/read-token",
+                "https://workspace.example/kapsel/w/read-token",
                 values[openkapsel_config.BASE_URL_KEY],
             )
             self.assertEqual("control-token", values[openkapsel_config.CONTROL_TOKEN_KEY])
 
             unchanged = openkapsel_config.initialize_env_file(
-                "https://workspace.example/agent/w/read-token",
+                "https://workspace.example/kapsel/w/read-token",
                 "control-token",
                 directory=root,
             )
             self.assertEqual("unchanged", unchanged[1])
             with self.assertRaisesRegex(ValueError, "--force"):
                 openkapsel_config.initialize_env_file(
-                    "https://workspace.example/agent/w/other-read",
+                    "https://workspace.example/kapsel/w/other-read",
                     "other-control",
                     directory=root,
                 )
             replaced = openkapsel_config.initialize_env_file(
-                "https://workspace.example/agent/w/other-read",
+                "https://workspace.example/kapsel/w/other-read",
                 "other-control",
                 directory=root,
                 force=True,
@@ -186,13 +186,13 @@ class SkillCredentialConfigTests(unittest.TestCase):
             root = Path(temporary)
             with self.assertRaisesRegex(ValueError, "/w/<READ_TOKEN>"):
                 openkapsel_config.initialize_env_file(
-                    "https://workspace.example/agent/admin",
+                    "https://workspace.example/kapsel/admin",
                     "control",
                     directory=root,
                 )
             with self.assertRaisesRegex(ValueError, "no whitespace"):
                 openkapsel_config.initialize_env_file(
-                    "https://workspace.example/agent/w/read",
+                    "https://workspace.example/kapsel/w/read",
                     "bad token",
                     directory=root,
                 )
