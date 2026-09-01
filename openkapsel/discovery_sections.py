@@ -89,7 +89,11 @@ SECTION_LIMITS = {
         "max_concurrent_shell_tasks_per_token", "max_schedule_runs_per_schedule",
         "schedule_run_retention_days",
     },
-    "web": {"workspace_storage", "max_request_body_bytes"},
+    "web": {
+        "workspace_storage", "max_request_body_bytes", "max_sse_streams",
+        "max_sse_streams_per_token", "max_sse_duration_seconds",
+        "http_socket_timeout_seconds",
+    },
     "sharing": {
         "share_ttl_seconds", "max_share_entries", "max_share_bytes",
         "max_recursion_depth", "max_tree_nodes", "max_concurrent_transfers",
@@ -140,6 +144,7 @@ SECTION_WORKFLOWS = {
     "web": [
         "Use the independent preview URL for static files and relative browser assets.",
         "A directory named api delegates that application subtree to its FastAPI app.py; each app owns private managed database storage.",
+        "Use a GET StreamingResponse with media type text/event-stream for live updates; send periodic SSE comments below the published upstream idle timeout and let EventSource reconnect when the duration limit closes a stream.",
         "Implement application users, sessions, CSRF, and roles inside the workspace application; OpenKapsel does not provide them.",
     ],
     "sharing": [

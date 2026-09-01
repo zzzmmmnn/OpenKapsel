@@ -29,6 +29,12 @@ OpenKapsel supports `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, and `DELETE` applicat
 
 FastAPI's default `/docs`, `/redoc`, and `/openapi.json` routes are blocked. Publish an explicitly named, authenticated route if the application intentionally exposes documentation.
 
+## Server-Sent Events
+
+A FastAPI `GET` response with media type `text/event-stream` is forwarded and flushed incrementally. Use `StreamingResponse`, emit standard SSE records separated by a blank line, and send periodic `: keep-alive` comments more frequently than `limits.http_socket_timeout_seconds`.
+
+Workspace API streams share `limits.max_sse_streams`, `limits.max_sse_streams_per_token`, and `limits.max_sse_duration_seconds` with Shell SSE. The proxy closes a duration-limited or idle stream without inventing application events; browser `EventSource` should reconnect normally.
+
 ## Runtime libraries and network
 
 The installed libraries and versions are deployment-dependent; read `capabilities.web_app_api.available_libraries` in `discovery/web`. The maintained contract currently includes FastAPI, SQLAlchemy, python-multipart, Jinja2, HTTPX, NumPy, Numba, pandas, Matplotlib, SciPy, cryptography, lxml, Pillow, PyYAML, and Beautiful Soup. Outbound HTTP still requires the token's network permission.

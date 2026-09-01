@@ -200,7 +200,10 @@ class DiscoveryMixin:
                     },
                     "network": capabilities["network"],
                     "web_preview": {"enabled": capabilities["web_preview"]["enabled"]},
-                    "web_app_api": {"enabled": capabilities["web_app_api"]["enabled"]},
+                    "web_app_api": {
+                        "enabled": capabilities["web_app_api"]["enabled"],
+                        "sse": capabilities["web_app_api"]["sse"],
+                    },
                     "mcp": {
                         "enabled": capabilities["mcp"]["enabled"],
                         "transport": capabilities["mcp"]["transport"],
@@ -214,6 +217,7 @@ class DiscoveryMixin:
                         "workspace_storage", "max_request_body_bytes", "max_file_bytes",
                         "max_concurrent_transfers", "max_concurrent_shell_tasks_per_token",
                         "max_sse_streams_per_token", "max_sse_duration_seconds",
+                        "http_socket_timeout_seconds",
                         "max_batch_file_operations",
                         "share_ttl_seconds", "max_share_entries", "max_share_bytes",
                         "max_operation_message_characters", "max_taskname_characters",
@@ -701,6 +705,24 @@ class DiscoveryMixin:
                     "authentication": "application-defined",
                     "built_in_users": False,
                     "built_in_sessions": False,
+                    "sse": {
+                        "enabled": self.token_record.can_preview,
+                        "method": "GET",
+                        "content_type": "text/event-stream",
+                        "incremental_passthrough": True,
+                        "response_buffered_until_eof": False,
+                        "browser_reconnects_after_stream_close": True,
+                        "shared_with_shell_stream_limits": True,
+                        "max_global": self.server.config.max_sse_streams,
+                        "max_per_token": self.server.config.max_sse_streams_per_token,
+                        "max_duration_seconds": self.server.config.max_sse_duration_seconds,
+                        "upstream_idle_timeout_seconds": (
+                            self.server.config.http_socket_timeout_seconds
+                        ),
+                        "heartbeat_recommendation": (
+                            "send an SSE comment more frequently than the upstream idle timeout"
+                        ),
+                    },
                     "default_documentation_routes": {
                         "public": False,
                         "blocked_paths": ["/docs", "/redoc", "/openapi.json"],
@@ -807,6 +829,7 @@ class DiscoveryMixin:
                 "max_sse_streams": self.server.config.max_sse_streams,
                 "max_sse_streams_per_token": self.server.config.max_sse_streams_per_token,
                 "max_sse_duration_seconds": self.server.config.max_sse_duration_seconds,
+                "http_socket_timeout_seconds": self.server.config.http_socket_timeout_seconds,
                 "max_direct_upload_bytes": self.server.config.max_direct_upload_bytes,
                 "max_file_bytes": self.server.config.max_file_bytes,
                 "recommended_upload_chunk_bytes": self.server.config.upload_chunk_bytes,
@@ -1046,7 +1069,7 @@ class DiscoveryMixin:
                     "methods": "GET, HEAD, POST, PUT, PATCH, DELETE",
                     "url": f"{preview_base}/<app-path>/api/<route>",
                     "entrypoint": "<app-directory>/api/app.py",
-                    "notes": "app-path may be empty for the workspace-root app; the first api path component owns the remaining route; default FastAPI documentation routes are not exposed",
+                    "notes": "app-path may be empty for the workspace-root app; the first api path component owns the remaining route; GET responses with Content-Type text/event-stream are flushed incrementally and share the published SSE limits; default FastAPI documentation routes are not exposed",
                     "authentication": "defined entirely by the workspace FastAPI application; OpenKapsel adds no users, cookies, sessions, or auth routes",
                 },
                 "fs_list": {

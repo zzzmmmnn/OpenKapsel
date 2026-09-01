@@ -50,6 +50,32 @@ OpenKapsel returns `404` for FastAPI's default `/docs`, `/redoc`, and `/openapi.
 
 OpenKapsel does not provide application users, login, CAPTCHA, cookies, sessions, CSRF, or roles. Each application implements its own business authentication.
 
+## Server-Sent Events
+
+A FastAPI `GET` route whose response media type is `text/event-stream` is passed through incrementally instead of being buffered to EOF:
+
+```python
+import asyncio
+
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+
+app = FastAPI()
+
+@app.get("/events")
+async def events():
+    async def generate():
+        while True:
+            yield ": keep-alive\n\n"
+            await asyncio.sleep(10)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+```
+
+OpenKapsel flushes each upstream chunk, removes response-length and hop-by-hop framing headers, disables intermediary buffering, and closes the downstream connection when the upstream ends or a limit is reached. Browser `EventSource` reconnects normally after that close.
+
+Workspace API SSE and Shell SSE share `max_sse_streams`, `max_sse_streams_per_token`, and `max_sse_duration_seconds`. Send an SSE event or comment more frequently than `http_socket_timeout_seconds` so an otherwise silent upstream connection is not treated as idle. SSE bodies are not subject to the ordinary buffered FastAPI response-size limit; concurrency and duration limits bound their resource use instead.
+
 ## Available libraries
 
 The supported application libraries are published in `discovery/web`:

@@ -1,16 +1,85 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.api_workers import ApiWorkerManager
+from openkapsel.api_workers import ApiWorker, ApiWorkerManager
 from openkapsel.cgroups import TokenCgroupManager
 from openkapsel.tokens import TokenRecord, utc_now
 
 
 class ApiWorkerSandboxTests(unittest.TestCase):
+    def test_active_connection_holds_worker_lease_until_close(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class RunningProcess:
+                stopped = False
+
+                def poll(self) -> int | None:
+                    return 0 if self.stopped else None
+
+                def terminate(self) -> None:
+                    self.stopped = True
+
+                @staticmethod
+                def wait(timeout: float) -> int:
+                    return 0
+
+                def kill(self) -> None:
+                    self.stopped = True
+
+            class LogHandle:
+                @staticmethod
+                def close() -> None:
+                    return None
+
+            record = TokenRecord(
+                token="lease-token",
+                name="Lease test",
+                created_at=utc_now(),
+                preview_token="preview-token",
+                control_token="control-token",
+                app_id="lease-app",
+            )
+            worker = ApiWorker(
+                app_id=record.app_id,
+                process=RunningProcess(),
+                socket_path=root / "worker.sock",
+                fingerprint=(),
+                last_used=0,
+                log_handle=LogHandle(),
+            )
+            manager = ApiWorkerManager(
+                worker_root=root / "manager",
+                bubblewrap_path=Path("/usr/bin/bwrap"),
+                rootlesskit_path=Path("/usr/bin/rootlesskit"),
+                cgroups=TokenCgroupManager(enabled=False),
+            )
+            manager._workers["lease-worker"] = worker
+            try:
+                with patch.object(manager, "_ensure", return_value=worker):
+                    connection = manager.connection(
+                        record,
+                        root,
+                        "/preview/api",
+                        "lease-worker",
+                )
+                self.assertEqual(1, worker.active_connections)
+                self.assertFalse(manager._worker_is_stale(worker, time.monotonic()))
+                connection.close()
+                self.assertEqual(0, worker.active_connections)
+                released_at = worker.last_used
+                self.assertTrue(manager._worker_is_stale(worker, released_at + 1))
+                connection.close()
+                self.assertEqual(0, worker.active_connections)
+                self.assertEqual(released_at, worker.last_used)
+            finally:
+                manager.close()
+
     def test_systemd_policy_permits_nested_private_proc(self) -> None:
         service = (
             Path(__file__).resolve().parents[1] / "systemd" / "openkapsel.service"

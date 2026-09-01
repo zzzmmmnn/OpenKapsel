@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .cgroups import (
     BUBBLEWRAP_PROCESS_OVERHEAD,
@@ -40,15 +40,32 @@ def apparmor_restricts_user_namespaces() -> bool:
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, socket_path: Path, timeout: float = 30):
+    def __init__(
+        self,
+        socket_path: Path,
+        timeout: float = 30,
+        *,
+        on_close: Callable[[], None] | None = None,
+    ):
         super().__init__("localhost", timeout=timeout)
         self.socket_path = socket_path
+        self._on_close = on_close
+        self._lease_released = False
 
     def connect(self) -> None:
         value = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         value.settimeout(self.timeout)
         value.connect(str(self.socket_path))
         self.sock = value
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if not self._lease_released:
+                self._lease_released = True
+                if self._on_close is not None:
+                    self._on_close()
 
 
 @dataclass
@@ -60,6 +77,7 @@ class ApiWorker:
     last_used: float
     log_handle: object
     network_proxy: DomainProxy | None = None
+    active_connections: int = 0
 
 
 class ApiWorkerManager:
@@ -100,9 +118,21 @@ class ApiWorkerManager:
         root_path: str,
         worker_key: str,
     ) -> UnixHTTPConnection:
-        worker = self._ensure(record, workspace, root_path, worker_key)
-        worker.last_used = time.monotonic()
-        return UnixHTTPConnection(worker.socket_path)
+        with self._lock:
+            worker = self._ensure(record, workspace, root_path, worker_key)
+            worker.last_used = time.monotonic()
+            worker.active_connections += 1
+        return UnixHTTPConnection(
+            worker.socket_path,
+            on_close=lambda: self._release_connection(worker_key, worker),
+        )
+
+    def _release_connection(self, worker_key: str, worker: ApiWorker) -> None:
+        with self._lock:
+            if worker.active_connections > 0:
+                worker.active_connections -= 1
+            if self._workers.get(worker_key) is worker:
+                worker.last_used = time.monotonic()
 
     def stop(self, app_id: str) -> None:
         with self._lock:
@@ -361,10 +391,16 @@ class ApiWorkerManager:
             cutoff = time.monotonic() - self.idle_seconds
             with self._lock:
                 stale = [key for key, worker in self._workers.items()
-                         if worker.last_used < cutoff or worker.process.poll() is not None]
+                         if self._worker_is_stale(worker, cutoff)]
                 workers = [self._workers.pop(key) for key in stale]
             for worker in workers:
                 self._terminate(worker)
+
+    @staticmethod
+    def _worker_is_stale(worker: ApiWorker, cutoff: float) -> bool:
+        return worker.process.poll() is not None or (
+            worker.active_connections == 0 and worker.last_used < cutoff
+        )
 
     @staticmethod
     def _terminate(worker: ApiWorker) -> None:

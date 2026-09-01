@@ -7,7 +7,9 @@ import http.client
 import logging
 import mimetypes
 import os
+import socket
 import stat
+import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
@@ -297,6 +299,9 @@ class PreviewHandlersMixin:
             )
             connection.request(method, target, body=body, headers=forwarded_headers)
             response = connection.getresponse()
+            if self._is_workspace_api_sse(method, response):
+                self._stream_workspace_api_sse(response, connection, api_target.worker_key)
+                return
             data = response.read(self.server.config.api_max_body_bytes + 1)
             if len(data) > self.server.config.api_max_body_bytes:
                 raise ApiWorkerError("FastAPI response exceeds the configured size limit")
@@ -321,6 +326,99 @@ class PreviewHandlersMixin:
         self.end_headers()
         if method != "HEAD":
             self.wfile.write(data)
+
+    @staticmethod
+    def _is_workspace_api_sse(method: str, response: http.client.HTTPResponse) -> bool:
+        if method != "GET" or response.status != HTTPStatus.OK:
+            return False
+        content_type = next(
+            (
+                value
+                for key, value in response.getheaders()
+                if key.lower() == "content-type"
+            ),
+            "",
+        )
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        return media_type == "text/event-stream"
+
+    def _stream_workspace_api_sse(
+        self,
+        response: http.client.HTTPResponse,
+        connection: http.client.HTTPConnection,
+        worker_key: str,
+    ) -> None:
+        limited_by = self.server.acquire_sse_stream(self.token_record.token)
+        if limited_by is not None:
+            raise ApiError(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "too_many_streams",
+                "the concurrent SSE stream limit has been reached",
+                details={
+                    "scope": limited_by,
+                    "max_global": self.server.config.max_sse_streams,
+                    "max_per_token": self.server.config.max_sse_streams_per_token,
+                },
+                headers={"Retry-After": "1"},
+            )
+        try:
+            self.send_response(response.status)
+            blocked_response = {
+                "cache-control",
+                "connection",
+                "content-length",
+                "date",
+                "keep-alive",
+                "proxy-authenticate",
+                "proxy-authorization",
+                "server",
+                "te",
+                "trailer",
+                "transfer-encoding",
+                "upgrade",
+                "x-accel-buffering",
+            }
+            for key, value in response.getheaders():
+                if key.lower() not in blocked_response:
+                    self.send_header(key, value)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.flush()
+            self.close_connection = True
+
+            started_at = time.monotonic()
+            read_chunk = getattr(response, "read1", response.read)
+            while True:
+                remaining = self.server.config.max_sse_duration_seconds - (
+                    time.monotonic() - started_at
+                )
+                if remaining <= 0:
+                    return
+                upstream_socket = getattr(connection, "sock", None)
+                if upstream_socket is not None:
+                    upstream_socket.settimeout(
+                        min(self.server.config.http_socket_timeout_seconds, remaining)
+                    )
+                chunk = read_chunk(self.server.config.transfer_buffer_bytes)
+                if not chunk:
+                    return
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+            TimeoutError,
+            socket.timeout,
+            http.client.HTTPException,
+            OSError,
+        ) as exc:
+            LOGGER.info("Workspace API SSE stream ended for %s: %s", worker_key, exc)
+        finally:
+            self.server.release_sse_stream(self.token_record.token)
 
     def _web_root_path(self) -> str:
         token = quote(self.token_record.preview_token, safe="")

@@ -16,7 +16,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Store app-identity-scoped Shell variables and POSIX initialization, then inject them into full, Bubblewrap, and Podman tasks.
 - Give each token a restricted Bubblewrap or Podman sandbox, or explicitly grant trusted tokens full Shell access.
 - Restrict outbound networking to disabled, an exact domain allowlist, or full network access.
-- Publish static browser previews on an independent origin and run project-owned FastAPI applications.
+- Publish static browser previews on an independent origin and run project-owned FastAPI applications with live Server-Sent Events.
 - Provide project databases through a portable SQLAlchemy runtime without exposing raw database paths.
 - Record mutation history and hierarchical Plans in Context, and retain longer project knowledge in Memory.
 - Move one file or directory between workspaces through short-lived, capability-addressed shares.

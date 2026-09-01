@@ -468,6 +468,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("application-defined", web_app["authentication"])
         self.assertFalse(web_app["built_in_users"])
         self.assertFalse(web_app["built_in_sessions"])
+        self.assertTrue(web_app["sse"]["enabled"])
+        self.assertTrue(web_app["sse"]["incremental_passthrough"])
+        self.assertFalse(web_app["sse"]["response_buffered_until_eof"])
+        self.assertEqual(2, web_app["sse"]["max_global"])
+        self.assertEqual(1, web_app["sse"]["max_per_token"])
+        self.assertEqual(0.2, web_app["sse"]["max_duration_seconds"])
+        self.assertEqual(30.0, web_app["sse"]["upstream_idle_timeout_seconds"])
         self.assertFalse(web_app["default_documentation_routes"]["public"])
         self.assertEqual(
             ["/docs", "/redoc", "/openapi.json"],
@@ -721,6 +728,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(2, payload["limits"]["max_sse_streams"])
         self.assertEqual(1, payload["limits"]["max_sse_streams_per_token"])
         self.assertEqual(0.2, payload["limits"]["max_sse_duration_seconds"])
+        self.assertEqual(30.0, payload["limits"]["http_socket_timeout_seconds"])
         self.assertEqual(
             ["output", "done", "reconnect"],
             payload["endpoints"]["task_stream"]["events"],
@@ -4898,6 +4906,108 @@ class WorkspaceServerTests(unittest.TestCase):
         status, body, _ = self.raw_preview_request("GET", "/project/site-a/index.html")
         self.assertEqual(200, status)
         self.assertEqual(b"site-a", body)
+
+    def test_workspace_api_sse_streams_before_eof_and_uses_shared_limits(self) -> None:
+        site = self.root / "project" / "live"
+        (site / "api").mkdir(parents=True)
+        (site / "api" / "app.py").write_text("app = object()\n", encoding="utf-8")
+        allow_eof = threading.Event()
+        upstream_closed = threading.Event()
+
+        class StubResponse:
+            status = 200
+
+            def __init__(self) -> None:
+                self.reads = 0
+
+            @staticmethod
+            def getheader(name: str, default: str = "") -> str:
+                if name.lower() == "content-type":
+                    return "text/event-stream; charset=utf-8"
+                return default
+
+            @staticmethod
+            def getheaders() -> list[tuple[str, str]]:
+                return [
+                    ("Content-Type", "text/event-stream; charset=utf-8"),
+                    ("Transfer-Encoding", "chunked"),
+                    ("Content-Length", "999"),
+                    ("Connection", "keep-alive"),
+                ]
+
+            def read1(self, _limit: int) -> bytes:
+                self.reads += 1
+                if self.reads == 1:
+                    return b"event: pixel\ndata: {\"rev\":1}\n\n"
+                allow_eof.wait(2)
+                return b""
+
+            def read(self, _limit: int) -> bytes:
+                raise AssertionError("SSE must not use the buffered response path")
+
+        class StubConnection:
+            sock = None
+
+            @staticmethod
+            def request(
+                method: str,
+                target: str,
+                body: bytes | None = None,
+                headers: dict[str, str] | None = None,
+            ) -> None:
+                return None
+
+            @staticmethod
+            def getresponse() -> StubResponse:
+                return StubResponse()
+
+            @staticmethod
+            def close() -> None:
+                upstream_closed.set()
+
+        client = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        with patch.object(
+            self.server.api_workers,
+            "connection",
+            side_effect=lambda *_args: StubConnection(),
+        ):
+            client.request(
+                "GET",
+                self.preview_endpoint("/project/live/api/events"),
+                headers={"Host": "preview.ws.example.test"},
+            )
+            response = client.getresponse()
+            self.assertEqual(200, response.status)
+            headers = dict(response.getheaders())
+            self.assertTrue(headers["Content-Type"].startswith("text/event-stream"))
+            self.assertEqual("no-store", headers["Cache-Control"])
+            self.assertEqual("no", headers["X-Accel-Buffering"])
+            self.assertEqual("close", headers["Connection"])
+            self.assertNotIn("Content-Length", headers)
+            self.assertNotIn("Transfer-Encoding", headers)
+
+            first_line = response.readline()
+            self.assertEqual(b"event: pixel\n", first_line)
+            self.assertFalse(allow_eof.is_set(), "the first event must arrive before upstream EOF")
+
+            status, limited, limited_headers = self.raw_preview_request(
+                "GET", "/project/live/api/events"
+            )
+            self.assertEqual(429, status)
+            self.assertEqual("1", limited_headers["Retry-After"])
+            error = json.loads(limited)["error"]
+            self.assertEqual("too_many_streams", error["code"])
+            self.assertEqual("token", error["details"]["scope"])
+
+            allow_eof.set()
+            self.assertIn(b'data: {"rev":1}', response.read())
+            client.close()
+
+        self.assertTrue(upstream_closed.wait(1))
+        self.assertNotIn(
+            self.server.tokens.get("test-token").token,
+            self.server.sse_streams_by_token,
+        )
 
     def test_admin_requires_csrf(self) -> None:
         login_form = urlencode(

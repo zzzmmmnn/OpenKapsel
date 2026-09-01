@@ -129,16 +129,16 @@ OpenKapsel also has application-side limits:
 | Configuration key | Default | Purpose |
 |---|---:|---|
 | `max_http_connections` | `128` | Maximum accepted OpenKapsel HTTP connections; overload returns `503` |
-| `http_socket_timeout_seconds` | `30` | Bounds stalled socket I/O and idle backend Keep-Alive reads; it is not a total task deadline |
-| `max_sse_streams` | `16` | Global concurrent Shell SSE streams |
-| `max_sse_streams_per_token` | `4` | Concurrent Shell SSE streams for one token |
-| `max_sse_duration_seconds` | `3600` | Duration before an SSE `reconnect` event supplies exact output offsets |
+| `http_socket_timeout_seconds` | `30` | Bounds stalled socket I/O and silent Workspace API SSE upstream reads; it is not a total task deadline |
+| `max_sse_streams` | `16` | Global concurrent Shell and Workspace API SSE streams |
+| `max_sse_streams_per_token` | `4` | Concurrent Shell and Workspace API SSE streams for one token |
+| `max_sse_duration_seconds` | `3600` | Maximum duration of one SSE connection; Shell emits `reconnect`, while browser `EventSource` reconnects after an API stream closes |
 | `max_network_proxy_connections` | `64` | Global connections through restricted-domain proxies |
 | `max_network_proxy_connections_per_instance` | `16` | Connections through one task or worker proxy instance |
 | `network_proxy_header_timeout_seconds` | `15` | Time allowed to finish a restricted-proxy request header |
 | `schedule_misfire_grace_seconds` | `300` | Maximum lateness before a `misfire_policy: skip` occurrence is recorded as missed |
 
-Do not confuse the one-hour SSE rotation with the Shell task runtime. The stream can reconnect without losing output, while the task follows its own configured runtime limit.
+Do not confuse the one-hour SSE rotation with the Shell task runtime. The stream can reconnect without losing output, while the task follows its own configured runtime limit. Workspace FastAPI SSE routes should send comments or events more frequently than `http_socket_timeout_seconds`.
 
 Validate and reload with the existing Caddy installation's normal commands:
 
