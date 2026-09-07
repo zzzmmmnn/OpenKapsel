@@ -2,6 +2,42 @@
 
 [Back to README](../README.md)
 
+## Attacker definition
+
+OpenKapsel treats remote clients, AI agents, request payloads, workspace files,
+and workspace-executed code as potentially hostile. An attacker is assumed to
+know the source code, public URLs, endpoint shapes, and non-secret deployment
+details. They may bypass Discovery and the REST Skill, construct arbitrary and
+malformed requests, open concurrent or slow connections, and—when they possess
+a restricted control credential—run arbitrary Shell syntax, interpreters, and
+scripts. Security must therefore come from credential checks, path validation,
+process isolation, and resource limits rather than from model cooperation or
+endpoint obscurity.
+
+The relevant attacker profiles are:
+
+| Profile | Assumed capability | Boundary OpenKapsel is expected to preserve |
+|---|---|---|
+| Anonymous network client | Can reach public API, preview, and application routes but initially has no valid credential | Cannot enumerate valid capabilities, enter administration, or use Workspace read/mutation surfaces; behavior intentionally exposed by a project application remains that application's responsibility |
+| Read-token holder | Can issue every read operation authorized by that Workspace URL | Cannot mutate the workspace, invoke Shell/MCP, obtain the control token, or cross into another token scope |
+| Restricted control-token holder or compromised AI client | Has the matching Workspace URL and control token and can deliberately send arbitrary mutation and Shell requests | Is confined to that token's workspace and explicit path/network grants, resource limits, and permitted capabilities; cannot reach service-private state or other workspaces |
+| Preview visitor or application user | Can load published assets, execute project JavaScript in their browser, and call public project application routes | A preview credential does not become a read/control credential; the application worker remains isolated from service-private state and other workspaces |
+| Malicious workspace program | Runs inside restricted Shell or an application worker and may attempt interpreter-based escapes, process spawning, filesystem traversal, network pivoting, or resource exhaustion | Remains inside the corresponding mount, namespace, network, process, memory, CPU, and task limits |
+
+Possession of a credential authorizes everything that credential explicitly
+grants. In particular, workspace content is not confidential from a read-token
+holder, and workspace integrity is not protected from a matching control-token
+holder with write permission. Two token records intentionally pointing to the
+same workspace are in the same data-isolation domain; OpenKapsel distinguishes
+their actors and permissions but does not isolate their shared files from one
+another.
+
+Security goals include preventing cross-workspace and host-filesystem access,
+protecting token and administrator secrets, preventing a restricted process
+from escaping its granted network and resource policy, rejecting ambiguous or
+malformed protocol input safely, and bounding application-level denial of
+service where configured limits apply.
+
 ## Credential boundaries
 
 - The URL token is read-only.
@@ -50,3 +86,17 @@ Full Shell is the explicit exception. It has all filesystem and network privileg
 OpenKapsel isolates Workspace infrastructure, not application business logic. A project FastAPI application is responsible for its own users, authorization, password reset, cookies, sessions, CSRF, abuse controls, and data model.
 
 Allowed public domains can host user-controlled content. Prefer exact domains over broad suffixes. The network proxy does not inspect encrypted HTTPS content; it limits destinations, while TLS certificate validation remains end-to-end.
+
+The host administrator, the `root` account, the reverse proxy, the operating
+system kernel, and the selected Bubblewrap or Podman runtime are trusted. An
+attacker who compromises those components, administrator credentials, the
+`openkapsel` service account, or the installed runtime/dependencies is outside
+the isolation guarantee. Full Shell tokens are also explicitly trusted: as
+stated above, Full Shell deliberately runs with all privileges of the service
+account and is not confined by token path or network settings.
+
+OpenKapsel's connection, task, process, CPU, memory, and workspace-image limits
+reduce service-level resource abuse; they are not a complete volumetric DDoS or
+host-capacity defense. Public ingress rate limiting, firewalling, monitoring,
+backups, host disk reservation, and dependency patching remain deployment
+responsibilities.
