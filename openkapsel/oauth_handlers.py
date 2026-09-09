@@ -27,6 +27,10 @@ class OAuthHandlersMixin:
         self._oauth_base(cid)
         return self._public_base_url() + "/connect/" + cid + "/mcp"
 
+    def _oauth_resource_metadata_url(self, cid: str) -> str:
+        resource = urlsplit(self._oauth_resource(cid))
+        return f"{resource.scheme}://{resource.netloc}/.well-known/oauth-protected-resource{resource.path}"
+
     def _oauth_record(self, cid: str):
         connection = self.server.oauth.get(cid)
         record = self.server.tokens.get_by_app_id(connection["app_id"])
@@ -55,7 +59,7 @@ class OAuthHandlersMixin:
             resource = self._oauth_resource(cid)
             self._oauth_record(cid)
             action = "metadata" if as_match else "resource" if resource_match else endpoint.group(2)
-            if method == "GET" and action in {"metadata", ".well-known/oauth-authorization-server"}:
+            if method in {"GET", "HEAD"} and action in {"metadata", ".well-known/oauth-authorization-server"}:
                 self._discard_request_body()
                 self._send_json(200, {
                     "issuer": base, "authorization_endpoint": base + "/authorize",
@@ -66,7 +70,7 @@ class OAuthHandlersMixin:
                     "code_challenge_methods_supported": ["S256"], "scopes_supported": [SCOPE],
                     "client_id_metadata_document_supported": False,
                 })
-            elif method == "GET" and action == "resource":
+            elif method in {"GET", "HEAD"} and action == "resource":
                 self._discard_request_body()
                 self._send_json(200, {"resource": resource, "authorization_servers": [base],
                                       "scopes_supported": [SCOPE], "bearer_methods_supported": ["header"]})
@@ -124,7 +128,7 @@ class OAuthHandlersMixin:
             self.oauth_connection_id = cid
             self.server.oauth.touch(cid)
         except OAuthError as exc:
-            headers = {"WWW-Authenticate": f'Bearer resource_metadata="{self._oauth_base(cid)}/resource", scope="{SCOPE}"'} if exc.status == 401 else None
+            headers = {"WWW-Authenticate": f'Bearer resource_metadata="{self._oauth_resource_metadata_url(cid)}", scope="{SCOPE}"'} if exc.status == 401 else None
             raise ApiError(exc.status, exc.code, str(exc), headers=headers) from None
         except ValueError:
             raise ApiError(403, "access_denied", "Workspace directory is unavailable") from None

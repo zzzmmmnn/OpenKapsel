@@ -37,8 +37,8 @@ Each connection is an independent issuer:
 | Endpoint | Purpose |
 |---|---|
 | `/kapsel/connect/<id>/mcp` | Streamable HTTP MCP; missing credentials return 401 with a resource metadata challenge |
-| `/kapsel/oauth/<id>/resource` | Protected resource metadata referenced by the challenge |
-| `/.well-known/oauth-protected-resource/kapsel/connect/<id>/mcp` | Standard resource metadata discovery |
+| `/kapsel/oauth/<id>/resource` | Additional protected resource metadata endpoint |
+| `/.well-known/oauth-protected-resource/kapsel/connect/<id>/mcp` | Standard resource metadata discovery; also referenced by the 401 challenge |
 | `/.well-known/oauth-authorization-server/kapsel/oauth/<id>` | Authorization server metadata |
 | `/kapsel/oauth/<id>/register` | Dynamic client registration |
 | `/kapsel/oauth/<id>/authorize` | Starts administrator authorization |

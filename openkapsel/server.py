@@ -88,6 +88,8 @@ from .workspace_images import WorkspaceImageClient
 
 
 LOGGER = logging.getLogger("openkapsel")
+OAUTH_DISCOVERY_LOGGER = logging.getLogger("openkapsel.oauth.discovery")
+OAUTH_DISCOVERY_LOGGER.setLevel(logging.INFO)
 
 
 @dataclass(frozen=True)
@@ -2584,6 +2586,13 @@ class WorkspaceRequestHandler(
         message = fmt % args
         if "/oauth/" in self.path:
             message = message.replace(self.path, self.path.split("?", 1)[0])
+        request_path = self.path.split("?", 1)[0]
+        if request_path.startswith("/.well-known/") or (
+            request_path.startswith(self.server.config.url_base_path + "/oauth/")
+            and request_path.endswith(("/resource", "/oauth-authorization-server"))
+        ):
+            OAUTH_DISCOVERY_LOGGER.info("%s - %s", self.address_string(), message.replace(self.path, request_path))
+            return
         LOGGER.info("%s - %s", self.address_string(), message)
 
 

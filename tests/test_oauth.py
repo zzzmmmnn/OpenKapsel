@@ -211,10 +211,14 @@ class OAuthHTTPTests(unittest.TestCase):
     def test_discovery_and_full_flow_survive_credential_renewal(self):
         status, headers, _ = self.request("POST", self.mcp, "{}", {"Content-Type": "application/json"})
         self.assertEqual(401, status)
-        self.assertIn(self.prefix + "/resource", headers["WWW-Authenticate"])
+        self.assertIn("/.well-known/oauth-protected-resource" + self.mcp, headers["WWW-Authenticate"])
         for path in (self.prefix + "/resource", "/.well-known/oauth-protected-resource" + self.mcp, "/.well-known/oauth-authorization-server" + self.prefix):
             status, _, raw = self.request("GET", path)
             self.assertEqual(200, status, raw)
+            status, head_headers, raw = self.request("HEAD", path)
+            self.assertEqual(200, status)
+            self.assertEqual(b"", raw)
+            self.assertGreater(int(head_headers["Content-Length"]), 0)
         token, cookie, session = self.authorize()
         status, payload = self.rpc(token["access_token"], "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
         self.assertEqual(200, status, payload)
