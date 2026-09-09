@@ -36,6 +36,7 @@ from .admin_ui import render_discovery, render_http_error
 from .admin_handlers import AdminHandlersMixin
 from .oauth_handlers import OAuthHandlersMixin
 from .oauth_store import OAuthStore
+from .static_mcp import StaticMcpStore, StaticMcpHandlersMixin
 from .api_workers import ApiWorkerManager
 from .cgroups import (
     BUBBLEWRAP_PROCESS_OVERHEAD,
@@ -484,6 +485,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.memory_stores_lock = threading.Lock()
         self.tokens = TokenStore(config.root, config.token_data_file, config.token)
         self.oauth = OAuthStore(config.upload_state_dir.parent / "oauth.sqlite3")
+        self.static_mcp = StaticMcpStore(config.upload_state_dir.parent / "static-mcp.sqlite3")
         self.workspace_images = WorkspaceImageClient(config.workspace_image_socket)
         self.workspace_admin_lock = threading.RLock()
         self.admin_sessions = AdminSessions()
@@ -701,6 +703,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 class WorkspaceRequestHandler(
     AdminHandlersMixin,
     OAuthHandlersMixin,
+    StaticMcpHandlersMixin,
     DiscoveryMixin,
     EnvironmentHandlersMixin,
     FileHandlersMixin,
@@ -745,6 +748,7 @@ class WorkspaceRequestHandler(
 
     def _dispatch(self, method: str) -> None:
         self.oauth_connection_id = None
+        self.static_mcp_connection_id = None
         self.control_authorized = False
         self._prepare_context_tracking(None, {})
         try:
@@ -785,10 +789,14 @@ class WorkspaceRequestHandler(
                 return
             if request_path.startswith("/connect/"):
                 route = self._oauth_authenticated_route(request_path)
+            elif request_path.startswith("/mcp-connect/"):
+                route = self._static_mcp_authenticated_route(request_path)
             elif request_path == "/transfer" or request_path.startswith("/transfer/"):
                 route = self._control_authenticated_transfer_route(request_path)
             else:
                 route = self._authenticated_route(request_path)
+                if route.rstrip("/") == "/mcp":
+                    raise ApiError(404, "not_found", "Create an MCP connection in administration")
             api_target = self._resolve_web_api_target(route)
             if api_target is not None:
                 self._handle_web_api(method, api_target, parsed.query)

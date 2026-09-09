@@ -18,6 +18,8 @@ The URL is a stable identifier, not an access credential. Registration alone can
 
 The dashboard shows the comment, pinned workspace, creation/authorization timestamps, latest authenticated use, registered client and callback addresses. Last-use writes are coalesced to once per minute. **Delete connection** removes its registration, outstanding requests and access/refresh credentials immediately; it does not delete files or terminate already-running Shell tasks.
 
+Connections are grouped by project directory. Edit a connection's comment and save without changing its URL, registration, or existing grant. Clients without OAuth support can use independently expiring [static MCP connections](static-mcp-connections.md).
+
 ## Permissions and lifetime
 
 Connections refer to the stable `app_id` of a token configuration and pin its workspace directory. Current permissions, workspace expiry, sandbox and network policies remain authoritative on every call. Disabling/deleting the configuration or changing its directory blocks the connection. Read/control credential expiration and renewal do not invalidate OAuth credentials.

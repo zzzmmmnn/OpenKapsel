@@ -117,6 +117,14 @@ class OAuthStore:
         with self._db() as db:
             return self._connection(db, cid)
 
+    def update(self, cid: str, comment: str) -> None:
+        comment = comment.strip()
+        if not comment or len(comment) > 200:
+            raise OAuthError("invalid_request", "Comment must contain 1 to 200 characters")
+        with self._db() as db:
+            self._connection(db, cid)
+            db.execute("UPDATE connections SET comment=? WHERE id=?", (comment, cid))
+
     def list(self) -> list[dict]:
         with self._db() as db:
             return [dict(row) for row in db.execute("SELECT connections.*, clients.metadata FROM connections LEFT JOIN clients ON clients.id=connections.client_id ORDER BY created_at DESC")]

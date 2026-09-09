@@ -826,6 +826,9 @@ class McpHandlersMixin:
 
     def _mcp_transfer_base(self) -> str:
         base = self._public_base_url().rstrip("/")
+        static_cid = getattr(self, "static_mcp_connection_id", None)
+        if static_cid:
+            return f"{base}/mcp-connect/{static_cid}/transfer"
         cid = getattr(self, "oauth_connection_id", None)
         return f"{base}/connect/{cid}/transfer" if cid else f"{base}/transfer"
 
@@ -879,7 +882,7 @@ class McpHandlersMixin:
 
     def _send_mcp_json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        if getattr(self, "oauth_connection_id", None):
+        if getattr(self, "oauth_connection_id", None) or getattr(self, "static_mcp_connection_id", None):
             for secret in (self.token_record.token, self.token_record.control_token):
                 data = data.replace(secret.encode("utf-8"), b"<redacted>")
         self.send_response(status)

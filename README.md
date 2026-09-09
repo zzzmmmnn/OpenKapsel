@@ -29,7 +29,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 A workspace has three independent credentials:
 
 - The read token is embedded in the Workspace URL and is always read-only.
-- The matching control token is sent as `Authorization: Bearer ...` for mutations, Shell, schedules, Context, Memory, and MCP.
+- The matching control token is sent as `Authorization: Bearer ...` for mutations, Shell, schedules, Context, and Memory.
 - The preview token only serves the browser preview and can be shared without exposing Workspace access.
 
 Read and control credentials are short-lived and rotate together. The workspace lifetime and preview token are independent. Every state-changing API operation also belongs to a Plan and includes a short task name and operation message, giving later AI clients an auditable project history.
@@ -121,7 +121,7 @@ Open that URL as JSON to receive compact Discovery, capability summaries, curren
 Authorization: Bearer <CONTROL_TOKEN>
 ```
 
-The portable `skills/openkapsel-rest` Skill translates the REST interface into higher-level file, directory, retry, resumable-upload, and batch workflows. MCP clients can use the same Workspace URL with `/mcp` and the control token, or an administrator-created OAuth connection. Runtime Discovery is authoritative for the permissions and limits of the current token.
+The portable `skills/openkapsel-rest` Skill translates the REST interface into higher-level file, directory, retry, resumable-upload, and batch workflows. MCP clients use administrator-created static or OAuth connections with independent credentials. REST Discovery describes only REST and Skill usage. Runtime Discovery is authoritative for the permissions and limits of the current token.
 
 For an OAuth-capable remote MCP client, open **Administration → OAuth connections**, select a workspace configuration, enter a comment, and copy the generated MCP URL into the client. Approve its authorization request in OpenKapsel. Each connection binds one OAuth client, survives read/control token renewal, and can be deleted independently. See [OAuth connections](docs/oauth-connections.md), including the required reverse-proxy metadata routes.
 
@@ -129,6 +129,7 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 
 - [Installation and reverse proxy](docs/installation.md): production layout, migration, path grants, Caddy, timeouts, and verification.
 - [Authentication and administration](docs/authentication-and-administration.md): credentials, Discovery, token settings, renewal, and workspace images.
+- [Static MCP connections](docs/static-mcp-connections.md): fixed Bearer credentials, client JSON, independent expiry, and revocation.
 - [OAuth connections](docs/oauth-connections.md): remote MCP onboarding, consent, client registration, refresh, and revocation.
 - [Sandboxing and networking](docs/sandboxing-and-networking.md): Bubblewrap, Podman, cgroups, path isolation, and domain-restricted egress.
 - [REST files, transfers, and sharing](docs/rest-files-and-transfers.md): endpoints, mutation context, ETags, recycle, large files, and temporary shares.

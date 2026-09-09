@@ -31,7 +31,7 @@ class AdminHandlersMixin:
         if not self.server.config.admin_enabled:
             self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
             return
-        if path == "/admin/oauth" or path.startswith("/admin/oauth/"):
+        if path == "/admin/static-mcp" or path == "/admin/oauth" or path.startswith("/admin/oauth/"):
             self._handle_admin_oauth(method, path, raw_query)
             return
         if method == "GET" and path in {"/admin", "/admin/"}:
@@ -455,6 +455,7 @@ class AdminHandlersMixin:
                 active_panel=active_panel,
                 default_network_domains=self.server.config.default_network_domains,
                 oauth_connections=self.server.oauth.list(),
+                static_mcp_connections=self.server.static_mcp.list(),
             ),
         )
 

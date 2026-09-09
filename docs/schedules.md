@@ -6,7 +6,7 @@ Schedules persist background Shell intent inside the workspace's private `.openk
 
 ## Permission and execution boundary
 
-A token needs both a non-`none` Shell mode and the separate scheduled-task permission. Schedule HTTP and MCP operations also require the matching Bearer control token. Existing token records default to schedules disabled until an administrator enables them.
+A token needs both a non-`none` Shell mode and the separate scheduled-task permission. Schedule REST operations require the matching Bearer control token; MCP operations use their connection's credential and inherit the linked configuration's permissions. Existing token records default to schedules disabled until an administrator enables them.
 
 Each dispatched command uses the token's current Shell mode, sandbox backend and image, environment configuration, network policy, additional path grants, cgroup limits, timeout, and ordinary global/per-token task limits. Credentials are never injected into the scheduled process.
 

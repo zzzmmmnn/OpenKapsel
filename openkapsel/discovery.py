@@ -131,10 +131,33 @@ class DiscoveryMixin:
         if requested == "full":
             full["section"] = "full"
             full["index_url"] = "../../"
-            return full
-        if requested == "main":
-            return self._main_discovery(full)
-        return self._section_discovery(full, requested)
+            result = full
+        elif requested == "main":
+            result = self._main_discovery(full)
+        else:
+            result = self._section_discovery(full, requested)
+        if getattr(self, "oauth_connection_id", None) or getattr(self, "static_mcp_connection_id", None):
+            return result
+        return self._rest_discovery(result)
+
+    @staticmethod
+    def _rest_discovery(payload):
+        """Keep REST/Skill documents free of MCP connection configuration."""
+        payload.get("endpoints", {}).pop("mcp", None)
+        payload.get("authentication", {}).pop("mcp_requires_control_token", None)
+        payload.get("limits", {}).pop("max_mcp_binary_chunk_bytes", None)
+        capabilities = payload.get("capabilities", {})
+        capabilities.pop("mcp", None)
+        transfer = capabilities.get("binary_transfer", {})
+        for key in list(transfer):
+            if key.startswith("mcp_"):
+                transfer.pop(key)
+        if "workflow" in payload:
+            payload["workflow"] = [
+                item.replace("REST or MCP", "REST").replace("REST and MCP", "REST").replace(", MCP,", ",")
+                for item in payload["workflow"] if not item.startswith("MCP ")
+            ]
+        return payload
 
     def _discovery_common(self, full: dict[str, Any], section: str) -> dict[str, Any]:
         return {
@@ -1342,7 +1365,7 @@ class DiscoveryMixin:
                         "taskname": "<required task grouping name>",
                         "message": "<required brief operation summary>",
                     },
-                    "notes": "creates a new file only; recycle an existing destination before uploading; MCP start_upload results also include token-free control-authenticated raw-transfer URLs",
+                    "notes": "creates a new file only; recycle an existing destination before uploading",
                 },
                 "upload_status": {
                     "method": "GET or HEAD",
@@ -1560,8 +1583,8 @@ class DiscoveryMixin:
                 "For persistent application data, define a FastAPI route in <app-directory>/api/app.py and use openkapsel_runtime.database.engine('main') or database.session('main') with portable SQLAlchemy APIs; each app gets private runtime-managed storage, while browser code calls /<app-path>/api/* and never accesses database storage directly.",
                 "Use list_tree/fs_tree for a bounded recursive overview and search_files/fs_search for cross-file text search.",
                 "Request sha256 explicitly from stat_file/fs_stat only when content verification is needed.",
-                "Use fs_stat before transferring files; MCP clients can call prepare_download for a token-free control-authenticated fs_content URL, then stream binary or large downloads with HTTP Range.",
-                "Use direct fs_content PUT for small binary files, or create an upload session for large files; MCP start_upload returns raw_transfer URLs so bytes do not need Base64 encoding.",
+                "Use fs_stat before transferring files, then stream binary or large downloads through fs_content with HTTP Range.",
+                "Use direct fs_content PUT for small binary files, or create an upload session for large files and send raw bytes in chunks.",
                 "Uploads never overwrite. To replace a file, first use delete_path/fs_delete so its previous version is retained in private recycle storage, then upload the new file.",
                 "Create directories with create_directory/fs_mkdir, and move or rename paths with move_path/fs_move.",
                 "Prefer replace_text/fs_replace for one focused edit. Use fs_replace_batch for multiple exact non-overlapping replacements in one or more files; all rules match each file's original text. Use write_file/fs_write for complete file creation or replacement, and pass expected_etag to prevent overwriting a concurrent change.",
@@ -1775,20 +1798,32 @@ class DiscoveryMixin:
             elif isinstance(url, str) and url.startswith(base):
                 endpoint["url"] = "." + url[len(base) :]
         cid = getattr(self, "oauth_connection_id", None)
-        if cid:
+        static_cid = getattr(self, "static_mcp_connection_id", None)
+        if cid or static_cid:
             payload["authentication"] = {
                 "mode": "oauth2",
                 "control_authorized": True,
                 "authorization": "Authorization: Bearer <OAUTH_ACCESS_TOKEN>",
-                "resource": self._oauth_resource(cid),
+                "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
                 "scope": "openkapsel",
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
                 "rest_access": "OAuth grants cover this connection's MCP endpoint and returned raw transfer URLs only. Other REST URLs require separate read/control credentials.",
             }
+            if static_cid:
+                conn = self.server.static_mcp.get(static_cid)
+                payload["authentication"].update(
+                    mode="static_mcp", authorization="Authorization: Bearer <MCP_CONNECTION_SECRET>",
+                    expires_at=conn["expires_at"],
+                    renewal="An administrator can extend this connection's expiration; do not call credentials/renew.",
+                    rest_access="This credential covers only its MCP endpoint and returned raw transfer URLs.",
+                )
+            payload.get("endpoints", {}).pop("credentials_renew", None)
+            if "mcp" in payload.get("endpoints", {}):
+                payload["endpoints"]["mcp"]["url"] = payload["authentication"]["resource"]
             payload.get("token", {}).pop("credentials_expires_at", None)
             mcp_capability = payload.get("capabilities", {}).get("mcp")
             if isinstance(mcp_capability, dict):
-                mcp_capability["authentication"] = "Bearer OAuth access token"
+                mcp_capability["authentication"] = "Bearer MCP connection secret" if static_cid else "Bearer OAuth access token"
             # Existing REST examples may be nested inside Discovery sections.
             # Do not let their capability URLs escape through OAuth tool results.
             def redact(value):

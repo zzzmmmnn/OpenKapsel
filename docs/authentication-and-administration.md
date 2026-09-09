@@ -41,9 +41,9 @@ Runtime Discovery is authoritative for token permissions and configured limits.
 
 The console is at `<url_base_path>/admin`. Its twelve-hour session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` behind HTTPS. Forms use CSRF protection. Repeated failed logins are rate-limited by source address.
 
-Each token card can copy its MCP URL, URL plus control header, or a ready-to-paste `mcpServers` JSON object for clients that accept remote Streamable HTTP configuration. The JSON uses `type: "http"`, the MCP URL, and an `Authorization: Bearer ...` header. It contains the control credential and must be protected accordingly; it is not an OAuth or stdio configuration.
+MCP clients are managed on separate **Static MCP** and **OAuth connections** pages, grouped by project directory. Both support editing comments. [Static MCP connections](static-mcp-connections.md) provide copyable client JSON containing an independent Bearer secret and editable expiration (30/91/182/365/730 days; default 365). Project token cards expose REST and preview credentials.
 
-The single-page console has responsive views for tokens, workspace images, OAuth connections, and administrator password changes. Token cards are collapsed by default. Expanding one reveals credentials, renewal and rotation controls, paths, sandbox settings, and advanced permissions. [OAuth connections](oauth-connections.md) provide stable, independently revocable remote MCP access without sharing read/control credentials.
+The single-page console has responsive views for tokens, workspace images, static MCP connections, OAuth connections, and administrator password changes. Token cards are collapsed by default. Expanding one reveals credentials, renewal and rotation controls, paths, sandbox settings, and advanced permissions. [OAuth connections](oauth-connections.md) provide stable, independently revocable remote MCP access without sharing read/control credentials.
 
 Each token controls:
 

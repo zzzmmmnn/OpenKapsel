@@ -171,28 +171,35 @@ class OAuthHandlersMixin:
                     uri = params["redirect_uri"]
                     self._redirect(uri + ("&" if "?" in uri else "?") + urlencode(query))
                     return
-            elif path == "/admin/oauth" and method == "POST":
+            elif path in {"/admin/oauth", "/admin/static-mcp"} and method == "POST":
                 session = self._require_admin_session()
                 if session is None:
                     return
                 form = self._read_form()
                 if not self._valid_csrf(session, form):
                     raise OAuthError("access_denied", "CSRF validation failed", 403)
+                static = path == "/admin/static-mcp"
+                store = self.server.static_mcp if static else self.server.oauth
                 if self._form_one(form, "action") == "create":
-                    self._oauth_base("")
+                    if not static:
+                        self._oauth_base("")
                     record = self.server.tokens.get_by_app_id(self._form_one(form, "app_id"))
                     if record is None or not record.valid or record.path_prefix == ".":
                         raise OAuthError("invalid_request", "Select an active child workspace")
-                    self.server.oauth.create(record.app_id, record.path_prefix, self._form_one(form, "comment"))
+                    args = (self._form_one(form, "days") or "365",) if static else ()
+                    store.create(record.app_id, record.path_prefix, self._form_one(form, "comment"), *args)
+                elif self._form_one(form, "action") == "update":
+                    args = (self._form_one(form, "days") or None,) if static else ()
+                    store.update(self._form_one(form, "connection_id"), self._form_one(form, "comment"), *args)
                 elif self._form_one(form, "action") == "delete":
-                    self.server.oauth.delete(self._form_one(form, "connection_id"))
+                    store.delete(self._form_one(form, "connection_id"))
                 else:
                     raise OAuthError("invalid_request", "Unknown connection action")
-                self._redirect(self._admin_path() + "#connections")
+                self._redirect(self._admin_path() + ("#static-mcp" if static else "#connections"))
                 return
             raise OAuthError("invalid_request", "Endpoint does not exist", 404)
         except OAuthError as exc:
-            self._send_html(exc.status, _page("OAuth connection", f'<main><h1>OAuth connection</h1><p>{html.escape(str(exc))}</p><a href="{html.escape(self._admin_path())}">Administration</a></main>'))
+            self._send_html(exc.status, _page("MCP connection", f'<main><h1>MCP connection</h1><p>{html.escape(str(exc))}</p><a href="{html.escape(self._admin_path())}">Administration</a></main>'))
 
     def _oauth_consent(self, request: dict, csrf: str) -> str:
         esc = html.escape

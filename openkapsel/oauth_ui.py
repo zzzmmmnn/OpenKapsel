@@ -2,10 +2,11 @@
 
 import html
 import json
+import time
 from datetime import datetime, timezone
 
 
-def render_connections(connections, records, csrf, admin_path, public_base_url):
+def render_connections(connections, records, csrf, admin_path, public_base_url, *, static=False):
     esc = html.escape
 
     def stamp(value):
@@ -13,25 +14,51 @@ def render_connections(connections, records, csrf, admin_path, public_base_url):
 
     common = f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
     records_by_id = {record.app_id: record for record in records}
-    cards = []
+    groups = {}
+    action_path = admin_path + ("/static-mcp" if static else "/oauth")
+    panel = "static-mcp" if static else "connections"
+    title = "Static MCP connections" if static else "OAuth connections"
+    from .static_mcp import EXPIRY_DAYS
+    days_options = ''.join(f'<option value="{days}"' + (' selected' if days == 365 else '') + f'>{days} days</option>' for days in EXPIRY_DAYS)
     for conn in connections:
         cid = conn["id"]
         record = records_by_id.get(conn["app_id"])
-        status = "Authenticated" if conn["authenticated_at"] else "Awaiting token exchange" if conn["client_id"] else "Pending authorization"
+        status = "Authenticated" if conn.get("authenticated_at") else "Awaiting token exchange" if conn.get("client_id") else "Pending authorization"
         if record is None or not record.valid or record.path_prefix != conn["workspace"]:
             status = "Unavailable"
         metadata = json.loads(conn["metadata"]) if conn.get("metadata") else {}
         callbacks = "<br>".join(esc(uri) for uri in metadata.get("redirect_uris", [])) or "Not registered"
         url = public_base_url.rstrip("/") + "/connect/" + cid + "/mcp"
-        cards.append(f'''<section class="card"><h3>{esc(conn['comment'])}</h3>
-            <p>{esc(conn['workspace'])} · {status}</p>
+        if static:
+            status = "Active" if conn["expires_at"] > time.time() else "Expired"
+            if record is None or not record.valid or record.path_prefix != conn["workspace"]:
+                status = "Unavailable"
+            url = public_base_url.rstrip("/") + "/mcp-connect/" + cid + "/mcp"
+        edit = f'''<form method="post" action="{esc(action_path)}">{common}<input type="hidden" name="action" value="update"><input type="hidden" name="connection_id" value="{cid}"><div class="grid"><div class="span2"><label>Comment</label><input name="comment" value="{esc(conn['comment'], quote=True)}" maxlength="200" required></div>'''
+        if static:
+            edit += '<div><label>Reset expiration from now</label><select name="days"><option value="" selected>Keep current expiration</option>' + days_options.replace(' selected', '') + '</select></div>'
+        edit += '<div class="checks"><button>Save changes</button></div></div></form>'
+        extra = ''
+        if static:
+            config = json.dumps({"mcpServers": {"openkapsel": {"type": "http", "url": url, "headers": {"Authorization": "Bearer " + conn["secret"]}}}}, indent=2)
+            extra = f'''<pre id="json-{cid}" hidden>{esc(config)}</pre><div class="actions"><button type="button" onclick="copyToken('json-{cid}',this)">Copy MCP JSON</button></div><p>Expires: {stamp(conn['expires_at'])}</p>'''
+        group = groups.setdefault(conn['workspace'], [])
+        group.append(f'''<section class="card"><h3>{esc(conn['comment'])}</h3>
+            <p>Configuration: {esc(record.name if record else 'Deleted configuration')} · {status}</p>
             <code id="oauth-{cid}" style="overflow-wrap:anywhere">{esc(url)}</code>
             <div class="actions"><button type="button" onclick="copyToken('oauth-{cid}',this)">Copy MCP URL</button></div>
-            <p class="muted">Created: {stamp(conn['created_at'])}<br>First authorized: {stamp(conn['authenticated_at'])}<br>Last authorized: {stamp(conn['last_authorized_at'])}<br>Last used: {stamp(conn['last_used_at'])}</p>
-            <details><summary>Client registration</summary><p>Client: {esc(metadata.get('client_name', 'Not bound'))}<br>Client ID: {esc(conn['client_id'] or 'Not bound')}</p><p style="overflow-wrap:anywhere">Redirect URIs:<br>{callbacks}</p></details>
-            <form method="post" action="{esc(admin_path)}/oauth" onsubmit="return confirm('Delete this connection and revoke all its OAuth credentials?')">{common}<input type="hidden" name="action" value="delete"><input type="hidden" name="connection_id" value="{cid}"><button class="danger">Delete connection</button></form></section>''')
+            {extra}{edit}
+            <p class="muted">Created: {stamp(conn['created_at'])}<br>Last used: {stamp(conn['last_used_at'])}</p>
+            <details><summary>Client registration</summary><p>First authorized: {stamp(conn.get('authenticated_at'))}<br>Last authorized: {stamp(conn.get('last_authorized_at'))}<br>Client: {esc(metadata.get('client_name', 'Not bound'))}<br>Client ID: {esc(conn.get('client_id') or 'Not bound')}</p><p style="overflow-wrap:anywhere">Redirect URIs:<br>{callbacks}</p></details>
+            <form method="post" action="{esc(action_path)}" onsubmit="return confirm('Delete this connection and revoke its credentials?')">{common}<input type="hidden" name="action" value="delete"><input type="hidden" name="connection_id" value="{cid}"><button class="danger">Delete connection</button></form></section>''')
+        if static:
+            start = group[-1].index('<details>')
+            end = group[-1].index('</details>', start) + len('</details>')
+            group[-1] = group[-1][:start] + group[-1][end:]
     options = "".join(f'<option value="{esc(r.app_id)}">{esc(r.name)} — {esc(r.path_prefix)}</option>' for r in records if r.valid and r.path_prefix != ".")
-    return f'''<section id="panel-connections" class="admin-panel" data-admin-panel="connections" hidden>
-        <div class="panel-heading"><h2>OAuth connections</h2><p class="muted">Connect a remote MCP client to a workspace. Each connection binds one client and inherits its linked token configuration's permissions. Deletion revokes access without deleting workspace files.</p></div>
-        {''.join(cards) or '<p>No connections yet.</p>'}
-        <section class="card"><h3>Create connection</h3><form method="post" action="{esc(admin_path)}/oauth">{common}<input type="hidden" name="action" value="create"><div class="grid"><div><label>Comment</label><input name="comment" maxlength="200" required placeholder="e.g. Claude personal"></div><div><label>Workspace configuration</label><select name="app_id" required>{options}</select></div><div class="checks"><button>Create connection</button></div></div></form></section></section>'''
+    cards = ''.join(f'<section class="connection-group"><h3>Project: {esc(workspace)}</h3>{"".join(items)}</section>' for workspace, items in sorted(groups.items()))
+    expiry_field = '<div><label>Expiration from now</label><select name="days">' + days_options + '</select></div>' if static else ''
+    return f'''<section id="panel-{panel}" class="admin-panel" data-admin-panel="{panel}" hidden>
+        <div class="panel-heading"><h2>{title}</h2><p class="muted">Each connection inherits its linked workspace configuration's permissions. Deletion revokes access without deleting workspace files.</p></div>
+        {cards or '<p>No connections yet.</p>'}
+        <section class="card"><h3>Create connection</h3><form method="post" action="{esc(action_path)}">{common}<input type="hidden" name="action" value="create"><div class="grid"><div><label>Comment</label><input name="comment" maxlength="200" required placeholder="e.g. Personal client"></div><div><label>Workspace configuration</label><select name="app_id" required>{options}</select></div>{expiry_field}<div class="checks"><button>Create connection</button></div></div></form></section></section>'''

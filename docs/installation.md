@@ -16,6 +16,7 @@ The installer uses the following layout:
 - `/var/lib/openkapsel/config.json`: service configuration
 - `/var/lib/openkapsel/tokens.json`: token registry
 - `/var/lib/openkapsel/oauth.sqlite3`: remote MCP OAuth connections, client registrations and hashed credentials
+- `/var/lib/openkapsel/static-mcp.sqlite3`: independent static MCP connections and their private copyable credentials
 - `/var/lib/openkapsel/workspace`: Workspace Root
 - `/var/lib/openkapsel/shares`: temporary cross-workspace shares
 - `/var/lib/openkapsel/network-proxies`: ephemeral token-scoped proxy sockets

@@ -42,7 +42,7 @@ service where configured limits apply.
 ## Credential boundaries
 
 - The URL token is read-only.
-- REST mutations and the Workspace MCP URL require a separate matching control token. Connection-specific MCP URLs instead require an administrator-approved OAuth access token.
+- REST mutations require a separate matching control token. MCP connections require their own static credential or administrator-approved OAuth access token and cannot authorize ordinary REST requests. Both inherit the linked workspace configuration's current permissions and validity; REST credential renewal does not revoke them.
 - URL and control credentials share a short expiration and rotate together.
 - Conditional self-renewal works only when less than two days remain.
 - Browser preview uses an independent rotatable credential on a dedicated origin.
