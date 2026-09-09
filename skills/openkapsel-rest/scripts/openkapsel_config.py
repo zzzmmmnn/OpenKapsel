@@ -156,7 +156,9 @@ def _atomic_write_env(path: Path, values: dict[str, str]) -> None:
     ]
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        # Windows uses the containing directory's ACL; fchmod is Unix-only.
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             descriptor = -1
             handle.write("\n".join(lines) + "\n")
