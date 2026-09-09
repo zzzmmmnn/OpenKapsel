@@ -4097,6 +4097,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("https://ws.example.test/kapsel/w/test-token/mcp", dashboard_text)
         self.assertIn("Copy MCP URL", dashboard_text)
         self.assertIn("Copy MCP URL + control token", dashboard_text)
+        self.assertIn("Copy MCP JSON", dashboard_text)
         self.assertIn(
             "copyUrlAndToken('mcp-testtoken','control-testtoken',this)",
             dashboard_text,
@@ -4117,6 +4118,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("Copy Authorization header", dashboard_text)
         self.assertIn("Copy URL + control token", dashboard_text)
         self.assertIn("function copyUrlAndToken", dashboard_text)
+        self.assertIn("function copyMcpJson", dashboard_text)
+        self.assertIn("type:'http',url,headers:{Authorization:authorization}", dashboard_text)
+        self.assertIn(
+            "copyMcpJson('mcp-testtoken','control-testtoken',this)",
+            dashboard_text,
+        )
         self.assertIn("writeClipboard(url+'\\n'+control,button)", dashboard_text)
         self.assertIn(
             "copyUrlAndToken('url-testtoken','control-testtoken',this)",
