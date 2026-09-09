@@ -38,16 +38,21 @@ def render_connections(connections, records, csrf, admin_path, public_base_url, 
         if static:
             edit += '<div><label>Reset expiration from now</label><select name="days"><option value="" selected>Keep current expiration</option>' + days_options.replace(' selected', '') + '</select></div>'
         edit += '<div class="checks"><button>Save changes</button></div></div></form>'
-        extra = ''
+        copy_json = ''
         if static:
             config = json.dumps({"mcpServers": {"openkapsel": {"type": "http", "url": url, "headers": {"Authorization": "Bearer " + conn["secret"]}}}}, indent=2)
-            extra = f'''<pre id="json-{cid}" hidden>{esc(config)}</pre><div class="actions"><button type="button" onclick="copyToken('json-{cid}',this)">Copy MCP JSON</button></div><p>Expires: {stamp(conn['expires_at'])}</p>'''
+            copy_json = f'''<pre id="json-{cid}" hidden>{esc(config)}</pre><button type="button" onclick="copyToken('json-{cid}',this)">Copy MCP JSON</button>'''
+            status_class = "" if status == "Active" else " off"
+            status_line = f'''<div class="connection-status-row"><span class="badge{status_class}">{status}</span><span class="muted">Expires: {stamp(conn['expires_at'])}</span></div>'''
+        else:
+            status_class = " off" if status == "Unavailable" else ""
+            status_line = f'''<div class="connection-status-row"><span class="badge{status_class}">{status}</span></div>'''
         group = groups.setdefault(conn['workspace'], [])
         group.append(f'''<section class="card"><h3>{esc(conn['comment'])}</h3>
-            <p>Configuration: {esc(record.name if record else 'Deleted configuration')} · {status}</p>
+            {status_line}
             <code id="oauth-{cid}" style="overflow-wrap:anywhere">{esc(url)}</code>
-            <div class="actions"><button type="button" onclick="copyToken('oauth-{cid}',this)">Copy MCP URL</button></div>
-            {extra}{edit}
+            <div class="actions"><button type="button" onclick="copyToken('oauth-{cid}',this)">Copy MCP URL</button>{copy_json}</div>
+            {edit}
             <p class="muted">Created: {stamp(conn['created_at'])}<br>Last used: {stamp(conn['last_used_at'])}</p>
             <details><summary>Client registration</summary><p>First authorized: {stamp(conn.get('authenticated_at'))}<br>Last authorized: {stamp(conn.get('last_authorized_at'))}<br>Client: {esc(metadata.get('client_name', 'Not bound'))}<br>Client ID: {esc(conn.get('client_id') or 'Not bound')}</p><p style="overflow-wrap:anywhere">Redirect URIs:<br>{callbacks}</p></details>
             <form method="post" action="{esc(action_path)}" onsubmit="return confirm('Delete this connection and revoke its credentials?')">{common}<input type="hidden" name="action" value="delete"><input type="hidden" name="connection_id" value="{cid}"><button class="danger">Delete connection</button></form></section>''')

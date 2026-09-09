@@ -115,6 +115,12 @@ class StaticMcpTests(unittest.TestCase):
         self.assertIn("&lt;New&gt;", page)
         self.assertIn("OAuth renamed", page)
         self.assertIn("Copy MCP JSON", page)
+        self.assertIn('<span class="badge">Active</span><span class="muted">Expires:', page)
+        self.assertNotIn("Configuration:", page)
+        static_card = page.index(f'id="json-{conn["id"]}"')
+        copy_json = page.index("Copy MCP JSON", static_card)
+        self.assertLess(page.rfind("Copy MCP URL", 0, copy_json), copy_json)
+        self.assertLess(copy_json, page.index("Save changes", copy_json))
         self.assertIn(conn["secret"], page)
         copied = json.loads(html.unescape(re.search(r'<pre id="json-' + conn['id'] + r'" hidden>(.*?)</pre>', page, re.S).group(1)))
         client = copied['mcpServers']['openkapsel']
