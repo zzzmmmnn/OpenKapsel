@@ -442,7 +442,7 @@ def _token_card(
     )
     control_block = (
         renew_block
-        + '<label>Control token (write, upload, Shell, and MCP)</label>'
+        + '<label>Control token (write, upload, Shell, Network, and Scheduled tasks)</label>'
         f'<div class="token" id="{control_id}">{control_header}</div>'
         '<div class="actions">'
         f'<button type="button" class="secondary" onclick="copyToken(\'{control_id}\',this)">'
