@@ -57,12 +57,15 @@ def render_http_error(status: int, code: str, message: str, request_id: str | No
     return _page(f"HTTP {status} · {code}", body)
 
 
-def render_login(admin_path: str, error: str | None = None) -> str:
+def render_login(admin_path: str, error: str | None = None, oauth_request: str = "") -> str:
     error_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
-    return _page(
+    page = _page(
         "Workspace Admin Login",
         f"""<main class="login"><section class="card"><h1>Workspace Administration</h1><p class="muted">Enter your administrator credentials.</p>{error_html}<form method="post" action="{html.escape(admin_path, quote=True)}/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><div style="height:12px"></div><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" minlength="8" required><div style="height:18px"></div><button type="submit">Sign in</button></form></section></main>""",
     )
+    if oauth_request:
+        page = page.replace("</form>", f'<input type="hidden" name="oauth_request" value="{html.escape(oauth_request, quote=True)}"></form>', 1)
+    return page
 
 
 def _local_expiry(record: TokenRecord) -> str:
@@ -257,6 +260,7 @@ def render_dashboard(
     success: str | None = None,
     active_panel: str = "tokens",
     default_network_domains: tuple[str, ...] = (),
+    oauth_connections: list[dict] | None = None,
 ) -> str:
     esc_csrf = html.escape(csrf, quote=True)
     error_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
@@ -358,6 +362,10 @@ def render_dashboard(
         "Workspace expiration",
     )
     body = _shell_fields_before_network(body)
+    from .oauth_ui import render_connections
+    body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="connections" aria-controls="panel-connections" title="OAuth connections"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">OAuth connections</span></button></nav>', 1)
+    body = body.replace('</main>', render_connections(oauth_connections or [], records, csrf, admin_path, public_base_url) + '</main>', 1)
+    body = body.replace("['tokens','images','password']", "['tokens','images','password','connections']")
     return _page("Workspace Administration", body)
 
 

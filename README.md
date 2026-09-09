@@ -21,6 +21,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Record mutation history and hierarchical Plans in Context, and retain longer project knowledge in Memory.
 - Move one file or directory between workspaces through short-lived, capability-addressed shares.
 - Expose focused Discovery documents, a portable REST Skill, and a stateless Streamable HTTP MCP endpoint.
+- Connect remote MCP clients through individually revocable OAuth connections with stable URLs and administrator-approved access.
 - Manage token lifetimes, permissions, workspace images, sandbox limits, preview credentials, and administrator credentials from a browser console.
 
 ## Credential model
@@ -120,12 +121,15 @@ Open that URL as JSON to receive compact Discovery, capability summaries, curren
 Authorization: Bearer <CONTROL_TOKEN>
 ```
 
-The portable `skills/openkapsel-rest` Skill translates the REST interface into higher-level file, directory, retry, resumable-upload, and batch workflows. MCP clients use the same Workspace URL with `/mcp` and always provide the control token. Runtime Discovery is authoritative for the permissions and limits of the current token.
+The portable `skills/openkapsel-rest` Skill translates the REST interface into higher-level file, directory, retry, resumable-upload, and batch workflows. MCP clients can use the same Workspace URL with `/mcp` and the control token, or an administrator-created OAuth connection. Runtime Discovery is authoritative for the permissions and limits of the current token.
+
+For an OAuth-capable remote MCP client, open **Administration → OAuth connections**, select a workspace configuration, enter a comment, and copy the generated MCP URL into the client. Approve its authorization request in OpenKapsel. Each connection binds one OAuth client, survives read/control token renewal, and can be deleted independently. See [OAuth connections](docs/oauth-connections.md), including the required reverse-proxy metadata routes.
 
 ## Documentation
 
 - [Installation and reverse proxy](docs/installation.md): production layout, migration, path grants, Caddy, timeouts, and verification.
 - [Authentication and administration](docs/authentication-and-administration.md): credentials, Discovery, token settings, renewal, and workspace images.
+- [OAuth connections](docs/oauth-connections.md): remote MCP onboarding, consent, client registration, refresh, and revocation.
 - [Sandboxing and networking](docs/sandboxing-and-networking.md): Bubblewrap, Podman, cgroups, path isolation, and domain-restricted egress.
 - [REST files, transfers, and sharing](docs/rest-files-and-transfers.md): endpoints, mutation context, ETags, recycle, large files, and temporary shares.
 - [Web preview and applications](docs/web-applications.md): preview security, FastAPI layout, bundled libraries, and SQLAlchemy runtime.

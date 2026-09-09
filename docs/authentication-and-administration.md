@@ -41,7 +41,7 @@ Runtime Discovery is authoritative for token permissions and configured limits.
 
 The console is at `<url_base_path>/admin`. Its twelve-hour session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` behind HTTPS. Forms use CSRF protection. Repeated failed logins are rate-limited by source address.
 
-The single-page console has responsive views for tokens, workspace images, and administrator password changes. Token cards are collapsed by default. Expanding one reveals credentials, renewal and rotation controls, paths, sandbox settings, and advanced permissions.
+The single-page console has responsive views for tokens, workspace images, OAuth connections, and administrator password changes. Token cards are collapsed by default. Expanding one reveals credentials, renewal and rotation controls, paths, sandbox settings, and advanced permissions. [OAuth connections](oauth-connections.md) provide stable, independently revocable remote MCP access without sharing read/control credentials.
 
 Each token controls:
 

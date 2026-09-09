@@ -1774,4 +1774,32 @@ class DiscoveryMixin:
                 endpoint["url"] = "./../../shares/<share_id>?path=<relative-path>&depth=1"
             elif isinstance(url, str) and url.startswith(base):
                 endpoint["url"] = "." + url[len(base) :]
+        cid = getattr(self, "oauth_connection_id", None)
+        if cid:
+            payload["authentication"] = {
+                "mode": "oauth2",
+                "control_authorized": True,
+                "authorization": "Authorization: Bearer <OAUTH_ACCESS_TOKEN>",
+                "resource": self._oauth_resource(cid),
+                "scope": "openkapsel",
+                "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
+                "rest_access": "OAuth grants cover this connection's MCP endpoint and returned raw transfer URLs only. Other REST URLs require separate read/control credentials.",
+            }
+            payload.get("token", {}).pop("credentials_expires_at", None)
+            mcp_capability = payload.get("capabilities", {}).get("mcp")
+            if isinstance(mcp_capability, dict):
+                mcp_capability["authentication"] = "Bearer OAuth access token"
+            # Existing REST examples may be nested inside Discovery sections.
+            # Do not let their capability URLs escape through OAuth tool results.
+            def redact(value):
+                if isinstance(value, str):
+                    for secret in (self.token_record.token, self.token_record.control_token, self.token_record.preview_token):
+                        value = value.replace(secret, "<redacted>")
+                    return value
+                if isinstance(value, list):
+                    return [redact(item) for item in value]
+                if isinstance(value, dict):
+                    return {key: redact(item) for key, item in value.items()}
+                return value
+            payload = redact(payload)
         return payload

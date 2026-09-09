@@ -15,6 +15,7 @@ The installer uses the following layout:
 - `/opt/openkapsel`: read-only application source and Python virtual environment
 - `/var/lib/openkapsel/config.json`: service configuration
 - `/var/lib/openkapsel/tokens.json`: token registry
+- `/var/lib/openkapsel/oauth.sqlite3`: remote MCP OAuth connections, client registrations and hashed credentials
 - `/var/lib/openkapsel/workspace`: Workspace Root
 - `/var/lib/openkapsel/shares`: temporary cross-workspace shares
 - `/var/lib/openkapsel/network-proxies`: ephemeral token-scoped proxy sockets
@@ -109,6 +110,8 @@ preview.example.com {
 ```
 
 OpenKapsel listens on HTTP only. In production, `public_base_url` and `preview_base_url` must use HTTPS. Caddy terminates TLS, supplies HSTS, and forwards the original request information.
+
+Remote MCP OAuth connections additionally require the two `/.well-known/` metadata routes shown in [OAuth connections](oauth-connections.md#installation-and-proxy).
 
 ### Recommended Caddy connection limits
 

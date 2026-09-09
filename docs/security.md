@@ -20,6 +20,7 @@ The relevant attacker profiles are:
 |---|---|---|
 | Anonymous network client | Can reach public API, preview, and application routes but initially has no valid credential | Cannot enumerate valid capabilities, enter administration, or use Workspace read/mutation surfaces; behavior intentionally exposed by a project application remains that application's responsibility |
 | Read-token holder | Can issue every read operation authorized by that Workspace URL | Cannot mutate the workspace, invoke Shell/MCP, obtain the control token, or cross into another token scope |
+| OAuth client or connection-URL holder | Can discover metadata and request registration; a successfully authorized client possesses connection-scoped access/refresh credentials | A URL or registration alone cannot grant access; administrator approval, PKCE and exact callback/resource binding are required. An authorized client remains within its linked configuration's current permissions and pinned workspace |
 | Restricted control-token holder or compromised AI client | Has the matching Workspace URL and control token and can deliberately send arbitrary mutation and Shell requests | Is confined to that token's workspace and explicit path/network grants, resource limits, and permitted capabilities; cannot reach service-private state or other workspaces |
 | Preview visitor or application user | Can load published assets, execute project JavaScript in their browser, and call public project application routes | A preview credential does not become a read/control credential; the application worker remains isolated from service-private state and other workspaces |
 | Malicious workspace program | Runs inside restricted Shell or an application worker and may attempt interpreter-based escapes, process spawning, filesystem traversal, network pivoting, or resource exhaustion | Remains inside the corresponding mount, namespace, network, process, memory, CPU, and task limits |
@@ -41,11 +42,13 @@ service where configured limits apply.
 ## Credential boundaries
 
 - The URL token is read-only.
-- Mutation and MCP require a separate matching control token.
+- REST mutations and the Workspace MCP URL require a separate matching control token. Connection-specific MCP URLs instead require an administrator-approved OAuth access token.
 - URL and control credentials share a short expiration and rotate together.
 - Conditional self-renewal works only when less than two days remain.
 - Browser preview uses an independent rotatable credential on a dedicated origin.
 - Invalid capability URLs return `404` to reduce enumeration.
+- OAuth grants are independent of read/control renewal. Deleting a connection revokes its credentials; disabling/deleting the linked token configuration or changing its directory blocks access. Full Shell remains trusted even when invoked through OAuth.
+- OAuth client names are unverified registration metadata. Administrators must inspect the displayed workspace, permissions and return address before approving a connection. The authorization server does not fetch client-supplied metadata URLs in this version.
 - Discovery never returns the control token unless the request already supplies that matching credential where required.
 
 ## Filesystem boundaries

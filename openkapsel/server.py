@@ -34,6 +34,8 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .admin_ui import render_discovery, render_http_error
 from .admin_handlers import AdminHandlersMixin
+from .oauth_handlers import OAuthHandlersMixin
+from .oauth_store import OAuthStore
 from .api_workers import ApiWorkerManager
 from .cgroups import (
     BUBBLEWRAP_PROCESS_OVERHEAD,
@@ -479,6 +481,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.memory_stores: dict[Path, MemoryStore] = {}
         self.memory_stores_lock = threading.Lock()
         self.tokens = TokenStore(config.root, config.token_data_file, config.token)
+        self.oauth = OAuthStore(config.upload_state_dir.parent / "oauth.sqlite3")
         self.workspace_images = WorkspaceImageClient(config.workspace_image_socket)
         self.workspace_admin_lock = threading.RLock()
         self.admin_sessions = AdminSessions()
@@ -695,6 +698,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
 class WorkspaceRequestHandler(
     AdminHandlersMixin,
+    OAuthHandlersMixin,
     DiscoveryMixin,
     EnvironmentHandlersMixin,
     FileHandlersMixin,
@@ -738,6 +742,9 @@ class WorkspaceRequestHandler(
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        self.oauth_connection_id = None
+        self.control_authorized = False
+        self._prepare_context_tracking(None, {})
         try:
             parsed = urlsplit(self.path)
             if self._is_dedicated_preview_request():
@@ -756,6 +763,8 @@ class WorkspaceRequestHandler(
                     head_only=method == "HEAD",
                 )
                 return
+            if self._dispatch_oauth(method, parsed.path, parsed.query):
+                return
             request_path = self._strip_url_base_path(parsed.path)
             if request_path == "/skills" or request_path.startswith("/skills/"):
                 self._dispatch_skill(method, request_path)
@@ -772,7 +781,9 @@ class WorkspaceRequestHandler(
                 self._discard_request_body()
                 self._handle_share_query(parts[2], parse_qs(parsed.query, keep_blank_values=True))
                 return
-            if request_path == "/transfer" or request_path.startswith("/transfer/"):
+            if request_path.startswith("/connect/"):
+                route = self._oauth_authenticated_route(request_path)
+            elif request_path == "/transfer" or request_path.startswith("/transfer/"):
                 route = self._control_authenticated_transfer_route(request_path)
             else:
                 route = self._authenticated_route(request_path)
@@ -2570,7 +2581,10 @@ class WorkspaceRequestHandler(
         self.end_headers()
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        LOGGER.info("%s - %s", self.address_string(), fmt % args)
+        message = fmt % args
+        if "/oauth/" in self.path:
+            message = message.replace(self.path, self.path.split("?", 1)[0])
+        LOGGER.info("%s - %s", self.address_string(), message)
 
 
 def utc_now() -> str:
