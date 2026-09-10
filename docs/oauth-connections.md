@@ -5,7 +5,7 @@
 ## Connect a client
 
 1. In Administration, select **OAuth connections**.
-2. Choose an active child-workspace token configuration and enter a comment, such as `Claude personal`.
+2. Choose an active child-workspace token configuration and enter a comment, such as `personal client`.
 3. Copy the generated MCP URL into the remote client's connector configuration:
 
    `https://ws.example.com/kapsel/connect/<CONNECTION_ID>/mcp`
@@ -67,4 +67,4 @@ The registry is stored as `oauth.sqlite3` alongside the upload state directory, 
 
 ## Verification
 
-`python3 -m unittest tests.test_oauth -v` exercises discovery, DCR, administrator login and CSRF, code exchange, PKCE, callback/resource binding, concurrent redemption, refresh rotation/replay, restart persistence, credential renewal, transfer handoff and revocation. Actual ChatGPT/Claude connector testing is a separate acceptance step.
+`python3 -m unittest tests.test_oauth -v` exercises discovery, DCR, administrator login and CSRF, code exchange, PKCE, callback/resource binding, concurrent redemption, refresh rotation/replay, restart persistence, credential renewal, transfer handoff and revocation. Testing with each target client is a separate acceptance step.

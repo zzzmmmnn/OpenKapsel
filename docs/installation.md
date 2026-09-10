@@ -100,6 +100,13 @@ Merge the routes into the existing Caddyfile. Do not launch a second Caddy proce
 }
 
 ws.example.com {
+    # Keep these before the regular API-prefix handler. OAuth discovery is
+    # deliberately rooted at /.well-known/, outside /kapsel/.
+    @kapsel_oauth_metadata path /.well-known/oauth-authorization-server/kapsel/oauth/* /.well-known/oauth-protected-resource/kapsel/connect/*
+    handle @kapsel_oauth_metadata {
+        reverse_proxy 127.0.0.1:8765
+    }
+
     handle /kapsel/* {
         reverse_proxy 127.0.0.1:8765
     }
@@ -112,7 +119,9 @@ preview.example.com {
 
 OpenKapsel listens on HTTP only. In production, `public_base_url` and `preview_base_url` must use HTTPS. Caddy terminates TLS, supplies HSTS, and forwards the original request information.
 
-Remote MCP OAuth connections additionally require the two `/.well-known/` metadata routes shown in [OAuth connections](oauth-connections.md#installation-and-proxy).
+The two `/.well-known/` matchers in the example are mandatory when remote MCP OAuth connections are used. They are outside the configured API prefix by OAuth convention: forwarding only `/kapsel/*` leaves REST and static MCP working while OAuth discovery fails. The same routes and endpoint details are documented in [OAuth connections](oauth-connections.md#installation-and-proxy).
+
+Each installation generates `/var/lib/openkapsel/caddy-routes.caddyfile` from its current `url_base_path`. For example, `/agent` produces metadata matchers under `/.well-known/.../agent/...`, while `/kapsel` produces the paths shown above. Import or merge the generated fragment inside the API-origin site block. The installer does not edit or reload an existing Caddy configuration because unrelated sites, plugins, TLS directives and process management are installation-specific.
 
 ### Recommended Caddy connection limits
 

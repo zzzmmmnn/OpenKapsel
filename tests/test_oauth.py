@@ -21,7 +21,7 @@ class OAuthStoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "oauth.sqlite3"
         self.store = OAuthStore(self.path)
-        self.cid = self.store.create("app", "project", "Claude")["id"]
+        self.cid = self.store.create("app", "project", "Client A")["id"]
         self.resource = "https://example.test/kapsel/connect/" + self.cid + "/mcp"
         self.client = self.store.register(self.cid, {"redirect_uris": ["https://client.test/callback"], "token_endpoint_auth_method": "none"})
         self.verifier = "v" * 64
@@ -87,7 +87,7 @@ class OAuthStoreTests(unittest.TestCase):
 
     def test_cross_connection_and_delete_revoke(self):
         token = self.issue()
-        other = self.store.create("other", "another", "ChatGPT")["id"]
+        other = self.store.create("other", "another", "Client B")["id"]
         with self.assertRaises(OAuthError):
             self.store.authenticate(other, token["access_token"])
         self.store.delete(self.cid)
@@ -136,7 +136,7 @@ class OAuthHTTPTests(unittest.TestCase):
         ))
         self.record = self.server.tokens.create(name="Project", path_prefix="project", shell_mode="none", expires_at=None, can_read=True, can_write=True)
         (root / "project" / "hello.txt").write_text("hello", encoding="utf-8")
-        self.cid = self.server.oauth.create(self.record.app_id, "project", "Claude test")["id"]
+        self.cid = self.server.oauth.create(self.record.app_id, "project", "OAuth test")["id"]
         self.prefix = "/kapsel/oauth/" + self.cid
         self.mcp = "/kapsel/connect/" + self.cid + "/mcp"
         self.resource = "https://example.test" + self.mcp
@@ -249,12 +249,12 @@ class OAuthHTTPTests(unittest.TestCase):
         )
         (self.server.config.root / "oauth-reassigned" / "new.txt").write_text("new", encoding="utf-8")
         self.server.oauth.update(
-            self.cid, "Claude reassigned", app_id=reassigned.app_id, workspace="oauth-reassigned"
+            self.cid, "Client reassigned", app_id=reassigned.app_id, workspace="oauth-reassigned"
         )
         status, payload = self.rpc(token["access_token"], "tools/call", {"name": "list_files", "arguments": {"path": "."}})
         self.assertEqual(200, status)
         self.assertEqual(["new.txt"], [item["name"] for item in payload["result"]["structuredContent"]["entries"]])
-        self.assertEqual("Claude reassigned", self.server.oauth.get(self.cid)["comment"])
+        self.assertEqual("Client reassigned", self.server.oauth.get(self.cid)["comment"])
         status, _, raw = self.request("GET", "/kapsel/admin", headers={"Cookie": cookie})
         self.assertEqual(200, status)
         self.assertIn(b"OAuth connections", raw)

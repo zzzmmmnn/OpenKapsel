@@ -83,6 +83,12 @@ Keep the API under a fixed prefix and serve previews from a separate origin:
 }
 
 ws.example.com {
+    # OAuth-capable MCP clients discover these endpoints at the origin root.
+    @kapsel_oauth_metadata path /.well-known/oauth-authorization-server/kapsel/oauth/* /.well-known/oauth-protected-resource/kapsel/connect/*
+    handle @kapsel_oauth_metadata {
+        reverse_proxy 127.0.0.1:8765
+    }
+
     handle /kapsel/* {
         reverse_proxy 127.0.0.1:8765
     }
@@ -96,6 +102,10 @@ preview.example.com {
 Here `idle 2m` only limits how long an already completed Keep-Alive connection waits for the next request. It does not impose a two-minute limit on an active upload, download, Shell task, or SSE stream. Do not add short global `read_body` or `write` timeouts unless the resulting limits on legitimate large transfers and streaming responses are intentional. The detailed timeout model and recommended values are in [Installation and reverse proxy](docs/installation.md#recommended-caddy-connection-limits).
 
 OpenKapsel itself listens on HTTP. Production configuration requires HTTPS public and preview URLs; the reverse proxy owns certificates, HSTS, and public routing.
+
+The two root-level `/.well-known/` matchers are required for OAuth MCP discovery. A proxy that forwards only `/kapsel/*` will serve ordinary REST and MCP traffic, but OAuth-capable clients will fail before authorization begins.
+
+`install.sh` also generates `/var/lib/openkapsel/caddy-routes.caddyfile` from the configured `url_base_path`. Import or merge that fragment into the API-origin site block, then validate and reload the existing Caddy process. The installer deliberately does not rewrite or reload a host's existing proxy configuration automatically.
 
 ## Development mode
 
