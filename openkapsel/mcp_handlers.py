@@ -152,7 +152,10 @@ class McpHandlersMixin:
                 "delete_path is recoverable through list_recycle and restore_recycle. "
                 "run_shell returns a task_id; poll get_task until status is finished. "
                 "When schedule tools are available, use create_schedule for persistent once, interval, or strict six-field cron Shell work; use run_schedule_now for explicit immediate execution. "
-                "Use interrupt_task for normal termination and kill_task only for immediate forced termination."
+                "Use interrupt_task for normal termination and kill_task only for immediate forced termination. "
+                "When connected through OAuth, use MCP tools rather than ordinary REST URLs. "
+                "Only returned connection-scoped raw transfer URLs accept the same OAuth bearer; "
+                "your MCP client handles credential refresh through OAuth."
             ),
         }
 
@@ -725,7 +728,7 @@ class McpHandlersMixin:
             "content_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
             "transfer": {
                 "url": (
-                    f"{self._public_base_url().rstrip('/')}/transfer/fs/content"
+                    f"{self._mcp_transfer_base()}/fs/content"
                     f"?path={quote(requested, safe='')}"
                 ),
                 "methods": ["GET", "HEAD"],
@@ -795,7 +798,7 @@ class McpHandlersMixin:
 
     def _mcp_upload_transfer(self, payload: dict[str, Any]) -> dict[str, Any]:
         upload_id = str(payload["upload_id"])
-        transfer_base = f"{self._public_base_url().rstrip('/')}/transfer/uploads/{quote(upload_id, safe='')}"
+        transfer_base = f"{self._mcp_transfer_base()}/uploads/{quote(upload_id, safe='')}"
         result = dict(payload)
         result["raw_transfer"] = {
             "url": transfer_base,
@@ -820,6 +823,14 @@ class McpHandlersMixin:
             "recommended_chunk_size": self.server.config.upload_chunk_bytes,
         }
         return result
+
+    def _mcp_transfer_base(self) -> str:
+        base = self._public_base_url().rstrip("/")
+        static_cid = getattr(self, "static_mcp_connection_id", None)
+        if static_cid:
+            return f"{base}/mcp-connect/{static_cid}/transfer"
+        cid = getattr(self, "oauth_connection_id", None)
+        return f"{base}/connect/{cid}/transfer" if cid else f"{base}/transfer"
 
     def _mcp_upload_chunk(self, arguments: dict[str, Any]) -> dict[str, Any]:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
@@ -871,6 +882,9 @@ class McpHandlersMixin:
 
     def _send_mcp_json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if getattr(self, "oauth_connection_id", None) or getattr(self, "static_mcp_connection_id", None):
+            for secret in (self.token_record.token, self.token_record.control_token):
+                data = data.replace(secret.encode("utf-8"), b"<redacted>")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))

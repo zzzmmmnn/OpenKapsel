@@ -49,13 +49,13 @@ The restricted-sandbox process endpoint lists cgroup PIDs, commands, aggregate m
 
 ## MCP transport
 
-Each Workspace has a Streamable HTTP MCP endpoint:
+Create a [static MCP connection](static-mcp-connections.md) or [OAuth connection](oauth-connections.md) for a workspace. A static connection uses:
 
 ```text
-https://ws.example.com/kapsel/w/<READ_TOKEN>/mcp
+https://ws.example.com/kapsel/mcp-connect/<CONNECTION_ID>/mcp
 ```
 
-It is stateless JSON-RPC. Every call requires the matching Bearer control token; MCP has no anonymous read-only mode and no required session ID. Use `POST /mcp`; `GET /mcp` returns `405`.
+It is stateless JSON-RPC. Every call requires the connection's Bearer credential; MCP has no anonymous read-only mode and no required session ID. Use `POST /mcp`; `GET /mcp` returns `405`.
 
 The negotiated protocol is `2025-11-25`, with compatibility for `2025-03-26` and `2025-06-18`. Requests containing `Origin` are checked against the configured public origin to mitigate DNS rebinding.
 

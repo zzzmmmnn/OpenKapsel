@@ -167,6 +167,9 @@ class WorkspaceServerTests(unittest.TestCase):
     ):
         request_headers = dict(headers or {})
         route_path = path.split("?", 1)[0]
+        if authorize and "Authorization" not in request_headers and path.startswith("/kapsel/mcp-connect/"):
+            cid = path.split("/")[3]
+            request_headers["Authorization"] = "Bearer " + self.server.static_mcp.get(cid)["secret"]
         if (
             method in {"POST", "PUT", "PATCH", "DELETE"}
             and (
@@ -289,6 +292,14 @@ class WorkspaceServerTests(unittest.TestCase):
         tools = self.mcp_request("test-token", 90, "tools/list")[1]["result"]["tools"]
         self.assertIn("create_schedule", {tool["name"] for tool in tools})
 
+    def mcp_endpoint(self, token):
+        record = self.server.tokens.get(token)
+        connections = self.server.static_mcp.list()
+        conn = next((c for c in connections if c["app_id"] == record.app_id), None)
+        if conn is None:
+            conn = self.server.static_mcp.create(record.app_id, record.path_prefix, "Test MCP")
+        return "/kapsel/mcp-connect/" + conn["id"] + "/mcp"
+
     def mcp_request(
         self,
         token: str,
@@ -336,7 +347,7 @@ class WorkspaceServerTests(unittest.TestCase):
         headers.update(extra_headers or {})
         status, raw, response_headers = self.raw_request(
             "POST",
-            f"/kapsel/w/{token}/mcp",
+            self.mcp_endpoint(token),
             json.dumps(body).encode("utf-8"),
             headers,
         )
@@ -353,12 +364,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(
             {
                 "discovery", "discovery_section", "credentials_renew",
-                "environment_get", "environment_replace", "environment_clear", "mcp",
+                "environment_get", "environment_replace", "environment_clear",
             },
             set(main["endpoints"]),
         )
         self.assertEqual([".openkapsel"], main["path_rules"]["private_directories"])
-        self.assertNotIn("available_tools", main["capabilities"]["mcp"])
+        self.assertNotIn("mcp", main["capabilities"])
         skill = main["skills"]["openkapsel_rest"]
         self.assertEqual("openkapsel-rest", skill["name"])
         self.assertEqual("none", skill["authentication"])
@@ -398,7 +409,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(
             set(payload["endpoints"])
             - {
-                "discovery", "discovery_section", "credentials_renew", "mcp",
+                "discovery", "discovery_section", "credentials_renew",
             },
             set().union(*section_endpoint_sets),
         )
@@ -518,7 +529,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertFalse(database["portability"]["backend_details_exposed"])
         self.assertIn("do not depend", database["portability"]["recommendation"])
-        self.assertEqual(128 * 1024, payload["limits"]["max_mcp_binary_chunk_bytes"])
+        self.assertNotIn("max_mcp_binary_chunk_bytes", payload["limits"])
         self.assertEqual(200, payload["limits"]["max_context_query_entries"])
         self.assertEqual(100000, payload["limits"]["max_context_entries"])
         self.assertEqual(1000, payload["limits"]["context_trim_oldest_entries"])
@@ -578,7 +589,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         workflow_text = "\n".join(payload["workflow"])
         self.assertIn("root_plans=true", workflow_text)
-        self.assertIn("Every modifying REST or MCP operation must provide plan_id", workflow_text)
+        self.assertIn("Every modifying REST operation must provide plan_id", workflow_text)
         self.assertIn("get_plan_tree", workflow_text)
         self.assertIn("Uploads never overwrite", workflow_text)
         upload_contract = payload["endpoints"]["upload_create"]["json"]
@@ -642,7 +653,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(262144, payload["limits"]["max_environment_total_characters"])
         self.assertEqual(131072, payload["limits"]["max_environment_rc_characters"])
         self.assertTrue(payload["capabilities"]["task_control"]["force_kill"])
-        self.assertIn("kill_task", payload["capabilities"]["mcp"]["available_tools"])
+        self.assertNotIn("mcp", payload["capabilities"])
         self.assertIn("shell_task_token_limit_reached", payload["errors"]["shell_limit_codes"])
         self.assertTrue(
             all(
@@ -696,7 +707,6 @@ class WorkspaceServerTests(unittest.TestCase):
                 "upload_chunk",
                 "upload_commit",
                 "upload_cancel",
-                "mcp",
                 "shell_exec",
                 "schedule_list",
                 "schedule_create",
@@ -739,7 +749,7 @@ class WorkspaceServerTests(unittest.TestCase):
         workflow = " ".join(payload["workflow"])
         self.assertIn("skills.openkapsel_rest", workflow)
         self.assertIn(".openkapsel.env", workflow)
-        self.assertIn("MCP clients", workflow)
+        self.assertNotIn("MCP clients", workflow)
         self.assertIn("fs_mkdir", workflow)
         self.assertIn("fs_move", workflow)
         self.assertIn("recycle_list", workflow)
@@ -868,7 +878,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(discovery["capabilities"]["context"]["enabled"])
         self.assertEqual("none", discovery["capabilities"]["shell"])
         self.assertTrue(discovery["capabilities"]["extra_paths_redacted"])
-        self.assertFalse(discovery["endpoints"]["mcp"]["available"])
+        self.assertNotIn("mcp", discovery["endpoints"])
         self.assertFalse(discovery["endpoints"]["context_query"]["available"])
         self.assertIn("redacted", discovery["endpoints"]["context_query"]["details"])
         self.assertFalse(discovery["endpoints"]["context_plan_tree"]["available"])
@@ -949,7 +959,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, raw, _ = self.raw_request(
             "POST",
-            self.endpoint("/mcp"),
+            self.mcp_endpoint("test-token"),
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).encode(),
             {
                 "Content-Type": "application/json",
@@ -958,13 +968,13 @@ class WorkspaceServerTests(unittest.TestCase):
             authorize=False,
         )
         self.assertEqual(401, status)
-        self.assertEqual("control_token_required", json.loads(raw)["error"]["code"])
+        self.assertEqual("invalid_token", json.loads(raw)["error"]["code"])
 
         status, privileged = self.request("GET", self.endpoint("/discovery/full"))
         self.assertEqual(200, status)
         self.assertTrue(privileged["authentication"]["control_authorized"])
         self.assertTrue(privileged["capabilities"]["files"]["write"])
-        self.assertTrue(privileged["endpoints"]["mcp"]["available"])
+        self.assertNotIn("mcp", privileged["endpoints"])
         self.assertIn("json", privileged["endpoints"]["fs_write"])
         self.assertNotIn(record.control_token, json.dumps(privileged))
 
@@ -2175,7 +2185,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode("utf-8")
         status, body, _ = self.raw_request(
             "POST",
-            f"/kapsel/w/{token}/mcp",
+            self.mcp_endpoint(token),
             notification,
             {
                 "Content-Type": "application/json",
@@ -2261,7 +2271,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(
             workspace_payload["limits"]["workspace_storage"]["hard_quota_enforced"]
         )
-        self.assertEqual("./mcp", workspace_payload["endpoints"]["mcp"]["url"])
+        self.assertEqual("https://ws.example.test" + self.mcp_endpoint(token), workspace_payload["endpoints"]["mcp"]["url"])
 
         _, invalid_section, _ = self.mcp_request(
             token,
@@ -2293,7 +2303,7 @@ class WorkspaceServerTests(unittest.TestCase):
             workspace_payload["endpoints"]["web_app_api"]["url"],
         )
         for name, endpoint in workspace_payload["endpoints"].items():
-            if name in {"web_preview", "web_app_api"}:
+            if name in {"web_preview", "web_app_api", "mcp"}:
                 continue
             self.assertTrue(endpoint["url"].startswith("./"))
 
@@ -2543,7 +2553,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, body, headers = self.raw_request(
             "GET",
-            f"/kapsel/w/{token}/mcp",
+            self.mcp_endpoint(token),
             headers={"Accept": "text/event-stream"},
         )
         self.assertEqual(405, status)
@@ -3234,7 +3244,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         download = prepared["result"]["structuredContent"]
         self.assertEqual(
-            "https://ws.example.test/kapsel/transfer/fs/content?path=conditional.txt",
+            "https://ws.example.test" + self.mcp_endpoint(token).removesuffix("/mcp") + "/transfer/fs/content?path=conditional.txt",
             download["transfer"]["url"],
         )
         self.assertEqual("reuse_mcp_bearer", download["transfer"]["authorization"])
@@ -4094,20 +4104,9 @@ class WorkspaceServerTests(unittest.TestCase):
         )
 
         self.assertIn("https://ws.example.test/kapsel/w/test-token/", dashboard_text)
-        self.assertIn("https://ws.example.test/kapsel/w/test-token/mcp", dashboard_text)
-        self.assertIn("Copy MCP URL", dashboard_text)
-        self.assertIn("Copy MCP URL + control token", dashboard_text)
-        self.assertIn(
-            "copyUrlAndToken('mcp-testtoken','control-testtoken',this)",
-            dashboard_text,
-        )
-        mcp_address_position = dashboard_text.index('id="mcp-testtoken"')
-        mcp_copy_position = dashboard_text.index(">Copy MCP URL</button>")
-        preview_label_position = dashboard_text.index(
-            "<label>Web preview URL (independent read-only credential)</label>"
-        )
-        self.assertLess(mcp_address_position, mcp_copy_position)
-        self.assertLess(mcp_copy_position, preview_label_position)
+        self.assertNotIn("https://ws.example.test/kapsel/w/test-token/mcp", dashboard_text)
+        self.assertIn("Static MCP", dashboard_text)
+        self.assertNotIn("MCP Streamable HTTP URL", dashboard_text)
         self.assertIn(
             f"https://preview.ws.example.test/"
             f"{self.server.tokens.get('test-token').preview_token}/",

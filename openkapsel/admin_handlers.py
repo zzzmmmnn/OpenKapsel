@@ -31,6 +31,9 @@ class AdminHandlersMixin:
         if not self.server.config.admin_enabled:
             self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
             return
+        if path == "/admin/static-mcp" or path == "/admin/oauth" or path.startswith("/admin/oauth/"):
+            self._handle_admin_oauth(method, path, raw_query)
+            return
         if method == "GET" and path in {"/admin", "/admin/"}:
             session = self._admin_session()
             if session is None:
@@ -96,10 +99,13 @@ class AdminHandlersMixin:
         form = self._read_form()
         username = self._form_one(form, "username")
         password = self._form_one(form, "password")
+        oauth_request = self._form_one(form, "oauth_request")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", oauth_request):
+            oauth_request = ""
         if len(password) < 8:
             self._send_html(
                 HTTPStatus.BAD_REQUEST,
-                render_login(self._admin_path(), "Password must contain at least 8 characters"),
+                render_login(self._admin_path(), "Password must contain at least 8 characters", oauth_request),
             )
             return
         configured_username = self.server.config.admin_username or ""
@@ -110,7 +116,7 @@ class AdminHandlersMixin:
             self.server.admin_login_limiter.failed(address)
             self._send_html(
                 HTTPStatus.UNAUTHORIZED,
-                render_login(self._admin_path(), "Invalid username or password"),
+                render_login(self._admin_path(), "Invalid username or password", oauth_request),
             )
             return
         if password_hash_needs_upgrade(configured_hash):
@@ -127,7 +133,10 @@ class AdminHandlersMixin:
         )
         if secure:
             cookie += "; Secure"
-        self._redirect(self._admin_path(), headers={"Set-Cookie": cookie})
+        destination = self._admin_path()
+        if oauth_request:
+            destination += "/oauth/approve?request=" + oauth_request
+        self._redirect(destination, headers={"Set-Cookie": cookie})
 
     def _admin_rate_limit_address(self) -> str:
         peer = self.client_address[0]
@@ -445,6 +454,8 @@ class AdminHandlersMixin:
                 success=success,
                 active_panel=active_panel,
                 default_network_domains=self.server.config.default_network_domains,
+                oauth_connections=self.server.oauth.list(),
+                static_mcp_connections=self.server.static_mcp.list(),
             ),
         )
 
@@ -598,6 +609,8 @@ class AdminHandlersMixin:
         status: int,
         content: str,
         headers: dict[str, str] | None = None,
+        *,
+        form_action: str = "'self'",
     ) -> None:
         data = content.encode("utf-8")
         self.send_response(status)
@@ -611,7 +624,7 @@ class AdminHandlersMixin:
             self.close_connection = True
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            f"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action {form_action}; base-uri 'none'; frame-ancestors 'none'",
         )
         for key, value in (headers or {}).items():
             self.send_header(key, value)

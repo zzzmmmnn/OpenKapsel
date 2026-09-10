@@ -23,6 +23,7 @@ button,.button{border:0;border-radius:7px;padding:9px 13px;background:var(--bran
 button.secondary{background:#e8edff;color:#2747ae}button.danger{background:#fff0f1;color:var(--danger);border:1px solid #f2c7cd}.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .token{font:12px/1.4 ui-monospace,SFMono-Regular,monospace;background:#f4f6fa;border:1px solid var(--line);padding:9px;border-radius:7px;word-break:break-all;margin:10px 0}
 .badge{display:inline-block;border-radius:99px;padding:3px 8px;font-size:12px;font-weight:700;background:#e8f7ee;color:#17713b}.badge.off{background:#f4e8e9;color:#9d2533}
+.connection-status-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:10px 0}.connection-status-row .muted{white-space:nowrap}
 .login{max-width:420px;margin:12vh auto}.error{background:#fff0f1;border:1px solid #f2c7cd;color:#9d2533;padding:10px;border-radius:7px;margin-bottom:14px}
 .success{background:#eaf8ef;border:1px solid #b9e1c7;color:#176738;padding:10px;border-radius:7px;margin-bottom:14px}
 .notice{background:#fff8db;border:1px solid #eadb91;padding:10px;border-radius:7px;margin-top:12px}.token-card{border-left:4px solid #aab8d2}.token-card.invalid{border-left-color:#c95161}
@@ -31,7 +32,7 @@ button.secondary{background:#e8edff;color:#2747ae}button.danger{background:#fff0
 details.token-card{padding:0;overflow:hidden}details.token-card>summary{list-style:none}details.token-card>summary::-webkit-details-marker{display:none}.token-summary{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(150px,1fr) minmax(180px,1fr) minmax(220px,1.2fr) auto;align-items:center;gap:16px;padding:17px 19px;cursor:pointer;user-select:none}.token-summary:hover{background:#f8faff}.token-summary-title{font-size:16px;font-weight:750;min-width:0}.token-summary-title>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.token-summary-meta{min-width:0}.token-summary-meta strong,.token-summary-meta span{display:block}.token-summary-meta strong{font-size:12px;color:var(--muted);margin-bottom:2px}.token-summary-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.summary-toggle{color:var(--brand);font-weight:700;white-space:nowrap}.summary-toggle::after{content:'Show settings'}.summary-toggle::before{content:'+';display:inline-block;margin-right:6px;font-size:18px;line-height:1}details[open] .summary-toggle::after{content:'Hide settings'}details[open] .summary-toggle::before{content:'−'}.token-details{border-top:1px solid var(--line);padding:20px}.token-details>.top{margin-bottom:14px}
 @media(max-width:980px){.token-summary{grid-template-columns:minmax(180px,1.4fr) minmax(130px,1fr) minmax(160px,1fr) auto}.token-summary-meta.permissions{display:none}}
 @media(max-width:800px){.admin-shell{grid-template-columns:68px minmax(0,1fr)}.admin-sidebar{padding:18px 8px}.brand-copy,.nav-label{display:none}.admin-brand{padding:0 9px}.nav-item{justify-content:center;padding:11px}.admin-main{padding:24px 20px}.grid{grid-template-columns:1fr}.span2,.span4{grid-column:span 1}.top{align-items:flex-start}.checks{padding-top:4px;flex-wrap:wrap}.token-summary{grid-template-columns:minmax(150px,1fr) minmax(120px,.8fr) auto;padding:15px}.token-summary-meta.expires{display:none}}
-@media(max-width:520px){.admin-shell{grid-template-columns:58px minmax(0,1fr)}.admin-sidebar{padding:14px 5px}.admin-main{padding:18px 12px}.top{flex-direction:column}.token-summary{grid-template-columns:minmax(0,1fr) auto}.token-summary-meta{display:none}.summary-toggle::after{content:'Show'}details[open] .summary-toggle::after{content:'Hide'}.card{padding:16px}.token-details{padding:16px}.path-grant-row{grid-template-columns:1fr}}
+@media(max-width:520px){.admin-shell{grid-template-columns:58px minmax(0,1fr)}.admin-sidebar{padding:14px 5px}.admin-main{padding:18px 12px}.top{flex-direction:column}.token-summary{grid-template-columns:minmax(0,1fr) auto}.token-summary-meta{display:none}.summary-toggle::after{content:'Show'}details[open] .summary-toggle::after{content:'Hide'}.card{padding:16px}.token-details{padding:16px}.path-grant-row{grid-template-columns:1fr}.connection-status-row{align-items:flex-start;flex-direction:column;gap:6px}}
 """
 
 
@@ -57,12 +58,15 @@ def render_http_error(status: int, code: str, message: str, request_id: str | No
     return _page(f"HTTP {status} · {code}", body)
 
 
-def render_login(admin_path: str, error: str | None = None) -> str:
+def render_login(admin_path: str, error: str | None = None, oauth_request: str = "") -> str:
     error_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
-    return _page(
+    page = _page(
         "Workspace Admin Login",
         f"""<main class="login"><section class="card"><h1>Workspace Administration</h1><p class="muted">Enter your administrator credentials.</p>{error_html}<form method="post" action="{html.escape(admin_path, quote=True)}/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><div style="height:12px"></div><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" minlength="8" required><div style="height:18px"></div><button type="submit">Sign in</button></form></section></main>""",
     )
+    if oauth_request:
+        page = page.replace("</form>", f'<input type="hidden" name="oauth_request" value="{html.escape(oauth_request, quote=True)}"></form>', 1)
+    return page
 
 
 def _local_expiry(record: TokenRecord) -> str:
@@ -257,6 +261,8 @@ def render_dashboard(
     success: str | None = None,
     active_panel: str = "tokens",
     default_network_domains: tuple[str, ...] = (),
+    oauth_connections: list[dict] | None = None,
+    static_mcp_connections: list[dict] | None = None,
 ) -> str:
     esc_csrf = html.escape(csrf, quote=True)
     error_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
@@ -358,6 +364,12 @@ def render_dashboard(
         "Workspace expiration",
     )
     body = _shell_fields_before_network(body)
+    from .oauth_ui import render_connections
+    body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="connections" aria-controls="panel-connections" title="OAuth connections"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">OAuth connections</span></button></nav>', 1)
+    body = body.replace('</main>', render_connections(oauth_connections or [], records, csrf, admin_path, public_base_url) + '</main>', 1)
+    body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="static-mcp" aria-controls="panel-static-mcp" title="Static MCP connections"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">Static MCP</span></button></nav>', 1)
+    body = body.replace('</main>', render_connections(static_mcp_connections or [], records, csrf, admin_path, public_base_url, static=True) + '</main>', 1)
+    body = body.replace("['tokens','images','password']", "['tokens','images','password','connections','static-mcp']")
     return _page("Workspace Administration", body)
 
 
@@ -412,7 +424,6 @@ def _token_card(
     )
     token_key = "".join(char for char in record.token if char.isalnum())[:18]
     workspace_url_id = "url-" + token_key
-    mcp_url_id = "mcp-" + token_key
     control_id = "control-" + token_key
     control_header = html.escape(f"Authorization: Bearer {record.control_token}")
     credential_expiry_label = html.escape(_credential_expiry_label(record))
@@ -431,7 +442,7 @@ def _token_card(
     )
     control_block = (
         renew_block
-        + '<label>Control token (write, upload, Shell, and MCP)</label>'
+        + '<label>Control token (write, upload, Shell, Network, and Scheduled tasks)</label>'
         f'<div class="token" id="{control_id}">{control_header}</div>'
         '<div class="actions">'
         f'<button type="button" class="secondary" onclick="copyToken(\'{control_id}\',this)">'
@@ -440,28 +451,15 @@ def _token_card(
         "Copy URL + control token</button></div>"
     )
     card = card.replace(
-        '<label>MCP Streamable HTTP URL</label>',
-        control_block
-        + '<label style="margin-top:12px">MCP Streamable HTTP URL (send the header above with every request)</label>',
-        1,
-    )
-    mcp_actions = (
-        '<div class="actions" style="margin:10px 0 12px">'
-        f'<button type="button" class="secondary" onclick="copyToken(\'{mcp_url_id}\',this)">'
-        "Copy MCP URL</button>"
-        f'<button type="button" class="secondary" onclick="copyUrlAndToken(\'{mcp_url_id}\',\'{control_id}\',this)">'
-        "Copy MCP URL + control token</button></div>"
-    )
-    card = card.replace(
         '<label>Web preview URL (independent read-only credential)</label>',
-        mcp_actions + '<label>Web preview URL (independent read-only credential)</label>',
+        control_block + '<label>Web preview URL (independent read-only credential)</label>',
         1,
     )
     card = card.replace('name="action" value="rotate_token"', 'name="action" value="rotate_read"', 1)
     card = card.replace("Regenerate primary token", "Regenerate read-only URL token", 1)
     card = card.replace(
-        "Regenerating immediately invalidates the previous Workspace and MCP URLs; workspace and permission settings remain unchanged.",
-        "Regenerating immediately invalidates the previous read-only Workspace and MCP URLs; the control token and settings remain unchanged.",
+        "Regenerating immediately invalidates the previous Workspace URLs; workspace and permission settings remain unchanged.",
+        "Regenerating immediately invalidates the previous read-only Workspace URLs; the control token and settings remain unchanged.",
         1,
     )
     control_form = (
@@ -525,13 +523,11 @@ def _token_card_base(
     token_escaped = html.escape(record.token, quote=True)
     token_url = f"{public_base_url.rstrip('/')}/w/{quote(record.token, safe='')}/"
     token_url_escaped = html.escape(token_url)
-    mcp_url_escaped = html.escape(token_url + "mcp")
     preview_url = (
         f"{preview_base_url.rstrip('/')}/{quote(record.preview_token, safe='')}/"
     )
     preview_url_escaped = html.escape(preview_url)
     element_id = "url-" + "".join(char for char in record.token if char.isalnum())[:18]
-    mcp_element_id = "mcp-" + "".join(char for char in record.token if char.isalnum())[:18]
     preview_element_id = "preview-" + "".join(char for char in record.token if char.isalnum())[:18]
     status, usable = _token_status(record)
     invalid_class = "" if usable else " invalid"
@@ -539,4 +535,4 @@ def _token_card_base(
     path_container_id = "paths-" + "".join(char for char in record.token if char.isalnum())[:18]
     path_rows = _path_grant_rows(record.allowed_paths)
     domain_text = html.escape("\n".join(record.allowed_domains))
-    return f"""<section class="card token-card{invalid_class}"><div class="top"><div><h2>{html.escape(record.name)} <span class="badge{badge_class}">{status}</span></h2><div class="muted">Created {html.escape(record.created_at)} · The full token is shown only on this administration page</div></div><div class="actions"><button type="button" class="secondary" onclick="copyToken('{element_id}',this)">Copy Workspace URL</button><button type="button" class="secondary" onclick="copyToken('{preview_element_id}',this)">Copy web preview URL</button></div></div><label>Workspace URL</label><div class="token" id="{element_id}">{token_url_escaped}</div><label>MCP Streamable HTTP URL</label><div class="token" id="{mcp_element_id}">{mcp_url_escaped}</div><label>Web preview URL (independent read-only credential)</label><div class="token" id="{preview_element_id}">{preview_url_escaped}</div><div class="actions" style="margin:10px 0"><form method="post" action="{admin_path}/tokens" onsubmit="return confirm('Regenerating immediately invalidates the previous Workspace and MCP URLs; workspace and permission settings remain unchanged. Continue?')"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="rotate_token"><button class="secondary" type="submit">Regenerate primary token</button></form><form method="post" action="{admin_path}/tokens" onsubmit="return confirm('Regenerating immediately invalidates the previous preview URL. Continue?')"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="rotate_preview"><button class="secondary" type="submit">Regenerate preview token</button></form></div><form method="post" action="{admin_path}/tokens"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="update"><div class="grid"><div class="token-name-field"><label>Name</label><input name="name" value="{html.escape(record.name, quote=True)}" required maxlength="200"></div><div><label>Workspace expiration (UTC; blank means never)</label><input type="datetime-local" name="expires_at" value="{_local_expiry(record)}"></div><div><label>Workspace directory</label><input name="path_prefix" value="{html.escape(record.path_prefix, quote=True)}" required></div><div class="span2 checks"><label><input type="checkbox" name="can_read"{_checked(record.can_read)}>Read</label><label><input type="checkbox" name="can_write"{_checked(record.can_write)}>Write</label><label><input type="checkbox" name="can_preview"{_checked(record.can_preview)}>Web preview</label><label><input type="checkbox" name="can_schedule"{_checked(record.can_schedule)}>Scheduled tasks</label><label><input type="checkbox" name="enabled"{_checked(record.enabled)}>Enabled</label></div><div><label>Network mode</label><select name="network_mode"><option value="none"{_selected(record.network_mode,'none')}>Disabled</option><option value="domain_allowlist"{_selected(record.network_mode,'domain_allowlist')}>Allowed domains only</option><option value="full"{_selected(record.network_mode,'full')}>Full network</option></select></div><div class="span2"><label>Allowed network domains</label><textarea name="allowed_domains" placeholder="One exact domain or .suffix rule per line">{domain_text}</textarea></div><div><label>Shell permission</label><select name="shell_mode"><option value="none"{_selected(record.shell_mode,'none')}>Disabled</option><option value="restricted"{_selected(record.shell_mode,'restricted')}>Restricted</option><option value="full"{_selected(record.shell_mode,'full')}>Full (dangerous)</option></select></div><div><label>Process/thread limit</label><input type="number" name="sandbox_max_processes" value="{record.sandbox_max_processes}" min="1" max="4096" required></div><div><label>Memory limit (MiB)</label><input type="number" name="sandbox_memory_mb" value="{record.sandbox_memory_mb}" min="16" max="1048576" required></div><div><label>CPU limit (% of one core)</label><input type="number" name="sandbox_cpu_percent" value="{record.sandbox_cpu_percent}" min="1" max="4096" required></div><div class="span4"><label>Additional accessible directories</label><div id="{path_container_id}">{path_rows}</div><button class="secondary" type="button" onclick="addPathGrant('{path_container_id}')">Add directory</button></div><div class="span4 actions"><button type="submit">Save changes</button></div></div></form><form method="post" action="{admin_path}/tokens" class="actions" style="margin-top:10px" onsubmit="return confirm('Permanently delete this token?')"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="delete"><button class="danger" type="submit">Permanently delete</button></form></section>"""
+    return f"""<section class="card token-card{invalid_class}"><div class="top"><div><h2>{html.escape(record.name)} <span class="badge{badge_class}">{status}</span></h2><div class="muted">Created {html.escape(record.created_at)} · The full token is shown only on this administration page</div></div><div class="actions"><button type="button" class="secondary" onclick="copyToken('{element_id}',this)">Copy Workspace URL</button><button type="button" class="secondary" onclick="copyToken('{preview_element_id}',this)">Copy web preview URL</button></div></div><label>Workspace URL</label><div class="token" id="{element_id}">{token_url_escaped}</div><label>Web preview URL (independent read-only credential)</label><div class="token" id="{preview_element_id}">{preview_url_escaped}</div><div class="actions" style="margin:10px 0"><form method="post" action="{admin_path}/tokens" onsubmit="return confirm('Regenerating immediately invalidates the previous Workspace URLs; workspace and permission settings remain unchanged. Continue?')"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="rotate_token"><button class="secondary" type="submit">Regenerate primary token</button></form><form method="post" action="{admin_path}/tokens" onsubmit="return confirm('Regenerating immediately invalidates the previous preview URL. Continue?')"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="rotate_preview"><button class="secondary" type="submit">Regenerate preview token</button></form></div><form method="post" action="{admin_path}/tokens"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="update"><div class="grid"><div class="token-name-field"><label>Name</label><input name="name" value="{html.escape(record.name, quote=True)}" required maxlength="200"></div><div><label>Workspace expiration (UTC; blank means never)</label><input type="datetime-local" name="expires_at" value="{_local_expiry(record)}"></div><div><label>Workspace directory</label><input name="path_prefix" value="{html.escape(record.path_prefix, quote=True)}" required></div><div class="span2 checks"><label><input type="checkbox" name="can_read"{_checked(record.can_read)}>Read</label><label><input type="checkbox" name="can_write"{_checked(record.can_write)}>Write</label><label><input type="checkbox" name="can_preview"{_checked(record.can_preview)}>Web preview</label><label><input type="checkbox" name="can_schedule"{_checked(record.can_schedule)}>Scheduled tasks</label><label><input type="checkbox" name="enabled"{_checked(record.enabled)}>Enabled</label></div><div><label>Network mode</label><select name="network_mode"><option value="none"{_selected(record.network_mode,'none')}>Disabled</option><option value="domain_allowlist"{_selected(record.network_mode,'domain_allowlist')}>Allowed domains only</option><option value="full"{_selected(record.network_mode,'full')}>Full network</option></select></div><div class="span2"><label>Allowed network domains</label><textarea name="allowed_domains" placeholder="One exact domain or .suffix rule per line">{domain_text}</textarea></div><div><label>Shell permission</label><select name="shell_mode"><option value="none"{_selected(record.shell_mode,'none')}>Disabled</option><option value="restricted"{_selected(record.shell_mode,'restricted')}>Restricted</option><option value="full"{_selected(record.shell_mode,'full')}>Full (dangerous)</option></select></div><div><label>Process/thread limit</label><input type="number" name="sandbox_max_processes" value="{record.sandbox_max_processes}" min="1" max="4096" required></div><div><label>Memory limit (MiB)</label><input type="number" name="sandbox_memory_mb" value="{record.sandbox_memory_mb}" min="16" max="1048576" required></div><div><label>CPU limit (% of one core)</label><input type="number" name="sandbox_cpu_percent" value="{record.sandbox_cpu_percent}" min="1" max="4096" required></div><div class="span4"><label>Additional accessible directories</label><div id="{path_container_id}">{path_rows}</div><button class="secondary" type="button" onclick="addPathGrant('{path_container_id}')">Add directory</button></div><div class="span4 actions"><button type="submit">Save changes</button></div></div></form><form method="post" action="{admin_path}/tokens" class="actions" style="margin-top:10px" onsubmit="return confirm('Permanently delete this token?')"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="token" value="{token_escaped}"><input type="hidden" name="action" value="delete"><button class="danger" type="submit">Permanently delete</button></form></section>"""
