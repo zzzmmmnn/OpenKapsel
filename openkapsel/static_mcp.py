@@ -53,14 +53,17 @@ class StaticMcpStore(OAuthStore):
                        (cid, app_id, workspace, comment, time.time(), secrets.token_urlsafe(32), expiry))
             return self._connection(db, cid)
 
-    def update(self, cid, comment, days=None):
+    def update(self, cid, comment, days=None, *, app_id=None, workspace=None):
         expiry = self.expiry(days) if days is not None else None
         comment = comment.strip()
         if not comment or len(comment) > 200:
             raise OAuthError("invalid_request", "Comment must contain 1 to 200 characters")
         with self._db() as db:
             self._connection(db, cid)
-            db.execute("UPDATE connections SET comment=?,expires_at=COALESCE(?,expires_at) WHERE id=?", (comment, expiry, cid))
+            db.execute(
+                "UPDATE connections SET comment=?,expires_at=COALESCE(?,expires_at),app_id=COALESCE(?,app_id),workspace=COALESCE(?,workspace) WHERE id=?",
+                (comment, expiry, app_id, workspace, cid),
+            )
 
     def authenticate(self, cid, secret):
         conn = self.get(cid)

@@ -189,8 +189,17 @@ class OAuthHandlersMixin:
                     args = (self._form_one(form, "days") or "365",) if static else ()
                     store.create(record.app_id, record.path_prefix, self._form_one(form, "comment"), *args)
                 elif self._form_one(form, "action") == "update":
+                    record = self.server.tokens.get_by_app_id(self._form_one(form, "app_id"))
+                    if record is None or not record.valid or record.path_prefix == ".":
+                        raise OAuthError("invalid_request", "Select an active child workspace")
                     args = (self._form_one(form, "days") or None,) if static else ()
-                    store.update(self._form_one(form, "connection_id"), self._form_one(form, "comment"), *args)
+                    store.update(
+                        self._form_one(form, "connection_id"),
+                        self._form_one(form, "comment"),
+                        *args,
+                        app_id=record.app_id,
+                        workspace=record.path_prefix,
+                    )
                 elif self._form_one(form, "action") == "delete":
                     store.delete(self._form_one(form, "connection_id"))
                 else:

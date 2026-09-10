@@ -243,6 +243,18 @@ class OAuthHTTPTests(unittest.TestCase):
         status, _, raw = self.request("GET", parsed.path + "?" + parsed.query, headers={"Authorization": "Bearer " + token["access_token"]})
         self.assertEqual((200, b"hello"), (status, raw))
         self.assertIsNotNone(self.server.oauth.get(self.cid)["last_used_at"])
+        reassigned = self.server.tokens.create(
+            name="OAuth reassigned", path_prefix="oauth-reassigned", shell_mode="none",
+            expires_at=None, can_read=True, can_write=False,
+        )
+        (self.server.config.root / "oauth-reassigned" / "new.txt").write_text("new", encoding="utf-8")
+        self.server.oauth.update(
+            self.cid, "Claude reassigned", app_id=reassigned.app_id, workspace="oauth-reassigned"
+        )
+        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "list_files", "arguments": {"path": "."}})
+        self.assertEqual(200, status)
+        self.assertEqual(["new.txt"], [item["name"] for item in payload["result"]["structuredContent"]["entries"]])
+        self.assertEqual("Claude reassigned", self.server.oauth.get(self.cid)["comment"])
         status, _, raw = self.request("GET", "/kapsel/admin", headers={"Cookie": cookie})
         self.assertEqual(200, status)
         self.assertIn(b"OAuth connections", raw)

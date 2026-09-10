@@ -20,6 +20,14 @@ def render_connections(connections, records, csrf, admin_path, public_base_url, 
     title = "Static MCP connections" if static else "OAuth connections"
     from .static_mcp import EXPIRY_DAYS
     days_options = ''.join(f'<option value="{days}"' + (' selected' if days == 365 else '') + f'>{days} days</option>' for days in EXPIRY_DAYS)
+    available_records = [record for record in records if record.valid and record.path_prefix != "."]
+
+    def workspace_options(selected=None):
+        return "".join(
+            f'<option value="{esc(record.app_id)}"{(" selected" if record.app_id == selected else "")}>{esc(record.name)} — {esc(record.path_prefix)}</option>'
+            for record in available_records
+        )
+
     for conn in connections:
         cid = conn["id"]
         record = records_by_id.get(conn["app_id"])
@@ -34,7 +42,8 @@ def render_connections(connections, records, csrf, admin_path, public_base_url, 
             if record is None or not record.valid or record.path_prefix != conn["workspace"]:
                 status = "Unavailable"
             url = public_base_url.rstrip("/") + "/mcp-connect/" + cid + "/mcp"
-        edit = f'''<form method="post" action="{esc(action_path)}">{common}<input type="hidden" name="action" value="update"><input type="hidden" name="connection_id" value="{cid}"><div class="grid"><div class="span2"><label>Comment</label><input name="comment" value="{esc(conn['comment'], quote=True)}" maxlength="200" required></div>'''
+        comment_class = "" if static else "span2"
+        edit = f'''<form method="post" action="{esc(action_path)}">{common}<input type="hidden" name="action" value="update"><input type="hidden" name="connection_id" value="{cid}"><div class="grid"><div class="{comment_class}"><label>Comment</label><input name="comment" value="{esc(conn['comment'], quote=True)}" maxlength="200" required></div><div><label>Workspace configuration</label><select name="app_id" required>{workspace_options(conn['app_id'])}</select></div>'''
         if static:
             edit += '<div><label>Reset expiration from now</label><select name="days"><option value="" selected>Keep current expiration</option>' + days_options.replace(' selected', '') + '</select></div>'
         edit += '<div class="checks"><button>Save changes</button></div></div></form>'
@@ -60,7 +69,7 @@ def render_connections(connections, records, csrf, admin_path, public_base_url, 
             start = group[-1].index('<details>')
             end = group[-1].index('</details>', start) + len('</details>')
             group[-1] = group[-1][:start] + group[-1][end:]
-    options = "".join(f'<option value="{esc(r.app_id)}">{esc(r.name)} — {esc(r.path_prefix)}</option>' for r in records if r.valid and r.path_prefix != ".")
+    options = workspace_options()
     cards = ''.join(f'<section class="connection-group"><h3>Project: {esc(workspace)}</h3>{"".join(items)}</section>' for workspace, items in sorted(groups.items()))
     expiry_field = '<div><label>Expiration from now</label><select name="days">' + days_options + '</select></div>' if static else ''
     return f'''<section id="panel-{panel}" class="admin-panel" data-admin-panel="{panel}" hidden>

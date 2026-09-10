@@ -117,13 +117,23 @@ class OAuthStore:
         with self._db() as db:
             return self._connection(db, cid)
 
-    def update(self, cid: str, comment: str) -> None:
+    def update(
+        self,
+        cid: str,
+        comment: str,
+        *,
+        app_id: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
         comment = comment.strip()
         if not comment or len(comment) > 200:
             raise OAuthError("invalid_request", "Comment must contain 1 to 200 characters")
         with self._db() as db:
             self._connection(db, cid)
-            db.execute("UPDATE connections SET comment=? WHERE id=?", (comment, cid))
+            db.execute(
+                "UPDATE connections SET comment=?,app_id=COALESCE(?,app_id),workspace=COALESCE(?,workspace) WHERE id=?",
+                (comment, app_id, workspace, cid),
+            )
 
     def list(self) -> list[dict]:
         with self._db() as db:

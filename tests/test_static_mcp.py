@@ -61,6 +61,19 @@ class StaticMcpTests(unittest.TestCase):
         self.assertEqual(conn["secret"], updated["secret"])
         self.assertEqual("Renamed", updated["comment"])
         self.assertAlmostEqual(time.time() + 730 * 86400, updated["expires_at"], delta=5)
+        reassigned = self.server.tokens.create(
+            name="Reassigned project", path_prefix="reassigned", shell_mode="none",
+            expires_at=None, can_read=True, can_write=False,
+        )
+        (self.server.config.root / "reassigned" / "new.txt").write_text("new", encoding="utf-8")
+        self.server.static_mcp.update(
+            conn["id"], "Renamed", app_id=reassigned.app_id, workspace="reassigned"
+        )
+        rebound = self.server.static_mcp.get(conn["id"])
+        self.assertEqual(conn["secret"], rebound["secret"])
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "list_files", "arguments": {"path": "."}})
+        self.assertEqual(200, status)
+        self.assertEqual(["new.txt"], [item["name"] for item in result["result"]["structuredContent"]["entries"]])
         with self.server.static_mcp._db() as db:
             db.execute("UPDATE connections SET expires_at=?", (time.time() - 1,))
         self.assertEqual(401, self.rpc(conn["secret"], "tools/list")[0])
@@ -103,15 +116,20 @@ class StaticMcpTests(unittest.TestCase):
         form["csrf"] = session.csrf
         self.assertEqual(303, self.form("/kapsel/admin/static-mcp", form, auth)[0])
         conn = self.server.static_mcp.list()[0]
+        reassigned = self.server.tokens.create(
+            name="Reassigned", path_prefix="reassigned", shell_mode="none",
+            expires_at=None, can_read=True, can_write=False,
+        )
         self.assertAlmostEqual(time.time() + 91 * 86400, conn["expires_at"], delta=5)
-        form.update(action="update", connection_id=conn["id"], comment="<New>", days="182")
+        form.update(action="update", connection_id=conn["id"], comment="<New>", days="182", app_id=reassigned.app_id)
         self.assertEqual(303, self.form("/kapsel/admin/static-mcp", form, auth)[0])
-        form.update(connection_id=self.cid, comment="OAuth renamed")
+        form.update(connection_id=self.cid, comment="OAuth renamed", app_id=self.record.app_id)
         self.assertEqual(303, self.form("/kapsel/admin/oauth", form, auth)[0])
         status, _, raw = self.request("GET", "/kapsel/admin", headers=auth)
         self.assertEqual(200, status)
         page = raw.decode()
-        self.assertEqual(2, page.count("Project: project"))
+        self.assertEqual(1, page.count("Project: project"))
+        self.assertEqual(1, page.count("Project: reassigned"))
         self.assertIn("&lt;New&gt;", page)
         self.assertIn("OAuth renamed", page)
         self.assertIn("Copy MCP JSON", page)
@@ -122,6 +140,7 @@ class StaticMcpTests(unittest.TestCase):
         self.assertLess(page.rfind("Copy MCP URL", 0, copy_json), copy_json)
         self.assertLess(copy_json, page.index("Save changes", copy_json))
         self.assertIn(conn["secret"], page)
+        self.assertIn(f'<option value="{reassigned.app_id}" selected>', page)
         copied = json.loads(html.unescape(re.search(r'<pre id="json-' + conn['id'] + r'" hidden>(.*?)</pre>', page, re.S).group(1)))
         client = copied['mcpServers']['openkapsel']
         self.assertEqual('http', client['type'])
