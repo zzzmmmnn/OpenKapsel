@@ -6,54 +6,45 @@
 
 ### Git inspection
 
-Six fixed GET endpoints are available under the workspace URL, authenticated by
-the control Bearer token with read and Shell permissions:
+Git inspection is a read-only file capability, not Shell execution. REST needs
+only the workspace read URL; MCP uses its existing connection authentication.
+It works with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
-| Endpoint | Options in addition to `path` and repeated `file` filters |
+| GET endpoint | Parameters besides `path` and repeated literal `file` |
 |---|---|
-| `/git/status` | Porcelain v1 status, including untracked files |
-| `/git/diff` | `staged=false`, optional `revision`, `to_revision` |
-| `/git/diff_stat` | Same comparison options, diff statistics instead of patches |
-| `/git/log` | `revision=HEAD`, `limit=20` (1–200), `skip=0` (0–100000) |
-| `/git/show` | `revision=HEAD`; `HEAD:relative/file` reads a committed blob |
-| `/git/ls_files` | Tracked filenames |
+| `/git/status` | Porcelain v1 status |
+| `/git/diff`, `/git/diff_stat` | `staged`, `revision`, `to_revision` |
+| `/git/log` | `revision=HEAD`, `limit=20` (max 200), `skip=0` |
+| `/git/show` | `revision=HEAD`, including `HEAD:relative/file` |
+| `/git/ls_files` | Tracked files |
 
-`path` selects a repository working directory (default `.`). Repeated `file`
-parameters are literal paths relative to it, not Git magic pathspecs or flags.
-`to_revision` requires `revision` and cannot combine with `staged`.
-`timeout_seconds` defaults to 30 and allows 1–120; a client's lower local timeout
-still wins. No Plan or message is required for these inspections; optional read
-Context fields follow the usual rules.
+`path` must identify a repository root with an ordinary SHA-1 `.git` directory.
+Git runs on a private sanitized temporary snapshot: source config, includes,
+hooks, filter definitions, global config, and private `.openkapsel` storage
+are not loaded. No original workspace path is passed to the Git process.
+There is no arbitrary argv, no Shell task, and no execution-permission fallback.
+Git must be installed on the host. A mapped path uses one `git_api` version 2
+RPC; old clients must update/reconnect and fail closed until then.
 
-Example: `GET /git/diff?path=laptop/project&staged=true&file=src/main.py`.
-When `path` is mapped, the server makes one client RPC. Both mapping and client
-must enable execution, and both caller and mapping must be writable, as for
-existing client tasks. An old/offline client does not fall back to running Git
-through server-side FUSE. Ordinary paths use the token's server Shell sandbox.
-Git must be installed on the execution host or in the selected container image.
+Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per
+process, 15-second default timeout (maximum 20), and 64 KiB output per stream.
+Metadata-only queries (log/show/ls-files/staged or two-revision diffs) do not
+copy working files; status and working-tree diffs do. This uses local temporary
+disk and adds copying overhead; it does not transfer the snapshot to the server.
+Linked worktrees, external object alternates, and symlinks/reparse points or
+special files encountered in copied paths are rejected. Repository-local
+configuration (including custom filters, ignore settings and autocrlf) is not
+applied; output may therefore differ from normal developer Git commands.
+Snapshots are not transactional across files.
 
-The response waits at most two seconds: 200 on success, 202 if still running,
-or 422 `git_failed` for a completed failure (task details are in `error.details`).
-Results include `task_id`, `location`, `running`, `exit_code`, `output`,
-`output_truncated`, `next_offset`, and `status_url`; mapped results include
-`mapping_id`. The initial output is capped at 64 KiB per stream. Client stderr
-is merged into output; server stderr is separate with `stderr_next_offset`.
-Client polling at `status_url?offset=<next_offset>` returns Base64 bytes;
-server incremental reads use `/tasks/<id>/output` with stdout/stderr byte cursors.
-Check dropped/truncated flags: retained task output is bounded, not an archive
-of arbitrarily large diffs. Log output uses hash/date/author/subject TSV; other
-outputs use Git's text formats (quoted unusual filenames), not parsed JSON rows.
-
-MCP offers `git_status`, `git_diff`, `git_diff_stat`, `git_log`, `git_show`,
-`git_ls_files`, and `get_git_task` (include `mapping_id` for client tasks).
-
-These tools do not expose add/commit/checkout/push or arbitrary arguments.
-Pager, fsmonitor, external diff and textconv helpers are disabled where applicable,
-and optional Git locks are disabled. Nevertheless, Git processes repository and
-environment configuration: the existing execution sandbox is the security
-boundary, not this convenience API. Unsandboxed client/full Shell execution
-retains host account authority. Client Git tasks count toward the client's
-execution limit; server Git tasks count toward the token/global Shell limits.
+Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
+`output_truncated`, `stderr_truncated`, and `snapshot_bytes`; there is no
+task ID or polling. Narrow queries when output is truncated. Errors use 413 for
+snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
+422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
+MCP exposes the six `git_*` tools; `get_git_task` is no longer needed.
+Read Context is optional. Mutating RPCs still need write permission, and
+arbitrary Shell/client tasks still require their execution permissions.
 
 ### Persistent environment
 

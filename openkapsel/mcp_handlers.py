@@ -556,6 +556,8 @@ class McpHandlersMixin:
             "list_recycle": self._handle_recycle_list,
         }
         body_tools = {
+            "read_files": self._handle_fs_read_many,
+            "file_manifest": self._handle_fs_manifest,
             "write_file": self._handle_fs_write,
             "replace_text": self._handle_fs_replace,
             "create_directory": self._handle_fs_mkdir,
@@ -570,28 +572,12 @@ class McpHandlersMixin:
         self._capturing_mcp_tool = True
         self._mcp_tool_response: tuple[int, dict[str, Any]] | None = None
         try:
-            if name == "get_git_task":
-                tid = str(arguments["task_id"])
-                mid = arguments.get("mapping_id")
-                if mid is not None:
-                    if not isinstance(mid, str) or "/" in mid or "/" in tid:
-                        raise ApiError(400, "invalid_request", "invalid mapping or task id")
-                    # MCP arrives as POST, while this read-only adapter must use
-                    # the GET branch of the shared mapping task handler.
-                    original_method = self.command
-                    try:
-                        self.command = "GET"
-                        self._handle_mapping_task(f"{mid}/tasks/{tid}", {"offset": [str(arguments.get("offset", 0))]})
-                    finally:
-                        self.command = original_method
-                else:
-                    self._handle_task(tid)
-            elif name in {"git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat"}:
+            if name in {"git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat"}:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
                          for key, value in arguments.items()}
                 self._handle_git(name[4:], query)
             elif name in query_tools:
-                query = {key: [str(value)] for key, value in arguments.items()}
+                query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)
             elif name in body_tools:
                 self._mcp_tool_arguments = arguments

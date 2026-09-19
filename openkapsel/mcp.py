@@ -98,11 +98,14 @@ POSITIVE = {"type": "integer", "minimum": 1}
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
-    _tool("get_git_task", "Read Git task", "Poll a Git task returned by git_* tools. For client tasks provide mapping_id; client output is Base64 with next_offset (byte cursor). Server tasks return stdout/stderr and status; use read_task_output for incremental server output.",
-          _object_schema({"task_id": {"type": "string"}, "mapping_id": {"type": "string"},
-                          "offset": {"type": "integer", "minimum": 0, "default": 0}}, ("task_id",)), read_only=True),
+    _tool("read_files", "Read multiple files", "Read bounded UTF-8 files, with per-item status/content/etag and partial errors. No write or Shell permission required.",
+          _object_schema({"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                          "limit": {"type": "integer", "minimum": 1}, "max_total_chars": {"type": "integer", "minimum": 1}}, ("paths",)), read_only=True),
+    _tool("file_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
+          _object_schema({"items": {"type": "array", "items": _object_schema({"path": {"type": "string"}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string"}}, ("path",))},
+                          "recursive": {"type": "boolean"}, "path": {"type": "string"}, "depth": {"type": "integer", "minimum": 0}, "include_sha256": {"type": "boolean"}}), read_only=True),
     *(_tool("git_" + operation, "Git " + operation.replace("_", " "),
-            "Inspect Git via the existing Shell sandbox. A mapped path executes on the client in one RPC (requires writable mapping/caller and execution enabled on both sides). Returns bounded Git text, exit_code and task_id; 2-second wait then use get_git_task with poll_arguments for unfinished work. No arbitrary flags or Git mutations. Git must be installed in the execution environment.",
+            "Read-only Git inspection using a bounded sanitized snapshot, locally or in one mapped client RPC. Read permission only: no Shell/write/allow_exec required. Synchronous text result, no task. Ordinary SHA-1 .git directory required; no linked worktrees/alternates/symlinks. Snapshot max 128 MiB/100000 nodes, output 64 KiB per stream, timeout at most 20s. Source config/hooks/filters are not loaded. Git must be installed on the host.",
             _object_schema(git_tool_properties(operation)), read_only=True)
       for operation in GIT_OPERATIONS),
     _tool(
@@ -500,6 +503,8 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "max_results": {**POSITIVE, "default": 100},
                 "regex": {"type": "boolean", "default": False},
                 "case_sensitive": {"type": "boolean", "default": True},
+                "include": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
+                "exclude": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
             },
             ("query",),
         ),
@@ -956,6 +961,8 @@ def tools_for(
         "archive_memory",
     }
     if record.can_read:
+        readable.update({"read_files", "file_manifest"})
+        readable.update("git_" + operation for operation in GIT_OPERATIONS)
         readable.update(
             {
                 "query_context",
@@ -995,9 +1002,6 @@ def tools_for(
         if recycle_enabled:
             readable.update({"delete_path", "restore_recycle"})
     if record.shell_mode != "none":
-        if record.can_read:
-            readable.update("git_" + operation for operation in GIT_OPERATIONS)
-            readable.add("get_git_task")
         readable.update(
             {
                 "run_shell",

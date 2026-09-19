@@ -6,28 +6,44 @@ Restricted Shell and full Shell have different boundaries. Restricted Shell is c
 
 ## Git inspection
 
-Prefer `GET git/status`, `git/diff`, `git/diff_stat`, `git/log`, `git/show`, or
-`git/ls_files` for fixed Git queries. All require control Bearer authentication,
-read and Shell permissions. `path` is the repository working directory (default
-`.`); repeated `file` parameters filter literal relative paths, not glob/magic
-pathspecs. Diff accepts `staged`, `revision`, and `to_revision` (the latter needs
-`revision` and cannot combine with staged). Log accepts `revision=HEAD`,
-`limit=20` (max 200), `skip=0` (max 100000); show accepts `revision=HEAD`,
-including `HEAD:relative/file`. Timeout defaults to 30 seconds, maximum 120.
+Git inspection is a read-only file capability, not Shell execution. REST needs
+only the workspace read URL; MCP uses its existing connection authentication.
+It works with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
-Mapped queries execute in one RPC on the client; client/mapping execution must
-be enabled, with a writable mapping and caller. Update/reconnect old clients;
-there is deliberately no Git FUSE fallback. Git must exist in the selected
-host/container. These APIs retain the existing Shell/client sandbox policy.
+| GET endpoint | Parameters besides `path` and repeated literal `file` |
+|---|---|
+| `/git/status` | Porcelain v1 status |
+| `/git/diff`, `/git/diff_stat` | `staged`, `revision`, `to_revision` |
+| `/git/log` | `revision=HEAD`, `limit=20` (max 200), `skip=0` |
+| `/git/show` | `revision=HEAD`, including `HEAD:relative/file` |
+| `/git/ls_files` | Tracked files |
 
-Results wait at most two seconds: 200 means finished successfully, 202 means
-poll `status_url`, 422 `git_failed` contains failure details. Initial `output`
-is bounded; use `next_offset` for subsequent reads and check `output_truncated`.
-For client tasks, `status_url?offset=N` returns Base64 output (merged stderr).
-For server tasks, `/tasks/<id>/output` uses `stdout_offset` and `stderr_offset`;
-server results also supply `stderr_next_offset`. Log returns TSV, other commands
-Git text, not parsed rows. These are inspections: mutation Context is optional.
-Do not infer commit/push support or a read-only execution sandbox from the names.
+`path` must identify a repository root with an ordinary SHA-1 `.git` directory.
+Git runs on a private sanitized temporary snapshot: source config, includes,
+hooks, filter definitions, global config, and private `.openkapsel` storage
+are not loaded. No original workspace path is passed to the Git process.
+There is no arbitrary argv, no Shell task, and no execution-permission fallback.
+Git must be installed on the host. A mapped path uses one `git_api` version 2
+RPC; old clients must update/reconnect and fail closed until then.
+
+Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per
+process, 15-second default timeout (maximum 20), and 64 KiB output per stream.
+Metadata-only queries (log/show/ls-files/staged or two-revision diffs) do not
+copy working files; status and working-tree diffs do. This uses local temporary
+disk and adds copying overhead; it does not transfer the snapshot to the server.
+Linked worktrees, external object alternates, and symlinks/reparse points or
+special files encountered in copied paths are rejected. Repository-local
+configuration (including custom filters, ignore settings and autocrlf) is not
+applied; output may therefore differ from normal developer Git commands.
+Snapshots are not transactional across files.
+
+Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
+`output_truncated`, `stderr_truncated`, and `snapshot_bytes`; there is no
+task ID or polling. Narrow queries when output is truncated. Errors use 413 for
+snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
+422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
+Read Context is optional. Mutating RPCs still need write permission, and
+arbitrary Shell/client tasks still require their execution permissions.
 
 ## Persistent Shell environment
 

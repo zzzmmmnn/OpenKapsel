@@ -275,7 +275,7 @@ class MappingTransportTests(unittest.TestCase):
                 result = sessions[0].call("list", {"path": "."})
                 self.assertEqual(result["names"], ["hello.txt"])
                 self.assertEqual(sessions[0].capabilities["file_api"]["version"], 2)
-                self.assertEqual(sessions[0].capabilities["git_api"], {"version": 1, "enabled": writable})
+                self.assertEqual(sessions[0].capabilities["git_api"], {"version": 2, "read_only": True})
                 result = sessions[0].call("api_fs_stat", {"query": {"path": ["hello.txt"], "fields": ["sha256,size"]}, "display_root": "/workspace/client"})
                 self.assertEqual(result["status"], 200)
                 self.assertEqual(result["body"]["size"], 5)
@@ -284,12 +284,14 @@ class MappingTransportTests(unittest.TestCase):
                 result = sessions[0].call("api_fs_read", {"query": {"path": ["missing"]}})
                 self.assertEqual(result["status"], 404)
                 import shutil
-                if writable and shutil.which("git"):
+                if shutil.which("git"):
                     from tests.test_git_operations import make_repo
                     repo = Path(directory) / "repo"
                     repo.mkdir()
                     make_repo(repo)
                     result = sessions[0].call("git_log", {"cwd": "repo", "options": {"limit": 1}})
+                    self.assertEqual(200, result["status"], result)
+                    result = result["body"]
                     self.assertFalse(result["running"], result)
                     self.assertEqual(0, result["exit_code"], result)
                     self.assertIn("Initial fixture", result["output"])

@@ -58,8 +58,8 @@ class GitClientTests(unittest.TestCase):
         if os.name == "nt":
             from openkapsel.client_windows import WindowsClientFiles
             factory = WindowsClientFiles
-        self.files = factory(self.root, writable=True)
-        self.tasks = ClientTasks(self.files, enabled=True, sandbox=False)
+        self.files = factory(self.root, writable=False)
+        self.tasks = ClientTasks(self.files, enabled=False, sandbox=False)
         self.git = make_repo(self.root)
 
     def tearDown(self):
@@ -68,7 +68,9 @@ class GitClientTests(unittest.TestCase):
         self.temp.cleanup()
 
     def call(self, operation, options=None):
-        result = self.tasks.git(operation, {"options": options or {}})
+        response = self.files.dispatch("git_" + operation, {"options": options or {}})
+        self.assertEqual(200, response["status"], response)
+        result = response["body"]
         self.assertFalse(result["running"], result)
         self.assertEqual(0, result["exit_code"], result)
         return result
@@ -86,29 +88,34 @@ class GitClientTests(unittest.TestCase):
         self.assertEqual("", self.call("ls_files", {"paths": ["missing"]})["output"])
 
     def test_policy_output_budget_and_bad_revision(self):
-        self.tasks.enabled = False
         with self.assertRaises(OSError):
-            self.tasks.git("status", {})
-        self.tasks.enabled = True
-        self.files.writable = False
-        with self.assertRaises(OSError):
-            self.tasks.git("status", {})
-        self.files.writable = True
-        result = self.tasks.git("show", {"options": {"revision": "not-a-real-ref"}})
-        self.assertNotEqual(0, result["exit_code"])
+            self.tasks.dispatch("task_start", {"task_id": "denied123", "argv": ["git", "status"]})
+        self.assertEqual(422, self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})["status"])
         (self.root / "source.txt").write_text("x" * 100000, encoding="utf-8")
         result = self.call("diff")
         self.assertTrue(result["output_truncated"])
         self.assertLessEqual(len(result["output"].encode()), 65536)
-        self.assertEqual(65536, result["next_offset"])
 
-    def test_git_uses_existing_task_launcher_and_local_limits(self):
-        with patch.object(self.tasks, "_start", wraps=self.tasks._start) as start:
-            self.tasks.max_seconds = 5
-            self.call("status")
-            args = start.call_args.args[1]
-            self.assertEqual(5, args["timeout_seconds"])
-            self.assertEqual("git", args["argv"][0])
+    def test_source_configuration_cannot_execute_commands_or_redirect_worktree(self):
+        marker = self.root / "injected"
+        self.git("config", "filter.evil.clean", "touch injected")
+        self.git("config", "diff.external", "touch injected")
+        self.git("config", "core.worktree", str(self.root.parent))
+        self.git("config", "include.path", str(self.root / "malicious-config"))
+        (self.root / ".gitattributes").write_text("*.txt filter=evil diff=evil\n", encoding="utf-8")
+        (self.root / "source.txt").write_text("changed\n", encoding="utf-8")
+        self.call("diff")
+        self.call("status")
+        self.assertFalse(marker.exists())
+
+    def test_snapshot_limit_and_external_object_store_fail_closed(self):
+        from openkapsel import git_read
+        with patch.object(git_read, "MAX_SNAPSHOT_BYTES", 1):
+            self.assertEqual(413, self.files.dispatch("git_status", {})["status"])
+        alternate = self.root / ".git/objects/info/alternates"
+        alternate.write_text(str(self.root.parent), encoding="utf-8")
+        result = self.files.dispatch("git_log", {})
+        self.assertEqual("git_unsupported_layout", result["error"]["code"])
 
     def test_repository_diff_helpers_are_not_invoked(self):
         self.git("config", "diff.external", "nonexistent-openkapsel-diff-helper")

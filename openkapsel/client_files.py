@@ -50,6 +50,14 @@ class ClientFiles:
             return self._dispatch(operation, args)
 
     def _dispatch(self, op, args):
+        if op.startswith("git_"):
+            from .git_read import inspect_git
+            from .errors import ApiError
+            try:
+                return {"status": 200, "body": inspect_git(self.paths, self.path(args.get("cwd", ".")),
+                        op[4:], args.get("options", {}), args.get("timeout_seconds", 15))}
+            except ApiError as exc:
+                return {"status": int(exc.status), "error": {"code": exc.code, "message": exc.message, "details": exc.details}}
         if op.startswith("api_"):
             from .client_file_api import ClientFileAPI
             return ClientFileAPI.dispatch(self, op[4:], args)

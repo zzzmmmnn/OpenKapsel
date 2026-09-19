@@ -83,13 +83,11 @@ retrying a mutation whose result is unknown. The same applies to an oversized
 response reporting `mutation_may_have_completed: true`. Client-side path guards, protected
 internal directories, and both mapping and local write restrictions still apply.
 
-Git inspection uses the separate `capabilities.git_api` version `1` capability.
-The six `/git/*` inspection endpoints execute on the mapped client, using its
-existing task sandbox and concurrency limits. Both client and mapping must enable
-execution; caller and mapping must be writable. Git must be installed in the host
-or sandbox image. Git does not use the file API fallback: unsupported clients
-return an upgrade-required error. See [Git inspection](shell-and-mcp.md#git-inspection)
-for parameters, bounded output, and asynchronous task polling.
+Git inspection uses `capabilities.git_api` version `2` with `read_only=true`.
+It is independent of client execution: read-only mappings and `allow_exec=false`
+work. Git runs against a bounded local sanitized snapshot, never the original
+repository configuration. Host Git is required; old clients fail closed.
+See [Git inspection](shell-and-mcp.md#git-inspection) for limits and supported layouts.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 

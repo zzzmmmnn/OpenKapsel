@@ -182,7 +182,7 @@ class DiscoveryMixin:
             ),
             "context": capabilities["context"]["enabled"],
             "memory": capabilities["memory"]["enabled"],
-            "shell": capabilities["shell"] != "none",
+            "shell": capabilities["shell"] != "none" or capabilities["git"]["enabled"],
             "schedules": capabilities["schedules"]["enabled"],
             "web": capabilities["web_preview"]["enabled"],
             "sharing": capabilities["sharing"]["enabled"],
@@ -433,9 +433,9 @@ class DiscoveryMixin:
                 "openkapsel_rest": skill_discovery(self._public_base_url()),
             },
             "capabilities": {
-                "git": {"enabled": control_authorized and read_enabled and self.token_record.shell_mode != "none",
+                "git": {"enabled": read_enabled,
                         "operations": ["status", "diff", "diff_stat", "log", "show", "ls_files"],
-                        "execution_policy": "existing Shell sandbox; mapped execution requires writable mapping/caller and client/server allow_exec"},
+                        "execution_policy": "read-only sanitized snapshot, independent of Shell/client allow_exec"},
                 "files": {"read": read_enabled, "write": write_enabled},
                 "sharing": {
                     "enabled": True,
@@ -1620,8 +1620,8 @@ class DiscoveryMixin:
             "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
-            "git_api": {"version": 1, "operations": ["status", "diff", "log", "show", "ls_files", "diff_stat"],
-                        "routing": "Git endpoints targeting a mapping execute on that client under its execution policy. No fallback to server Git/FUSE. Update the client and install Git in its selected runtime."},
+            "git_api": {"version": 2, "operations": ["status", "diff", "log", "show", "ls_files", "diff_stat"],
+                        "routing": "Read-only Git snapshot RPC; no Shell/write/allow_exec. Requires updated client and host Git. No unsafe fallback."},
             "file_api": {
                 "version": 2, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
                 "routing": "Existing file endpoints automatically use one RPC when every path belongs to the same mapping and its client advertises the operation. No new caller endpoint is needed.",
@@ -1732,7 +1732,7 @@ class DiscoveryMixin:
             "share_import": ("destination Bearer control token + files.write", write_enabled),
             "share_delete": ("creator Bearer control token", control_authorized),
             "mcp": ("Bearer control token", control_authorized),
-            **{"git_" + op: ("Bearer control token + read + shell", shell_enabled and read_enabled)
+            **{"git_" + op: ("files.read", read_enabled)
                for op in ("status", "diff", "log", "show", "ls_files", "diff_stat")},
             "shell_exec": ("Bearer control token + shell", shell_enabled),
             "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),

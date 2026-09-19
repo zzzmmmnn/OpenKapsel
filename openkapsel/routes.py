@@ -55,7 +55,7 @@ def _exact(
 ENDPOINTS: tuple[EndpointSpec, ...] = (
     *(EndpointSpec(
         "git_" + operation, frozenset(("GET",)), re.compile(r"/git/(?P<operation>" + operation + r")"),
-        "_handle_git", invocation="param_query", parameter="operation", control_required=True,
+        "_handle_git", invocation="param_query", parameter="operation",
         transfer_slot=True, context_mode="optional_query", context_operations=(("GET", "git." + operation),),
         discovery_key="git_" + operation,
     ) for operation in ("status", "diff", "log", "show", "ls_files", "diff_stat")),

@@ -163,3 +163,5 @@ mapping has independent provider credentials, read/write policy, and a local
 recycle bin. Clients can also opt into remote task execution, with sandboxing
 enabled by default. See [client mappings and execution](docs/client-mappings.md)
 for setup, proxy support, permissions, and current platform limitations.
+
+Read-only Git inspection, multi-file reads, recursive manifests, and glob-filtered search are available through REST and MCP. Fixed RPC operations do not require Shell/client execution permission; write RPCs still require write access. Git uses bounded sanitized snapshots; see [Git inspection and limits](docs/shell-and-mcp.md#git-inspection).

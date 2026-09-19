@@ -1,7 +1,7 @@
 """Bounded, fixed Git inspection commands shared by server and provider.
 
-Git is executable code, not a filesystem reader: callers must use the existing
-Shell/client execution policy. These arguments are not an OS security boundary.
+Commands are run only against bounded sanitized snapshots by git_read; source
+configuration is never used. No Shell execution permission is required.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def git_arguments(operation, options):
 def git_discovery(base):
     result = {}
     for operation in GIT_OPERATIONS:
-        query = {"path": ".", "file": "optional repeated literal repository-relative path", "timeout_seconds": 30}
+        query = {"path": ".", "file": "optional repeated literal repository-relative path", "timeout_seconds": 15}
         if operation in {"diff", "diff_stat", "log", "show"}:
             query["revision"] = "optional revision (HEAD by default for log/show)"
         if operation in {"diff", "diff_stat"}:
@@ -91,8 +91,8 @@ def git_discovery(base):
             query.update(limit=20, skip=0)
         result["git_" + operation] = {
             "method": "GET", "url": f"{base}/git/{operation}", "query": query,
-            "authentication": "Bearer control token + read + Shell permissions; mapped execution also requires writable caller/mapping and allow_exec on both server and client",
-            "notes": "Fixed inspection command; no arbitrary Git flags. Uses Shell sandbox and task limits. Same-mapping client RPC requires git_api version 1; no FUSE fallback. Waits up to 2 seconds, returns 200 if successful or 202 with task_id/status_url while running. Finished failures return 422 git_failed with task/output details. Inspect exit_code, output, output_truncated and next_offset. Output is Git text (log: hash/date/author/subject TSV). stderr is merged on client, separate on server. Continue via status_url and the task output API; client polling returns Base64 output with byte offsets. Git must be installed in the execution environment/image. Native execution has host permissions; repository configuration is not an isolation boundary.",
+            "authentication": "read permission; read URL is sufficient for REST; MCP uses its existing connection authentication",
+            "notes": "Read-only bounded sanitized snapshot; no Shell/write/client allow_exec needed. git_api version 2 for mapping RPC; old clients fail closed. Synchronous result (no task/polling); 422 on Git failure, 504 timeout, 413 snapshot limit, 409 unsupported layout. Requires an ordinary SHA-1 repository root with .git directory, not linked worktrees or alternates. Symlinks/reparse points and special files in copied paths are rejected. Max 128 MiB and 100000 nodes; 4 concurrent queries per process. Timeout 15s default, maximum 20s. Output capped at 64 KiB per stream; narrow queries if truncated. Git is installed on the host, not in a Shell container. Config/hooks/filters/global config are excluded. Log/show/revision comparisons copy metadata only; status and working-tree diffs also copy working files. Private .openkapsel is excluded; the snapshot is not transactional.",
         }
     return result
 
@@ -100,7 +100,7 @@ def git_discovery(base):
 def git_tool_properties(operation):
     properties = {"path": {"type": "string", "default": "."},
                   "file": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
-                  "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 30}}
+                  "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 20, "default": 15}}
     if operation in {"diff", "diff_stat", "log", "show"}:
         properties["revision"] = {"type": "string", "maxLength": 256}
     if operation in {"diff", "diff_stat"}:
