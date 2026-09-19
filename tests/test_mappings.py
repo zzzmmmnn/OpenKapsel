@@ -158,6 +158,33 @@ class MappingTests(unittest.TestCase):
             manager.call(row["id"], "read", {"handle": "old:1", "size": 1})
         self.assertEqual(error.exception.errno, errno.ESTALE)
 
+    def test_rename_preserves_identity_rejects_collisions_and_rolls_back(self):
+        workspace = self.root / "workspaces"
+        (workspace / "project").mkdir(parents=True)
+        manager = MappingManager(workspace, self.root / "state")
+        row, key = manager.store.create("project", "before", writable=True)
+        original = workspace / "project" / "before"
+        original.mkdir()
+        with patch.object(manager, "mount"), patch.object(manager, "unmount"):
+            changed = manager.rename(row["id"], "after")
+            self.assertEqual(changed["id"], row["id"])
+            self.assertEqual(manager.store.authenticate(row["id"], key)["name"], "after")
+            self.assertFalse(original.exists())
+            occupied = workspace / "project" / "occupied"
+            occupied.mkdir()
+            (occupied / "keep").write_text("unchanged")
+            with self.assertRaises(FileExistsError):
+                manager.rename(row["id"], "occupied")
+            self.assertEqual((occupied / "keep").read_text(), "unchanged")
+            with self.assertRaises(ValueError):
+                manager.rename(row["id"], "../escape")
+        with patch.object(manager, "unmount"), patch.object(manager, "mount", side_effect=[OSError("mount failed"), None]):
+            with self.assertRaises(OSError):
+                manager.rename(row["id"], "failed")
+        self.assertEqual(manager.store.authenticate(row["id"], key)["name"], "after")
+        self.assertTrue((workspace / "project" / "after").is_dir())
+        self.assertFalse((workspace / "project" / "failed").exists())
+
     def test_task_deadline_covers_descendants_after_leader_exit(self):
         tasks = ClientTasks(self.files, enabled=True, sandbox=False, max_tasks=1)
         try:

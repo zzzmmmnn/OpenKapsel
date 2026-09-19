@@ -206,6 +206,9 @@ class MappingHandlersMixin:
                         manager.store.delete(mid)
                         manager.mount_path(row).rmdir()
                     elif action in {"update", "rotate"}:
+                        if action == "update":
+                            name = self._form_one(form, "name") or row["name"]
+                            row = manager.rename(mid, name)
                         row, secret = manager.store.update(mid, rotate=action == "rotate", **({
                             "comment": self._form_one(form, "comment"), "writable": self._form_one(form, "writable") == "on",
                             "allow_exec": self._form_one(form, "allow_exec") == "on", "enabled": self._form_one(form, "enabled") == "on"

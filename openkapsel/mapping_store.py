@@ -61,9 +61,13 @@ class MappingStore:
                 raise KeyError("mapping does not exist")
             return self.public(dict(row))
 
-    def create(self, workspace, name, *, comment="", writable=False, allow_exec=False):
+    @staticmethod
+    def validate_name(name):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name):
             raise ValueError("mapping name must contain 1-64 ASCII letters, digits, '-' or '_'")
+
+    def create(self, workspace, name, *, comment="", writable=False, allow_exec=False):
+        self.validate_name(name)
         if not isinstance(comment, str) or len(comment) > 200:
             raise ValueError("comment must contain at most 200 characters")
         mid, secret = secrets.token_urlsafe(18), secrets.token_urlsafe(32)
@@ -83,13 +87,15 @@ class MappingStore:
                 raise PermissionError("invalid mapping credential")
             return self.public(dict(row))
 
-    def update(self, mid, *, comment=None, writable=None, allow_exec=None, enabled=None, rotate=False):
+    def update(self, mid, *, name=None, comment=None, writable=None, allow_exec=None, enabled=None, rotate=False):
         self.get(mid)
+        if name is not None:
+            self.validate_name(name)
         if comment is not None and (not isinstance(comment, str) or len(comment) > 200):
             raise ValueError("comment must contain at most 200 characters")
         secret = secrets.token_urlsafe(32) if rotate else None
         with self.db() as db:
-            for key, value in {"comment": comment, "writable": writable, "allow_exec": allow_exec,
+            for key, value in {"name": name, "comment": comment, "writable": writable, "allow_exec": allow_exec,
                                "enabled": enabled, "secret_hash": self.digest(secret) if secret else None}.items():
                 if value is not None:
                     db.execute(f"UPDATE mappings SET {key}=? WHERE id=?", (value, mid))

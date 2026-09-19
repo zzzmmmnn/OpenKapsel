@@ -18,6 +18,8 @@ Set `"mappings_enabled": true` in the server configuration and restart the servi
 
 Open **Administration → Client mappings**, choose the workspace, directory name, writable state, and optional client execution permission. Save the generated client configuration: the provider token is shown only once. The name must not already exist. Up to 16 mappings are supported.
 
+Expand an existing mapping to edit its directory name. Renaming changes only the server mountpoint: the mapping ID, provider credential, client root and recycle store remain unchanged. The provider disconnects and can reconnect with its existing configuration. Stop active transfers/tasks first; open handles and running sandboxes may still refer to the old mount. Existing destination names are never overwritten.
+
 Under the server state directory, `mappings.sqlite3` holds registrations and `file-transfers` holds resumable transfer metadata. `mapping-run` next to Workspace Root holds private broker IPC. With the installed image helper, fixed-command transient `openkapsel-mapping-<id>.service` units run FUSE as the non-root service account in the host mount namespace. This makes mappings visible to both the service and rootless Podman's persistent namespace. The helper accepts only mapping IDs and relative workspace/directory names, not arbitrary commands or mount options. Without a helper, development-mode mounts stay in the server's own namespace; persistent Podman namespaces may not see them.
 
 ## Python client installation

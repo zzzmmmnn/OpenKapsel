@@ -215,8 +215,10 @@ class MappingManager:
         return result
 
     def accept(self, handler, row):
-        self.mount(row)
         with self.lock:
+            # Authentication may precede a concurrent rename or rotation.
+            row = self.store.authenticate(row["id"], handler.headers["Authorization"][7:])
+            self.mount(row)
             existing = self.sessions.get(row["id"])
             if existing and not existing.closed:
                 raise ValueError("mapping already has an active provider")
@@ -243,6 +245,44 @@ class MappingManager:
             session = self.sessions.pop(mid, None)
         if session:
             session.close()
+
+    def rename(self, mid, name):
+        """Change only the server mountpoint; provider identity stays stable."""
+        self.store.validate_name(name)
+        with self.lock:
+            row = self.store.get(mid)
+            if name == row["name"]:
+                return row
+            if any(r["name"] == name for r in self.store.list(row["workspace"])):
+                raise ValueError("mapping name is already registered")
+            old_path = self.mount_path(row)
+            new_path = old_path.with_name(name)
+            # Reserve exclusively, rejecting files, directories and dangling links.
+            new_path.mkdir(mode=0o700)
+            changed = False
+            try:
+                self.unmount(row)
+                updated, _ = self.store.update(mid, name=name)
+                changed = True
+                self.mount(updated)
+            except Exception:
+                if changed:
+                    self.unmount(self.store.get(mid))
+                    self.store.update(mid, name=row["name"])
+                try:
+                    self.mount(row)
+                finally:
+                    # Only remove our empty reservation, never client content.
+                    if not os.path.ismount(new_path):
+                        try:
+                            new_path.rmdir()
+                        except OSError:
+                            pass
+                raise
+            # An old backing directory contains no client data. Refuse to delete
+            # unexpected contents if another local process populated it.
+            old_path.rmdir()
+            return updated
 
     def unmount(self, row):
         self.disconnect(row["id"])
