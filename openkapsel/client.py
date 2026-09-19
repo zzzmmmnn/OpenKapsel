@@ -34,9 +34,20 @@ def proxy_options(url):
     return options
 
 
-def run_once(config, stop=None):
-    import websocket
-    stop = stop or threading.Event()
+class ClientRuntime:
+    """Own tasks across transport sessions, bound to one immutable configuration."""
+    def __init__(self, config):
+        self.config = json.loads(json.dumps(config))
+        self.files, self.tasks = _create_resources(self.config)
+
+    def close(self):
+        try:
+            self.tasks.close()
+        finally:
+            self.files.close()
+
+
+def _create_resources(config):
     url = config["url"]
     parsed = urlsplit(url)
     if parsed.scheme not in {"wss", "ws"} or parsed.username or parsed.password or parsed.fragment or parsed.query:
@@ -61,6 +72,18 @@ def run_once(config, stop=None):
                         network=config.get("network", False), **limits)
     if tasks.enabled and not tasks.sandbox:
         LOG.warning("Sandbox explicitly disabled: remote tasks have this OS account's host permissions")
+    return files, tasks
+
+
+def run_once(config, stop=None, *, runtime=None):
+    import websocket
+    stop = stop or threading.Event()
+    owned = runtime is None
+    runtime = runtime or ClientRuntime(config)
+    if runtime.config != config:
+        raise ValueError("runtime belongs to a different client configuration")
+    files, tasks = runtime.files, runtime.tasks
+    url = runtime.config["url"]
     sock = None
     stopped = threading.Event()
     try:
@@ -101,7 +124,8 @@ def run_once(config, stop=None):
         LOG.info("Mapping provider disconnected")
     finally:
         stopped.set()
-        tasks.close()
+        if owned:
+            tasks.close()
         files.close()
         if sock:
             sock.close()
@@ -116,19 +140,23 @@ def main():
     config = json.loads(options.config.read_text())
     if os.name != "nt" and options.config.stat().st_mode & 0o077:
         parser.error("client configuration contains credentials: chmod 600 it first")
-    while True:
-        try:
-            run_once(config)
-        except KeyboardInterrupt:
-            return
-        except Exception as exc:
-            # Exceptions from transport libraries can contain URL/proxy credentials.
-            LOG.warning("Provider connection ended (%s)", type(exc).__name__)
+    runtime = ClientRuntime(config)
+    try:
+        while True:
+            try:
+                run_once(config, runtime=runtime)
+            except Exception as exc:
+                # Transport exceptions can contain URL/proxy credentials.
+                LOG.warning("Provider connection ended (%s)", type(exc).__name__)
+                if options.once:
+                    raise SystemExit(1) from None
             if options.once:
-                raise SystemExit(1) from None
-        if options.once:
-            return
-        time.sleep(5)
+                return
+            time.sleep(5)
+    except KeyboardInterrupt:
+        return
+    finally:
+        runtime.close()
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ jobs:
       - name: Test client transport and filesystem operations
         run: |
           python -m unittest discover -s tests -p test_client_imports.py -v
+          python -m unittest discover -s tests -p test_client_reconnect.py -v
           python -m unittest discover -s tests -p test_mappings.py -v
           python -m unittest discover -s tests -p test_client_windows.py -v
           python -m unittest discover -s tests -p test_client_file_api.py -v
