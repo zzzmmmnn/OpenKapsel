@@ -197,9 +197,11 @@ class MappingManager:
             session = self.sessions.get(mid)
             if not row["enabled"] or session is None or session.closed:
                 raise OSError(errno.EHOSTDOWN, "mapping client is offline")
-        if op.startswith("task_"):
+        if op.startswith(("task_", "git_")):
             if not row["allow_exec"]:
                 raise OSError(errno.EACCES, "mapping execution is disabled")
+            if op.startswith("git_") and not row["writable"]:
+                raise OSError(errno.EROFS, "Git client execution requires a writable mapping")
         elif (op not in READ_OPERATIONS or (op == "open" and (args.get("mode", "r") != "r" or args.get("truncate")))) and not row["writable"]:
             raise OSError(errno.EROFS, "mapping is read-only")
         # Handle IDs are generation-bound, including file descriptors held open
@@ -213,6 +215,14 @@ class MappingManager:
         if op in {"open", "create"}:
             result = session.generation + ":" + str(result)
         return result
+
+    def supports_git_api(self, mid):
+        with self.lock:
+            session = self.sessions.get(mid)
+            if session is None or session.closed:
+                return False
+            capability = session.capabilities.get("git_api", {})
+            return isinstance(capability, dict) and capability.get("version") == 1 and capability.get("enabled") is True
 
     def supports_file_api(self, mid, operation, *, min_version=1):
         with self.lock:

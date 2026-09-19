@@ -33,6 +33,7 @@ jobs:
           python -m unittest discover -s tests -p test_mappings.py -v
           python -m unittest discover -s tests -p test_client_windows.py -v
           python -m unittest discover -s tests -p test_client_file_api.py -v
+          python -m unittest discover -s tests -p test_git_operations.py -v
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

@@ -54,6 +54,7 @@ from .discovery import DiscoveryMixin
 from .errors import ApiError
 from .environment_handlers import EnvironmentHandlersMixin
 from .mapping_handlers import MappingHandlersMixin
+from .git_handlers import GitHandlersMixin
 from .mapping_manager import MappingManager
 from .mapping_transfers import FileTransferManager
 from .file_handlers import FileHandlersMixin
@@ -716,6 +717,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
 
 class WorkspaceRequestHandler(
+    GitHandlersMixin,
     MappingHandlersMixin,
     AdminHandlersMixin,
     OAuthHandlersMixin,

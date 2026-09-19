@@ -1,6 +1,7 @@
 """OpenKapsel."""
 
+__version__ = "1.56.0"
+
 from .server import ServerConfig, create_server
 
 __all__ = ["ServerConfig", "create_server"]
-__version__ = "1.55.0"

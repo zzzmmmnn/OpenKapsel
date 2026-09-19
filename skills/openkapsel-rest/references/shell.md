@@ -4,6 +4,31 @@ Read `GET /discovery/shell` before use. It states whether Shell is `none`, `rest
 
 Restricted Shell and full Shell have different boundaries. Restricted Shell is confined by its configured backend, mounts, network setting, and available cgroup limits. Full Shell runs as the OpenKapsel service user and is not constrained by token path grants or the network flag.
 
+## Git inspection
+
+Prefer `GET git/status`, `git/diff`, `git/diff_stat`, `git/log`, `git/show`, or
+`git/ls_files` for fixed Git queries. All require control Bearer authentication,
+read and Shell permissions. `path` is the repository working directory (default
+`.`); repeated `file` parameters filter literal relative paths, not glob/magic
+pathspecs. Diff accepts `staged`, `revision`, and `to_revision` (the latter needs
+`revision` and cannot combine with staged). Log accepts `revision=HEAD`,
+`limit=20` (max 200), `skip=0` (max 100000); show accepts `revision=HEAD`,
+including `HEAD:relative/file`. Timeout defaults to 30 seconds, maximum 120.
+
+Mapped queries execute in one RPC on the client; client/mapping execution must
+be enabled, with a writable mapping and caller. Update/reconnect old clients;
+there is deliberately no Git FUSE fallback. Git must exist in the selected
+host/container. These APIs retain the existing Shell/client sandbox policy.
+
+Results wait at most two seconds: 200 means finished successfully, 202 means
+poll `status_url`, 422 `git_failed` contains failure details. Initial `output`
+is bounded; use `next_offset` for subsequent reads and check `output_truncated`.
+For client tasks, `status_url?offset=N` returns Base64 output (merged stderr).
+For server tasks, `/tasks/<id>/output` uses `stdout_offset` and `stderr_offset`;
+server results also supply `stderr_next_offset`. Log returns TSV, other commands
+Git text, not parsed rows. These are inspections: mutation Context is optional.
+Do not infer commit/push support or a read-only execution sandbox from the names.
+
 ## Persistent Shell environment
 
 The control-authenticated `/env` endpoint stores Shell configuration for the stable app identity behind the current token record. It is distinct from the local `.openkapsel.env` file used by this Skill to find a server and credentials. Two token records may share one Workspace while retaining different Shell environments; rotating either record's read/control credentials preserves its configuration.

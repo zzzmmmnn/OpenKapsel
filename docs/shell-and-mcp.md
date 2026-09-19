@@ -4,6 +4,57 @@
 
 ## Shell task lifecycle
 
+### Git inspection
+
+Six fixed GET endpoints are available under the workspace URL, authenticated by
+the control Bearer token with read and Shell permissions:
+
+| Endpoint | Options in addition to `path` and repeated `file` filters |
+|---|---|
+| `/git/status` | Porcelain v1 status, including untracked files |
+| `/git/diff` | `staged=false`, optional `revision`, `to_revision` |
+| `/git/diff_stat` | Same comparison options, diff statistics instead of patches |
+| `/git/log` | `revision=HEAD`, `limit=20` (1–200), `skip=0` (0–100000) |
+| `/git/show` | `revision=HEAD`; `HEAD:relative/file` reads a committed blob |
+| `/git/ls_files` | Tracked filenames |
+
+`path` selects a repository working directory (default `.`). Repeated `file`
+parameters are literal paths relative to it, not Git magic pathspecs or flags.
+`to_revision` requires `revision` and cannot combine with `staged`.
+`timeout_seconds` defaults to 30 and allows 1–120; a client's lower local timeout
+still wins. No Plan or message is required for these inspections; optional read
+Context fields follow the usual rules.
+
+Example: `GET /git/diff?path=laptop/project&staged=true&file=src/main.py`.
+When `path` is mapped, the server makes one client RPC. Both mapping and client
+must enable execution, and both caller and mapping must be writable, as for
+existing client tasks. An old/offline client does not fall back to running Git
+through server-side FUSE. Ordinary paths use the token's server Shell sandbox.
+Git must be installed on the execution host or in the selected container image.
+
+The response waits at most two seconds: 200 on success, 202 if still running,
+or 422 `git_failed` for a completed failure (task details are in `error.details`).
+Results include `task_id`, `location`, `running`, `exit_code`, `output`,
+`output_truncated`, `next_offset`, and `status_url`; mapped results include
+`mapping_id`. The initial output is capped at 64 KiB per stream. Client stderr
+is merged into output; server stderr is separate with `stderr_next_offset`.
+Client polling at `status_url?offset=<next_offset>` returns Base64 bytes;
+server incremental reads use `/tasks/<id>/output` with stdout/stderr byte cursors.
+Check dropped/truncated flags: retained task output is bounded, not an archive
+of arbitrarily large diffs. Log output uses hash/date/author/subject TSV; other
+outputs use Git's text formats (quoted unusual filenames), not parsed JSON rows.
+
+MCP offers `git_status`, `git_diff`, `git_diff_stat`, `git_log`, `git_show`,
+`git_ls_files`, and `get_git_task` (include `mapping_id` for client tasks).
+
+These tools do not expose add/commit/checkout/push or arbitrary arguments.
+Pager, fsmonitor, external diff and textconv helpers are disabled where applicable,
+and optional Git locks are disabled. Nevertheless, Git processes repository and
+environment configuration: the existing execution sandbox is the security
+boundary, not this convenience API. Unsandboxed client/full Shell execution
+retains host account authority. Client Git tasks count toward the client's
+execution limit; server Git tasks count toward the token/global Shell limits.
+
 ### Persistent environment
 
 Each token record has a stable internal `app_id`. It is not a credential: read/control token rotation keeps it unchanged, and `actor_id` is a one-way SHA-256 pseudonym derived from it. OpenKapsel uses the stable ID to keep Shell environment configuration separate when multiple token records point at the same Workspace.

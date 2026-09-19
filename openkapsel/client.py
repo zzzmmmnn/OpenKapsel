@@ -68,6 +68,7 @@ def run_once(config, stop=None):
                                            suppress_origin=True, timeout=30, **proxy_options(config.get("proxy")))
         sock.send(encode({"type": "hello", "capabilities": {"protocol": 1, "writable": files.writable,
                                                            "file_api": {"version": 2, "operations": sorted(FILE_API_OPERATIONS)},
+                                                           "git_api": {"version": 1, "enabled": tasks.enabled},
                                                            "execution": tasks.capabilities()}}).decode())
         LOG.info("Mapping provider connected")
         def heartbeat():
@@ -90,7 +91,10 @@ def run_once(config, stop=None):
             try:
                 if not isinstance(op, str) or not isinstance(args, dict):
                     raise OSError(errno.EINVAL, "invalid operation")
-                result = tasks.dispatch(op, args) if op.startswith("task_") else files.dispatch(op, args)
+                if op.startswith("git_"):
+                    result = tasks.git(op[4:], args)
+                else:
+                    result = tasks.dispatch(op, args) if op.startswith("task_") else files.dispatch(op, args)
                 response = {"id": request["id"], "result": result}
                 encode(response)
             except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:

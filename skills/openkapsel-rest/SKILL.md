@@ -48,7 +48,7 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the top-level objec
 - For file listing, reading, metadata, search, trees, text edits, recycle, direct binary transfer, and resumable uploads, read [references/files.md](references/files.md).
 - For operation history, hierarchical Plans, Notes, mutation attribution, and Plan completion, read [references/context.md](references/context.md).
 - For durable project knowledge, revision checks, tags, paths, and Memory actions, read [references/memory.md](references/memory.md).
-- For persistent Shell environments, tasks, output polling or SSE, interactive stdin, interruption, force-kill, and process inspection, read [references/shell.md](references/shell.md).
+- For Git inspection, persistent Shell environments, tasks, output polling or SSE, interactive stdin, interruption, force-kill, and process inspection, read [references/shell.md](references/shell.md).
 - For persistent once, interval, or six-field cron Shell schedules and their run history, read [references/schedules.md](references/schedules.md).
 - For static preview and workspace FastAPI applications, read [references/web-and-apps.md](references/web-and-apps.md).
 - For temporary cross-workspace transfer by share ID, read [references/sharing.md](references/sharing.md).

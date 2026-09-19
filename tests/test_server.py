@@ -685,6 +685,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "fs_list",
                 "fs_read",
                 "fs_read_many",
+                "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat",
                 "fs_stat",
                 "fs_manifest",
                 "fs_search",

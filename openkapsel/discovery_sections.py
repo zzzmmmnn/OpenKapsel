@@ -22,6 +22,7 @@ SECTION_ENDPOINTS = {
         "memory_revisions",
     },
     "shell": {
+        "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat",
         "mapping_tasks", "mapping_task",
         "shell_exec", "task_list", "task_status", "task_output", "task_stream",
         "task_stdin", "task_interrupt", "task_kill", "sandbox_processes",
@@ -46,6 +47,7 @@ SECTION_CAPABILITIES = {
     "memory": {"memory"},
     "shell": {
         "mappings",
+        "git",
         "shell", "shell_sandbox", "shell_sandbox_requested", "sandbox_backends",
         "shell_pid_namespace", "shell_sandbox_image", "shell_sandbox_image_requested",
         "network", "network_mode", "network_domains",
@@ -108,7 +110,7 @@ SECTION_SUMMARIES = {
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
-    "shell": "Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
+    "shell": "Git inspection, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
     "sharing": "Temporary ID-addressed transfer of one file or directory between workspaces.",
@@ -134,6 +136,7 @@ SECTION_WORKFLOWS = {
         "On plan completion, create, update, resolve, archive, or explicitly retain no Memory through memory_actions.",
     ],
     "shell": [
+        "Use git_status, git_diff, git_diff_stat, git_log, git_show, and git_ls_files for fixed Git queries. Mapped repositories execute on the client through one RPC; read and Shell permissions are required. Poll the returned task when still running.",
         "Use the env endpoint to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization; writes require mutation Context.",
         "Start asynchronous Shell tasks, then poll status or read output incrementally; use SSE when the client supports it.",
         "Send stdin only to interactive tasks. Interrupt normally before using force-kill.",

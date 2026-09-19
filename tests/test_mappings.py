@@ -241,6 +241,10 @@ class MappingTests(unittest.TestCase):
 
 class MappingTransportTests(unittest.TestCase):
     def test_real_websocket_client_roundtrip(self):
+        self._roundtrip(False)
+        self._roundtrip(True)
+
+    def _roundtrip(self, writable):
         try:
             import websocket
         except ImportError:
@@ -261,7 +265,8 @@ class MappingTransportTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             client = threading.Thread(target=run_once, args=({"url": f"ws://127.0.0.1:{server.server_port}/provider",
-                                                              "token": "testing", "root": directory},), daemon=True)
+                                                              "token": "testing", "root": directory,
+                                                              "writable": writable, "allow_exec": writable, "sandbox": False},), daemon=True)
             client.start()
             try:
                 self.assertTrue(connected.wait(5))
@@ -269,7 +274,8 @@ class MappingTransportTests(unittest.TestCase):
                 self.assertEqual(result["st_size"], 5)
                 result = sessions[0].call("list", {"path": "."})
                 self.assertEqual(result["names"], ["hello.txt"])
-                self.assertEqual(sessions[0].capabilities["file_api"]["version"], 1)
+                self.assertEqual(sessions[0].capabilities["file_api"]["version"], 2)
+                self.assertEqual(sessions[0].capabilities["git_api"], {"version": 1, "enabled": writable})
                 result = sessions[0].call("api_fs_stat", {"query": {"path": ["hello.txt"], "fields": ["sha256,size"]}, "display_root": "/workspace/client"})
                 self.assertEqual(result["status"], 200)
                 self.assertEqual(result["body"]["size"], 5)
@@ -277,9 +283,20 @@ class MappingTransportTests(unittest.TestCase):
                 self.assertEqual(len(result["body"]["sha256"]), 64)
                 result = sessions[0].call("api_fs_read", {"query": {"path": ["missing"]}})
                 self.assertEqual(result["status"], 404)
-                with self.assertRaises(OSError):
-                    sessions[0].call("api_fs_write", {"body": {"path": "no-write", "content": "no"}})
-                self.assertFalse((Path(directory) / "no-write").exists())
+                import shutil
+                if writable and shutil.which("git"):
+                    from tests.test_git_operations import make_repo
+                    repo = Path(directory) / "repo"
+                    repo.mkdir()
+                    make_repo(repo)
+                    result = sessions[0].call("git_log", {"cwd": "repo", "options": {"limit": 1}})
+                    self.assertFalse(result["running"], result)
+                    self.assertEqual(0, result["exit_code"], result)
+                    self.assertIn("Initial fixture", result["output"])
+                if not writable:
+                    with self.assertRaises(OSError):
+                        sessions[0].call("api_fs_write", {"body": {"path": "no-write", "content": "no"}})
+                    self.assertFalse((Path(directory) / "no-write").exists())
             finally:
                 for session in sessions:
                     session.close()

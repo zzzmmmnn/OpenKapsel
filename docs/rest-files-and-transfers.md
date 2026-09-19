@@ -17,6 +17,7 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
 | `GET` | `/fs/list`, `/fs/tree`, `/fs/search` | List, recursively inspect, or search files |
 | `GET` | `/fs/read`, `/fs/stat` | Read UTF-8 text or selected metadata |
+| `GET` | `/git/status`, `/git/diff`, `/git/diff_stat`, `/git/log`, `/git/show`, `/git/ls_files` | Git inspection using Shell permissions; see [Git options](shell-and-mcp.md#git-inspection) |
 | `POST` | `/fs/manifest` | Batch synchronization preflight or recursive metadata manifest |
 | `POST` | `/fs/read_many` | Read multiple small UTF-8 files in one request |
 | `GET/HEAD/PUT` | `/fs/content` | Stream or atomically upload raw bytes |

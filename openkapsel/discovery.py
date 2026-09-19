@@ -27,6 +27,7 @@ from .discovery_sections import (
     SECTION_WORKFLOWS,
 )
 from .errors import ApiError
+from .git_operations import git_discovery
 from .environment_store import (
     EnvironmentStore,
     MAX_ENVIRONMENT_NAME_CHARS,
@@ -432,6 +433,9 @@ class DiscoveryMixin:
                 "openkapsel_rest": skill_discovery(self._public_base_url()),
             },
             "capabilities": {
+                "git": {"enabled": control_authorized and read_enabled and self.token_record.shell_mode != "none",
+                        "operations": ["status", "diff", "diff_stat", "log", "show", "ls_files"],
+                        "execution_policy": "existing Shell sandbox; mapped execution requires writable mapping/caller and client/server allow_exec"},
                 "files": {"read": read_enabled, "write": write_enabled},
                 "sharing": {
                     "enabled": True,
@@ -1396,6 +1400,7 @@ class DiscoveryMixin:
                     "url": f"{base}/mcp",
                     "transport": "Streamable HTTP (stateless JSON responses; GET SSE is not offered)",
                 },
+                **git_discovery(base),
                 "shell_exec": {
                     "method": "POST",
                     "url": f"{base}/shell/exec",
@@ -1615,8 +1620,10 @@ class DiscoveryMixin:
             "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
+            "git_api": {"version": 1, "operations": ["status", "diff", "log", "show", "ls_files", "diff_stat"],
+                        "routing": "Git endpoints targeting a mapping execute on that client under its execution policy. No fallback to server Git/FUSE. Update the client and install Git in its selected runtime."},
             "file_api": {
-                "version": 1, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
+                "version": 2, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
                 "routing": "Existing file endpoints automatically use one RPC when every path belongs to the same mapping and its client advertises the operation. No new caller endpoint is needed.",
                 "batching": "Keep batch items within one mapping for client-local execution; cross-root batches retain the existing file path.",
                 "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
@@ -1725,6 +1732,8 @@ class DiscoveryMixin:
             "share_import": ("destination Bearer control token + files.write", write_enabled),
             "share_delete": ("creator Bearer control token", control_authorized),
             "mcp": ("Bearer control token", control_authorized),
+            **{"git_" + op: ("Bearer control token + read + shell", shell_enabled and read_enabled)
+               for op in ("status", "diff", "log", "show", "ls_files", "diff_stat")},
             "shell_exec": ("Bearer control token + shell", shell_enabled),
             "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_create": ("Bearer control token + schedules + shell", schedules_enabled),

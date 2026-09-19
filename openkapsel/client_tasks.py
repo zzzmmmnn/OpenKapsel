@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import errno
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -42,6 +43,33 @@ class ClientTasks:
                 "backend": self.backend if self.sandbox else "native-unsandboxed",
                 "platform": sys.platform, "max_tasks": self.max_tasks,
                 "max_seconds": self.max_seconds, "network": self.network if self.sandbox else "host"}
+
+    def git(self, operation, args):
+        """One RPC for command launch and a short bounded wait; never bypass policy."""
+        from .git_operations import git_arguments
+        from .errors import ApiError
+        if not self.enabled or not self.files.writable:
+            raise OSError(errno.EACCES, "Git requires writable client execution")
+        try:
+            argv = git_arguments(operation, args.get("options", {}))
+        except ApiError as exc:
+            raise OSError(errno.EINVAL, exc.message) from None
+        timeout = args.get("timeout_seconds", 30)
+        if type(timeout) is not int or not 1 <= timeout <= 120:
+            raise OSError(errno.EINVAL, "invalid Git timeout")
+        tid = "git_" + secrets.token_urlsafe(18)
+        self.dispatch("task_start", {"task_id": tid, "argv": argv, "cwd": args.get("cwd", "."),
+                                     "timeout_seconds": min(timeout, self.max_seconds)})
+        with self.lock:
+            task = self.tasks[tid]
+            task["input"].put_nowait(None)
+        task["done"].wait(2)
+        result = self._public(task)
+        with task["output_lock"]:
+            output = bytes(task["output"][:65536]).decode("utf-8", errors="replace")
+            more = len(task["output"]) > 65536 or task["truncated"]
+            offset = min(65536, len(task["output"]))
+        return {**result, "output": output, "next_offset": offset, "output_truncated": more}
 
     def dispatch(self, op, args):
         if not self.enabled:

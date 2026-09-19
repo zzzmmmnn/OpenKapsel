@@ -7,11 +7,13 @@ from typing import Any
 
 from .memory_contracts import plan_debrief_schema
 from .tokens import TokenRecord
+from .git_operations import GIT_OPERATIONS, git_tool_properties
+from . import __version__
 
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOL_VERSIONS = {"2025-03-26", "2025-06-18", MCP_PROTOCOL_VERSION}
-SERVER_VERSION = "1.53.3"
+SERVER_VERSION = __version__
 PUBLIC_SERVER_VERSION = SERVER_VERSION.split(".", 1)[0]
 
 
@@ -96,6 +98,13 @@ POSITIVE = {"type": "integer", "minimum": 1}
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
+    _tool("get_git_task", "Read Git task", "Poll a Git task returned by git_* tools. For client tasks provide mapping_id; client output is Base64 with next_offset (byte cursor). Server tasks return stdout/stderr and status; use read_task_output for incremental server output.",
+          _object_schema({"task_id": {"type": "string"}, "mapping_id": {"type": "string"},
+                          "offset": {"type": "integer", "minimum": 0, "default": 0}}, ("task_id",)), read_only=True),
+    *(_tool("git_" + operation, "Git " + operation.replace("_", " "),
+            "Inspect Git via the existing Shell sandbox. A mapped path executes on the client in one RPC (requires writable mapping/caller and execution enabled on both sides). Returns bounded Git text, exit_code and task_id; 2-second wait then use get_git_task with poll_arguments for unfinished work. No arbitrary flags or Git mutations. Git must be installed in the execution environment.",
+            _object_schema(git_tool_properties(operation)), read_only=True)
+      for operation in GIT_OPERATIONS),
     _tool(
         "workspace_info",
         "Workspace information",
@@ -986,6 +995,9 @@ def tools_for(
         if recycle_enabled:
             readable.update({"delete_path", "restore_recycle"})
     if record.shell_mode != "none":
+        if record.can_read:
+            readable.update("git_" + operation for operation in GIT_OPERATIONS)
+            readable.add("get_git_task")
         readable.update(
             {
                 "run_shell",
