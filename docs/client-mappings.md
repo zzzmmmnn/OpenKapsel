@@ -56,6 +56,39 @@ If local DNS returns a proxy's synthetic address (for example an address from `1
 
 Use normal file APIs, server Shell, and backend filesystem operations for mapped paths. `GET /mappings` reports online state, writable state, and client capabilities. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
 
+Updated clients advertise `capabilities.file_api` with version `2` and a list of
+supported operations. The server automatically sends one complete file operation
+over the existing WebSocket when all its paths belong to the same mapping. The
+client performs filesystem work locally and returns the normal REST response.
+For example, SHA-256 calculation sends back the digest rather than transferring
+the file to the server, and directory listing returns metadata in one RPC.
+
+The fast path supports list, stat/hash, text read (including byte offsets), tree,
+search, text write, replace, mkdir, same-mapping move, recoverable delete, and
+same-mapping manifest/replace/delete batches, multi-file text reads, glob-filtered
+search, and recursive manifests with optional SHA256. The latter three require
+version 2; older clients retain the FUSE fallback. REST and MCP callers keep their
+existing endpoints, request fields, permissions, and Context attribution. Server
+Shell and application filesystem access still use FUSE. Binary streaming,
+resumable uploads, cross-root transfers, and batches spanning multiple storage
+roots retain their existing paths.
+
+Upgrade and reconnect the client to enable this optimization. An older client,
+an oversized request, or a server limit above the client operation ceiling uses
+the existing FUSE path, decided before an RPC is sent. RPC messages are bounded
+to 1 MiB. An oversized response returns `mapping_response_too_large` (413): use
+a smaller page, read limit, tree depth, or batch. A timeout or disconnection after
+dispatch is never automatically replayed; check the affected paths before
+retrying a mutation whose result is unknown. The same applies to an oversized
+response reporting `mutation_may_have_completed: true`. Client-side path guards, protected
+internal directories, and both mapping and local write restrictions still apply.
+
+Git inspection uses `capabilities.git_api` version `2` with `read_only=true`.
+It is independent of client execution: read-only mappings and `allow_exec=false`
+work. Git runs against a bounded local sanitized snapshot, never the original
+repository configuration. Host Git is required; old clients fail closed.
+See [Git inspection](shell-and-mcp.md#git-inspection) for limits and supported layouts.
+
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 
 `POST /fs/copy` starts a verified, resumable copy. `fs/move` between different roots uses verified copy followed by source recycling. Both return 202 with a transfer ID; poll `/fs/transfers/<id>` and use POST `/cancel` or `/resume` with mutation Context. A move is not atomic. `copied_source_retained` means the destination exists but the source still needs attention. Publication never silently overwrites an existing destination. Cancellation retains partial data on the destination for resumption, so it still consumes client/destination space.

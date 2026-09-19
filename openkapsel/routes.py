@@ -53,6 +53,12 @@ def _exact(
 
 
 ENDPOINTS: tuple[EndpointSpec, ...] = (
+    *(EndpointSpec(
+        "git_" + operation, frozenset(("GET",)), re.compile(r"/git/(?P<operation>" + operation + r")"),
+        "_handle_git", invocation="param_query", parameter="operation",
+        transfer_slot=True, context_mode="optional_query", context_operations=(("GET", "git." + operation),),
+        discovery_key="git_" + operation,
+    ) for operation in ("status", "diff", "log", "show", "ls_files", "diff_stat")),
     _exact("recycle_purge", ("POST",), "/recycle/purge", "_handle_recycle_purge", control_required=True,
         request_body=True, context_mode="deferred", context_operations=(("POST", "recycle.purge"),), discovery_key="recycle_purge"),
     _exact("fs_copy", ("POST",), "/fs/copy", "_handle_file_copy", control_required=True,
@@ -136,6 +142,10 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     _exact(
         "fs_manifest", ("POST",), "/fs/manifest", "_handle_fs_manifest",
         request_body=True, transfer_slot=True, discovery_key="fs_manifest",
+    ),
+    _exact(
+        "fs_read_many", ("POST",), "/fs/read_many", "_handle_fs_read_many",
+        request_body=True, transfer_slot=True, discovery_key="fs_read_many",
     ),
     _exact(
         "fs_search", ("GET",), "/fs/search", "_handle_fs_search",

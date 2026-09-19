@@ -556,6 +556,8 @@ class McpHandlersMixin:
             "list_recycle": self._handle_recycle_list,
         }
         body_tools = {
+            "read_files": self._handle_fs_read_many,
+            "file_manifest": self._handle_fs_manifest,
             "write_file": self._handle_fs_write,
             "replace_text": self._handle_fs_replace,
             "create_directory": self._handle_fs_mkdir,
@@ -570,8 +572,12 @@ class McpHandlersMixin:
         self._capturing_mcp_tool = True
         self._mcp_tool_response: tuple[int, dict[str, Any]] | None = None
         try:
-            if name in query_tools:
-                query = {key: [str(value)] for key, value in arguments.items()}
+            if name in {"git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat"}:
+                query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
+                         for key, value in arguments.items()}
+                self._handle_git(name[4:], query)
+            elif name in query_tools:
+                query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)
             elif name in body_tools:
                 self._mcp_tool_arguments = arguments
@@ -724,7 +730,7 @@ class McpHandlersMixin:
         return {
             "path": str(path),
             "size": file_stat.st_size,
-            "etag": self._stat_etag(file_stat),
+            "etag": self._path_etag(path, file_stat),
             "content_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
             "transfer": {
                 "url": (

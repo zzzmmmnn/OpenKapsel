@@ -4,6 +4,47 @@ Read `GET /discovery/shell` before use. It states whether Shell is `none`, `rest
 
 Restricted Shell and full Shell have different boundaries. Restricted Shell is confined by its configured backend, mounts, network setting, and available cgroup limits. Full Shell runs as the OpenKapsel service user and is not constrained by token path grants or the network flag.
 
+## Git inspection
+
+Git inspection is a read-only file capability, not Shell execution. REST needs
+only the workspace read URL; MCP uses its existing connection authentication.
+It works with Shell disabled, client `allow_exec=false`, and read-only mappings.
+
+| GET endpoint | Parameters besides `path` and repeated literal `file` |
+|---|---|
+| `/git/status` | Porcelain v1 status |
+| `/git/diff`, `/git/diff_stat` | `staged`, `revision`, `to_revision` |
+| `/git/log` | `revision=HEAD`, `limit=20` (max 200), `skip=0` |
+| `/git/show` | `revision=HEAD`, including `HEAD:relative/file` |
+| `/git/ls_files` | Tracked files |
+
+`path` must identify a repository root with an ordinary SHA-1 `.git` directory.
+Git runs on a private sanitized temporary snapshot: source config, includes,
+hooks, filter definitions, global config, and private `.openkapsel` storage
+are not loaded. No original workspace path is passed to the Git process.
+There is no arbitrary argv, no Shell task, and no execution-permission fallback.
+Git must be installed on the host. A mapped path uses one `git_api` version 2
+RPC; old clients must update/reconnect and fail closed until then.
+
+Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per
+process, 15-second default timeout (maximum 20), and 64 KiB output per stream.
+Metadata-only queries (log/show/ls-files/staged or two-revision diffs) do not
+copy working files; status and working-tree diffs do. This uses local temporary
+disk and adds copying overhead; it does not transfer the snapshot to the server.
+Linked worktrees, external object alternates, and symlinks/reparse points or
+special files encountered in copied paths are rejected. Repository-local
+configuration (including custom filters, ignore settings and autocrlf) is not
+applied; output may therefore differ from normal developer Git commands.
+Snapshots are not transactional across files.
+
+Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
+`output_truncated`, `stderr_truncated`, and `snapshot_bytes`; there is no
+task ID or polling. Narrow queries when output is truncated. Errors use 413 for
+snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
+422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
+Read Context is optional. Mutating RPCs still need write permission, and
+arbitrary Shell/client tasks still require their execution permissions.
+
 ## Persistent Shell environment
 
 The control-authenticated `/env` endpoint stores Shell configuration for the stable app identity behind the current token record. It is distinct from the local `.openkapsel.env` file used by this Skill to find a server and credentials. Two token records may share one Workspace while retaining different Shell environments; rotating either record's read/control credentials preserves its configuration.

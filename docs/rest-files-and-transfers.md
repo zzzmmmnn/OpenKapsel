@@ -17,7 +17,9 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
 | `GET` | `/fs/list`, `/fs/tree`, `/fs/search` | List, recursively inspect, or search files |
 | `GET` | `/fs/read`, `/fs/stat` | Read UTF-8 text or selected metadata |
-| `POST` | `/fs/manifest` | Batch synchronization preflight |
+| `GET` | `/git/status`, `/git/diff`, `/git/diff_stat`, `/git/log`, `/git/show`, `/git/ls_files` | Read-only Git snapshot inspection; see [Git options](shell-and-mcp.md#git-inspection) |
+| `POST` | `/fs/manifest` | Batch synchronization preflight or recursive metadata manifest |
+| `POST` | `/fs/read_many` | Read multiple small UTF-8 files in one request |
 | `GET/HEAD/PUT` | `/fs/content` | Stream or atomically upload raw bytes |
 | `POST` | `/fs/write`, `/fs/replace`, `/fs/replace/batch` | Write or perform exact UTF-8 replacements |
 | `POST` | `/fs/mkdir`, `/fs/move`, `/fs/delete` | Create, move, rename, or recycle paths |
@@ -63,6 +65,37 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the body. Raw-byte 
 - `OpenKapsel-Message`
 
 ## Metadata, search, and trees
+
+`POST /fs/read_many` accepts `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}`.
+`limit` caps characters per file; `max_total_chars` caps their combined content.
+Both are bounded by `max_read_chars`, and paths by `max_batch_file_operations`.
+Results preserve input order with per-item `status`, `content`, `etag`, `length`,
+`truncated`, and `next_offset`, or an `error`. Partial failures return HTTP 207.
+When the shared budget is exhausted, remaining items report `read_budget_exhausted`.
+Use `/fs/read?path=...&offset=<next_offset>` to continue a truncated file.
+This endpoint is read-only despite using POST; it needs no control token or Plan.
+
+Search accepts repeated `include` and `exclude` glob query parameters, for example
+`/fs/search?path=src&query=TODO&include=*.py&include=*.js&exclude=node_modules`.
+Patterns without `/` match basenames; others match POSIX paths relative to the
+search root. Matching is case-sensitive regardless of the content-search flag;
+`*` spans `/` (Python fnmatch semantics). Exclude wins, and matching directories
+are pruned. Include only filters files, allowing traversal to matching descendants.
+Each group accepts at most 64 patterns, each at most 512 characters.
+
+`POST /fs/manifest` additionally accepts
+`{"recursive":true,"path":"src","depth":8,"include_sha256":true}` instead of `items`.
+It returns a flat `items` list containing the root and descendants with
+`path`, `name`, `type`, `size`, and `modified_at`, plus optional `sha256`
+(null for non-files). Depth 0 returns only the root, depth 1 includes direct children.
+Traversal is bounded by `max_recursion_depth` and `max_tree_nodes`; `truncated`
+reports the node limit, while the requested depth intentionally bounds traversal.
+Internal storage is omitted and symlinks are not followed. Hashes are computed
+on demand; this is not a transactional snapshot across files.
+
+All three operations execute locally on an updated mapping client when the request
+targets one mapping, using a single RPC. Large RPC responses may return HTTP 413;
+reduce batch size, character budgets, or traversal depth.
 
 `fs/stat` can return selected fields: `type`, `size`, `created_at`, `modified_at`, `changed_at`, `etag`, `content_type`, and `sha256`. SHA-256 is calculated only when requested. On platforms without birth time, `created_at` is `null`; inode change time remains separate.
 

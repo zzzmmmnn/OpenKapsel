@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 from .client_files import ClientFiles
 from .client_tasks import ClientTasks
-from .mapping_transport import MAX_MESSAGE, encode
+from .mapping_transport import MAX_MESSAGE, FILE_API_OPERATIONS, encode
 
 LOG = logging.getLogger("openkapsel.client")
 
@@ -67,6 +67,8 @@ def run_once(config, stop=None):
         sock = websocket.create_connection(url, header={"Authorization": "Bearer " + config["token"]},
                                            suppress_origin=True, timeout=30, **proxy_options(config.get("proxy")))
         sock.send(encode({"type": "hello", "capabilities": {"protocol": 1, "writable": files.writable,
+                                                           "file_api": {"version": 2, "operations": sorted(FILE_API_OPERATIONS)},
+                                                           "git_api": {"version": 2, "read_only": True},
                                                            "execution": tasks.capabilities()}}).decode())
         LOG.info("Mapping provider connected")
         def heartbeat():

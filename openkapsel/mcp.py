@@ -7,11 +7,13 @@ from typing import Any
 
 from .memory_contracts import plan_debrief_schema
 from .tokens import TokenRecord
+from .git_operations import GIT_OPERATIONS, git_tool_properties
+from . import __version__
 
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOL_VERSIONS = {"2025-03-26", "2025-06-18", MCP_PROTOCOL_VERSION}
-SERVER_VERSION = "1.53.3"
+SERVER_VERSION = __version__
 PUBLIC_SERVER_VERSION = SERVER_VERSION.split(".", 1)[0]
 
 
@@ -96,6 +98,16 @@ POSITIVE = {"type": "integer", "minimum": 1}
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
+    _tool("read_files", "Read multiple files", "Read bounded UTF-8 files, with per-item status/content/etag and partial errors. No write or Shell permission required.",
+          _object_schema({"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                          "limit": {"type": "integer", "minimum": 1}, "max_total_chars": {"type": "integer", "minimum": 1}}, ("paths",)), read_only=True),
+    _tool("file_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
+          _object_schema({"items": {"type": "array", "items": _object_schema({"path": {"type": "string"}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string"}}, ("path",))},
+                          "recursive": {"type": "boolean"}, "path": {"type": "string"}, "depth": {"type": "integer", "minimum": 0}, "include_sha256": {"type": "boolean"}}), read_only=True),
+    *(_tool("git_" + operation, "Git " + operation.replace("_", " "),
+            "Read-only Git inspection using a bounded sanitized snapshot, locally or in one mapped client RPC. Read permission only: no Shell/write/allow_exec required. Synchronous text result, no task. Ordinary SHA-1 .git directory required; no linked worktrees/alternates/symlinks. Snapshot max 128 MiB/100000 nodes, output 64 KiB per stream, timeout at most 20s. Source config/hooks/filters are not loaded. Git must be installed on the host.",
+            _object_schema(git_tool_properties(operation)), read_only=True)
+      for operation in GIT_OPERATIONS),
     _tool(
         "workspace_info",
         "Workspace information",
@@ -491,6 +503,8 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "max_results": {**POSITIVE, "default": 100},
                 "regex": {"type": "boolean", "default": False},
                 "case_sensitive": {"type": "boolean", "default": True},
+                "include": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
+                "exclude": {"type": "array", "items": {"type": "string"}, "maxItems": 64},
             },
             ("query",),
         ),
@@ -947,6 +961,8 @@ def tools_for(
         "archive_memory",
     }
     if record.can_read:
+        readable.update({"read_files", "file_manifest"})
+        readable.update("git_" + operation for operation in GIT_OPERATIONS)
         readable.update(
             {
                 "query_context",

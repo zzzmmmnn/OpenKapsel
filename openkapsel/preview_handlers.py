@@ -102,7 +102,7 @@ class PreviewHandlersMixin:
         with handle:
             file_stat = os.fstat(handle.fileno())
             size = file_stat.st_size
-            etag = self._stat_etag(file_stat)
+            etag = self._path_etag(target, file_stat)
             if self.headers.get("If-None-Match") == etag:
                 self._send_empty(
                     HTTPStatus.NOT_MODIFIED,

@@ -84,11 +84,23 @@ class WindowsPaths:
             return fd
 
     def mkdir(self, path, *, parents, exist_ok):
+        if parents and path != self.root:
+            self.mkdir(path.parent, parents=True, exist_ok=True)
         with self.guard(path):
-            path.mkdir(exist_ok=exist_ok)
+            try:
+                path.mkdir()
+            except FileExistsError:
+                if not exist_ok:
+                    raise
+                with self.guard(path, include_final=True):
+                    if not path.is_dir():
+                        raise
+                return False
             return True
 
     def rename(self, source, destination, *, overwrite, create_parents):
+        if create_parents:
+            self.mkdir(destination.parent, parents=True, exist_ok=True)
         with self.guard(source), self.guard(destination):
             # Refuse reparse sources; release its non-delete-sharing handle only
             # for rename, which moves the entry itself rather than following it.

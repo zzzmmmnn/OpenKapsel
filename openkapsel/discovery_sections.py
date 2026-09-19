@@ -8,7 +8,7 @@ SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sha
 SECTION_ENDPOINTS = {
     "files": {
         "mapping_list", "fs_copy", "file_transfer", "recycle_purge",
-        "fs_list", "fs_read", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
+        "fs_list", "fs_read", "fs_read_many", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
         "fs_content_put", "fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_delete",
         "fs_delete_batch", "fs_move", "recycle_list", "recycle_restore", "upload_create",
         "upload_status", "upload_chunk", "upload_commit", "upload_cancel",
@@ -22,6 +22,7 @@ SECTION_ENDPOINTS = {
         "memory_revisions",
     },
     "shell": {
+        "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat",
         "mapping_tasks", "mapping_task",
         "shell_exec", "task_list", "task_status", "task_output", "task_stream",
         "task_stdin", "task_interrupt", "task_kill", "sandbox_processes",
@@ -46,6 +47,7 @@ SECTION_CAPABILITIES = {
     "memory": {"memory"},
     "shell": {
         "mappings",
+        "git",
         "shell", "shell_sandbox", "shell_sandbox_requested", "sandbox_backends",
         "shell_pid_namespace", "shell_sandbox_image", "shell_sandbox_image_requested",
         "network", "network_mode", "network_domains",
@@ -108,7 +110,7 @@ SECTION_SUMMARIES = {
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
-    "shell": "Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
+    "shell": "Git inspection, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
     "sharing": "Temporary ID-addressed transfer of one file or directory between workspaces.",
@@ -134,6 +136,7 @@ SECTION_WORKFLOWS = {
         "On plan completion, create, update, resolve, archive, or explicitly retain no Memory through memory_actions.",
     ],
     "shell": [
+        "Use git_status, git_diff, git_diff_stat, git_log, git_show, and git_ls_files for fixed Git queries. Mapped repositories use read-only Git snapshot RPC; only read permission is required. Results are synchronous and bounded, with no Shell task.",
         "Use the env endpoint to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization; writes require mutation Context.",
         "Start asynchronous Shell tasks, then poll status or read output incrementally; use SSE when the client supports it.",
         "Send stdin only to interactive tasks. Interrupt normally before using force-kill.",

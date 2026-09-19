@@ -684,6 +684,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 "web_app_api",
                 "fs_list",
                 "fs_read",
+                "fs_read_many",
+                "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat",
                 "fs_stat",
                 "fs_manifest",
                 "fs_search",
@@ -4058,7 +4060,7 @@ class WorkspaceServerTests(unittest.TestCase):
     def test_admin_login_create_permissions_and_expiration(self) -> None:
         status, body, _ = self.raw_request("GET", "/kapsel/admin")
         self.assertEqual(200, status)
-        self.assertIn("Workspace Administration", body.decode("utf-8"))
+        self.assertIn("Sign in to administration.", body.decode("utf-8"))
 
         bad_form = urlencode({"username": "admin", "password": "wrong-password"}).encode()
         status, _, _ = self.raw_request(

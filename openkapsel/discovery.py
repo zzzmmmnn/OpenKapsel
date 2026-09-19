@@ -27,6 +27,7 @@ from .discovery_sections import (
     SECTION_WORKFLOWS,
 )
 from .errors import ApiError
+from .git_operations import git_discovery
 from .environment_store import (
     EnvironmentStore,
     MAX_ENVIRONMENT_NAME_CHARS,
@@ -181,7 +182,7 @@ class DiscoveryMixin:
             ),
             "context": capabilities["context"]["enabled"],
             "memory": capabilities["memory"]["enabled"],
-            "shell": capabilities["shell"] != "none",
+            "shell": capabilities["shell"] != "none" or capabilities["git"]["enabled"],
             "schedules": capabilities["schedules"]["enabled"],
             "web": capabilities["web_preview"]["enabled"],
             "sharing": capabilities["sharing"]["enabled"],
@@ -432,6 +433,9 @@ class DiscoveryMixin:
                 "openkapsel_rest": skill_discovery(self._public_base_url()),
             },
             "capabilities": {
+                "git": {"enabled": read_enabled,
+                        "operations": ["status", "diff", "diff_stat", "log", "show", "ls_files"],
+                        "execution_policy": "read-only sanitized snapshot, independent of Shell/client allow_exec"},
                 "files": {"read": read_enabled, "write": write_enabled},
                 "sharing": {
                     "enabled": True,
@@ -1119,6 +1123,12 @@ class DiscoveryMixin:
                         **optional_read_context_query,
                     },
                 },
+                "fs_read_many": {
+                    "method": "POST", "url": f"{base}/fs/read_many",
+                    "authentication": "read-only URL token; Bearer token is not required",
+                    "json": {"paths": ["src/main.py", "README.md"], "limit": 65536, "max_total_chars": 262144},
+                    "notes": "UTF-8 text; paths bounded by max_batch_file_operations; limit is per-file characters, max_total_chars is shared, both bounded by max_read_chars. Items contain status, content, etag, truncated and next_offset; errors are per-item (HTTP 207). An exhausted budget reports read_budget_exhausted for remaining items. Continue truncated files using fs_read offset=next_offset. Same-mapping batches execute in one client RPC.",
+                },
                 "fs_stat": {
                     "method": "GET",
                     "url": f"{base}/fs/stat?path=<path>&fields=type,size,created_at,modified_at,sha256",
@@ -1154,12 +1164,14 @@ class DiscoveryMixin:
                         "include_sha256": False,
                     },
                     "response_statuses": ["missing", "same", "conflict", "exists"],
+                    "recursive_json": {"recursive": True, "path": ".", "depth": 8, "include_sha256": False},
+                    "recursive_notes": "Alternative to items (mutually exclusive): flat recursive metadata including root, bounded by depth and max_tree_nodes. Returns path/type/size/modified_at, optional SHA256 for regular files, total and truncated. Depth 0 includes only root; depth 1 includes direct children. Symlinks are never followed. SHA256 reads file contents locally on a mapping client; results are not a transactional directory snapshot.",
                     "notes": "bounded multi-path status and synchronization preflight; hashes are calculated only when expected or explicitly requested",
                 },
                 "fs_search": {
                     "method": "GET",
                     "url": f"{base}/fs/search?path=.&query=<text>&depth=8&max_results=100",
-                    "notes": "searches UTF-8 text; supports regex and case_sensitive flags",
+                    "notes": "searches UTF-8 text; supports regex and case_sensitive flags. Repeated include/exclude globs: slash-free patterns match basenames, others match root-relative POSIX paths; case-sensitive fnmatch semantics (* spans /). Exclude wins and prunes matching directories. Up to 64 patterns per group, 512 characters each.",
                     "query": {
                         "path": ".",
                         "query": "<required text or regex>",
@@ -1167,6 +1179,8 @@ class DiscoveryMixin:
                         "max_results": min(100, self.server.config.max_search_results),
                         "regex": False,
                         "case_sensitive": True,
+                        "include": "optional repeated glob parameter, e.g. include=*.py&include=*.js",
+                        "exclude": "optional repeated glob parameter, e.g. exclude=node_modules&exclude=*.min.js; matching directories are pruned",
                         **optional_read_context_query,
                     },
                 },
@@ -1386,6 +1400,7 @@ class DiscoveryMixin:
                     "url": f"{base}/mcp",
                     "transport": "Streamable HTTP (stateless JSON responses; GET SSE is not offered)",
                 },
+                **git_discovery(base),
                 "shell_exec": {
                     "method": "POST",
                     "url": f"{base}/shell/exec",
@@ -1599,11 +1614,20 @@ class DiscoveryMixin:
             ],
         }
 
+        from .mapping_transport import FILE_API_OPERATIONS, MAX_MESSAGE
         payload["capabilities"]["mappings"] = {
             "enabled": self.server.config.mappings_enabled,
             "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
+            "git_api": {"version": 2, "operations": ["status", "diff", "log", "show", "ls_files", "diff_stat"],
+                        "routing": "Read-only Git snapshot RPC; no Shell/write/allow_exec. Requires updated client and host Git. No unsafe fallback."},
+            "file_api": {
+                "version": 2, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
+                "routing": "Existing file endpoints automatically use one RPC when every path belongs to the same mapping and its client advertises the operation. No new caller endpoint is needed.",
+                "batching": "Keep batch items within one mapping for client-local execution; cross-root batches retain the existing file path.",
+                "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
+            },
         }
         payload["endpoints"].update({
             "recycle_purge": {"method": "POST", "url": "./recycle/purge", "body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
@@ -1675,6 +1699,7 @@ class DiscoveryMixin:
             "fs_read": ("files.read", read_enabled),
             "fs_stat": ("files.read", read_enabled),
             "fs_manifest": ("files.read", read_enabled),
+            "fs_read_many": ("files.read", read_enabled),
             "fs_search": ("files.read", read_enabled),
             "fs_tree": ("files.read", read_enabled),
             "fs_content": ("files.read", read_enabled),
@@ -1707,6 +1732,8 @@ class DiscoveryMixin:
             "share_import": ("destination Bearer control token + files.write", write_enabled),
             "share_delete": ("creator Bearer control token", control_authorized),
             "mcp": ("Bearer control token", control_authorized),
+            **{"git_" + op: ("files.read", read_enabled)
+               for op in ("status", "diff", "log", "show", "ls_files", "diff_stat")},
             "shell_exec": ("Bearer control token + shell", shell_enabled),
             "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_create": ("Bearer control token + schedules + shell", schedules_enabled),

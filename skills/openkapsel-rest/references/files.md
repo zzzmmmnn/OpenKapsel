@@ -12,6 +12,7 @@ All paths are workspace-relative unless they are absolute paths inside the works
 | `GET` | `/fs/read` | required `path`; `offset` or efficient `byte_offset`; `limit`; UTF-8 text only |
 | `GET` | `/fs/stat` | required `path`; optional comma-separated `fields` |
 | `POST` | `/fs/manifest` | bounded `items` with `path` plus optional expected `size`/`sha256`; returns per-file synchronization status |
+| `POST` | `/fs/read_many` | read several small UTF-8 files with per-file errors and bounded total content |
 | `GET` | `/fs/search` | `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
 | `GET` | `/fs/tree` | `path=.`, `depth=2`; nested tree bounded by published node/depth limits |
 | `GET|HEAD` | `/fs/content` | required `path`; raw bytes, ETag, Last-Modified, single HTTP Range support |
@@ -19,6 +20,14 @@ All paths are workspace-relative unless they are absolute paths inside the works
 `fs/stat` fields are `type`, `size`, `created_at`, `modified_at`, `changed_at`, `etag`, `content_type`, and `sha256`. SHA-256 is computed only when requested. For `fs/content`, use `Range: bytes=<start>-<end>` or `If-None-Match: <etag>` where useful.
 
 `POST /fs/manifest` accepts `{"items":[{"path":"...","size":123,"sha256":"..."}],"include_sha256":false}`. An item with expectations returns `same`, `conflict`, or `missing`; one without expectations returns `exists` or `missing`. It computes SHA-256 only when an expected hash is supplied or `include_sha256` is true. Split requests at `limits.max_batch_file_operations`.
+
+For a recursive inventory, use `{"recursive":true,"path":"src","depth":8,"include_sha256":true}` instead of `items`. The flat response includes the root, file/directory metadata and optional hashes, bounded by `max_tree_nodes`. Depth 0 includes only root; check `truncated` for the node cap. It is not a transactional snapshot.
+
+Prefer `POST /fs/read_many` with `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}` when reading several small source files. Limits count characters (per-file and aggregate), bounded by `max_read_chars`; paths are bounded by `max_batch_file_operations`. Check each item's `status` (HTTP 207 means partial errors). Continue truncated content with `fs/read` using `offset=next_offset`; retry remaining paths separately on `read_budget_exhausted`. It is read-only and requires no mutation context.
+
+Search supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters.
+
+These operations run in one RPC for a single mapping with an updated client. Reduce batch size, text budget, or depth if the RPC response exceeds its size limit (413).
 
 Search skips binary, non-UTF-8, oversized, private, and symlinked content. Depth `0` means only the named root; consult Discovery for the maximum.
 
