@@ -13,6 +13,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `GET` | `<workspace_url>/fs/read` |
 | `GET` | `<workspace_url>/fs/stat` |
 | `POST` | `<workspace_url>/fs/manifest` |
+| `POST` | `<workspace_url>/fs/read_many` |
 | `GET` | `<workspace_url>/fs/search` |
 | `GET` | `<workspace_url>/fs/tree` |
 | `GET|HEAD|PUT` | `<workspace_url>/fs/content` |

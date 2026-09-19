@@ -127,6 +127,32 @@ class FileHandlersMixin(FileOperationSupportMixin):
         body = self._read_json()
         if self._try_mapping_file_api("fs_manifest", body=body):
             return
+        if self._optional_bool(body, "recursive", False):
+            if "items" in body:
+                raise ApiError(400, "invalid_request", "recursive mode does not accept items")
+            root = self._resolve_path(self._required_string({"path": body.get("path", ".")}, "path"))
+            depth = self._body_read_limit(body, "depth", 8, self.server.config.max_recursion_depth, minimum=0)
+            include_sha256 = self._optional_bool(body, "include_sha256", False)
+            state = {"count": 0, "truncated": False}
+            tree = self._tree_node(root, root, depth, 0, state)
+            results = []
+            stack = [tree]
+            while stack:
+                node = dict(stack.pop())
+                stack.extend(reversed(node.pop("children", [])))
+                if include_sha256:
+                    path = Path(node["path"])
+                    node["sha256"] = None
+                    if node.get("type") == "file":
+                        details = self._file_stat(path)
+                        if details.st_size != node["size"] or datetime.fromtimestamp(details.st_mtime, timezone.utc).isoformat() != node["modified_at"]:
+                            raise ApiError(409, "path_changed", "file changed during manifest traversal")
+                        node["sha256"] = self._sha256_snapshot(path, details)
+                results.append(node)
+            self._send_json(200, {"path": str(root), "recursive": True, "depth": depth,
+                                  "items": results, "total": len(results),
+                                  "truncated": state["truncated"], "include_sha256": include_sha256})
+            return
         items = body.get("items")
         if not isinstance(items, list) or not items:
             raise ApiError(
@@ -287,7 +313,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
         skipped_binary = 0
         skipped_large = 0
         truncated = False
-        for file_path in self._search_files(root, depth):
+        includes = self._glob_patterns(query.get("include", []))
+        excludes = self._glob_patterns(query.get("exclude", []))
+        for file_path in self._search_files(root, depth, includes=includes, excludes=excludes):
             try:
                 descriptor = self._safe_path_access().open(file_path, os.O_RDONLY)
                 with os.fdopen(descriptor, "rb") as handle:
@@ -334,6 +362,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "regex": regex,
                 "case_sensitive": case_sensitive,
                 "depth": depth,
+                "include": includes,
+                "exclude": excludes,
                 "matches": matches,
                 "match_count": len(matches),
                 "files_searched": files_searched,
@@ -514,6 +544,63 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "etag": self._path_etag(path, final_stat),
             },
         )
+
+    @staticmethod
+    def _body_read_limit(body, key, default, maximum, *, minimum=1):
+        value = body.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise ApiError(400, "invalid_request", f"{key} must be an integer between {minimum} and {maximum}")
+        return value
+
+    def _handle_fs_read_many(self) -> None:
+        self._require_permission(self.token_record.can_read, "read permission is not granted")
+        body = self._read_json()
+        if self._try_mapping_file_api("fs_read_many", body=body):
+            return
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not paths or len(paths) > self.server.config.max_batch_file_operations:
+            raise ApiError(400, "invalid_request", "paths must be a non-empty array within the batch operation limit")
+        if any(not isinstance(path, str) or not path for path in paths):
+            raise ApiError(400, "invalid_request", "paths must contain non-empty strings")
+        limit = self._body_read_limit(body, "limit", min(65536, self.server.config.max_read_chars), self.server.config.max_read_chars)
+        remaining = self._body_read_limit(body, "max_total_chars", min(262144, self.server.config.max_read_chars), self.server.config.max_read_chars)
+        items = []
+        total = 0
+        for index, requested in enumerate(paths):
+            item = {"index": index, "path": requested}
+            try:
+                if remaining == 0:
+                    raise ApiError(413, "read_budget_exhausted", "total character budget exhausted; request remaining paths separately")
+                path = self._resolve_path(requested)
+                descriptor = self._safe_open_descriptor(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+                with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                    details = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(details.st_mode):
+                        raise ApiError(400, "not_a_file", "path is not a regular file")
+                    count = min(limit, remaining)
+                    window = handle.read(count + 1)
+                    after = os.fstat(handle.fileno())
+                    if self._stat_etag(details) != self._stat_etag(after):
+                        raise ApiError(409, "path_changed", "file changed during read")
+                content = window[:count]
+                truncated = len(window) > count
+                item.update(status=200, content=content, length=len(content), encoding="utf-8",
+                            truncated=truncated, next_offset=len(content) if truncated else None,
+                            etag=self._path_etag(path, details))
+                remaining -= len(content)
+                total += len(content)
+            except UnicodeDecodeError:
+                item.update(status=415, error={"code": "not_utf8_text", "message": "file is not valid UTF-8 text"})
+            except ApiError as exc:
+                item.update(status=int(exc.status), error={"code": exc.code, "message": exc.message})
+            except OSError as exc:
+                status, code = {errno.ENOENT: (404, "path_not_found"), errno.EPERM: (403, "path_access_denied"),
+                                errno.EACCES: (403, "path_access_denied"), errno.EINVAL: (400, "invalid_request")}.get(
+                                    exc.errno, (409, "file_operation_failed"))
+                item.update(status=status, error={"code": code, "message": "file could not be read"})
+            items.append(item)
+        self._send_json(207 if any(item["status"] != 200 for item in items) else 200,
+                        {"items": items, "total": len(items), "total_chars": total})
 
     def _handle_fs_read(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")

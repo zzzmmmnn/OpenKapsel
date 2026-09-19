@@ -8,7 +8,7 @@ SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sha
 SECTION_ENDPOINTS = {
     "files": {
         "mapping_list", "fs_copy", "file_transfer", "recycle_purge",
-        "fs_list", "fs_read", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
+        "fs_list", "fs_read", "fs_read_many", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
         "fs_content_put", "fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_delete",
         "fs_delete_batch", "fs_move", "recycle_list", "recycle_restore", "upload_create",
         "upload_status", "upload_chunk", "upload_commit", "upload_cancel",

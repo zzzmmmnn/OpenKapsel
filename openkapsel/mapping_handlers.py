@@ -55,6 +55,8 @@ class MappingHandlersMixin:
             if not value:
                 return False
             targets.append((query, "path", value, True))
+        elif operation == "fs_manifest" and body.get("recursive") is True:
+            targets.append((body, "path", body.get("path", "."), False))
         elif operation in {"fs_manifest", "fs_replace_batch"}:
             items = body.get("items")
             if not isinstance(items, list) or not items or len(items) > self.server.config.max_batch_file_operations:
@@ -62,7 +64,7 @@ class MappingHandlersMixin:
             if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) for item in items):
                 return False
             targets.extend((item, "path", item["path"], False) for item in items)
-        elif operation == "fs_delete_batch":
+        elif operation in {"fs_delete_batch", "fs_read_many"}:
             paths = body.get("paths")
             if not isinstance(paths, list) or not paths or len(paths) > self.server.config.max_batch_file_operations:
                 return False
@@ -98,7 +100,10 @@ class MappingHandlersMixin:
                 raise ApiError(403, "reserved_path", "workspace internal paths are not available")
             container[key] = [relative.as_posix()] if is_query else relative.as_posix()
             selected = row
-        if selected is None or not self.server.mappings.supports_file_api(selected["id"], operation):
+        min_version = 2 if (operation == "fs_read_many" or
+                            operation == "fs_manifest" and body.get("recursive") is True or
+                            operation == "fs_search" and ("include" in query or "exclude" in query)) else 1
+        if selected is None or not self.server.mappings.supports_file_api(selected["id"], operation, min_version=min_version):
             return False
         limits = {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}
         if any(value > FILE_API_LIMITS[name] for name, value in limits.items()):
@@ -124,8 +129,8 @@ class MappingHandlersMixin:
         payload = result.get("body")
         if not isinstance(payload, dict) or result["status"] not in {200, 201, 207}:
             raise ApiError(502, "invalid_mapping_response", "client returned an invalid file API result")
-        if operation in {"fs_manifest", "fs_replace_batch", "fs_delete_batch"}:
-            originals = original.get("paths") if operation == "fs_delete_batch" else [item["path"] for item in original["items"]]
+        if operation in {"fs_manifest", "fs_replace_batch", "fs_delete_batch", "fs_read_many"} and not original.get("recursive"):
+            originals = original.get("paths") if operation in {"fs_delete_batch", "fs_read_many"} else [item["path"] for item in original["items"]]
             for item in payload.get("items", []):
                 index = item.get("index")
                 if isinstance(index, int) and 0 <= index < len(originals):

@@ -684,6 +684,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "web_app_api",
                 "fs_list",
                 "fs_read",
+                "fs_read_many",
                 "fs_stat",
                 "fs_manifest",
                 "fs_search",

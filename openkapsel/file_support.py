@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fnmatch
 import hashlib
 import hmac
 import os
@@ -293,10 +294,24 @@ class FileOperationSupportMixin:
             )
         return requested
 
-    def _search_files(self, root: Path, depth: int):
+    @staticmethod
+    def _glob_patterns(values):
+        if len(values) > 64 or any(not isinstance(value, str) or not value or len(value) > 512 or "\x00" in value for value in values):
+            raise ApiError(400, "invalid_request", "glob filters accept at most 64 non-empty patterns of up to 512 characters")
+        return values
+
+    @staticmethod
+    def _matches_glob(relative, patterns):
+        # Slash-free patterns match basenames; other patterns match root-relative
+        # POSIX paths. fnmatch '*' spans slashes; no platform case folding.
+        return any(fnmatch.fnmatchcase(relative.rsplit("/", 1)[-1] if "/" not in pattern else relative, pattern)
+                   for pattern in patterns)
+
+    def _search_files(self, root: Path, depth: int, *, includes=(), excludes=()):
         root_stat = self._file_stat(root)
         if stat.S_ISREG(root_stat.st_mode):
-            yield root
+            if not self._matches_glob(root.name, excludes) and (not includes or self._matches_glob(root.name, includes)):
+                yield root
             return
         if not stat.S_ISDIR(root_stat.st_mode):
             return
@@ -313,8 +328,12 @@ class FileOperationSupportMixin:
                 entry = directory / name
                 if self._is_hidden_internal_path(directory, entry) or stat.S_ISLNK(entry_stat.st_mode):
                     continue
+                relative = entry.relative_to(root).as_posix()
+                if self._matches_glob(relative, excludes):
+                    continue
                 if stat.S_ISREG(entry_stat.st_mode):
-                    yield entry
+                    if not includes or self._matches_glob(relative, includes):
+                        yield entry
                 elif stat.S_ISDIR(entry_stat.st_mode) and level < depth:
                     directories.append((entry, level + 1))
             stack.extend(directories)

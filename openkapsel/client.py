@@ -67,7 +67,7 @@ def run_once(config, stop=None):
         sock = websocket.create_connection(url, header={"Authorization": "Bearer " + config["token"]},
                                            suppress_origin=True, timeout=30, **proxy_options(config.get("proxy")))
         sock.send(encode({"type": "hello", "capabilities": {"protocol": 1, "writable": files.writable,
-                                                           "file_api": {"version": 1, "operations": sorted(FILE_API_OPERATIONS)},
+                                                           "file_api": {"version": 2, "operations": sorted(FILE_API_OPERATIONS)},
                                                            "execution": tasks.capabilities()}}).decode())
         LOG.info("Mapping provider connected")
         def heartbeat():

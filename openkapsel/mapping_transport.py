@@ -14,7 +14,7 @@ import time
 MAX_MESSAGE = 1024 * 1024
 CHUNK_SIZE = 128 * 1024
 RPC_TIMEOUT = 30
-FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search", "fs_manifest"})
+FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_read_many", "fs_tree", "fs_search", "fs_manifest"})
 FILE_API_WRITE_OPERATIONS = frozenset({"fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_move", "fs_delete", "fs_delete_batch"})
 FILE_API_OPERATIONS = FILE_API_READ_OPERATIONS | FILE_API_WRITE_OPERATIONS
 READ_OPERATIONS = frozenset({"stat", "list", "read", "open", "close", "flush", "statfs", "recycle_list",

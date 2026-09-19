@@ -39,7 +39,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         def call(op, args):
             self.calls.append((op, args))
             return self.files.dispatch(op, args)
-        self.session = SimpleNamespace(closed=False, capabilities={"file_api": {"version": 1, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
+        self.session = SimpleNamespace(closed=False, capabilities={"file_api": {"version": 2, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
         self.server.mappings.sessions[self.row["id"]] = self.session
 
     def tearDown(self):
@@ -85,6 +85,28 @@ class MappingFileHTTPTests(unittest.TestCase):
         status, body = self.api("/fs/delete/batch", {"paths": ["laptop/a"]})
         self.assertEqual(200, status, body)
         self.assertEqual("laptop", body["items"][0]["root"])
+
+    def test_new_read_operations_are_single_rpc_and_read_token_accessible(self):
+        (self.export / "a.py").write_text("needle")
+        self.headers = {"Content-Type": "application/json"}
+        for endpoint, body in (("/fs/read_many", {"paths": ["laptop/a.py"]}),
+                               ("/fs/manifest", {"recursive": True, "path": "laptop", "include_sha256": True}),
+                               ("/fs/search?path=laptop&query=needle&include=*.py", None)):
+            before = len(self.calls)
+            status, result = self.api(endpoint, body)
+            self.assertEqual(200, status, result)
+            self.assertEqual(before + 1, len(self.calls))
+        self.session.capabilities["file_api"]["version"] = 1
+        self.assertFalse(self.server.mappings.supports_file_api(self.row["id"], "fs_manifest", min_version=2))
+        # Simulate the old client's FUSE view and ensure filters are not silently
+        # sent to a client which cannot implement them.
+        (self.mount / "a.py").write_text("needle")
+        (self.mount / "b.txt").write_text("needle")
+        before = len(self.calls)
+        status, result = self.api("/fs/search?path=laptop&query=needle&include=*.py")
+        self.assertEqual(200, status, result)
+        self.assertEqual(1, result["match_count"])
+        self.assertEqual(before, len(self.calls))
 
     def test_fuse_and_direct_rpc_etags_share_client_identity(self):
         (self.export / "a").write_text("same file")
