@@ -1114,11 +1114,12 @@ class DiscoveryMixin:
                 "fs_read": {
                     "method": "GET",
                     "url": f"{base}/fs/read?path=<path>&offset=0&limit=65536",
-                    "notes": "UTF-8 text only; use byte_offset instead of offset for efficient large-file cursors",
+                    "notes": "Explicit encoding, UTF-8 by default; strict decoding, literal LF/CRLF/CR preservation. byte_offset only supports UTF-8; other encodings use character offset. Supported: utf-8, utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No auto-detection; UTF-16 BOM remains U+FEFF.",
                     "query": {
                         "path": "<required>",
                         "offset": 0,
                         "byte_offset": "alternative to offset",
+                        "encoding": "utf-8",
                         "limit": self.server.config.default_read_chars,
                         **optional_read_context_query,
                     },
@@ -1126,8 +1127,8 @@ class DiscoveryMixin:
                 "fs_read_many": {
                     "method": "POST", "url": f"{base}/fs/read_many",
                     "authentication": "read-only URL token; Bearer token is not required",
-                    "json": {"paths": ["src/main.py", "README.md"], "limit": 65536, "max_total_chars": 262144},
-                    "notes": "UTF-8 text; paths bounded by max_batch_file_operations; limit is per-file characters, max_total_chars is shared, both bounded by max_read_chars. Items contain status, content, etag, truncated and next_offset; errors are per-item (HTTP 207). An exhausted budget reports read_budget_exhausted for remaining items. Continue truncated files using fs_read offset=next_offset. Same-mapping batches execute in one client RPC.",
+                    "json": {"paths": ["src/main.py", "README.md"], "encoding": "utf-8", "limit": 65536, "max_total_chars": 262144},
+                    "notes": "Explicit encoding as in fs_read, UTF-8 by default; literal newlines. paths bounded by max_batch_file_operations; limit is per-file characters, max_total_chars is shared, both bounded by max_read_chars. Items contain status, content, etag, truncated and next_offset; errors are per-item (HTTP 207). An exhausted budget reports read_budget_exhausted for remaining items. Continue truncated files using fs_read offset=next_offset with the same encoding. Same-mapping batches execute in one client RPC.",
                 },
                 "fs_stat": {
                     "method": "GET",
@@ -1223,28 +1224,30 @@ class DiscoveryMixin:
                     "url": f"{base}/fs/write",
                     "json": {
                         "path": "<path>",
-                        "content": "<UTF-8 text>",
+                        "content": "<Unicode text with literal newlines>",
+                        "encoding": "utf-8",
                         "create_parents": False,
                         "expected_etag": "<optional current ETag>",
                         "plan_id": "<required owning plan id>",
                         "taskname": "<required task grouping name>",
                         "message": "<required brief operation summary>",
                     },
-                    "notes": "expected_etag provides If-Match-style optimistic concurrency",
+                    "notes": "encoding uses the same codec choices as fs_read; default UTF-8. Strict encoding; input newlines are written literally, without platform translation. expected_etag provides If-Match-style optimistic concurrency",
                 },
                 "fs_replace": {
                     "method": "POST",
                     "url": f"{base}/fs/replace",
                     "json": {
                         "path": "<path>",
-                        "old": "<exact text>",
+                        "old": "<exact text including CRLF if present>",
+                        "encoding": "utf-8",
                         "new": "<replacement>",
                         "expected_etag": "<optional current ETag>",
                         "plan_id": "<required owning plan id>",
                         "taskname": "<required task grouping name>",
                         "message": "<required brief operation summary>",
                     },
-                    "notes": "safe by default: old must occur exactly once; set expected_matches or replace_all explicitly; expected_etag provides If-Match-style optimistic concurrency",
+                    "notes": "encoding uses the same codec choices as fs_read, default UTF-8; exact matching including newlines, no newline conversion. old must occur exactly once; set expected_matches or replace_all explicitly; expected_etag provides If-Match-style optimistic concurrency",
                 },
                 "fs_replace_batch": {
                     "method": "POST",
@@ -1252,7 +1255,8 @@ class DiscoveryMixin:
                     "json": {
                         "items": [
                             {
-                                "path": "<existing UTF-8 file>",
+                                "path": "<existing text file>",
+                                "encoding": "utf-8",
                                 "expected_etag": "<optional current ETag>",
                                 "replacements": [
                                     {
@@ -1623,7 +1627,7 @@ class DiscoveryMixin:
             "git_api": {"version": 2, "operations": ["status", "diff", "log", "show", "ls_files", "diff_stat"],
                         "routing": "Read-only Git snapshot RPC; no Shell/write/allow_exec. Requires updated client and host Git. No unsafe fallback."},
             "file_api": {
-                "version": 2, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
+                "version": 3, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
                 "routing": "Existing file endpoints automatically use one RPC when every path belongs to the same mapping and its client advertises the operation. No new caller endpoint is needed.",
                 "batching": "Keep batch items within one mapping for client-local execution; cross-root batches retain the existing file path.",
                 "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",

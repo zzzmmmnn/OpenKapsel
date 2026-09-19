@@ -56,7 +56,7 @@ If local DNS returns a proxy's synthetic address (for example an address from `1
 
 Use normal file APIs, server Shell, and backend filesystem operations for mapped paths. `GET /mappings` reports online state, writable state, and client capabilities. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
 
-Updated clients advertise `capabilities.file_api` with version `2` and a list of
+Updated clients advertise `capabilities.file_api` with version `3` and a list of
 supported operations. The server automatically sends one complete file operation
 over the existing WebSocket when all its paths belong to the same mapping. The
 client performs filesystem work locally and returns the normal REST response.

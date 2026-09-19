@@ -37,10 +37,10 @@ class ClientFileAPITests(unittest.TestCase):
         self.assertEqual("/workspace/laptop/sub/test.txt", result["body"]["path"])
         result = self.call("fs_replace", {"path": "sub/test.txt", "old": "héllo", "new": "bye", "expected_etag": '"wrong"'})
         self.assertEqual(412, result["status"])
-        self.assertEqual(content, (self.root / "sub/test.txt").read_text())
+        self.assertEqual(content, (self.root / "sub/test.txt").read_text(encoding="utf-8"))
         result = self.call("fs_replace", {"path": "sub/test.txt", "old": "héllo", "new": "bye", "expected_etag": etag})
         self.assertEqual(200, result["status"], result)
-        self.assertTrue((self.root / "sub/test.txt").read_text().startswith("bye"))
+        self.assertTrue((self.root / "sub/test.txt").read_text(encoding="utf-8").startswith("bye"))
 
     def test_mkdir_move_batch_preconditions_and_recycling(self):
         self.assertEqual(201, self.call("fs_mkdir", {"path": "a/b", "parents": True})["status"])
@@ -51,7 +51,7 @@ class ClientFileAPITests(unittest.TestCase):
         result = self.call("fs_replace_batch", {"items": [{"path": "c/file", "replacements": [
             {"old": "one", "new": "ONE"}, {"old": "two", "new": "TWO"}]}]})
         self.assertEqual(200, result["status"], result)
-        self.assertEqual("ONE TWO", (self.root / "c/file").read_text())
+        self.assertEqual("ONE TWO", (self.root / "c/file").read_text(encoding="utf-8"))
         result = self.call("fs_delete_batch", {"paths": ["c/file", "missing"]})
         self.assertEqual(409, result["status"], result)
         self.assertTrue((self.root / "c/file").exists())
@@ -60,6 +60,59 @@ class ClientFileAPITests(unittest.TestCase):
         self.assertEqual(2, result["body"]["deleted"])
         self.assertTrue((self.root / ".openkapsel/recycle").is_dir())
 
+    def test_encodings_newlines_and_exact_replacement_preserve_bytes(self):
+        for encoding, text in [("utf-8", "繁體é😀"), ("utf-8-sig", "繁體é😀"),
+                               ("utf-16-le", "\ufeff繁體😀"), ("utf-16-be", "\ufeff繁體😀"),
+                               ("gb18030", "中文😀"), ("gbk", "中文"), ("big5", "繁體"),
+                               ("cp1252", "café"), ("shift_jis", "日本語"), ("latin-1", "café")]:
+            with self.subTest(encoding=encoding):
+                content = text + "\r\nold\nlast\rEND"
+                body = {"path": "encoded.txt", "content": content, "encoding": encoding}
+                result = self.call("fs_write", body)
+                self.assertIn(result["status"], (200, 201), result)
+                raw = content.encode(encoding)
+                self.assertEqual(raw, (self.root / "encoded.txt").read_bytes())
+                self.assertEqual(len(raw), result["body"]["bytes_written"])
+                read = self.call("fs_read", query={"path": ["encoded.txt"], "encoding": [encoding]})
+                self.assertEqual(content, read["body"]["content"], read)
+                batch = self.call("fs_read_many", {"paths": ["encoded.txt"], "encoding": encoding})
+                self.assertEqual(content, batch["body"]["items"][0]["content"], batch)
+                replaced = self.call("fs_replace", {"path": "encoded.txt", "old": "\r\nold\n", "new": "\r\nNEW\n", "encoding": encoding})
+                self.assertEqual(200, replaced["status"], replaced)
+                self.assertEqual(content.replace("old", "NEW").encode(encoding), (self.root / "encoded.txt").read_bytes())
+                replaced = self.call("fs_replace_batch", {"items": [{"path": "encoded.txt", "encoding": encoding,
+                    "replacements": [{"old": "NEW", "new": "updated"}]}]})
+                self.assertEqual(200, replaced["status"], replaced)
+                self.assertEqual(content.replace("old", "updated").encode(encoding), (self.root / "encoded.txt").read_bytes())
+
+    def test_invalid_encoding_is_strict_and_does_not_modify_files(self):
+        path = self.root / "legacy.txt"
+        path.write_bytes(b"caf\xe9\r\n")
+        self.assertEqual(415, self.call("fs_read", query={"path": ["legacy.txt"]})["status"])
+        self.assertEqual(415, self.call("fs_replace", {"path": "legacy.txt", "old": "caf", "new": "new"})["status"])
+        for encoding in ("utf-7", "not-a-codec", None):
+            self.assertEqual(400, self.call("fs_write", {"path": "legacy.txt", "content": "new", "encoding": encoding})["status"])
+        self.assertEqual(400, self.call("fs_write", {"path": "legacy.txt", "content": "😀", "encoding": "cp1252"})["status"])
+        self.assertEqual(400, self.call("fs_replace", {"path": "legacy.txt", "old": "caf", "new": "😀", "encoding": "cp1252"})["status"])
+        self.assertEqual(b"caf\xe9\r\n", path.read_bytes())
+        self.assertEqual(400, self.call("fs_read", query={"path": ["legacy.txt"], "encoding": ["cp1252"], "byte_offset": ["0"]})["status"])
+
+    def test_crlf_character_cursors_and_batch_encode_preflight(self):
+        path = self.root / "crlf.txt"
+        path.write_bytes("甲\r\n乙\n".encode("utf-8"))
+        first = self.call("fs_read", query={"path": ["crlf.txt"], "limit": ["2"]})["body"]
+        self.assertEqual("甲\r", first["content"])
+        second = self.call("fs_read", query={"path": ["crlf.txt"], "offset": [str(first["next_offset"])]})["body"]
+        self.assertEqual("\n乙\n", second["content"])
+        self.assertEqual("甲\r\n乙\n", first["content"] + second["content"])
+        (self.root / "ascii.txt").write_bytes(b"old\r\n")
+        response = self.call("fs_replace_batch", {"items": [
+            {"path": "crlf.txt", "replacements": [{"old": "甲", "new": "新"}]},
+            {"path": "ascii.txt", "encoding": "ascii", "replacements": [{"old": "old", "new": "😀"}]},
+        ]})
+        self.assertEqual(400, response["status"], response)
+        self.assertEqual("甲\r\n乙\n".encode("utf-8"), path.read_bytes())
+        self.assertEqual(b"old\r\n", (self.root / "ascii.txt").read_bytes())
     def test_export_confinement_and_readonly_apply_to_high_level_operations(self):
         for value in ("../outside", "/etc/passwd", ".openkapsel/context/db", "a\x00b", "C:\\file"):
             result = self.call("fs_read", query={"path": [value]})

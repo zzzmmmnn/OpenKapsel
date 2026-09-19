@@ -9,10 +9,10 @@ All paths are workspace-relative unless they are absolute paths inside the works
 | Method | Path | Inputs and result |
 |---|---|---|
 | `GET` | `/fs/list` | `path=.` plus `offset=0`, `limit=1000`; immediate children |
-| `GET` | `/fs/read` | required `path`; `offset` or efficient `byte_offset`; `limit`; UTF-8 text only |
+| `GET` | `/fs/read` | required `path`; `offset` or UTF-8-only `byte_offset`; `limit`; optional `encoding`, default UTF-8 |
 | `GET` | `/fs/stat` | required `path`; optional comma-separated `fields` |
 | `POST` | `/fs/manifest` | bounded `items` with `path` plus optional expected `size`/`sha256`; returns per-file synchronization status |
-| `POST` | `/fs/read_many` | read several small UTF-8 files with per-file errors and bounded total content |
+| `POST` | `/fs/read_many` | read several small text files with optional `encoding`, per-file errors and bounded total content |
 | `GET` | `/fs/search` | `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
 | `GET` | `/fs/tree` | `path=.`, `depth=2`; nested tree bounded by published node/depth limits |
 | `GET|HEAD` | `/fs/content` | required `path`; raw bytes, ETag, Last-Modified, single HTTP Range support |
@@ -30,6 +30,8 @@ Search supports repeated `include`/`exclude` query parameters, e.g. `include=*.p
 These operations run in one RPC for a single mapping with an updated client. Reduce batch size, text budget, or depth if the RPC response exceeds its size limit (413).
 
 Search skips binary, non-UTF-8, oversized, private, and symlinked content. Depth `0` means only the named root; consult Discovery for the maximum.
+
+Text read/write/replace defaults to UTF-8 regardless of OS locale. Pass `encoding` in the read query, write/replace/read_many body, or each replace_batch item for other codecs: utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No automatic detection or lossy conversion: decode errors are 415, unrepresentable output is 400 and leaves files unchanged. UTF-16 uses explicit endian; its BOM remains U+FEFF. utf-8-sig consumes/emits the BOM. LF/CRLF/CR are preserved literally; exact replacement must include the original line endings, and new text controls its own endings. Character offsets count both CRLF characters. byte_offset is UTF-8-only; use binary APIs for byte-exact arbitrary formats. Client-local text RPC needs client 1.59.0+ (file API v3).
 
 ## Text and path mutations
 
