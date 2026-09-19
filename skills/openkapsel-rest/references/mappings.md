@@ -2,6 +2,8 @@
 
 Fetch `GET /mappings` before using client-backed paths. It returns each mapping's `id`, workspace-relative `path`, `online`, `writable`, and advertised client execution capabilities. Files live on that client, not inside the server's workspace image. Use normal file APIs for mapped paths. Offline operations fail; do not recreate an offline mountpoint or assume it is empty.
 
+Clients advertising `capabilities.file_api.version = 1` execute supported same-mapping file operations in one RPC. Continue using the normal REST endpoints; no separate caller-facing RPC is needed. Keep batch items within one mapping when possible. A `mapping_response_too_large` error (413) requires a smaller result limit, tree depth, or batch. After an ambiguous timeout or a response with `mutation_may_have_completed: true`, inspect the affected paths before repeating a mutation.
+
 `GET /recycle/list?root=.` selects the ordinary workspace recycle bin. Use `root=<mapping-name>` for that client's recycle bin. `POST /recycle/restore` accepts the same `root` and `recycle_id`, plus normal mutation Context. Never infer a recycle root from the ID alone.
 
 `POST /recycle/purge` permanently deletes one entry and requires `root`, `recycle_id`, `confirm: true`, and mutation Context. Use it only when permanent deletion is authorized; ordinary cleanup should use recoverable deletion instead.

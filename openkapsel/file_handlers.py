@@ -16,42 +16,37 @@ from typing import Any
 from urllib.parse import quote
 
 from .errors import ApiError
+from .file_support import FileOperationSupportMixin
 from .recycle import RecycleError
 from .safe_paths import SafePathError
 from .uploads import UploadError, UploadRecord
 
 
-class FileHandlersMixin:
+class FileHandlersMixin(FileOperationSupportMixin):
     """File-domain methods mixed into the main request handler."""
     def _handle_fs_list(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
+        if self._try_mapping_file_api("fs_list", query=query):
+            return
         path = self._resolve_path(self._query_one(query, "path", ""))
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        details = os.fstat(descriptor)
+        details = self._file_stat(path)
         if not stat.S_ISDIR(details.st_mode):
-            os.close(descriptor)
             raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_directory", "path is not a directory")
         offset = self._query_int(query, "offset", 0, minimum=0)
         limit = self._query_int(query, "limit", 1000, minimum=1, maximum=5000)
         entries = []
-        try:
-            with os.scandir(descriptor) as iterator:
-                for item in iterator:
-                    item_path = path / item.name
-                    if self._is_hidden_internal_path(path, item_path) or self._is_internal_transfer_name(item.name):
-                        continue
-                    item_stat = item.stat(follow_symlinks=False)
-                    if stat.S_ISLNK(item_stat.st_mode):
-                        kind = "symlink"
-                    elif stat.S_ISDIR(item_stat.st_mode):
-                        kind = "directory"
-                    elif stat.S_ISREG(item_stat.st_mode):
-                        kind = "file"
-                    else:
-                        kind = "other"
-                    entries.append((item.name, kind, item_stat))
-        finally:
-            os.close(descriptor)
+        for name, item_stat in self._directory_entries(path):
+            if self._is_hidden_internal_path(path, path / name):
+                continue
+            if stat.S_ISLNK(item_stat.st_mode):
+                kind = "symlink"
+            elif stat.S_ISDIR(item_stat.st_mode):
+                kind = "directory"
+            elif stat.S_ISREG(item_stat.st_mode):
+                kind = "file"
+            else:
+                kind = "other"
+            entries.append((name, kind, item_stat))
         entries.sort(key=lambda item: (item[1] != "directory", item[0].casefold()))
         selected = entries[offset : offset + limit]
         result = []
@@ -81,64 +76,57 @@ class FileHandlersMixin:
 
     def _handle_fs_stat(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
+        if self._try_mapping_file_api("fs_stat", query=query):
+            return
         path = self._resolve_path(self._required_query(query, "path"))
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        try:
-            file_stat = os.fstat(descriptor)
-            if stat.S_ISDIR(file_stat.st_mode):
-                kind = "directory"
-            elif stat.S_ISREG(file_stat.st_mode):
-                kind = "file"
-            else:
-                kind = "other"
-            allowed = {"type", "size", "created_at", "modified_at", "changed_at", "etag", "content_type", "sha256"}
-            requested = self._query_fields(
-                query,
-                "fields",
-                {"type", "size", "created_at", "modified_at", "etag", "content_type"},
-                allowed,
+        file_stat = self._file_stat(path)
+        if stat.S_ISDIR(file_stat.st_mode):
+            kind = "directory"
+        elif stat.S_ISREG(file_stat.st_mode):
+            kind = "file"
+        else:
+            kind = "other"
+        allowed = {"type", "size", "created_at", "modified_at", "changed_at", "etag", "content_type", "sha256"}
+        requested = self._query_fields(
+            query,
+            "fields",
+            {"type", "size", "created_at", "modified_at", "etag", "content_type"},
+            allowed,
+        )
+        result: dict[str, Any] = {"path": str(path), "fields": sorted(requested)}
+        if "type" in requested:
+            result["type"] = kind
+        if "size" in requested:
+            result["size"] = file_stat.st_size
+        if "created_at" in requested:
+            birthtime = getattr(file_stat, "st_birthtime", None)
+            result["created_at"] = (
+                datetime.fromtimestamp(birthtime, timezone.utc).isoformat()
+                if birthtime is not None
+                else None
             )
-            result: dict[str, Any] = {"path": str(path), "fields": sorted(requested)}
-            if "type" in requested:
-                result["type"] = kind
-            if "size" in requested:
-                result["size"] = file_stat.st_size
-            if "created_at" in requested:
-                birthtime = getattr(file_stat, "st_birthtime", None)
-                result["created_at"] = (
-                    datetime.fromtimestamp(birthtime, timezone.utc).isoformat()
-                    if birthtime is not None
-                    else None
-                )
-                result["created_at_available"] = birthtime is not None
-            if "modified_at" in requested:
-                result["modified_at"] = datetime.fromtimestamp(file_stat.st_mtime, timezone.utc).isoformat()
-            if "changed_at" in requested:
-                result["changed_at"] = datetime.fromtimestamp(file_stat.st_ctime, timezone.utc).isoformat()
-            if "etag" in requested:
-                result["etag"] = self._stat_etag(file_stat)
-            if "content_type" in requested:
-                content_type = mimetypes.guess_type(path.name)[0] if kind == "file" else None
-                result["content_type"] = content_type or ("application/octet-stream" if kind == "file" else None)
-            if "sha256" in requested:
-                if kind == "file":
-                    digest = hashlib.sha256()
-                    with os.fdopen(os.dup(descriptor), "rb") as handle:
-                        while True:
-                            chunk = handle.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            digest.update(chunk)
-                    result["sha256"] = digest.hexdigest()
-                else:
-                    result["sha256"] = None
-        finally:
-            os.close(descriptor)
+            result["created_at_available"] = birthtime is not None
+        if "modified_at" in requested:
+            result["modified_at"] = datetime.fromtimestamp(file_stat.st_mtime, timezone.utc).isoformat()
+        if "changed_at" in requested:
+            result["changed_at"] = datetime.fromtimestamp(file_stat.st_ctime, timezone.utc).isoformat()
+        if "etag" in requested:
+            result["etag"] = self._path_etag(path, file_stat)
+        if "content_type" in requested:
+            content_type = mimetypes.guess_type(path.name)[0] if kind == "file" else None
+            result["content_type"] = content_type or ("application/octet-stream" if kind == "file" else None)
+        if "sha256" in requested:
+            if kind == "file":
+                result["sha256"] = self._sha256_snapshot(path, file_stat)
+            else:
+                result["sha256"] = None
         self._send_json(HTTPStatus.OK, result)
 
     def _handle_fs_manifest(self) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_manifest", body=body):
+            return
         items = body.get("items")
         if not isinstance(items, list) or not items:
             raise ApiError(
@@ -210,9 +198,7 @@ class FileHandlersMixin:
         counts = {"missing": 0, "same": 0, "conflict": 0, "exists": 0}
         for index, requested_path, path, expected_size, expected_sha256 in validated:
             try:
-                descriptor = self._safe_open_descriptor(
-                    path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-                )
+                file_stat = self._file_stat(path)
             except ApiError as exc:
                 if exc.status == HTTPStatus.NOT_FOUND and exc.code == "path_not_found":
                     item_result = {
@@ -224,49 +210,41 @@ class FileHandlersMixin:
                     results.append(item_result)
                     continue
                 raise
-            try:
-                file_stat = os.fstat(descriptor)
-                if stat.S_ISDIR(file_stat.st_mode):
-                    kind = "directory"
-                elif stat.S_ISREG(file_stat.st_mode):
-                    kind = "file"
-                else:
-                    kind = "other"
-                actual_sha256: str | None = None
-                if kind == "file" and (include_sha256 or expected_sha256 is not None):
-                    digest = hashlib.sha256()
-                    with os.fdopen(os.dup(descriptor), "rb") as handle:
-                        while chunk := handle.read(1024 * 1024):
-                            digest.update(chunk)
-                    actual_sha256 = digest.hexdigest()
-                has_expectation = expected_size is not None or expected_sha256 is not None
-                matches = kind == "file"
-                if expected_size is not None:
-                    matches = matches and file_stat.st_size == expected_size
-                if expected_sha256 is not None:
-                    matches = matches and actual_sha256 == expected_sha256
-                item_status = (
-                    "same" if has_expectation and matches
-                    else "conflict" if has_expectation
-                    else "exists"
-                )
-                item_result = {
-                    "index": index,
-                    "path": requested_path,
-                    "status": item_status,
-                    "type": kind,
-                    "size": file_stat.st_size,
-                    "modified_at": datetime.fromtimestamp(
-                        file_stat.st_mtime, timezone.utc
-                    ).isoformat(),
-                    "etag": self._stat_etag(file_stat),
-                }
-                if include_sha256 or expected_sha256 is not None:
-                    item_result["sha256"] = actual_sha256
-                counts[item_status] += 1
-                results.append(item_result)
-            finally:
-                os.close(descriptor)
+            if stat.S_ISDIR(file_stat.st_mode):
+                kind = "directory"
+            elif stat.S_ISREG(file_stat.st_mode):
+                kind = "file"
+            else:
+                kind = "other"
+            actual_sha256: str | None = None
+            if kind == "file" and (include_sha256 or expected_sha256 is not None):
+                actual_sha256 = self._sha256_snapshot(path, file_stat)
+            has_expectation = expected_size is not None or expected_sha256 is not None
+            matches = kind == "file"
+            if expected_size is not None:
+                matches = matches and file_stat.st_size == expected_size
+            if expected_sha256 is not None:
+                matches = matches and actual_sha256 == expected_sha256
+            item_status = (
+                "same" if has_expectation and matches
+                else "conflict" if has_expectation
+                else "exists"
+            )
+            item_result = {
+                "index": index,
+                "path": requested_path,
+                "status": item_status,
+                "type": kind,
+                "size": file_stat.st_size,
+                "modified_at": datetime.fromtimestamp(
+                    file_stat.st_mtime, timezone.utc
+                ).isoformat(),
+                "etag": self._path_etag(path, file_stat),
+            }
+            if include_sha256 or expected_sha256 is not None:
+                item_result["sha256"] = actual_sha256
+            counts[item_status] += 1
+            results.append(item_result)
         self._send_json(
             HTTPStatus.OK,
             {
@@ -279,6 +257,8 @@ class FileHandlersMixin:
 
     def _handle_fs_search(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
+        if self._try_mapping_file_api("fs_search", query=query):
+            return
         needle = self._required_query(query, "query")
         root = self._resolve_path(self._query_one(query, "path", "."))
         depth = self._query_int(
@@ -365,6 +345,8 @@ class FileHandlersMixin:
 
     def _handle_fs_tree(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
+        if self._try_mapping_file_api("fs_tree", query=query):
+            return
         root = self._resolve_path(self._query_one(query, "path", "."))
         depth = self._query_int(
             query,
@@ -396,7 +378,7 @@ class FileHandlersMixin:
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
             size = file_stat.st_size
-            etag = self._stat_etag(file_stat)
+            etag = self._path_etag(path, file_stat)
             if self.headers.get("If-None-Match") == etag:
                 self._send_empty(HTTPStatus.NOT_MODIFIED, {"ETag": etag})
                 return
@@ -468,7 +450,7 @@ class FileHandlersMixin:
             previous_stat = parent.lstat()
             if previous_stat is not None and not stat.S_ISREG(previous_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
-            previous_etag = self._stat_etag(previous_stat) if previous_stat is not None else None
+            previous_etag = self._path_etag(path, previous_stat) if previous_stat is not None else None
             if previous_stat is not None:
                 raise ApiError(HTTPStatus.CONFLICT, "path_exists", "destination already exists")
             self._check_if_match(previous_etag)
@@ -503,7 +485,7 @@ class FileHandlersMixin:
                         {"expected": expected_sha256.lower(), "actual": actual_sha256},
                     )
                 current_stat = parent.lstat()
-                current_etag = self._stat_etag(current_stat) if current_stat is not None else None
+                current_etag = self._path_etag(path, current_stat) if current_stat is not None else None
                 if current_stat is not None:
                     raise ApiError(HTTPStatus.CONFLICT, "path_exists", "destination already exists")
                 self._check_if_match(current_etag)
@@ -529,12 +511,14 @@ class FileHandlersMixin:
                 "created": True,
                 "bytes_written": length,
                 "sha256": digest.hexdigest(),
-                "etag": self._stat_etag(final_stat),
+                "etag": self._path_etag(path, final_stat),
             },
         )
 
     def _handle_fs_read(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
+        if self._try_mapping_file_api("fs_read", query=query):
+            return
         requested = self._required_query(query, "path")
         path = self._resolve_path(requested)
         if "byte_offset" in query:
@@ -667,6 +651,8 @@ class FileHandlersMixin:
     def _handle_fs_write(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_write", body=body):
+            return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
         content = self._required_string(body, "content", allow_empty=True)
         expected_etag = self._optional_expected_etag(body)
@@ -679,7 +665,7 @@ class FileHandlersMixin:
             expected_etag=expected_etag,
             create_parents=create_parents,
         )
-        etag = self._stat_etag(file_stat)
+        etag = self._path_etag(path, file_stat)
         self._send_json(
             HTTPStatus.CREATED if created else HTTPStatus.OK,
             {
@@ -693,6 +679,8 @@ class FileHandlersMixin:
     def _handle_fs_replace(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_replace", body=body):
+            return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
         old = self._required_string(body, "old")
         new = self._required_string(body, "new", allow_empty=True)
@@ -734,13 +722,15 @@ class FileHandlersMixin:
             {
                 "path": str(path),
                 "replacements": count,
-                "etag": self._stat_etag(updated_stat),
+                "etag": self._path_etag(path, updated_stat),
             },
         )
 
     def _handle_fs_replace_batch(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_replace_batch", body=body):
+            return
         items = body.get("items")
         if not isinstance(items, list) or not items:
             raise ApiError(
@@ -858,7 +848,7 @@ class FileHandlersMixin:
                 if descriptor >= 0:
                     os.close(descriptor)
 
-            observed_etag = self._stat_etag(file_stat)
+            observed_etag = self._path_etag(item["path"], file_stat)
             self._check_expected_etag(item["expected_etag"], observed_etag)
             spans: list[tuple[int, int, str, int]] = []
             for replacement_index, (old, new, expected_matches) in enumerate(item["rules"]):
@@ -945,7 +935,7 @@ class FileHandlersMixin:
                     "path": item["requested_path"],
                     "updated": True,
                     "replacements": item["replacement_count"],
-                    "etag": self._stat_etag(updated_stat),
+                    "etag": self._path_etag(item["path"], updated_stat),
                 }
             )
         status = HTTPStatus.OK if failures == 0 else HTTPStatus.MULTI_STATUS
@@ -966,6 +956,8 @@ class FileHandlersMixin:
     def _handle_fs_mkdir(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_mkdir", body=body):
+            return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
         parents = self._optional_bool(body, "parents", False)
         exist_ok = self._optional_bool(body, "exist_ok", False)
@@ -991,6 +983,8 @@ class FileHandlersMixin:
     def _handle_fs_delete(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_delete", body=body):
+            return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
         if "recursive" in body:
             # Accepted for compatibility with clients using the previous API.
@@ -1016,6 +1010,8 @@ class FileHandlersMixin:
     def _handle_fs_delete_batch(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_delete_batch", body=body):
+            return
         paths = body.get("paths")
         if not isinstance(paths, list) or not paths:
             raise ApiError(
@@ -1081,9 +1077,7 @@ class FileHandlersMixin:
 
         for index, requested_path, path in validated:
             try:
-                descriptor = self._safe_open_descriptor(
-                    path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-                )
+                self._file_stat(path)
             except ApiError as exc:
                 if exc.status == HTTPStatus.NOT_FOUND and exc.code == "path_not_found":
                     raise ApiError(
@@ -1097,9 +1091,6 @@ class FileHandlersMixin:
                         },
                     ) from None
                 raise
-            else:
-                os.close(descriptor)
-
         results: list[dict[str, Any]] = []
         failures = 0
         for index, requested_path, path in validated:
@@ -1140,6 +1131,8 @@ class FileHandlersMixin:
     def _handle_fs_move(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        if self._try_mapping_file_api("fs_move", body=body):
+            return
         source = self._resolve_path(self._required_string(body, "source"), write=True)
         destination = self._resolve_path(self._required_string(body, "destination"), write=True)
         overwrite = self._optional_bool(body, "overwrite", False)
@@ -1410,7 +1403,7 @@ class FileHandlersMixin:
                 "created": True,
                 "bytes_written": verified.expected_size,
                 "sha256": actual_sha256,
-                "etag": self._stat_etag(final_stat),
+                "etag": self._path_etag(target, final_stat),
             },
         )
 

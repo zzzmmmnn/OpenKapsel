@@ -3,15 +3,140 @@
 from __future__ import annotations
 
 import errno
+import copy
 import json
 import re
 import secrets
 import sqlite3
+from datetime import datetime
+from pathlib import Path
 
 from .errors import ApiError
 
 
 class MappingHandlersMixin:
+    def _path_etag(self, path, details):
+        """Use client identity consistently even when the data path is FUSE."""
+        row = self.server.mappings.at_path(path)
+        if row is None or not self.server.mappings.supports_file_api(row["id"], "fs_stat"):
+            return self._stat_etag(details)
+        mount = self.server.mappings.mount_path(row)
+        result = self._mapping_rpc(row, "api_fs_stat", {"query": {
+            "path": [path.relative_to(mount).as_posix()], "fields": ["etag,size,modified_at,changed_at"]},
+            "display_root": str(mount)})
+        try:
+            if result["status"] != 200:
+                raise ValueError("metadata unavailable")
+            body = result["body"]
+            etag = body["etag"]
+            if not isinstance(etag, str):
+                raise ValueError("invalid etag")
+            unchanged = path == mount or (body["size"] == details.st_size and all(
+                abs(datetime.fromisoformat(body[key]).timestamp() - observed) < .00001
+                for key, observed in (("modified_at", details.st_mtime), ("changed_at", details.st_ctime))))
+        except (KeyError, TypeError, ValueError):
+            raise ApiError(409, "path_changed", "mapping file metadata is no longer available; retry the request") from None
+        if not unchanged:
+            raise ApiError(409, "path_changed", "mapping file changed while being accessed; retry the request")
+        return etag
+
+    def _try_mapping_file_api(self, operation, *, query=None, body=None):
+        """Route a complete same-mapping operation before touching its FUSE path."""
+        from .client_file_api import FILE_API_LIMITS
+        from .mapping_transport import FILE_API_WRITE_OPERATIONS, encode
+
+        query = copy.deepcopy(query or {})
+        original = body or {}
+        body = copy.deepcopy(original)
+        write = operation in FILE_API_WRITE_OPERATIONS
+        targets = []
+        if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search"}:
+            value = self._query_one(query, "path", "." if operation in {"fs_list", "fs_tree", "fs_search"} else "")
+            if not value:
+                return False
+            targets.append((query, "path", value, True))
+        elif operation in {"fs_manifest", "fs_replace_batch"}:
+            items = body.get("items")
+            if not isinstance(items, list) or not items or len(items) > self.server.config.max_batch_file_operations:
+                return False
+            if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) for item in items):
+                return False
+            targets.extend((item, "path", item["path"], False) for item in items)
+        elif operation == "fs_delete_batch":
+            paths = body.get("paths")
+            if not isinstance(paths, list) or not paths or len(paths) > self.server.config.max_batch_file_operations:
+                return False
+            targets.extend((paths, index, value, False) for index, value in enumerate(paths))
+        else:
+            keys = ("source", "destination") if operation == "fs_move" else ("path",)
+            targets.extend((body, key, body.get(key), False) for key in keys)
+
+        selected = None
+        for container, key, value, is_query in targets:
+            if not isinstance(value, str) or not value or "\x00" in value:
+                return False
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.token_scope_root / candidate
+            # Let the existing resolver handle aliases and non-mapping paths.
+            if ".." in candidate.parts:
+                return False
+            row = self.server.mappings.at_path(candidate)
+            if row is None or (selected and selected["id"] != row["id"]):
+                return False
+            self._assert_inside_root(candidate)
+            if write:
+                self._assert_path_writable(candidate)
+            try:
+                self.server.mappings.check_path(candidate, write=write, protect_root=write)
+            except OSError as exc:
+                raise ApiError(403 if exc.errno in {errno.EROFS, errno.EBUSY} else 503,
+                               "mapping_unavailable", "mapping is protected, read-only, or offline") from None
+            mount = self.server.mappings.mount_path(row)
+            relative = candidate.relative_to(mount)
+            if ".openkapsel" in relative.parts or any(self._is_internal_transfer_name(p) for p in relative.parts):
+                raise ApiError(403, "reserved_path", "workspace internal paths are not available")
+            container[key] = [relative.as_posix()] if is_query else relative.as_posix()
+            selected = row
+        if selected is None or not self.server.mappings.supports_file_api(selected["id"], operation):
+            return False
+        limits = {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}
+        if any(value > FILE_API_LIMITS[name] for name, value in limits.items()):
+            return False
+        for key in ("plan_id", "taskname", "message"):
+            body.pop(key, None)
+            query.pop(key, None)
+        arguments = {"query": query, "body": body, "limits": limits,
+                     "display_root": str(self.server.mappings.mount_path(selected))}
+        try:
+            encode({"id": "0" * 24, "op": "api_" + operation, "args": arguments})
+        except OSError:
+            return False  # Nothing has been sent; large requests retain the old path.
+        result = self._mapping_rpc(selected, "api_" + operation, arguments)
+        if not isinstance(result, dict) or not isinstance(result.get("status"), int):
+            raise ApiError(502, "invalid_mapping_response", "client returned an invalid file API response")
+        if "error" in result:
+            error = result["error"]
+            if not isinstance(error, dict) or not 400 <= result["status"] <= 599:
+                raise ApiError(502, "invalid_mapping_response", "client returned an invalid error")
+            raise ApiError(result["status"], error.get("code", "mapping_operation_failed"),
+                           error.get("message", "client operation failed"), error.get("details"))
+        payload = result.get("body")
+        if not isinstance(payload, dict) or result["status"] not in {200, 201, 207}:
+            raise ApiError(502, "invalid_mapping_response", "client returned an invalid file API result")
+        if operation in {"fs_manifest", "fs_replace_batch", "fs_delete_batch"}:
+            originals = original.get("paths") if operation == "fs_delete_batch" else [item["path"] for item in original["items"]]
+            for item in payload.get("items", []):
+                index = item.get("index")
+                if isinstance(index, int) and 0 <= index < len(originals):
+                    item["path"] = originals[index]
+                if operation == "fs_delete_batch" and item.get("recycled"):
+                    item["root"] = selected["name"]
+        elif operation == "fs_delete":
+            payload["root"] = selected["name"]
+        self._send_json(result["status"], payload)
+        return True
+
     def _handle_mapping_provider(self, method, path):
         match = re.fullmatch(r"/mapping-connect/([A-Za-z0-9_-]{24})", path)
         if method != "GET" or not match or not self.server.config.mappings_enabled:

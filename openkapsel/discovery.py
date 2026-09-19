@@ -1599,11 +1599,18 @@ class DiscoveryMixin:
             ],
         }
 
+        from .mapping_transport import FILE_API_OPERATIONS, MAX_MESSAGE
         payload["capabilities"]["mappings"] = {
             "enabled": self.server.config.mappings_enabled,
             "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
+            "file_api": {
+                "version": 1, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
+                "routing": "Existing file endpoints automatically use one RPC when every path belongs to the same mapping and its client advertises the operation. No new caller endpoint is needed.",
+                "batching": "Keep batch items within one mapping for client-local execution; cross-root batches retain the existing file path.",
+                "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
+            },
         }
         payload["endpoints"].update({
             "recycle_purge": {"method": "POST", "url": "./recycle/purge", "body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},

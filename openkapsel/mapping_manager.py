@@ -214,6 +214,15 @@ class MappingManager:
             result = session.generation + ":" + str(result)
         return result
 
+    def supports_file_api(self, mid, operation):
+        with self.lock:
+            session = self.sessions.get(mid)
+            if session is None or session.closed:
+                return False
+            capability = session.capabilities.get("file_api", {})
+            return (isinstance(capability, dict) and capability.get("version") == 1
+                    and operation in capability.get("operations", []))
+
     def accept(self, handler, row):
         with self.lock:
             # Authentication may precede a concurrent rename or rotation.

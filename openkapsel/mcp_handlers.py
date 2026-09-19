@@ -724,7 +724,7 @@ class McpHandlersMixin:
         return {
             "path": str(path),
             "size": file_stat.st_size,
-            "etag": self._stat_etag(file_stat),
+            "etag": self._path_etag(path, file_stat),
             "content_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
             "transfer": {
                 "url": (

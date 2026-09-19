@@ -269,6 +269,17 @@ class MappingTransportTests(unittest.TestCase):
                 self.assertEqual(result["st_size"], 5)
                 result = sessions[0].call("list", {"path": "."})
                 self.assertEqual(result["names"], ["hello.txt"])
+                self.assertEqual(sessions[0].capabilities["file_api"]["version"], 1)
+                result = sessions[0].call("api_fs_stat", {"query": {"path": ["hello.txt"], "fields": ["sha256,size"]}, "display_root": "/workspace/client"})
+                self.assertEqual(result["status"], 200)
+                self.assertEqual(result["body"]["size"], 5)
+                self.assertEqual(result["body"]["path"], "/workspace/client/hello.txt")
+                self.assertEqual(len(result["body"]["sha256"]), 64)
+                result = sessions[0].call("api_fs_read", {"query": {"path": ["missing"]}})
+                self.assertEqual(result["status"], 404)
+                with self.assertRaises(OSError):
+                    sessions[0].call("api_fs_write", {"body": {"path": "no-write", "content": "no"}})
+                self.assertFalse((Path(directory) / "no-write").exists())
             finally:
                 for session in sessions:
                     session.close()
