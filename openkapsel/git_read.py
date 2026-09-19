@@ -34,12 +34,16 @@ def inspect_git(access, root, operation, options, timeout=15):
         if time.monotonic() >= deadline:
             raise ApiError(504, "git_timeout", "Git inspection deadline exceeded")
 
-    def entries(path):
+    def entries(path, *, metadata=False):
         check()
         def collect_entries(it):
             result = []
             for entry in it:
                 check()
+                # Git maintenance and writers create transient lock files.
+                # They are not repository data and can vanish before stat().
+                if metadata and entry.name.endswith(".lock"):
+                    continue
                 if len(result) >= MAX_SNAPSHOT_NODES:
                     raise ApiError(413, "git_snapshot_limit", "too many directory entries")
                 result.append((entry.name, entry.stat(follow_symlinks=False)))
@@ -65,7 +69,7 @@ def inspect_git(access, root, operation, options, timeout=15):
             raise ApiError(409, "git_unsupported_layout", "Git snapshots do not follow symlinks or reparse points")
         if stat.S_ISDIR(details.st_mode):
             target.mkdir()
-            for name, child in entries(source):
+            for name, child in entries(source, metadata=metadata):
                 if name == ".openkapsel" or (not metadata and name == ".git"):
                     continue
                 if metadata and name in {"alternates", "http-alternates"}:
@@ -110,7 +114,7 @@ def inspect_git(access, root, operation, options, timeout=15):
             original_git = next((st for name, st in children if name == ".git"), None)
             if original_git is None or not stat.S_ISDIR(original_git.st_mode) or getattr(original_git, "st_file_attributes", 0) & 0x400:
                 raise ApiError(409, "git_unsupported_layout", "path must be a repository root with an ordinary .git directory")
-            for name, details in entries(root / ".git"):
+            for name, details in entries(root / ".git", metadata=True):
                 if name == "commondir":
                     raise ApiError(409, "git_unsupported_layout", "linked worktrees are not supported")
                 if name in {"HEAD", "index", "packed-refs", "shallow", "objects", "refs"} or name.startswith("sharedindex."):
@@ -161,7 +165,9 @@ def inspect_git(access, root, operation, options, timeout=15):
                 result["stderr"] = result["stderr"].replace(str(base), "<git-snapshot>")
                 raise ApiError(422, "git_failed", "Git inspection failed", result)
             return result
-    except OSError:
-        raise ApiError(409, "git_snapshot_unavailable", "repository could not be read safely") from None
+    except OSError as exc:
+        # Keep the cause for local debugging; API serialization exposes only
+        # the sanitized message, never the native path from the exception.
+        raise ApiError(409, "git_snapshot_unavailable", "repository could not be read safely") from exc
     finally:
         _SLOTS.release()

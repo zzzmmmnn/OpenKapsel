@@ -1,6 +1,7 @@
 """Portable Git argv validation and real client execution tests."""
 
 import os
+from contextlib import contextmanager
 import shutil
 import subprocess
 import tempfile
@@ -90,7 +91,17 @@ class GitClientTests(unittest.TestCase):
     def test_policy_output_budget_and_bad_revision(self):
         with self.assertRaises(OSError):
             self.tasks.dispatch("task_start", {"task_id": "denied123", "argv": ["git", "status"]})
-        self.assertEqual(422, self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})["status"])
+        from openkapsel.git_read import inspect_git
+        try:
+            inspect_git(self.files.paths, self.root, "show", {"revision": "bad-ref"})
+        except ApiError as exc:
+            if exc.status != 422:
+                raise
+            self.assertEqual("git_failed", exc.code)
+        else:
+            self.fail("unknown revision must fail")
+        response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
+        self.assertEqual(422, response["status"], response)
         (self.root / "source.txt").write_text("x" * 100000, encoding="utf-8")
         result = self.call("diff")
         self.assertTrue(result["output_truncated"])
@@ -116,6 +127,32 @@ class GitClientTests(unittest.TestCase):
         alternate.write_text(str(self.root.parent), encoding="utf-8")
         result = self.files.dispatch("git_log", {})
         self.assertEqual("git_unsupported_layout", result["error"]["code"])
+
+    def test_disappearing_git_maintenance_lock_is_not_snapshot_data(self):
+        lock = self.root / ".git/objects/maintenance.lock"
+        lock.write_text("transient", encoding="utf-8")
+        real_scandir = os.scandir
+        removed = []
+
+        @contextmanager
+        def racing_scandir(path):
+            with real_scandir(path) as entries:
+                def iterate():
+                    for entry in entries:
+                        if entry.name == "maintenance.lock" and lock.exists():
+                            lock.unlink()
+                            removed.append(True)
+                        yield entry
+                yield iterate()
+
+        with patch("openkapsel.git_read.os.scandir", racing_scandir):
+            response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
+        self.assertEqual([True], removed)
+        self.assertEqual(422, response["status"], response)
+        self.assertEqual("git_failed", response["error"]["code"])
+        # Only Git metadata locks are omitted, not regular workspace files.
+        (self.root / "application.lock").write_text("data", encoding="utf-8")
+        self.assertIn("application.lock", self.call("status")["output"])
 
     def test_repository_diff_helpers_are_not_invoked(self):
         self.git("config", "diff.external", "nonexistent-openkapsel-diff-helper")
