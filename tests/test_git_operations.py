@@ -129,25 +129,33 @@ class GitClientTests(unittest.TestCase):
         self.assertEqual("git_unsupported_layout", result["error"]["code"])
 
     def test_disappearing_git_maintenance_lock_is_not_snapshot_data(self):
-        lock = self.root / ".git/objects/maintenance.lock"
-        lock.write_text("transient", encoding="utf-8")
+        objects = self.root / ".git/objects"
+        identity = objects.stat()
         real_scandir = os.scandir
-        removed = []
+        injected = []
+
+        class VanishedLock:
+            name = "maintenance.lock"
+            def stat(self, **kwargs):
+                raise FileNotFoundError("simulated lock removed after enumeration")
 
         @contextmanager
         def racing_scandir(path):
             with real_scandir(path) as entries:
                 def iterate():
+                    current = os.fstat(path) if isinstance(path, int) else Path(path).stat()
+                    if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                        # Do not create a real Git-owned lock: background
+                        # maintenance may remove it before this test sees it.
+                        injected.append(True)
+                        yield VanishedLock()
                     for entry in entries:
-                        if entry.name == "maintenance.lock" and lock.exists():
-                            lock.unlink()
-                            removed.append(True)
                         yield entry
                 yield iterate()
 
         with patch("openkapsel.git_read.os.scandir", racing_scandir):
             response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
-        self.assertEqual([True], removed)
+        self.assertEqual([True], injected)
         self.assertEqual(422, response["status"], response)
         self.assertEqual("git_failed", response["error"]["code"])
         # Only Git metadata locks are omitted, not regular workspace files.
