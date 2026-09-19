@@ -16,12 +16,12 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `GET/POST` | `/memory`, `/memory/project` | Query, create, or read project Memory |
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
 | `GET` | `/fs/list`, `/fs/tree`, `/fs/search` | List, recursively inspect, or search files |
-| `GET` | `/fs/read`, `/fs/stat` | Read UTF-8 text or selected metadata |
+| `GET` | `/fs/read`, `/fs/stat` | Read explicitly encoded text or selected metadata |
 | `GET` | `/git/status`, `/git/diff`, `/git/diff_stat`, `/git/log`, `/git/show`, `/git/ls_files` | Read-only Git snapshot inspection; see [Git options](shell-and-mcp.md#git-inspection) |
 | `POST` | `/fs/manifest` | Batch synchronization preflight or recursive metadata manifest |
-| `POST` | `/fs/read_many` | Read multiple small UTF-8 files in one request |
+| `POST` | `/fs/read_many` | Read multiple small text files in one request |
 | `GET/HEAD/PUT` | `/fs/content` | Stream or atomically upload raw bytes |
-| `POST` | `/fs/write`, `/fs/replace`, `/fs/replace/batch` | Write or perform exact UTF-8 replacements |
+| `POST` | `/fs/write`, `/fs/replace`, `/fs/replace/batch` | Write or perform exact text replacements with explicit encoding |
 | `POST` | `/fs/mkdir`, `/fs/move`, `/fs/delete` | Create, move, rename, or recycle paths |
 | `POST` | `/fs/delete/batch` | Preflight and recycle multiple paths |
 | `GET/POST` | `/recycle/list`, `/recycle/restore` | List and restore recycled paths |
@@ -107,7 +107,15 @@ reduce batch size, character budgets, or traversal depth.
 
 `fs/write` and `fs/replace` accept conditional ETags. `expected_etag: "*"` requires an existing path. A mismatch returns `412 etag_mismatch` without modifying the target.
 
-`fs/replace/batch` performs replace-only edits across existing UTF-8 files. It supports multiple exact replacement rules in one file. Rules match the original text, source ranges must not overlap, and every file is preflighted before publication. Match, permission, size, ETag, and overlap errors therefore make no requested change. A race after preflight may return per-file `207 Multi-Status` results.
+`fs/replace/batch` performs replace-only edits across existing text files. It supports multiple exact replacement rules in one file. Rules match the original text, source ranges must not overlap, and every file is preflighted before publication. Match, permission, size, ETag, encoding, and overlap errors therefore make no requested change. A race after preflight may return per-file `207 Multi-Status` results.
+
+### Text encoding and line endings
+
+Text APIs default to UTF-8 independently of the host locale. `encoding` is a query parameter for `fs/read`, a body field for `fs/read_many`, `fs/write`, and `fs/replace`, and a field on each `fs/replace/batch` item. Supported codecs: `utf-8`, `utf-8-sig`, `utf-16-le`, `utf-16-be`, `ascii`, `iso8859-1` (alias `latin-1`), `cp1252`, `gbk`, `gb18030`, `big5`, and `shift_jis`. MCP text tools expose the same parameter. Search remains UTF-8-only; binary download/upload preserves arbitrary bytes.
+
+There is no encoding detection, locale fallback, or lossy replacement. Invalid input bytes return 415; unsupported codecs or unrepresentable output return 400 without replacing the target. Batch encoding failures are detected before any file is published. Specify the existing encoding for edits. For BOM handling, `utf-8-sig` consumes/emits the UTF-8 BOM; ordinary `utf-8` preserves it as U+FEFF. UTF-16 requires explicit endian and preserves any BOM as U+FEFF; include that character to create a new BOM-bearing UTF-16 file.
+
+Reads preserve LF (`\n`), CRLF (`\r\n`), CR (`\r`), and mixed endings. Character offsets count both characters of CRLF. Writes encode the supplied text literally, even on Windows; use `\r\n` explicitly to create CRLF files. Replacements match exact line endings and preserve all untouched text; replacement text controls its own endings. `byte_offset` remains UTF-8-only; use character offsets for other codecs. Client-local text RPC requires file API v3 (client 1.59.0+); older clients use the existing filesystem path instead.
 
 `fs/delete/batch` rejects duplicate and parent/child-overlapping paths and preflights every item before recycling. Its maximum item count is `max_batch_file_operations`.
 

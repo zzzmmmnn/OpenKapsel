@@ -95,12 +95,15 @@ PATH = {
 }
 NONNEGATIVE = {"type": "integer", "minimum": 0}
 POSITIVE = {"type": "integer", "minimum": 1}
+from .text_encoding import ENCODINGS
+TEXT_ENCODING = {"type": "string", "enum": list(ENCODINGS), "default": "utf-8",
+                 "description": "Explicit file encoding; strict conversion. LF/CRLF/CR are preserved literally. UTF-16 requires explicit endian; BOM is preserved as U+FEFF."}
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
-    _tool("read_files", "Read multiple files", "Read bounded UTF-8 files, with per-item status/content/etag and partial errors. No write or Shell permission required.",
+    _tool("read_files", "Read multiple files", "Read bounded text files with explicit encoding (default UTF-8), per-item status/content/etag and partial errors. No write or Shell permission required.",
           _object_schema({"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                          "limit": {"type": "integer", "minimum": 1}, "max_total_chars": {"type": "integer", "minimum": 1}}, ("paths",)), read_only=True),
+                          "encoding": TEXT_ENCODING, "limit": {"type": "integer", "minimum": 1}, "max_total_chars": {"type": "integer", "minimum": 1}}, ("paths",)), read_only=True),
     _tool("file_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
           _object_schema({"items": {"type": "array", "items": _object_schema({"path": {"type": "string"}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string"}}, ("path",))},
                           "recursive": {"type": "boolean"}, "path": {"type": "string"}, "depth": {"type": "integer", "minimum": 0}, "include_sha256": {"type": "boolean"}}), read_only=True),
@@ -461,11 +464,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "read_file",
         "Read text file",
-        "Read a UTF-8 text window. Offset and limit count decoded Unicode characters.",
+        "Read a text window, UTF-8 by default. Offset and limit count decoded Unicode characters, preserving literal newlines.",
         _object_schema(
             {
                 "path": PATH,
                 "offset": {**NONNEGATIVE, "default": 0},
+                "encoding": TEXT_ENCODING,
                 "limit": {**POSITIVE, "default": 65536},
             },
             ("path",),
@@ -563,11 +567,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "write_file",
         "Write text file",
-        "Create or atomically overwrite a UTF-8 text file. Set expected_etag for an If-Match-style conditional write.",
+        "Create or atomically overwrite text in the requested encoding (default UTF-8), without newline translation. Set expected_etag for conditional writes.",
         _object_schema(
             {
                 "path": PATH,
                 "content": {"type": "string"},
+                "encoding": TEXT_ENCODING,
                 "create_parents": {"type": "boolean", "default": False},
                 "expected_etag": {
                     "type": ["string", "null"],
@@ -584,11 +589,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "replace_text",
         "Replace exact text",
-        "Safely replace exact UTF-8 text. By default the old text must occur exactly once. Set expected_etag for an If-Match-style conditional edit.",
+        "Replace exact text in the requested encoding (default UTF-8), preserving untouched newlines. By default old must occur once. Set expected_etag for conditional edits.",
         _object_schema(
             {
                 "path": PATH,
                 "old": {"type": "string", "minLength": 1},
+                "encoding": TEXT_ENCODING,
                 "new": {"type": "string"},
                 "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
                 "replace_all": {"type": "boolean", "default": False},

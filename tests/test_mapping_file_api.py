@@ -39,7 +39,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         def call(op, args):
             self.calls.append((op, args))
             return self.files.dispatch(op, args)
-        self.session = SimpleNamespace(closed=False, capabilities={"file_api": {"version": 2, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
+        self.session = SimpleNamespace(closed=False, capabilities={"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
         self.server.mappings.sessions[self.row["id"]] = self.session
 
     def tearDown(self):
@@ -145,7 +145,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, body)
         self.assertEqual("fallback", body["entries"][0]["name"])
         self.assertEqual([], self.calls)
-        self.session.capabilities = {"file_api": {"version": 1, "operations": sorted(FILE_API_OPERATIONS)}}
+        self.session.capabilities = {"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}
         original = self.session.call
         def ambiguous(op, args):
             original(op, args)

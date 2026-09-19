@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .errors import ApiError
+from .text_encoding import text_encoding, encode_text, decode_error
 from .file_support import FileOperationSupportMixin
 from .recycle import RecycleError
 from .safe_paths import SafePathError
@@ -555,6 +556,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
     def _handle_fs_read_many(self) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         body = self._read_json()
+        encoding = text_encoding(body.get("encoding", "utf-8"))
         if self._try_mapping_file_api("fs_read_many", body=body):
             return
         paths = body.get("paths")
@@ -573,7 +575,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     raise ApiError(413, "read_budget_exhausted", "total character budget exhausted; request remaining paths separately")
                 path = self._resolve_path(requested)
                 descriptor = self._safe_open_descriptor(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-                with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                with os.fdopen(descriptor, "r", encoding=encoding, newline="") as handle:
                     details = os.fstat(handle.fileno())
                     if not stat.S_ISREG(details.st_mode):
                         raise ApiError(400, "not_a_file", "path is not a regular file")
@@ -584,13 +586,14 @@ class FileHandlersMixin(FileOperationSupportMixin):
                         raise ApiError(409, "path_changed", "file changed during read")
                 content = window[:count]
                 truncated = len(window) > count
-                item.update(status=200, content=content, length=len(content), encoding="utf-8",
+                item.update(status=200, content=content, length=len(content), encoding=encoding,
                             truncated=truncated, next_offset=len(content) if truncated else None,
                             etag=self._path_etag(path, details))
                 remaining -= len(content)
                 total += len(content)
             except UnicodeDecodeError:
-                item.update(status=415, error={"code": "not_utf8_text", "message": "file is not valid UTF-8 text"})
+                error = decode_error(encoding)
+                item.update(status=415, error={"code": error.code, "message": error.message})
             except ApiError as exc:
                 item.update(status=int(exc.status), error={"code": exc.code, "message": exc.message})
             except OSError as exc:
@@ -608,7 +611,10 @@ class FileHandlersMixin(FileOperationSupportMixin):
             return
         requested = self._required_query(query, "path")
         path = self._resolve_path(requested)
+        encoding = text_encoding(self._query_one(query, "encoding", "utf-8"))
         if "byte_offset" in query:
+            if encoding != "utf-8":
+                raise ApiError(400, "invalid_encoding", "byte_offset requires utf-8; use character offsets or binary download")
             self._handle_fs_read_bytes(path, query)
             return
         offset = self._query_int(query, "offset", 0, minimum=0)
@@ -621,7 +627,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
         )
         try:
             descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            with os.fdopen(descriptor, "r", encoding=encoding, newline="") as handle:
                 if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
                 remaining = offset
@@ -634,11 +640,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 # the entire file into memory.
                 window = handle.read(limit + 1)
         except UnicodeDecodeError:
-            raise ApiError(
-                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-                "not_utf8_text",
-                "file is not valid UTF-8 text",
-            )
+            raise decode_error(encoding) from None
         content = window[:limit]
         next_offset = offset + len(content)
         truncated = len(window) > limit
@@ -651,7 +653,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "length": len(content),
                 "truncated": truncated,
                 "next_offset": next_offset if truncated else None,
-                "encoding": "utf-8",
+                "encoding": encoding,
             },
         )
 
@@ -738,6 +740,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
     def _handle_fs_write(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        encoding = text_encoding(body.get("encoding", "utf-8"))
         if self._try_mapping_file_api("fs_write", body=body):
             return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
@@ -751,6 +754,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             content,
             expected_etag=expected_etag,
             create_parents=create_parents,
+            encoding=encoding,
         )
         etag = self._path_etag(path, file_stat)
         self._send_json(
@@ -758,7 +762,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             {
                 "path": str(path),
                 "created": created,
-                "bytes_written": len(content.encode("utf-8")),
+                "bytes_written": len(encode_text(content, encoding)),
                 "etag": etag,
             },
         )
@@ -766,6 +770,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
     def _handle_fs_replace(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
+        encoding = text_encoding(body.get("encoding", "utf-8"))
         if self._try_mapping_file_api("fs_replace", body=body):
             return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
@@ -774,7 +779,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
         expected_etag = self._optional_expected_etag(body)
         descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
         try:
-            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            with os.fdopen(descriptor, "r", encoding=encoding, newline="") as handle:
                 file_stat = os.fstat(handle.fileno())
                 if not stat.S_ISREG(file_stat.st_mode):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
@@ -786,7 +791,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     )
                 text = handle.read()
         except UnicodeDecodeError:
-            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "not_utf8_text", "file is not valid UTF-8 text")
+            raise decode_error(encoding) from None
         matches = text.count(old)
         replace_all = body.get("replace_all", False)
         expected = body.get("expected_matches", 1)
@@ -803,7 +808,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             )
         count = matches if replace_all else 1
         updated = text.replace(old, new, count)
-        _created, updated_stat = self._atomic_write(path, updated, expected_etag=expected_etag)
+        _created, updated_stat = self._atomic_write(path, updated, expected_etag=expected_etag, encoding=encoding)
         self._send_json(
             HTTPStatus.OK,
             {
@@ -899,6 +904,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     "path": path,
                     "expected_etag": expected_etag,
                     "rules": rules,
+                    "encoding": text_encoding(item.get("encoding", "utf-8")),
                 }
             )
 
@@ -908,7 +914,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 item["path"], os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
             )
             try:
-                with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                with os.fdopen(descriptor, "r", encoding=item["encoding"], newline="") as handle:
                     descriptor = -1
                     file_stat = os.fstat(handle.fileno())
                     if not stat.S_ISREG(file_stat.st_mode):
@@ -926,11 +932,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                         )
                     text = handle.read()
             except UnicodeDecodeError:
-                raise ApiError(
-                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-                    "not_utf8_text",
-                    f"items[{item['index']}].path is not valid UTF-8 text",
-                ) from None
+                raise decode_error(item["encoding"]) from None
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)
@@ -990,6 +992,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 cursor = end
             chunks.append(text[cursor:])
             item["updated_text"] = "".join(chunks)
+            encode_text(item["updated_text"], item["encoding"])
             item["observed_etag"] = observed_etag
             item["replacement_count"] = len(spans)
 
@@ -1001,6 +1004,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     item["path"],
                     item["updated_text"],
                     expected_etag=item["observed_etag"],
+                    encoding=item["encoding"],
                 )
             except ApiError as exc:
                 failures += 1

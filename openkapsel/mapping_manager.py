@@ -229,7 +229,7 @@ class MappingManager:
                 return False
             capability = session.capabilities.get("file_api", {})
             return (isinstance(capability, dict) and type(capability.get("version")) is int
-                    and min_version <= capability["version"] <= 2
+                    and min_version <= capability["version"] <= 3
                     and operation in capability.get("operations", []))
 
     def accept(self, handler, row):

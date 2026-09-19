@@ -103,6 +103,8 @@ class MappingHandlersMixin:
         min_version = 2 if (operation == "fs_read_many" or
                             operation == "fs_manifest" and body.get("recursive") is True or
                             operation == "fs_search" and ("include" in query or "exclude" in query)) else 1
+        if operation in {"fs_read", "fs_read_many", "fs_write", "fs_replace", "fs_replace_batch"}:
+            min_version = 3  # Explicit codecs and literal newline preservation.
         if selected is None or not self.server.mappings.supports_file_api(selected["id"], operation, min_version=min_version):
             return False
         limits = {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}

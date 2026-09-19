@@ -105,7 +105,10 @@ class FileOperationSupportMixin:
         *,
         expected_etag: str | None = None,
         create_parents: bool = False,
+        encoding: str = "utf-8",
     ) -> tuple[bool, os.stat_result]:
+        from .text_encoding import encode_text, text_encoding
+        data = encode_text(content, text_encoding(encoding))
         try:
             parent = self._safe_parent(path, create_parents=create_parents)
         except ApiError as exc:
@@ -130,9 +133,9 @@ class FileOperationSupportMixin:
                     0o600,
                     dir_fd=parent.fd,
                 )
-                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                with os.fdopen(descriptor, "wb") as handle:
                     descriptor = None
-                    handle.write(content)
+                    handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
                     os.fchmod(handle.fileno(), mode)

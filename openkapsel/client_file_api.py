@@ -199,9 +199,11 @@ class ClientFileAPI(FileHandlersMixin):
     def _recycle_path(self, path):
         return self.files._dispatch("recycle", {"path": path.relative_to(self.files.root).as_posix()})
 
-    def _atomic_write(self, path, content, *, expected_etag=None, create_parents=False):
+    def _atomic_write(self, path, content, *, expected_etag=None, create_parents=False, encoding="utf-8"):
+        from .text_encoding import encode_text, text_encoding
+        data = encode_text(content, text_encoding(encoding))
         if os.name != "nt":
-            return super()._atomic_write(path, content, expected_etag=expected_etag, create_parents=create_parents)
+            return super()._atomic_write(path, content, expected_etag=expected_etag, create_parents=create_parents, encoding=encoding)
         if create_parents:
             self.files.paths.mkdir(path.parent, parents=True, exist_ok=True)
         with self.files.paths.guard(path):
@@ -216,7 +218,7 @@ class ClientFileAPI(FileHandlersMixin):
             temporary = path.with_name(f".{path.name}.openkapsel-put-{secrets.token_hex(12)}")
             try:
                 with os.fdopen(self.files.paths.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "wb") as handle:
-                    handle.write(content.encode("utf-8"))
+                    handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
                 try:
