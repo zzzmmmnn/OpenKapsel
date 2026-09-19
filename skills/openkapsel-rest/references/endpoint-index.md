@@ -98,3 +98,16 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `GET|HEAD` | `<service-base>/skills/openkapsel-rest/{agents,references,scripts}/<file>` |
 
 There is intentionally no MCP route in this skill.
+## Client-backed mappings and transfers
+
+- `POST /recycle/purge`: permanently remove one explicitly confirmed recycle entry.
+
+- `GET /mappings`: mapped roots, online state, and capabilities.
+- `POST /fs/copy`: start an asynchronous copy.
+- `GET /fs/transfers/<id>`: inspect transfer progress.
+- `POST /fs/transfers/<id>/cancel` and `/resume`: control transfers.
+- `GET/POST /mappings/<mapping_id>/tasks`: list/start client tasks.
+- `GET /mappings/<mapping_id>/tasks/<task_id>`: incremental client task output.
+- `POST /mappings/<mapping_id>/tasks/<task_id>/stdin`, `/interrupt`, `/kill`: control a client task.
+
+See [mappings.md](mappings.md) for permissions, request fields, and root-scoped recycling.

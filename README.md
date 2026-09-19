@@ -154,3 +154,12 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 ## Scope
 
 OpenKapsel is AI workspace infrastructure, not a multi-user IDE or a general website account system. Authentication for a project-owned FastAPI application belongs to that application. Restricted sandboxing requires Linux, and full Shell is deliberately outside the token sandbox boundary; grant it only to trusted tokens.
+
+## Client-backed workspaces
+
+Optional reverse directory mappings let a Linux server access files kept on a
+connected client without synchronizing them into the workspace image. Each
+mapping has independent provider credentials, read/write policy, and a local
+recycle bin. Clients can also opt into remote task execution, with sandboxing
+enabled by default. See [client mappings and execution](docs/client-mappings.md)
+for setup, proxy support, permissions, and current platform limitations.

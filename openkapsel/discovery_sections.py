@@ -7,6 +7,7 @@ SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sha
 
 SECTION_ENDPOINTS = {
     "files": {
+        "mapping_list", "fs_copy", "file_transfer", "recycle_purge",
         "fs_list", "fs_read", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
         "fs_content_put", "fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_delete",
         "fs_delete_batch", "fs_move", "recycle_list", "recycle_restore", "upload_create",
@@ -21,6 +22,7 @@ SECTION_ENDPOINTS = {
         "memory_revisions",
     },
     "shell": {
+        "mapping_tasks", "mapping_task",
         "shell_exec", "task_list", "task_status", "task_output", "task_stream",
         "task_stdin", "task_interrupt", "task_kill", "sandbox_processes",
         "environment_get", "environment_replace", "environment_clear",
@@ -36,12 +38,14 @@ SECTION_ENDPOINTS = {
 
 SECTION_CAPABILITIES = {
     "files": {
+        "mappings",
         "files", "recycle", "file_operations", "binary_transfer", "extra_paths",
         "extra_paths_redacted",
     },
     "context": {"context"},
     "memory": {"memory"},
     "shell": {
+        "mappings",
         "shell", "shell_sandbox", "shell_sandbox_requested", "sandbox_backends",
         "shell_pid_namespace", "shell_sandbox_image", "shell_sandbox_image_requested",
         "network", "network_mode", "network_domains",

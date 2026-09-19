@@ -206,6 +206,7 @@ class DiscoveryMixin:
                     "private_directories": [".openkapsel"],
                 },
                 "capabilities": {
+                    "mappings": capabilities["mappings"],
                     "files": capabilities["files"],
                     "recycle": capabilities["recycle"],
                     "context": {"enabled": capabilities["context"]["enabled"]},
@@ -1598,6 +1599,27 @@ class DiscoveryMixin:
             ],
         }
 
+        payload["capabilities"]["mappings"] = {
+            "enabled": self.server.config.mappings_enabled,
+            "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
+            "offline": "mapped operations fail; never fall back to a local directory",
+            "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
+        }
+        payload["endpoints"].update({
+            "recycle_purge": {"method": "POST", "url": "./recycle/purge", "body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
+            "fs_copy": {"method": "POST", "url": "./fs/copy", "body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
+                "description": "Start a bounded, resumable file/directory copy. Destination parent must exist. No overwrite; return 202 and transfer id. Staging remains on destination storage."},
+            "file_transfer": {"method": "GET/POST", "url": "./fs/transfers/<id>", "description": "GET returns progress/state. POST /cancel or /resume requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
+            "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping IDs, root names, online state, write permissions, and client execution capabilities."},
+            "mapping_tasks": {"method": "GET/POST", "url": "./mappings/<mapping_id>/tasks",
+                "description": "GET lists client tasks; POST starts a task on that client, not on the server.",
+                "body": {"argv": ["python", "-m", "pytest"], "cwd": ".", "timeout_seconds": 300,
+                         "plan_id": "required for POST", "taskname": "required for POST", "message": "required for POST"}},
+            "mapping_task": {"method": "GET/POST", "url": "./mappings/<mapping_id>/tasks/<task_id>",
+                "description": "GET ?offset=0 returns bounded base64 combined output and next_offset. POST /stdin, /interrupt, or /kill controls a task; mutations require plan_id/taskname/message. stdin accepts base64 data or eof=true. Tasks are killed on client disconnect; no automatic replay."},
+        })
+        payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
+        payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
         missing_contract_docs = discovery_keys() - payload["endpoints"].keys()
         if missing_contract_docs:
             raise RuntimeError(
@@ -1605,6 +1627,12 @@ class DiscoveryMixin:
                 + ", ".join(sorted(missing_contract_docs))
             )
         endpoint_permissions = {
+            "recycle_purge": ("Bearer control token + write", control_authorized and self.token_record.can_write),
+            "fs_copy": ("Bearer control token + read + write", control_authorized and self.token_record.can_read and self.token_record.can_write),
+            "file_transfer": ("Bearer control token", control_authorized),
+            "mapping_list": ("read", self.token_record.can_read),
+            "mapping_tasks": ("Bearer control token + Shell + mapping/client execution permission", shell_enabled),
+            "mapping_task": ("Bearer control token + Shell + mapping/client execution permission", shell_enabled),
             "discovery_section": ("URL token", True),
             "credentials_renew": ("Bearer control token", control_authorized),
             "environment_get": ("Bearer control token", control_authorized),
@@ -1708,6 +1736,9 @@ class DiscoveryMixin:
             endpoint["available"] = available
         if not control_authorized:
             privileged_endpoints = {
+                "recycle_purge",
+                "fs_copy", "file_transfer",
+                "mapping_tasks", "mapping_task",
                 "credentials_renew",
                 "environment_get",
                 "environment_replace",

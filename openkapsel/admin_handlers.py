@@ -31,6 +31,9 @@ class AdminHandlersMixin:
         if not self.server.config.admin_enabled:
             self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
             return
+        if path == "/admin/mappings":
+            self._handle_admin_mappings(method)
+            return
         if path == "/admin/static-mcp" or path == "/admin/oauth" or path.startswith("/admin/oauth/"):
             self._handle_admin_oauth(method, path, raw_query)
             return

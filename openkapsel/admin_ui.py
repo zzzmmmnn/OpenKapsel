@@ -370,6 +370,7 @@ def render_dashboard(
     body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="static-mcp" aria-controls="panel-static-mcp" title="Static MCP connections"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">Static MCP</span></button></nav>', 1)
     body = body.replace('</main>', render_connections(static_mcp_connections or [], records, csrf, admin_path, public_base_url, static=True) + '</main>', 1)
     body = body.replace("['tokens','images','password']", "['tokens','images','password','connections','static-mcp']")
+    body = body.replace('</nav>', f'<a class="nav-item" href="{escaped_admin_path}/mappings"><span class="nav-icon">⇅</span><span class="nav-label">Client mappings</span></a></nav>', 1)
     return _page("Workspace Administration", body)
 
 

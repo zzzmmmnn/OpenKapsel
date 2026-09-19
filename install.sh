@@ -221,7 +221,7 @@ if ((INSTALL_PACKAGES)); then
     apt-get update
     apt-get install -y --no-install-recommends \
         python3 python3-venv bubblewrap rootlesskit slirp4netns uidmap acl ca-certificates curl git e2fsprogs util-linux \
-        fontconfig fonts-dejavu-core fonts-noto-core fonts-noto-cjk
+        fontconfig fonts-dejavu-core fonts-noto-core fonts-noto-cjk libfuse2 fuse3
     if ((ENABLE_PODMAN)); then
         apt-get install -y --no-install-recommends podman crun fuse-overlayfs
     fi
