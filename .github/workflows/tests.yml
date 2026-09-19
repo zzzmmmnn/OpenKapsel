@@ -35,6 +35,14 @@ jobs:
           python -m unittest discover -s tests -p test_client_windows.py -v
           python -m unittest discover -s tests -p test_client_file_api.py -v
           python -m unittest discover -s tests -p test_git_operations.py -v
+      - name: Repeat macOS Git failure regression
+        if: runner.os == 'macOS'
+        run: >-
+          python -c "import sys, unittest; sys.path.insert(0, 'tests');
+          from test_git_operations import GitClientTests;
+          suite = unittest.TestSuite(GitClientTests('test_policy_output_budget_and_bad_revision') for _ in range(100));
+          result = unittest.TextTestRunner(verbosity=1).run(suite);
+          sys.exit(not result.wasSuccessful())"
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
