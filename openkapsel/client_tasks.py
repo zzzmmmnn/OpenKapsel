@@ -41,6 +41,9 @@ class ClientTasks:
         return {"enabled": self.enabled, "sandbox": self.sandbox,
                 "backend": self.backend if self.sandbox else "native-unsandboxed",
                 "platform": sys.platform, "max_tasks": self.max_tasks,
+                "reconnect_persistence": True, "result_storage": "client_memory",
+                "max_records": self.max_tasks + 4,
+                "uncollected_results": "retained_until_client_exit",
                 "max_seconds": self.max_seconds, "network": self.network if self.sandbox else "host"}
 
     def dispatch(self, op, args):
@@ -59,13 +62,15 @@ class ClientTasks:
                 return self._start(tid, args)
             task = self.tasks.get(tid)
             if task is None:
-                raise OSError(errno.ENOENT, "task does not exist in this client session")
+                raise OSError(errno.ENOENT, "task does not exist in this client runtime")
             if op == "task_get":
                 offset = self.files._number(args.get("offset", 0))
                 result = self._public(task)
                 with task["output_lock"]:
                     result.update(output=base64.b64encode(bytes(task["output"][offset:offset + 65536])).decode(),
                                   next_offset=min(offset + 65536, len(task["output"])))
+                    if task["finished_at"] is not None and offset <= len(task["output"]) and result["next_offset"] == len(task["output"]):
+                        task["collected_at"] = task["collected_at"] or time.time()
                 return result
             if op in {"task_interrupt", "task_kill"}:
                 self._signal(task, force=op == "task_kill")
@@ -87,8 +92,13 @@ class ClientTasks:
 
     def _start(self, tid, args):
         import queue
-        if self.closed or sum(t["finished_at"] is None for t in self.tasks.values()) >= self.max_tasks:
-            raise OSError(errno.EBUSY, "client task limit reached")
+        if len(self.tasks) >= self.max_tasks + 4:
+            collected = [t for t in self.tasks.values() if t["collected_at"] is not None]
+            if collected:
+                oldest = min(collected, key=lambda t: t["collected_at"])
+                self.tasks.pop(oldest["id"], None)
+        if self.closed or sum(t["finished_at"] is None for t in self.tasks.values()) >= self.max_tasks or len(self.tasks) >= self.max_tasks + 4:
+            raise OSError(errno.EBUSY, "client task or retained-result limit reached")
         argv = args.get("argv")
         if not isinstance(argv, list) or not argv or len(argv) > 256 or any(not isinstance(a, str) or "\x00" in a for a in argv) or sum(map(len, argv)) > 32768:
             raise OSError(errno.EINVAL, "argv must be a bounded string array")
@@ -119,6 +129,7 @@ class ClientTasks:
                                    start_new_session=os.name != "nt",
                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
         task = {"id": tid, "process": process, "started_at": time.time(), "finished_at": None,
+                "collected_at": None,
                 "output": bytearray(), "output_lock": threading.Lock(), "truncated": False,
                 "input": queue.Queue(maxsize=8), "container": container, "timeout": timeout,
                 "done": threading.Event()}
@@ -193,9 +204,9 @@ class ClientTasks:
             pass
 
     def _prune(self):
-        finished = sorted((t for t in self.tasks.values() if t["finished_at"]), key=lambda t: t["finished_at"], reverse=True)
+        finished = sorted((t for t in self.tasks.values() if t["collected_at"] is not None), key=lambda t: t["collected_at"], reverse=True)
         for index, task in enumerate(finished):
-            if index >= 4 or time.time() - task["finished_at"] > 3600:
+            if index >= 4 or time.time() - task["collected_at"] > 3600:
                 self.tasks.pop(task["id"], None)
 
     def close(self):

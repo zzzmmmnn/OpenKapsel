@@ -99,7 +99,17 @@ Execution requires server caller Shell/write permissions, a writable mapping wit
 
 To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
 
-Client tasks use argv arrays and export-relative working directories. Output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee. Active tasks are terminated when the provider session closes. Completed tasks are retained in memory for at most one hour and four tasks per provider session; reconnect starts a new session.
+Client tasks use argv arrays and export-relative working directories. Output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
+
+### Task lifetime across reconnects
+
+With client 1.58.0 or later, one in-memory task manager spans all automatic reconnects. Network loss or a server restart does not kill tasks or reset their deadlines. After reconnect, list tasks or use the original task ID to read output, inspect exit status, send stdin, interrupt, or kill. Offline requests fail: they are not queued, and an unavailable client does not imply a stopped task. Never automatically replay a start request whose response was lost; reconnect and inspect the task list first.
+
+Results completed while offline remain available. Uncollected results do not expire while the client process remains alive. A completed result becomes collected when a task GET reads through the end of its retained output; listing alone does not collect it. Collected results are pruned on subsequent requests after one hour, or beyond four collected records. The registry holds at most `max_tasks + 4` total records (six by default); when full it rejects new starts rather than discarding uncollected results. Per-task output remains capped at 2 MB, with truncation reported explicitly.
+
+This is reconnect persistence, not process-restart persistence: stopping the client normally (including Ctrl+C and `--once` termination) kills active tasks and discards in-memory results. Client crashes, OS restarts, and detached native processes are not recoverable through this manager. File handles remain session-scoped and are closed on disconnect. Existing clients must be upgraded and restarted to use the new task lifetime.
+
+When the total registry is full, starting a task may evict the oldest already-collected result before its one-hour deadline. Uncollected results are never evicted to make room.
 
 Podman on macOS/Windows runs Linux workloads, not native platform tests. Linux Bubblewrap and native macOS/Windows sandbox adapters remain follow-up backends; this version does not claim they are implemented.
 

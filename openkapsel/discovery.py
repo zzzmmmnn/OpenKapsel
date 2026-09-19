@@ -1640,7 +1640,7 @@ class DiscoveryMixin:
                 "body": {"argv": ["python", "-m", "pytest"], "cwd": ".", "timeout_seconds": 300,
                          "plan_id": "required for POST", "taskname": "required for POST", "message": "required for POST"}},
             "mapping_task": {"method": "GET/POST", "url": "./mappings/<mapping_id>/tasks/<task_id>",
-                "description": "GET ?offset=0 returns bounded base64 combined output and next_offset. POST /stdin, /interrupt, or /kill controls a task; mutations require plan_id/taskname/message. stdin accepts base64 data or eof=true. Tasks are killed on client disconnect; no automatic replay."},
+                "description": "GET ?offset=0 returns bounded base64 combined output and next_offset. POST /stdin, /interrupt, or /kill controls a task; mutations require plan_id/taskname/message. stdin accepts base64 data or eof=true. Client 1.58.0+ keeps tasks and offline-completed results across reconnects, not client process restarts. Uncollected results remain in bounded client memory; reading through the end of completed output starts one-hour/four-collected-record retention. Total records: max_tasks + 4; new starts fail when full. Deadlines continue offline. Reconnect and list/query existing IDs; never automatically replay uncertain starts."},
         })
         payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
