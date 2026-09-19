@@ -90,7 +90,17 @@ class GitClientTests(unittest.TestCase):
     def test_policy_output_budget_and_bad_revision(self):
         with self.assertRaises(OSError):
             self.tasks.dispatch("task_start", {"task_id": "denied123", "argv": ["git", "status"]})
-        self.assertEqual(422, self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})["status"])
+        from openkapsel.git_read import inspect_git
+        try:
+            inspect_git(self.files.paths, self.root, "show", {"revision": "bad-ref"})
+        except ApiError as exc:
+            if exc.status != 422:
+                raise
+            self.assertEqual("git_failed", exc.code)
+        else:
+            self.fail("unknown revision must fail")
+        response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
+        self.assertEqual(422, response["status"], response)
         (self.root / "source.txt").write_text("x" * 100000, encoding="utf-8")
         result = self.call("diff")
         self.assertTrue(result["output_truncated"])

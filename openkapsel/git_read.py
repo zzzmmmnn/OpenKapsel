@@ -161,7 +161,9 @@ def inspect_git(access, root, operation, options, timeout=15):
                 result["stderr"] = result["stderr"].replace(str(base), "<git-snapshot>")
                 raise ApiError(422, "git_failed", "Git inspection failed", result)
             return result
-    except OSError:
-        raise ApiError(409, "git_snapshot_unavailable", "repository could not be read safely") from None
+    except OSError as exc:
+        # Keep the cause for local debugging; API serialization exposes only
+        # the sanitized message, never the native path from the exception.
+        raise ApiError(409, "git_snapshot_unavailable", "repository could not be read safely") from exc
     finally:
         _SLOTS.release()
