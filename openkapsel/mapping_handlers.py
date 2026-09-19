@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import html
 import json
 import re
 import secrets
@@ -219,21 +218,7 @@ class MappingHandlersMixin:
                 message = "Mapping operation failed: " + str(exc)
         elif method != "GET":
             raise ApiError(405, "method_not_allowed", "use GET or POST")
-        esc = html.escape
-        hidden = '<input type="hidden" name="csrf" value="' + esc(session.csrf) + '">'
-        records = self.server.tokens.list()
-        options = "".join(f'<option value="{esc(r.app_id)}">{esc(r.name)} — {esc(r.path_prefix)}</option>' for r in records if r.valid)
-        cards = []
-        for row in self.server.mappings.list():
-            fields = hidden + f'<input type="hidden" name="id" value="{esc(row["id"])}">'
-            checks = "".join(f'<label><input type="checkbox" name="{key}" {"checked" if row[key] else ""}>{label}</label> '
-                             for key, label in (("enabled", "Enabled"), ("writable", "Writable"), ("allow_exec", "Client execution")))
-            cards.append(f'<fieldset><legend>{esc(row["workspace"])}/{esc(row["name"])} — {"Online" if row["online"] else "Offline"}</legend>'
-                         f'<form method="post">{fields}<input name="comment" maxlength="200" value="{esc(row["comment"])}">{checks}'
-                         '<button name="action" value="update">Save</button><button name="action" value="rotate">Rotate credential</button>'
-                         '<button name="action" value="delete" onclick="return confirm(\'Detach this mapping? Client files are not deleted.\')">Delete mapping</button></form></fieldset>')
-        body = f'<!doctype html><html lang="en"><meta charset="utf-8"><title>Mappings · OpenKapsel</title><style>body{{font:16px system-ui;max-width:1000px;margin:40px auto;padding:20px}}fieldset{{margin:16px 0}}input,select,button{{margin:6px;padding:8px}}pre{{white-space:pre-wrap}}</style><a href="{esc(self._admin_path())}">Administration</a><h1>Client mappings</h1><p>Provider credentials are independent of REST tokens. Client execution also requires explicit local opt-in. Rotating or editing disconnects the client.</p><pre>{esc(message)}</pre>{"".join(cards)}<h2>Create mapping</h2><form method="post">{hidden}<select name="app_id">{options}</select><input name="name" placeholder="Directory name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"><input name="comment" placeholder="Comment" maxlength="200"><label><input type="checkbox" name="writable">Writable</label><label><input type="checkbox" name="allow_exec">Client execution</label><button name="action" value="create">Create</button></form></html>'
-        self._send_html(200, body, headers={"Cache-Control": "no-store"})
+        self._send_admin_dashboard(session, active_panel="mappings", mapping_message=message)
 
     def _mapping_client_config(self, row, secret):
         base = self._public_base_url().rstrip("/")

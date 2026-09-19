@@ -30,7 +30,14 @@ class MappingHTTPTests(unittest.TestCase):
         with patch.object(self.server.mappings, "mount"):
             status, _, raw = self.form(path, form, auth)
         self.assertEqual(status, 200)
-        config = json.loads(html.unescape(re.search(r'<pre>[^\n]*\n(.*?)</pre>', raw.decode(), re.S)[1]))
+        page = raw.decode()
+        config = json.loads(html.unescape(re.search(r'<pre[^>]*id="mapping-client-config"[^>]*>(.*?)</pre>', page, re.S)[1]))
+        self.assertIn('class="admin-shell" data-initial-panel="mappings"', page)
+        self.assertIn('data-admin-tab="mappings"', page)
+        self.assertIn("'static-mcp','mappings']", page)
+        self.assertIn('action="/kapsel/admin/mappings"', page)
+        for icon in ("🔑", "💾", "🔒", "🔗", "🔌", "🗂️", "🚪"):
+            self.assertIn(icon, page)
         row = self.server.mappings.store.list()[0]
         self.assertEqual(config["url"], "wss://example.test/kapsel/mapping-connect/" + row["id"])
         self.server.mappings.store.authenticate(row["id"], config["token"])

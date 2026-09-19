@@ -429,6 +429,7 @@ class AdminHandlersMixin:
         status: int = HTTPStatus.OK,
         success: str | None = None,
         active_panel: str = "tokens",
+        mapping_message: str = "",
     ) -> None:
         images = []
         images_error = None
@@ -459,6 +460,9 @@ class AdminHandlersMixin:
                 default_network_domains=self.server.config.default_network_domains,
                 oauth_connections=self.server.oauth.list(),
                 static_mcp_connections=self.server.static_mcp.list(),
+                mappings=self.server.mappings.list(),
+                mappings_enabled=self.server.config.mappings_enabled,
+                mapping_message=mapping_message,
             ),
         )
 

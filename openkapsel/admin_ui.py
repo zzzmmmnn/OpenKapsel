@@ -263,6 +263,9 @@ def render_dashboard(
     default_network_domains: tuple[str, ...] = (),
     oauth_connections: list[dict] | None = None,
     static_mcp_connections: list[dict] | None = None,
+    mappings: list[dict] | None = None,
+    mappings_enabled: bool = False,
+    mapping_message: str = "",
 ) -> str:
     esc_csrf = html.escape(csrf, quote=True)
     error_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
@@ -303,7 +306,7 @@ def render_dashboard(
         if sandbox_resources_available
         else f'<span class="muted"> · {html.escape(sandbox_resources_reason)}</span>'
     )
-    active_panel = active_panel if active_panel in {"tokens", "images", "password"} else "tokens"
+    active_panel = active_panel if active_panel in {"tokens", "images", "password", "connections", "static-mcp", "mappings"} else "tokens"
     tokens_hidden = " hidden" if active_panel != "tokens" else ""
     images_hidden = " hidden" if active_panel != "images" else ""
     password_hidden = " hidden" if active_panel != "password" else ""
@@ -370,7 +373,15 @@ def render_dashboard(
     body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="static-mcp" aria-controls="panel-static-mcp" title="Static MCP connections"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">Static MCP</span></button></nav>', 1)
     body = body.replace('</main>', render_connections(static_mcp_connections or [], records, csrf, admin_path, public_base_url, static=True) + '</main>', 1)
     body = body.replace("['tokens','images','password']", "['tokens','images','password','connections','static-mcp']")
-    body = body.replace('</nav>', f'<a class="nav-item" href="{escaped_admin_path}/mappings"><span class="nav-icon">⇅</span><span class="nav-label">Client mappings</span></a></nav>', 1)
+    from .mapping_ui import render_mappings
+    body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="mappings" aria-controls="panel-mappings" title="Client mappings"><span class="nav-icon" aria-hidden="true">🗂️</span><span class="nav-label">Client mappings</span></button></nav>', 1)
+    body = body.replace('</main>', render_mappings(mappings or [], records, csrf, admin_path, mapping_message, mappings_enabled) + '</main>', 1)
+    body = body.replace("['tokens','images','password','connections','static-mcp']", "['tokens','images','password','connections','static-mcp','mappings']")
+    icons = {"tokens": "🔑", "images": "💾", "password": "🔒", "connections": "🔗", "static-mcp": "🔌"}
+    import re
+    for tab, icon in icons.items():
+        body = re.sub(r'(data-admin-tab="' + tab + r'"[^>]*><span class="nav-icon" aria-hidden="true">)[^<]+', lambda match: match[1] + icon, body)
+    body = body.replace('aria-hidden="true">↪</span>', 'aria-hidden="true">🚪</span>')
     return _page("Workspace Administration", body)
 
 
