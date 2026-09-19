@@ -6,7 +6,6 @@ import json
 import os
 import posixpath
 import re
-import secrets
 import sqlite3
 import threading
 from contextlib import closing
@@ -14,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .random_ids import token_urlsafe_alnum
 from .workspace_layout import CONTEXT_DIRECTORY, ensure_workspace_directory, ensure_workspace_layout
 
 
@@ -364,7 +364,7 @@ class MemoryStore:
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 for _ in range(8):
-                    memory_id = "mem_" + secrets.token_urlsafe(12)
+                    memory_id = "mem_" + token_urlsafe_alnum(12)
                     try:
                         connection.execute(
                             """

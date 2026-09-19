@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from .random_ids import token_urlsafe_alnum
 from .admin_ui import render_discovery, render_http_error
 from .admin_handlers import AdminHandlersMixin
 from .oauth_handlers import OAuthHandlersMixin
@@ -381,8 +382,8 @@ class AdminSessions:
 
     def create(self) -> AdminSession:
         session = AdminSession(
-            id=secrets.token_urlsafe(32),
-            csrf=secrets.token_urlsafe(24),
+            id=token_urlsafe_alnum(32),
+            csrf=token_urlsafe_alnum(24),
             expires_at=time.time() + 12 * 60 * 60,
         )
         with self._lock:

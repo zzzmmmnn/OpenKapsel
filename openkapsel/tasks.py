@@ -19,6 +19,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
+from .random_ids import token_urlsafe_alnum
 from .cgroups import SandboxLimits, TokenCgroupManager
 from .errors import ApiError
 from .task_history import ArchivedTask, TaskHistoryStore
@@ -256,7 +257,7 @@ class TaskRegistry:
                     f"token resource controls are unavailable: {exc}",
                 ) from None
         task = ShellTask(
-            id=f"task_{secrets.token_urlsafe(12)}",
+            id=f"task_{token_urlsafe_alnum(12)}",
             command=command,
             cwd=str(cwd),
             output_limit=self.config.max_task_output_bytes,

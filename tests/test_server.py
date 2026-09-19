@@ -5427,7 +5427,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
 
         with patch(
-            "openkapsel.tokens.secrets.token_urlsafe",
+            "openkapsel.random_ids.secrets.token_urlsafe",
             side_effect=[
                 "read-token-safe-generated",
                 "PreviewToken0001",
@@ -5450,7 +5450,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         old_preview_token = unique.preview_token
         with patch(
-            "openkapsel.tokens.secrets.token_urlsafe",
+            "openkapsel.random_ids.secrets.token_urlsafe",
             side_effect=[old_preview_token, "PreviewToken0002"],
         ) as generator:
             rotated = reloaded.rotate_preview_token(unique.token)
@@ -5462,7 +5462,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         old_control_token = rotated.control_token
         with patch(
-            "openkapsel.tokens.secrets.token_urlsafe",
+            "openkapsel.random_ids.secrets.token_urlsafe",
             side_effect=[rotated.preview_token, "new-full-token-safe-generated"],
         ) as generator:
             main_rotated = reloaded.rotate_control_token(rotated.token)
@@ -5482,7 +5482,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         old_read_token = main_rotated.token
         with patch(
-            "openkapsel.tokens.secrets.token_urlsafe",
+            "openkapsel.random_ids.secrets.token_urlsafe",
             side_effect=[main_rotated.control_token, "new-read-token-safe-generated"],
         ) as generator:
             read_rotated = reloaded.rotate_read_token(old_read_token)

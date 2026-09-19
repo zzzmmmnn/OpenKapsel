@@ -6,11 +6,11 @@ import errno
 import copy
 import json
 import re
-import secrets
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from .random_ids import token_urlsafe_alnum
 from .errors import ApiError
 
 
@@ -245,7 +245,7 @@ class MappingHandlersMixin:
         body = self._read_json()
         if not row["writable"] or not self.token_record.can_write:
             raise ApiError(403, "client_execution_requires_write", "client execution requires a writable mapping and caller")
-        args = {"task_id": secrets.token_urlsafe(18), "argv": body.get("argv"), "cwd": body.get("cwd", ".")}
+        args = {"task_id": token_urlsafe_alnum(18), "argv": body.get("argv"), "cwd": body.get("cwd", ".")}
         if "timeout_seconds" in body:
             args["timeout_seconds"] = body["timeout_seconds"]
         self._send_json(202, self._mapping_rpc(row, "task_start", args))

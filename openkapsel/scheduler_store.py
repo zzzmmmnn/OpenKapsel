@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import calendar
 import re
-import secrets
 import sqlite3
 import threading
 from contextlib import closing
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .random_ids import token_urlsafe_alnum
 from .workspace_layout import SCHEDULER_DIRECTORY, ensure_workspace_directory
 
 
@@ -498,7 +498,7 @@ class ScheduleStore:
             message, "message", MAX_SCHEDULE_MESSAGE_CHARS
         )
         now = iso_utc(utc_now())
-        schedule_id = f"schedule_{secrets.token_urlsafe(12)}"
+        schedule_id = f"schedule_{token_urlsafe_alnum(12)}"
         with self._lock, closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             active_count = int(
@@ -826,7 +826,7 @@ class ScheduleStore:
                     connection.rollback()
                     return None
                 scheduled_at = record.next_run_at
-            run_id = f"run_{secrets.token_urlsafe(12)}"
+            run_id = f"run_{token_urlsafe_alnum(12)}"
             execute = True
             run_status = "claimed"
             error = None
