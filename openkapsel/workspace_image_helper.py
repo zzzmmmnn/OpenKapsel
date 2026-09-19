@@ -36,7 +36,8 @@ class ImageRequestHandler(socketserver.StreamRequestHandler):
             request = json.loads(raw)
             if not isinstance(request, dict):
                 raise WorkspaceImageError("workspace image request must be an object")
-            result = server.engine.dispatch(request)
+            result = (server.mapping_mounts.dispatch(request) if request.get("action") in {"mapping_mount", "mapping_unmount"}
+                      else server.engine.dispatch(request))
             self._reply({"ok": True, **result})
         except (ValueError, TypeError, WorkspaceImageError) as exc:
             self._reply({"ok": False, "error": str(exc)})
@@ -52,7 +53,9 @@ class ImageUnixServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
 
     def __init__(self, path: str, engine: WorkspaceImageEngine, allowed_uid: int):
+        from .mapping_host import HostMappingMounts
         self.engine = engine
+        self.mapping_mounts = HostMappingMounts(engine.workspace_root, engine.service_uid, engine.service_gid)
         self.allowed_uid = allowed_uid
         super().__init__(path, ImageRequestHandler)
 

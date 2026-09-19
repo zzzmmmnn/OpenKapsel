@@ -89,16 +89,10 @@ class SandboxMixin:
         return launch.argv, launch.stdin_data
 
     def _sandbox_hidden_paths(self) -> tuple[Path, ...]:
-        hidden: list[Path] = [ensure_workspace_layout(self.token_scope_root).root]
-        for current, directories, _files in os.walk(self.token_scope_root, followlinks=False):
-            parent = Path(current)
-            for name in tuple(directories):
-                path = parent / name
-                if path.is_symlink() or name == INTERNAL_DIRECTORY:
-                    directories.remove(name)
-                if name == INTERNAL_DIRECTORY and path.is_dir() and not path.is_symlink():
-                    hidden.append(path)
-        return tuple(sorted(set(hidden), key=lambda path: len(path.parts)))
+        from .shell_execution import sandbox_hidden_paths
+        manager = getattr(self.server, "mappings", None)
+        roots = () if manager is None else tuple(manager.mount_path(row) for row in manager.store.list(self.token_record.path_prefix))
+        return sandbox_hidden_paths(self.token_scope_root, mapping_roots=roots)
 
     def _validated_path_grants(self) -> tuple[PathGrant, ...]:
         for grant in self.token_record.allowed_paths:

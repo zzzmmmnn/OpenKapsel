@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openkapsel"
-version = "1.52.1"
+version = "1.53.3"
 description = "Token-scoped remote workspace infrastructure for AI clients"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,10 +26,16 @@ dependencies = [
   "scipy>=1.10,<2",
   "sqlalchemy>=2.0,<3",
   "uvicorn>=0.34,<1",
+  "wsproto>=1.2,<2",
+  "fusepy>=3,<4; sys_platform == 'linux'",
 ]
+
+[project.optional-dependencies]
+client = ["websocket-client>=1.8,<2", "python-socks>=2.7,<3"]
 
 [project.scripts]
 openkapsel = "openkapsel.server:main"
+openkapsel-client = "openkapsel.client:main"
 
 [tool.setuptools.packages.find]
 include = ["openkapsel*", "openkapsel_runtime*"]

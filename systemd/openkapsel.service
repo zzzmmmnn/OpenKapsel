@@ -13,6 +13,7 @@ WorkingDirectory=/opt/openkapsel
 ExecStart=/opt/openkapsel/venv/bin/python -m openkapsel --config /var/lib/openkapsel/config.json
 Restart=on-failure
 RestartSec=3s
+KillMode=mixed
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=/var/lib/openkapsel/home
 Environment=XDG_RUNTIME_DIR=/var/lib/openkapsel/run
@@ -27,6 +28,7 @@ PrivateTmp=true
 PrivateDevices=false
 DevicePolicy=closed
 DeviceAllow=/dev/net/tun rw
+DeviceAllow=/dev/fuse rw
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/openkapsel

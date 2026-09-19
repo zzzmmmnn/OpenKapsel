@@ -56,6 +56,7 @@ class FileHandlersMixin:
         selected = entries[offset : offset + limit]
         result = []
         for name, kind, item_stat in selected:
+            mapping = self.server.mappings.at_path(path / name)
             result.append(
                 {
                     "name": name,
@@ -63,6 +64,7 @@ class FileHandlersMixin:
                     "type": kind,
                     "size": item_stat.st_size,
                     "modified_at": datetime.fromtimestamp(item_stat.st_mtime, timezone.utc).isoformat(),
+                    **({"is_mapping": True, "mapping_id": mapping["id"]} if mapping and self.server.mappings.mount_path(mapping) == path / name else {}),
                 }
             )
         self._send_json(
@@ -1005,7 +1007,7 @@ class FileHandlersMixin:
                 "recoverable delete is only available inside the token workspace; use Shell for direct external deletion",
             ) from None
         try:
-            result = self.server.recycle_for(self.token_scope_root).recycle(path)
+            result = self._recycle_path(path)
         except RecycleError as exc:
             raise ApiError(exc.status, exc.code, exc.message) from None
         result.update({"path": str(path), "deleted": True, "recycled": True})
@@ -1102,7 +1104,7 @@ class FileHandlersMixin:
         failures = 0
         for index, requested_path, path in validated:
             try:
-                result = recycle.recycle(path)
+                result = self._recycle_path(path)
             except RecycleError as exc:
                 failures += 1
                 results.append(
@@ -1144,8 +1146,26 @@ class FileHandlersMixin:
         create_parents = self._optional_bool(body, "create_parents", False)
         if source == self.token_scope_root or destination == self.token_scope_root:
             raise ApiError(HTTPStatus.FORBIDDEN, "root_protected", "the token root cannot be moved or replaced")
+        try:
+            self.server.mappings.check_path(source, write=True, protect_root=True)
+            self.server.mappings.check_path(destination, write=True, protect_root=True)
+        except OSError:
+            raise ApiError(403, "mapping_root_protected", "mapping root cannot be moved or replaced") from None
         if source == destination:
             raise ApiError(HTTPStatus.BAD_REQUEST, "same_path", "source and destination are the same path")
+        source_mapping = self.server.mappings.at_path(source)
+        destination_mapping = self.server.mappings.at_path(destination)
+        if (source_mapping or destination_mapping) and (source_mapping or {}).get("id") != (destination_mapping or {}).get("id"):
+            if overwrite:
+                raise ApiError(400, "overwrite_not_supported", "cross-root moves never overwrite; recycle the destination first")
+            if create_parents:
+                try:
+                    with self._safe_parent(destination, create_parents=True):
+                        pass
+                except OSError:
+                    raise ApiError(409, "parent_unavailable", "could not create destination parents") from None
+            self._start_file_transfer(source, destination, move=True)
+            return
         try:
             with self._safe_parent(source) as source_parent:
                 source_stat = source_parent.lstat()
@@ -1193,6 +1213,12 @@ class FileHandlersMixin:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         offset = self._query_int(query, "offset", 0, minimum=0)
         limit = self._query_int(query, "limit", 1000, minimum=1, maximum=5000)
+        row = self._mapped_recycle_root(self._query_one(query, "root", "."))
+        if row:
+            result = self._mapping_rpc(row, "recycle_list", {"offset": offset, "limit": limit})
+            result.update(root=row["name"], offset=offset, limit=limit)
+            self._send_json(200, result)
+            return
         try:
             entries, total = self.server.recycle_for(self.token_scope_root).list_items(offset, limit)
         except RecycleError as exc:
@@ -1212,6 +1238,10 @@ class FileHandlersMixin:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
         recycle_id = self._required_string(body, "recycle_id")
+        row = self._mapped_recycle_root(body.get("root", "."))
+        if row:
+            self._send_json(200, self._mapping_rpc(row, "recycle_restore", {"recycle_id": recycle_id}))
+            return
         try:
             result = self.server.recycle_for(self.token_scope_root).restore(recycle_id)
         except RecycleError as exc:

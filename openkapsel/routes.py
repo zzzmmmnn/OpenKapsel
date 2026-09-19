@@ -53,6 +53,23 @@ def _exact(
 
 
 ENDPOINTS: tuple[EndpointSpec, ...] = (
+    _exact("recycle_purge", ("POST",), "/recycle/purge", "_handle_recycle_purge", control_required=True,
+        request_body=True, context_mode="deferred", context_operations=(("POST", "recycle.purge"),), discovery_key="recycle_purge"),
+    _exact("fs_copy", ("POST",), "/fs/copy", "_handle_file_copy", control_required=True,
+        request_body=True, context_mode="deferred", context_operations=(("POST", "fs.copy"),), discovery_key="fs_copy"),
+    EndpointSpec("file_transfer", frozenset(("GET", "POST")),
+        re.compile(r"/fs/transfers/(?P<target>[A-Za-z0-9_-]{24}(?:/(?:cancel|resume))?)"),
+        "_handle_file_transfer", invocation="param", parameter="target", control_required=True,
+        request_body=True, context_mode="deferred", context_operations=(("POST", "fs.transfer.control"), ("GET", "fs.transfer.get")), discovery_key="file_transfer"),
+    _exact("mapping_list", ("GET",), "/mappings", "_handle_mapping_list", discovery_key="mapping_list"),
+    EndpointSpec("mapping_tasks", frozenset(("GET", "POST")),
+        re.compile(r"/mappings/(?P<mid>[A-Za-z0-9_-]{24})/tasks"),
+        "_handle_mapping_tasks", invocation="param_query", parameter="mid", control_required=True,
+        request_body=True, context_mode="deferred", context_operations=(("POST", "client.task.start"), ("GET", "client.task.list")), discovery_key="mapping_tasks"),
+    EndpointSpec("mapping_task", frozenset(("GET", "POST")),
+        re.compile(r"/mappings/(?P<target>[A-Za-z0-9_-]{24}/tasks/[A-Za-z0-9_-]{8,64}(?:/(?:stdin|interrupt|kill))?)"),
+        "_handle_mapping_task", invocation="param_query", parameter="target", control_required=True,
+        request_body=True, context_mode="deferred", context_operations=(("POST", "client.task.control"), ("GET", "client.task.get")), discovery_key="mapping_task"),
     _exact(
         "credentials_renew", ("POST",), "/credentials/renew", "_handle_credentials_renew",
         control_required=True, discovery_key="credentials_renew",

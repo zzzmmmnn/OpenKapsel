@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import signal
 import socket
 import sqlite3
 import stat
@@ -52,6 +53,9 @@ from .context_store import (
 from .discovery import DiscoveryMixin
 from .errors import ApiError
 from .environment_handlers import EnvironmentHandlersMixin
+from .mapping_handlers import MappingHandlersMixin
+from .mapping_manager import MappingManager
+from .mapping_transfers import FileTransferManager
 from .file_handlers import FileHandlersMixin
 from .mcp_handlers import McpHandlersMixin
 from .memory_handlers import MemoryHandlersMixin
@@ -157,8 +161,11 @@ class ServerConfig:
     max_share_entries: int = 10
     max_share_bytes: int = 256 * 1024 * 1024
     schedule_misfire_grace_seconds: int = 300
+    mappings_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.mappings_enabled, bool):
+            raise ValueError("mappings_enabled must be boolean")
         resolved = self.root.expanduser().resolve()
         if not resolved.is_dir():
             raise ValueError(f"workspace root is not a directory: {resolved}")
@@ -497,6 +504,11 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         )
         prepare_proxy_root(config.network_proxy_dir)
         self.cgroups = TokenCgroupManager(enabled=config.sandbox_cgroup_enabled)
+        # Move the manager into its delegated leaf before spawning FUSE workers;
+        # otherwise their presence prevents enabling cgroup v2 controllers.
+        self.mappings = MappingManager(config.root, config.upload_state_dir.parent, enabled=config.mappings_enabled,
+                                       mount_helper=self.workspace_images if self.workspace_images.enabled else None)
+        self.mappings.workspace_available = lambda workspace: any(record.valid and record.path_prefix == workspace for record in self.tokens.list())
         self.sandboxes = SandboxRegistry(
             enabled=config.sandbox_backends,
             default=config.sandbox_default_backend,
@@ -532,6 +544,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             max_query_nodes=config.max_tree_nodes,
         )
         self.transfer_slots = threading.BoundedSemaphore(config.max_concurrent_transfers)
+        self.file_transfers = FileTransferManager(config.upload_state_dir.parent / "file-transfers", self.mappings, self.recycle_for, self.transfer_slots)
         super().__init__(address, WorkspaceRequestHandler)
         self.scheduler = SchedulerManager(self)
 
@@ -592,6 +605,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.api_workers.close()
         self.scheduler.close()
         self.tasks.close()
+        self.file_transfers.close()
+        self.mappings.close()
         super().server_close()
 
     def recycle_for(self, scope_root: Path) -> RecycleBin:
@@ -701,6 +716,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
 
 class WorkspaceRequestHandler(
+    MappingHandlersMixin,
     AdminHandlersMixin,
     OAuthHandlersMixin,
     StaticMcpHandlersMixin,
@@ -772,6 +788,9 @@ class WorkspaceRequestHandler(
             if self._dispatch_oauth(method, parsed.path, parsed.query):
                 return
             request_path = self._strip_url_base_path(parsed.path)
+            if request_path.startswith("/mapping-connect/"):
+                self._handle_mapping_provider(method, request_path)
+                return
             if request_path == "/skills" or request_path.startswith("/skills/"):
                 self._dispatch_skill(method, request_path)
                 return
@@ -1914,6 +1933,10 @@ class WorkspaceRequestHandler(
         candidate = Path(value).expanduser() if value else root
         if not candidate.is_absolute():
             candidate = root / candidate
+        try:
+            self.server.mappings.check_path(Path(os.path.abspath(candidate)), write=write, protect_root=write)
+        except OSError as exc:
+            raise ApiError(403 if exc.errno in {errno.EROFS, errno.EBUSY} else 503, "mapping_unavailable", "mapping is protected, read-only, or offline") from None
         resolved = candidate.resolve(strict=False)
         self._assert_inside_root(resolved)
         if write:
@@ -1982,6 +2005,7 @@ class WorkspaceRequestHandler(
                 ".openkapsel-upload-upload_" in name
                 or ".openkapsel-put-" in name
                 or name.startswith(".openkapsel-share-")
+                or name.startswith(".openkapsel-transfer-")
             )
         )
 
@@ -2750,6 +2774,7 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
         raise ValueError("config field max_finished_tasks_per_token must be between 1 and 4")
     name = args.name if args.name is not None else payload.get("workspace_name", "OpenKapsel")
     config = ServerConfig(
+        mappings_enabled=payload.get("mappings_enabled", False),
         root=root,
         token=bootstrap_token,
         name=name,
@@ -2851,6 +2876,9 @@ def main(argv: list[str] | None = None) -> None:
     if config.admin_enabled:
         print(f"Admin console: {local_base}/admin")
     print(f"Workspace root: {config.root}")
+    def stop_service(_signal, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop_service)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

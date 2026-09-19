@@ -222,6 +222,25 @@ class RecycleBin:
             finally:
                 os.close(root_fd)
 
+    def purge(self, recycle_id: str) -> dict[str, Any]:
+        """Permanently remove exactly one validated recycle entry."""
+        if not isinstance(recycle_id, str) or not RECYCLE_ID_PATTERN.fullmatch(recycle_id):
+            raise RecycleError(HTTPStatus.NOT_FOUND, "recycle_not_found", "recycle item does not exist")
+        with self._lock:
+            root_fd = self._open_root()
+            try:
+                entry_fd = os.open(recycle_id, DIRECTORY_FLAGS, dir_fd=root_fd)
+                try:
+                    self._load_metadata(entry_fd, recycle_id)
+                finally:
+                    os.close(entry_fd)
+                self._remove_tree(root_fd, recycle_id)
+                return {"recycle_id": recycle_id, "purged": True, "recoverable": False}
+            except (OSError, ValueError) as exc:
+                raise RecycleError(HTTPStatus.CONFLICT, "purge_failed", str(exc)) from None
+            finally:
+                os.close(root_fd)
+
     @staticmethod
     def _write_metadata(entry_fd: int, metadata: dict[str, Any]) -> None:
         descriptor = os.open(

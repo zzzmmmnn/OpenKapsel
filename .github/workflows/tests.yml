@@ -13,6 +13,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  client:
+    name: Client / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install lightweight client test dependencies
+        run: python -m pip install "wsproto>=1.2,<2" "websocket-client>=1.8,<2" "python-socks>=2.7,<3"
+      - name: Test client transport and filesystem operations
+        run: |
+          python -m unittest discover -s tests -p test_mappings.py -v
+          python -m unittest discover -s tests -p test_client_windows.py -v
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

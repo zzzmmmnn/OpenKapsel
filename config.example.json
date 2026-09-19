@@ -1,4 +1,5 @@
 {
+  "mappings_enabled": false,
   "workspace_name": "OpenKapsel",
   "workspace_root": "/absolute/path/to/workspace",
   "listen_host": "127.0.0.1",

@@ -52,12 +52,18 @@ def validated_path_grants(record: TokenRecord) -> tuple[PathGrant, ...]:
     return record.allowed_paths
 
 
-def sandbox_hidden_paths(scope_root: Path) -> tuple[Path, ...]:
+def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=()) -> tuple[Path, ...]:
     hidden: list[Path] = [ensure_workspace_layout(scope_root).root]
+    mapped = set(mapping_roots)
     for current, directories, _files in os.walk(scope_root, followlinks=False):
         parent = Path(current)
         for name in tuple(directories):
             path = parent / name
+            # Providers reject private paths themselves. Walking a remote export
+            # here would turn every Shell startup into an unbounded network scan.
+            if path in mapped:
+                directories.remove(name)
+                continue
             if path.is_symlink() or name == INTERNAL_DIRECTORY:
                 directories.remove(name)
             if name == INTERNAL_DIRECTORY and path.is_dir() and not path.is_symlink():
@@ -140,7 +146,10 @@ def sandbox_launch(
         allowed_domains=record.allowed_domains,
         proxy_root=server.config.network_proxy_dir,
         allowed_paths=validated_path_grants(record),
-        hidden_paths=sandbox_hidden_paths(scope_root),
+        hidden_paths=sandbox_hidden_paths(scope_root, mapping_roots=(
+            tuple(server.mappings.mount_path(row) for row in server.mappings.store.list(record.path_prefix))
+            if hasattr(server, "mappings") else ()
+        )),
         limits=SandboxLimits(
             max_processes=record.sandbox_max_processes,
             memory_bytes=record.sandbox_memory_mb * 1024 * 1024,

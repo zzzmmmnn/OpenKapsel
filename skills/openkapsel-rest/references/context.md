@@ -35,7 +35,7 @@ Every ordinary modifying REST endpoint requires the owning Plan's `plan_id`, a s
 
 Ordinary reads should omit Context parameters. To intentionally record a read, pass `taskname` and `message` together as query parameters; `plan_id` is optional but recommended.
 
-`actor_id` is a SHA-256 pseudonymous identifier derived from the read URL token. It distinguishes tokens that share one workspace without storing a raw token.
+`actor_id` is a SHA-256 pseudonymous identifier derived from the stable app identity. It distinguishes configurations that share one workspace and remains stable when credentials rotate.
 
 ## Plan tree and updates
 
