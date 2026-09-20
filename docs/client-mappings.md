@@ -43,6 +43,10 @@ Keep the configuration outside the exported directory and source control. On POS
   "root": "/path/to/local/project",
   "writable": true,
   "allow_exec": false,
+  "rpc": {
+    "file": true,
+    "git": true
+  },
   "sandbox": true,
   "proxy": "socks5://127.0.0.1:1080"
 }
@@ -56,12 +60,21 @@ If local DNS returns a proxy's synthetic address (for example an address from `1
 
 Use normal file APIs, server Shell, and backend filesystem operations for mapped paths. `GET /mappings` reports online state, writable state, and client capabilities. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
 
-Updated clients advertise `capabilities.file_api` with version `3` and a list of
-supported operations. The server automatically sends one complete file operation
-over the existing WebSocket when all its paths belong to the same mapping. The
-client performs filesystem work locally and returns the normal REST response.
-For example, SHA-256 calculation sends back the digest rather than transferring
-the file to the server, and directory listing returns metadata in one RPC.
+Updated clients advertise a generic `capabilities.rpc` map. Each RPC family reports
+one of `available`, `unsupported`, or `disabled`; the server derives `offline`
+when the provider session is absent. The client configuration can independently
+enable or disable each implemented family with `rpc.file` and `rpc.git`. Git is
+reported as `unsupported` when enabled but the local Git executable is missing.
+Legacy `file_api` and `git_api` advertisements remain accepted during rolling
+upgrades.
+
+The file family currently uses version `3` and advertises its supported
+operations. The server automatically sends one complete file operation over the
+existing WebSocket when all its paths belong to the same mapping and the
+operation is available. The client performs filesystem work locally and returns
+the normal REST response. For example, SHA-256 calculation sends back the digest
+rather than transferring the file to the server, and directory listing returns
+metadata in one RPC.
 
 The fast path supports list, stat/hash, text read (including byte offsets), tree,
 search, text write, replace, mkdir, same-mapping move, recoverable delete, and
@@ -73,9 +86,11 @@ Explicit server-target Shell and application filesystem access still use FUSE. B
 resumable uploads, cross-root transfers, and batches spanning multiple storage
 roots retain their existing paths.
 
-Upgrade and reconnect the client to enable this optimization. An older client,
-an oversized request, or a server limit above the client operation ceiling uses
-the existing FUSE path, decided before an RPC is sent. RPC messages are bounded
+File RPC is an optimization over the existing FUSE path, so an older client,
+a client with `rpc.file=false`, an unsupported file operation, an oversized
+request, or a server limit above the client operation ceiling may use FUSE when
+that fallback is decided before an RPC is sent. An offline mapping or an
+administrator-disabled mapping never falls back to FUSE. RPC messages are bounded
 to 1 MiB. An oversized response returns `mapping_response_too_large` (413): use
 a smaller page, read limit, tree depth, or batch. A timeout or disconnection after
 dispatch is never automatically replayed; check the affected paths before
@@ -83,10 +98,12 @@ retrying a mutation whose result is unknown. The same applies to an oversized
 response reporting `mutation_may_have_completed: true`. Client-side path guards, protected
 internal directories, and both mapping and local write restrictions still apply.
 
-Git inspection uses `capabilities.git_api` version `2` with `read_only=true`.
+Git inspection uses RPC family `git` version `2` with `read_only=true`.
 It is independent of client execution: read-only mappings and `allow_exec=false`
 work. Git runs against a bounded local sanitized snapshot, never the original
-repository configuration. Host Git is required; old clients fail closed.
+repository configuration. Git RPC has no FUSE/server fallback: disabled,
+unsupported, and offline states fail explicitly. Host Git is required when
+`rpc.git=true`; a missing executable is advertised as `unsupported`.
 See [Git inspection](shell-and-mcp.md#git-inspection) for limits and supported layouts.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.

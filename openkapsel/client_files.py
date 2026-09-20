@@ -14,11 +14,15 @@ from .mapping_transport import CHUNK_SIZE, READ_OPERATIONS
 
 
 class ClientFiles:
-    def __init__(self, root, *, writable=False):
+    def __init__(self, root, *, writable=False, rpc_capabilities=None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("export root must be a directory")
         self.writable = writable
+        self.rpc_capabilities = rpc_capabilities or {
+            "file": {"state": "available"},
+            "git": {"state": "available"},
+        }
         self.paths = SafePathAccess((self.root,))
         self.lock = threading.RLock()
         self.handles = {}
@@ -51,6 +55,8 @@ class ClientFiles:
 
     def _dispatch(self, op, args):
         if op.startswith("git_"):
+            if self.rpc_capabilities.get("git", {}).get("state") != "available":
+                raise OSError(errno.ENOSYS, "Git RPC is not available")
             from .git_read import inspect_git
             from .errors import ApiError
             try:
@@ -59,6 +65,8 @@ class ClientFiles:
             except ApiError as exc:
                 return {"status": int(exc.status), "error": {"code": exc.code, "message": exc.message, "details": exc.details}}
         if op.startswith("api_"):
+            if self.rpc_capabilities.get("file", {}).get("state") != "available":
+                raise OSError(errno.ENOSYS, "file RPC is not available")
             from .client_file_api import ClientFileAPI
             return ClientFileAPI.dispatch(self, op[4:], args)
         if op == "close":

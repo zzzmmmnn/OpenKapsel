@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+from .mapping_capabilities import MappingRpcCapability, RPC_FAMILIES, RPC_STATES, legacy_rpc_capability
 from .mapping_store import MappingStore
 from .mapping_transport import ProviderSession, READ_OPERATIONS, encode, recv_line
 
@@ -180,12 +181,14 @@ class MappingManager:
         if row:
             if protect_root and path == self.mount_path(row):
                 raise OSError(errno.EBUSY, "mapping root is protected")
-            if write and not row["writable"]:
-                raise OSError(errno.EROFS, "mapping is read-only")
             with self.lock:
                 session = self.sessions.get(row["id"])
-                if not row["enabled"] or session is None or session.closed:
+                if not row["enabled"]:
+                    raise OSError(errno.EACCES, "mapping is disabled")
+                if session is None or session.closed:
                     raise OSError(errno.EHOSTDOWN, "mapping client is offline")
+            if write and not row["writable"]:
+                raise OSError(errno.EROFS, "mapping is read-only")
         return row
 
     def call(self, mid, op, args):
@@ -195,7 +198,9 @@ class MappingManager:
             raise OSError(errno.EACCES, "workspace is unavailable")
         with self.lock:
             session = self.sessions.get(mid)
-            if not row["enabled"] or session is None or session.closed:
+            if not row["enabled"]:
+                raise OSError(errno.EACCES, "mapping is disabled")
+            if session is None or session.closed:
                 raise OSError(errno.EHOSTDOWN, "mapping client is offline")
         if op.startswith("task_"):
             if not row["allow_exec"]:
@@ -214,23 +219,105 @@ class MappingManager:
             result = session.generation + ":" + str(result)
         return result
 
-    def supports_git_api(self, mid):
+    def rpc_capability(self, mid, family, *, operation=None, min_version=1, max_version=None, required=None):
+        if family not in RPC_FAMILIES:
+            raise ValueError("unknown mapping RPC family")
+        spec = RPC_FAMILIES[family]
+        row = self.store.get(mid)
+        if not row["enabled"]:
+            return MappingRpcCapability(family, "disabled", reason="mapping_disabled")
         with self.lock:
             session = self.sessions.get(mid)
             if session is None or session.closed:
-                return False
-            capability = session.capabilities.get("git_api", {})
-            return isinstance(capability, dict) and capability.get("version") == 2 and capability.get("read_only") is True
+                return MappingRpcCapability(family, "offline", reason="client_offline")
+            capabilities = session.capabilities
+
+        rpc = capabilities.get("rpc")
+        advertised = rpc.get(family) if isinstance(rpc, dict) else None
+        if advertised is None:
+            advertised = legacy_rpc_capability(capabilities, family)
+        if not isinstance(advertised, dict):
+            return MappingRpcCapability(
+                family,
+                "unsupported",
+                reason="not_advertised",
+                fallback=spec["fallback"],
+            )
+
+        state = advertised.get("state", "available")
+        if state not in RPC_STATES or state == "offline":
+            return MappingRpcCapability(
+                family,
+                "unsupported",
+                reason="invalid_capability",
+                fallback=spec["fallback"],
+            )
+        version = advertised.get("version")
+        operations = advertised.get("operations", ())
+        if not isinstance(operations, list) or any(not isinstance(item, str) for item in operations):
+            operations = ()
+        details = {"advertised_reason": advertised.get("reason")} if advertised.get("reason") else None
+        fallback = spec["fallback"] if state in {"unsupported", "disabled"} else None
+        result = MappingRpcCapability(
+            family,
+            state,
+            reason=advertised.get("reason"),
+            version=version if type(version) is int else None,
+            operations=tuple(operations),
+            fallback=fallback,
+            details=details,
+        )
+        if state != "available":
+            return result
+        if type(version) is not int or version < min_version or (max_version is not None and version > max_version):
+            return MappingRpcCapability(
+                family,
+                "unsupported",
+                reason="version_mismatch",
+                version=version if type(version) is int else None,
+                operations=tuple(operations),
+                fallback=spec["fallback"],
+            )
+        if operation is not None and operation not in operations:
+            return MappingRpcCapability(
+                family,
+                "unsupported",
+                reason="operation_not_supported",
+                version=version,
+                operations=tuple(operations),
+                fallback=spec["fallback"],
+            )
+        if required:
+            for key, expected in required.items():
+                if advertised.get(key) != expected:
+                    return MappingRpcCapability(
+                        family,
+                        "unsupported",
+                        reason="incompatible_capability",
+                        version=version,
+                        operations=tuple(operations),
+                        fallback=spec["fallback"],
+                        details={"field": key},
+                    )
+        return result
+
+    def supports_git_api(self, mid):
+        return self.rpc_capability(
+            mid,
+            "git",
+            min_version=2,
+            max_version=2,
+            required={"read_only": True},
+        ).available
 
     def supports_file_api(self, mid, operation, *, min_version=1):
-        with self.lock:
-            session = self.sessions.get(mid)
-            if session is None or session.closed:
-                return False
-            capability = session.capabilities.get("file_api", {})
-            return (isinstance(capability, dict) and type(capability.get("version")) is int
-                    and min_version <= capability["version"] <= 3
-                    and operation in capability.get("operations", []))
+        return self.rpc_capability(
+            mid,
+            "file",
+            operation=operation,
+            min_version=min_version,
+            max_version=3,
+        ).available
 
     def accept(self, handler, row):
         with self.lock:

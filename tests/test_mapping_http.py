@@ -43,6 +43,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.server.mappings.store.authenticate(row["id"], config["token"])
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
+        self.assertEqual({"file": True, "git": True}, config["rpc"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
         base = "/kapsel/w/" + self.record.token
         self.assertNotIn(config["token"].encode(), self.request("GET", base + "/mappings")[2])
