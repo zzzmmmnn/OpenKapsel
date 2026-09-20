@@ -100,6 +100,15 @@ class ClientReconnectTests(unittest.TestCase):
         self.runtime.close()
         self.assertTrue(task["done"].wait(5))
 
+    def test_runtime_reports_loaded_rpc_extensions(self):
+        self.runtime.close()
+        with self.assertLogs("openkapsel.client", level="INFO") as logs:
+            self.runtime = ClientRuntime(self.config)
+        output = "\n".join(logs.output)
+        self.assertIn("Loaded RPC extensions:", output)
+        self.assertIn("archive v1", output)
+        self.assertIn("git v2", output)
+
     def test_real_websocket_reconnect_reads_completed_result(self):
         from openkapsel.mapping_transport import ProviderSession
         connected = threading.Event()

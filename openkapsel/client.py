@@ -62,6 +62,13 @@ def _create_resources(config):
             raise ValueError(f"{key} must be a boolean")
     rpc_registry = load_client_rpc_registry(config)
     rpc_capabilities = rpc_registry.capability_map(config)
+    extensions = []
+    for family in sorted(rpc_registry.families):
+        capability = rpc_capabilities[family]
+        extensions.append(
+            f"{family} v{capability['version']} ({capability['state']})"
+        )
+    LOG.info("Loaded RPC extensions: %s", ", ".join(extensions) or "none")
     file_class = ClientFiles
     if os.name == "nt":
         from .client_windows import WindowsClientFiles
