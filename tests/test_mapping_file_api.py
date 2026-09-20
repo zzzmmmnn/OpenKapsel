@@ -108,6 +108,34 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual(1, result["match_count"])
         self.assertEqual(before, len(self.calls))
 
+    def test_file_rpc_disabled_can_fallback_but_offline_and_mapping_disabled_do_not(self):
+        (self.mount / "fallback").write_text("fuse")
+        self.session.capabilities = {
+            "rpc": {
+                "file": {
+                    "state": "disabled",
+                    "reason": "client_config",
+                    "version": 3,
+                    "operations": sorted(FILE_API_OPERATIONS),
+                }
+            }
+        }
+        status, body = self.api("/fs/list?path=laptop")
+        self.assertEqual(200, status, body)
+        self.assertEqual(["fallback"], [entry["name"] for entry in body["entries"]])
+        self.assertEqual([], self.calls)
+
+        self.server.mappings.sessions.pop(self.row["id"])
+        status, body = self.api("/fs/list?path=laptop")
+        self.assertEqual(503, status, body)
+        self.assertEqual("mapping_offline", body["error"]["code"])
+
+        self.server.mappings.sessions[self.row["id"]] = self.session
+        self.server.mappings.store.update(self.row["id"], enabled=False)
+        status, body = self.api("/fs/list?path=laptop")
+        self.assertEqual(403, status, body)
+        self.assertEqual("mapping_disabled", body["error"]["code"])
+
     def test_fuse_and_direct_rpc_etags_share_client_identity(self):
         (self.export / "a").write_text("same file")
         actual = (self.export / "a").stat()

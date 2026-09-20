@@ -43,6 +43,8 @@ class MappingHTTPTests(unittest.TestCase):
         self.server.mappings.store.authenticate(row["id"], config["token"])
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
+        self.assertEqual({"file": True, "git": True, "archive": True}, config["rpc"])
+        self.assertEqual([], config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
         base = "/kapsel/w/" + self.record.token
         self.assertNotIn(config["token"].encode(), self.request("GET", base + "/mappings")[2])
@@ -50,6 +52,92 @@ class MappingHTTPTests(unittest.TestCase):
         for credential in (None, config["token"]):
             headers = {} if credential is None else {"Authorization": "Bearer " + credential}
             self.assertEqual(401, self.request("GET", base + "/mappings/" + row["id"] + "/tasks", headers=headers)[0])
+
+    def test_generic_readonly_rpc_plugin_rest_and_mcp(self):
+        from types import SimpleNamespace
+
+        row, _ = self.server.mappings.store.create(self.record.path_prefix, "plugin-client", writable=False)
+        root = self.server.tokens.scope_root(self.record)
+        (root / row["name"]).mkdir()
+        calls = []
+
+        def call(operation, args):
+            calls.append((operation, args))
+            return {"status": 200, "body": {"echo": args.get("value")}}
+
+        session = SimpleNamespace(
+            closed=False,
+            capabilities={"rpc": {"vendor": {
+                "state": "available",
+                "version": 1,
+                "description": "Inspect vendor metadata.",
+                "operations": ["inspect"],
+                "operation_specs": {
+                    "inspect": {
+                        "description": "Inspect one integer.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"value": {"type": "integer"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "read_only": True,
+            }}},
+            call=call,
+            close=lambda: None,
+        )
+        self.server.mappings.sessions[row["id"]] = session
+        try:
+            base = "/kapsel/w/" + self.record.token
+            status, _, raw = self.request("GET", base + "/mappings")
+            self.assertEqual(200, status, raw)
+            advertised = json.loads(raw)["mappings"][0]["capabilities"]["rpc"]["vendor"]
+            self.assertEqual("Inspect vendor metadata.", advertised["description"])
+            self.assertEqual(
+                "integer",
+                advertised["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
+            )
+
+            endpoint = base + f"/mappings/{row['id']}/rpc/vendor/inspect"
+            status, _, raw = self.request(
+                "POST", endpoint, json.dumps({"args": {"value": 7}}),
+                {"Content-Type": "application/json"},
+            )
+            self.assertEqual(200, status, raw)
+            payload = json.loads(raw)
+            self.assertEqual(7, payload["result"]["echo"])
+            self.assertEqual([("vendor_inspect", {"value": 7})], calls)
+
+            conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Plugin reads")
+            tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "rpc",
+                "arguments": {
+                    "mapping_id": row["id"],
+                    "family": "vendor",
+                    "operation": "inspect",
+                    "args": {"value": 8},
+                },
+            }}
+            _, _, raw = self.request(
+                "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(tool),
+                {"Authorization": "Bearer " + conn["secret"], "Content-Type": "application/json"},
+            )
+            result = json.loads(raw)["result"]
+            self.assertFalse(result["isError"], result)
+            self.assertEqual(8, json.loads(result["content"][0]["text"])["result"]["echo"])
+
+            session.capabilities["rpc"]["vendor"]["read_only"] = False
+            status, _, raw = self.request(
+                "POST", endpoint, json.dumps({"args": {}}),
+                {"Content-Type": "application/json"},
+            )
+            self.assertEqual(409, status, raw)
+            self.assertEqual("mapping_rpc_unsupported", json.loads(raw)["error"]["code"])
+        finally:
+            self.server.mappings.sessions.pop(row["id"], None)
+            self.server.mappings.store.delete(row["id"])
 
     def test_offline_mapping_is_not_an_empty_local_directory(self):
         row, _ = self.server.mappings.store.create(self.record.path_prefix, "offline")

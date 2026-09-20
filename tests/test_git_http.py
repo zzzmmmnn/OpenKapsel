@@ -57,7 +57,34 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual(["git_log"], calls)
             self.assertIn("Initial fixture", json.loads(raw)["output"])
             session.capabilities = {"git_api": {"version": 1, "enabled": True}}
-            self.assertEqual(409, self.request("GET", self.base + "/git/status?path=laptop")[0])
+            status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
+            self.assertEqual(409, status)
+            self.assertEqual("mapping_rpc_unsupported", json.loads(raw)["error"]["code"])
+            self.assertEqual(["git_log"], calls)
+
+            session.capabilities = {"rpc": {"git": {
+                "state": "disabled", "reason": "client_config", "version": 2,
+                "operations": ["status"], "read_only": True,
+            }}}
+            status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
+            self.assertEqual(403, status)
+            self.assertEqual("mapping_rpc_disabled", json.loads(raw)["error"]["code"])
+            self.assertEqual(["git_log"], calls)
+
+            session.capabilities = {"rpc": {"git": {
+                "state": "unsupported", "reason": "dependency_missing", "version": 2,
+                "operations": ["status"], "read_only": True,
+            }}}
+            status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
+            self.assertEqual(409, status)
+            self.assertEqual("mapping_rpc_unsupported", json.loads(raw)["error"]["code"])
+            self.assertEqual("dependency_missing", json.loads(raw)["error"]["details"]["reason"])
+            self.assertEqual(["git_log"], calls)
+
+            self.server.mappings.sessions.pop(row["id"])
+            status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
+            self.assertEqual(503, status)
+            self.assertEqual("mapping_offline", json.loads(raw)["error"]["code"])
             self.assertEqual(["git_log"], calls)
         finally:
             self.server.mappings.sessions.clear()

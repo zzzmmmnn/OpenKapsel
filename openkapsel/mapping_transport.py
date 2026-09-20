@@ -12,6 +12,7 @@ import time
 
 
 MAX_MESSAGE = 1024 * 1024
+MAX_CAPABILITIES = 256 * 1024
 CHUNK_SIZE = 128 * 1024
 RPC_TIMEOUT = 30
 FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_read_many", "fs_tree", "fs_search", "fs_manifest"})
@@ -122,7 +123,7 @@ class ProviderSession:
                                 if self.capabilities:
                                     raise ValueError("duplicate provider hello")
                                 caps = value.get("capabilities", {})
-                                if not isinstance(caps, dict) or len(encode(caps)) > 4096:
+                                if not isinstance(caps, dict) or len(encode(caps)) > MAX_CAPABILITIES:
                                     raise ValueError("invalid capabilities")
                                 self.capabilities = caps
                             else:

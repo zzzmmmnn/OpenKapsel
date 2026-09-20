@@ -34,8 +34,16 @@ class GitHandlersMixin:
             relative = candidate.relative_to(self.server.mappings.mount_path(row))
             if ".openkapsel" in relative.parts:
                 raise ApiError(403, "reserved_path", "workspace internal paths are not available")
-            if not self.server.mappings.supports_git_api(row["id"]):
-                raise ApiError(409, "git_client_upgrade_required", "reconnect a client supporting read-only git_api version 2")
+            capability = self.server.mappings.rpc_capability(
+                row["id"],
+                "git",
+                operation=operation,
+                min_version=2,
+                max_version=2,
+                required={"read_only": True},
+            )
+            if not capability.available:
+                self._raise_mapping_rpc_unavailable(capability)
             response = self._mapping_rpc(row, "git_" + operation,
                                          {"options": options, "cwd": relative.as_posix(), "timeout_seconds": timeout})
             if not isinstance(response, dict) or type(response.get("status")) is not int:

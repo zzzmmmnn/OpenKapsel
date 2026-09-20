@@ -23,7 +23,7 @@ Git runs on a private sanitized temporary snapshot: source config, includes,
 hooks, filter definitions, global config, and private `.openkapsel` storage
 are not loaded. No original workspace path is passed to the Git process.
 There is no arbitrary argv, no Shell task, and no execution-permission fallback.
-Git must be installed on the host. A mapped path uses one `git_api` version 2
+Git must be installed on the host. A mapped path uses the read-only `git` RPC plugin version 2
 RPC; old clients must update/reconnect and fail closed until then.
 
 Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per

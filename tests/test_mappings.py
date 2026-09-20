@@ -276,6 +276,15 @@ class MappingTransportTests(unittest.TestCase):
                 self.assertEqual(result["names"], ["hello.txt"])
                 self.assertEqual(sessions[0].capabilities["file_api"]["version"], 3)
                 self.assertEqual(sessions[0].capabilities["git_api"], {"version": 2, "read_only": True})
+                self.assertEqual(sessions[0].capabilities["rpc"]["file"]["state"], "available")
+                self.assertEqual(sessions[0].capabilities["rpc"]["git"]["state"], "available")
+                self.assertEqual(sessions[0].capabilities["rpc"]["archive"]["state"], "available")
+                self.assertTrue(sessions[0].capabilities["rpc"]["archive"]["read_only"])
+                self.assertIn("archive", sessions[0].capabilities["rpc"]["archive"]["description"].lower())
+                self.assertEqual(
+                    ["path", "member"],
+                    sessions[0].capabilities["rpc"]["archive"]["operation_specs"]["read"]["input_schema"]["required"],
+                )
                 result = sessions[0].call("api_fs_stat", {"query": {"path": ["hello.txt"], "fields": ["sha256,size"]}, "display_root": "/workspace/client"})
                 self.assertEqual(result["status"], 200)
                 self.assertEqual(result["body"]["size"], 5)

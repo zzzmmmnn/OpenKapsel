@@ -14,7 +14,8 @@ from urllib.parse import unquote, urlsplit
 
 from .client_files import ClientFiles
 from .client_tasks import ClientTasks
-from .mapping_transport import MAX_MESSAGE, FILE_API_OPERATIONS, encode
+from .rpc_plugins import load_client_rpc_registry
+from .mapping_transport import MAX_MESSAGE, encode
 
 LOG = logging.getLogger("openkapsel.client")
 
@@ -59,11 +60,18 @@ def _create_resources(config):
     for key in ("writable", "allow_exec", "sandbox", "network"):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")
+    rpc_registry = load_client_rpc_registry(config)
+    rpc_capabilities = rpc_registry.capability_map(config)
     file_class = ClientFiles
     if os.name == "nt":
         from .client_windows import WindowsClientFiles
         file_class = WindowsClientFiles
-    files = file_class(config["root"], writable=config.get("writable", False))
+    files = file_class(
+        config["root"],
+        writable=config.get("writable", False),
+        rpc_capabilities=rpc_capabilities,
+        rpc_registry=rpc_registry,
+    )
     limits = config.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {"max_tasks", "max_seconds", "memory_mb", "processes", "cpus"}:
         raise ValueError("invalid client limits")
@@ -89,10 +97,25 @@ def run_once(config, stop=None, *, runtime=None):
     try:
         sock = websocket.create_connection(url, header={"Authorization": "Bearer " + config["token"]},
                                            suppress_origin=True, timeout=30, **proxy_options(config.get("proxy")))
-        sock.send(encode({"type": "hello", "capabilities": {"protocol": 1, "writable": files.writable,
-                                                           "file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)},
-                                                           "git_api": {"version": 2, "read_only": True},
-                                                           "execution": tasks.capabilities()}}).decode())
+        capabilities = {
+            "protocol": 1,
+            "writable": files.writable,
+            "rpc": files.rpc_capabilities,
+            "execution": tasks.capabilities(),
+        }
+        # Retain legacy advertisements only for enabled/usable families so a
+        # rolling-upgrade server never mistakes disabled RPC for available RPC.
+        if files.rpc_capabilities["file"]["state"] == "available":
+            capabilities["file_api"] = {
+                "version": files.rpc_capabilities["file"]["version"],
+                "operations": files.rpc_capabilities["file"]["operations"],
+            }
+        if files.rpc_capabilities["git"]["state"] == "available":
+            capabilities["git_api"] = {
+                "version": files.rpc_capabilities["git"]["version"],
+                "read_only": True,
+            }
+        sock.send(encode({"type": "hello", "capabilities": capabilities}).decode())
         LOG.info("Mapping provider connected")
         def heartbeat():
             while not stopped.wait(10):
