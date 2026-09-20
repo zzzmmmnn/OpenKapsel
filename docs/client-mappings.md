@@ -74,13 +74,17 @@ Git and Archive are client RPC plugins rather than branches hard-coded into the
 filesystem provider. Built-in plugins are registered explicitly by the client.
 Additional installed packages can be loaded with `rpc_plugins` entries in
 `module:object` form. The object must expose a bounded family name, version,
-operation set, `read_only` flag, `probe(config)`, and `dispatch(files,
-operation, args)`. Loading is opt-in: merely installing a Python package does not
-execute its plugin code.
+family `description`, an `operations` mapping, `read_only` flag,
+`probe(config)`, and `dispatch(files, operation, args)`. Every operation maps
+to exactly `{description, input_schema}`, where `input_schema` is a bounded
+JSON object schema. The client publishes both the compatible operation-name list
+and the full `operation_specs` metadata in `GET /mappings`. Loading is opt-in:
+merely installing a Python package does not execute its plugin code.
 
 Read-only third-party operations can be called without adding a server handler:
-use `POST /mappings/<id>/rpc/<family>/<operation>` with an `args` object, or
-the MCP `mapping_rpc` tool. The family/operation must be advertised by the
+first inspect `GET /mappings`, then use
+`POST /mappings/<id>/rpc/<family>/<operation>` with an `args` object, or
+the MCP `rpc` tool. The family/operation must be advertised by the
 connected client with `read_only=true`; there is no FUSE/server fallback.
 Write-capable generic plugins are deliberately rejected until a separate mutation
 permission and Context contract is defined. An explicitly configured plugin is

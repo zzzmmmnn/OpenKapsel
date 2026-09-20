@@ -25,6 +25,11 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         self.assertIn("fs_read", capabilities["file"]["operations"])
         self.assertIn("log", capabilities["git"]["operations"])
         self.assertEqual(["list", "read"], capabilities["archive"]["operations"])
+        self.assertIn("archive", capabilities["archive"]["description"].lower())
+        self.assertEqual(
+            ["path", "member"],
+            capabilities["archive"]["operation_specs"]["read"]["input_schema"]["required"],
+        )
         self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])
 
     def test_client_can_disable_individual_rpc_families(self):
@@ -47,7 +52,8 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 "class Plugin:\n"
                 "    family='vendor'\n"
                 "    version=1\n"
-                "    operations=frozenset({'inspect'})\n"
+                "    description='Inspect vendor metadata.'\n"
+                "    operations={'inspect': {'description':'Inspect one value.', 'input_schema': {'type':'object','properties': {'value': {'type':'integer'}}, 'required':['value'], 'additionalProperties':False}}}\n"
                 "    read_only=True\n"
                 "    def probe(self, config): return ('available', None, {'kind':'test'})\n"
                 "    def dispatch(self, files, operation, args): return {'status':200,'body':{'ok':True}}\n"
@@ -61,6 +67,11 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 capabilities = registry.capability_map(config)
                 self.assertEqual("available", capabilities["vendor"]["state"])
                 self.assertEqual("vendor_rpc:plugin", capabilities["vendor"]["plugin"])
+                self.assertEqual("Inspect vendor metadata.", capabilities["vendor"]["description"])
+                self.assertEqual(
+                    "integer",
+                    capabilities["vendor"]["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
+                )
                 self.assertTrue(registry.accepts("vendor_inspect"))
                 from openkapsel.client_files import ClientFiles
                 export = Path(directory) / "export"

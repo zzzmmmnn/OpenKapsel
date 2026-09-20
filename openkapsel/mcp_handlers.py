@@ -580,7 +580,7 @@ class McpHandlersMixin:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
                          for key, value in arguments.items()}
                 self._handle_archive(name[8:], query)
-            elif name == "mapping_rpc":
+            elif name == "rpc":
                 self._mcp_tool_arguments = {"args": arguments.get("args", {})}
                 target = f"{arguments['mapping_id']}/rpc/{arguments['family']}/{arguments['operation']}"
                 self._handle_mapping_rpc(target)

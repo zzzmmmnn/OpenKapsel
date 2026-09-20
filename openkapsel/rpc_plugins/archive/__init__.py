@@ -276,7 +276,41 @@ def archive_read(access, path: Path, *, member: str, offset: int = 0, limit: int
 class ArchiveRpcPlugin:
     family = "archive"
     version = 1
-    operations = frozenset({"list", "read"})
+    description = (
+        "Safely browse ZIP and Python-standard-library tar archives without extracting "
+        "members to the workspace."
+    )
+    operations = {
+        "list": {
+            "description": "List one archive directory with bounded pagination.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "description": "Client-export-relative archive path."},
+                    "inner_path": {"type": "string", "default": "", "description": "Archive-internal directory path."},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+        "read": {
+            "description": "Read a bounded regular-file member preview without extracting it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "description": "Client-export-relative archive path."},
+                    "member": {"type": "string", "minLength": 1, "description": "Archive member path."},
+                    "offset": {"type": "integer", "minimum": 0, "maximum": MAX_ARCHIVE_OFFSET, "default": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_ARCHIVE_READ_BYTES, "default": 65536},
+                    "encoding": {"type": "string", "default": "utf-8"},
+                },
+                "required": ["path", "member"],
+                "additionalProperties": False,
+            },
+        },
+    }
     read_only = True
 
     def probe(self, config: dict[str, Any]):

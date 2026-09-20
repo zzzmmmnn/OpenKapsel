@@ -137,9 +137,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         read_only=True,
     ),
     _tool(
-        "mapping_rpc",
+        "rpc",
         "Call mapping RPC plugin",
-        "Call one explicitly advertised read-only RPC plugin operation on a mapped client. Third-party plugins are loaded only from client rpc_plugins configuration. No server/FUSE fallback is attempted.",
+        "Call one dynamic read-only RPC plugin operation on a mapping. Inspect mappings first: capabilities.rpc.<family> publishes the family description and operation_specs.<operation> publishes description/input_schema. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
         _object_schema({
             "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$"},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -1006,7 +1006,7 @@ def tools_for(
         "archive_memory",
     }
     if record.can_read:
-        readable.update({"read_files", "file_manifest", "archive_list", "archive_read", "mapping_rpc"})
+        readable.update({"read_files", "file_manifest", "archive_list", "archive_read", "rpc"})
         readable.update("git_" + operation for operation in GIT_OPERATIONS)
         readable.update(
             {

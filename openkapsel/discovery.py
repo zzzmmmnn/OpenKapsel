@@ -1633,7 +1633,7 @@ class DiscoveryMixin:
             "rpc": {
                 "states": ["available", "unsupported", "disabled", "offline"],
                 "routing": "The client advertises available/unsupported/disabled per RPC family; the server derives offline from provider connectivity. Family policy decides whether a pre-dispatch fallback is safe.",
-                "configuration": "Client config rpc.<family>=true|false selectively enables implemented families. Missing local dependencies are unsupported, not disabled.",
+                "configuration": "Client config rpc.<family>=true|false selectively enables implemented families. Missing local dependencies are unsupported, not disabled. Plugin families self-describe with description plus operation_specs.<operation>.description/input_schema in GET /mappings.",
                 "families": {
                     "file": {"version": 3, "fallback": "fuse before dispatch only", "operations": sorted(FILE_API_OPERATIONS)},
                     "git": {"version": 2, "fallback": "none", "operations": ["status", "diff", "log", "show", "ls_files", "diff_stat"]},
@@ -1655,7 +1655,7 @@ class DiscoveryMixin:
             "fs_copy": {"method": "POST", "url": "./fs/copy", "body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
                 "description": "Start a bounded, resumable file/directory copy. Destination parent must exist. No overwrite; return 202 and transfer id. Staging remains on destination storage."},
             "file_transfer": {"method": "GET/POST", "url": "./fs/transfers/<id>", "description": "GET returns progress/state. POST /cancel or /resume requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
-            "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping IDs, root names, online state, write permissions, and client execution capabilities."},
+            "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping IDs, roots, online/write state, and client capabilities. RPC plugins include family descriptions plus per-operation descriptions and JSON input schemas for dynamic callers."},
             "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_id>/rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>"},
                 "description": "Invoke one advertised read-only client RPC plugin operation. Third-party families have no implicit server/FUSE fallback; write-capable generic plugins are rejected."},

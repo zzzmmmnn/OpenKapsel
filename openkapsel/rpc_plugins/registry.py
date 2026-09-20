@@ -1,21 +1,26 @@
-"""Explicit, bounded client RPC plugin loading and dispatch."""
+"""Explicit, bounded client RPC plugin loading and self-description."""
 
 from __future__ import annotations
 
 import errno
 import importlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+MAX_DESCRIPTION_CHARS = 1000
+MAX_OPERATIONS_PER_PLUGIN = 64
+MAX_OPERATION_SCHEMA_BYTES = 32 * 1024
 
 
 class RpcPlugin(Protocol):
     family: str
     version: int
-    operations: frozenset[str]
+    description: str
+    operations: dict[str, dict[str, Any]]
     read_only: bool
 
     def probe(self, config: dict[str, Any]) -> tuple[str, str | None, dict[str, Any] | None]:
@@ -30,30 +35,66 @@ class RegisteredPlugin:
     family: str
     plugin: RpcPlugin
     source: str
+    description: str
+    operations: dict[str, dict[str, Any]]
 
 
-def _plugin_object(value: Any) -> RpcPlugin:
+def _description(value: Any, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} description must be a string")
+    value = value.strip()
+    if not value or len(value) > MAX_DESCRIPTION_CHARS:
+        raise ValueError(f"{label} description must contain 1-{MAX_DESCRIPTION_CHARS} characters")
+    return value
+
+
+def _operation_specs(value: Any, *, family: str) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict) or not value or len(value) > MAX_OPERATIONS_PER_PLUGIN:
+        raise ValueError(f"RPC plugin {family} must declare 1-{MAX_OPERATIONS_PER_PLUGIN} operations")
+    result: dict[str, dict[str, Any]] = {}
+    for operation, raw in value.items():
+        if not isinstance(operation, str) or not _NAME.fullmatch(operation):
+            raise ValueError(f"RPC plugin {family} has an invalid operation name")
+        if not isinstance(raw, dict) or set(raw) != {"description", "input_schema"}:
+            raise ValueError(
+                f"RPC plugin {family}.{operation} must declare exactly description and input_schema"
+            )
+        description = _description(raw["description"], label=f"RPC plugin {family}.{operation}")
+        schema = raw["input_schema"]
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            raise ValueError(f"RPC plugin {family}.{operation} input_schema must be an object schema")
+        try:
+            encoded = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError):
+            raise ValueError(f"RPC plugin {family}.{operation} input_schema must be JSON serializable") from None
+        if len(encoded) > MAX_OPERATION_SCHEMA_BYTES:
+            raise ValueError(f"RPC plugin {family}.{operation} input_schema is too large")
+        result[operation] = {
+            "description": description,
+            "input_schema": json.loads(encoded.decode("utf-8")),
+        }
+    return result
+
+
+def _plugin_object(value: Any) -> tuple[RpcPlugin, str, dict[str, dict[str, Any]]]:
     if isinstance(value, type):
         value = value()
     elif callable(value) and not hasattr(value, "family"):
         value = value()
     family = getattr(value, "family", None)
     version = getattr(value, "version", None)
-    operations = getattr(value, "operations", None)
     read_only = getattr(value, "read_only", None)
     if not isinstance(family, str) or not _NAME.fullmatch(family):
         raise ValueError("RPC plugin family must match [a-z][a-z0-9_]{0,31}")
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError(f"RPC plugin {family} has an invalid version")
-    if not isinstance(operations, frozenset) or not operations or any(
-        not isinstance(op, str) or not _NAME.fullmatch(op) for op in operations
-    ):
-        raise ValueError(f"RPC plugin {family} has invalid operations")
     if not isinstance(read_only, bool):
         raise ValueError(f"RPC plugin {family} must declare read_only")
+    description = _description(getattr(value, "description", None), label=f"RPC plugin {family}")
+    operations = _operation_specs(getattr(value, "operations", None), family=family)
     if not callable(getattr(value, "probe", None)) or not callable(getattr(value, "dispatch", None)):
         raise ValueError(f"RPC plugin {family} must implement probe and dispatch")
-    return value
+    return value, description, operations
 
 
 class ClientRpcRegistry:
@@ -65,12 +106,14 @@ class ClientRpcRegistry:
         return frozenset(self._plugins)
 
     def register(self, plugin: RpcPlugin, *, source: str) -> None:
-        plugin = _plugin_object(plugin)
+        plugin, description, operations = _plugin_object(plugin)
         if plugin.family == "file":
             raise ValueError("file is a reserved core RPC family")
         if plugin.family in self._plugins:
             raise ValueError(f"duplicate RPC plugin family: {plugin.family}")
-        self._plugins[plugin.family] = RegisteredPlugin(plugin.family, plugin, source)
+        self._plugins[plugin.family] = RegisteredPlugin(
+            plugin.family, plugin, source, description, operations
+        )
 
     def load_import_spec(self, spec: str) -> None:
         if not isinstance(spec, str) or not spec or spec.count(":") != 1:
@@ -123,7 +166,11 @@ class ClientRpcRegistry:
             capability: dict[str, Any] = {
                 "state": state,
                 "version": plugin.version,
-                "operations": sorted(plugin.operations),
+                "description": registered.description,
+                # Keep the compact list for compatibility with existing servers.
+                "operations": sorted(registered.operations),
+                # New clients self-describe every operation for dynamic callers.
+                "operation_specs": registered.operations,
                 "read_only": plugin.read_only,
                 "plugin": registered.source,
             }
@@ -146,7 +193,7 @@ class ClientRpcRegistry:
             return None
         for family, registered in self._plugins.items():
             prefix = family + "_"
-            if wire_operation.startswith(prefix) and wire_operation[len(prefix):] in registered.plugin.operations:
+            if wire_operation.startswith(prefix) and wire_operation[len(prefix):] in registered.operations:
                 return registered
         return None
 
@@ -158,7 +205,7 @@ class ClientRpcRegistry:
             if not wire_operation.startswith(prefix):
                 continue
             operation = wire_operation[len(prefix):]
-            if operation not in registered.plugin.operations:
+            if operation not in registered.operations:
                 raise OSError(errno.ENOSYS, "unsupported RPC plugin operation")
             capability = files.rpc_capabilities.get(family, {})
             if capability.get("state") != "available":

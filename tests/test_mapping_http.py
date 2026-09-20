@@ -70,7 +70,19 @@ class MappingHTTPTests(unittest.TestCase):
             capabilities={"rpc": {"vendor": {
                 "state": "available",
                 "version": 1,
+                "description": "Inspect vendor metadata.",
                 "operations": ["inspect"],
+                "operation_specs": {
+                    "inspect": {
+                        "description": "Inspect one integer.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"value": {"type": "integer"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
                 "read_only": True,
             }}},
             call=call,
@@ -79,6 +91,15 @@ class MappingHTTPTests(unittest.TestCase):
         self.server.mappings.sessions[row["id"]] = session
         try:
             base = "/kapsel/w/" + self.record.token
+            status, _, raw = self.request("GET", base + "/mappings")
+            self.assertEqual(200, status, raw)
+            advertised = json.loads(raw)["mappings"][0]["capabilities"]["rpc"]["vendor"]
+            self.assertEqual("Inspect vendor metadata.", advertised["description"])
+            self.assertEqual(
+                "integer",
+                advertised["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
+            )
+
             endpoint = base + f"/mappings/{row['id']}/rpc/vendor/inspect"
             status, _, raw = self.request(
                 "POST", endpoint, json.dumps({"args": {"value": 7}}),
@@ -91,7 +112,7 @@ class MappingHTTPTests(unittest.TestCase):
 
             conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Plugin reads")
             tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-                "name": "mapping_rpc",
+                "name": "rpc",
                 "arguments": {
                     "mapping_id": row["id"],
                     "family": "vendor",

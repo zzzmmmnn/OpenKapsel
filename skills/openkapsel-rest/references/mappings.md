@@ -6,6 +6,12 @@ Updated clients advertise a generic `capabilities.rpc` map. Each family reports 
 
 Git and Archive are client RPC plugins. Git uses version 2 and has no server/FUSE fallback. Archive uses version 1 with `list` and `read` and also has no fallback. Client config can independently enable `rpc.file`, `rpc.git`, and `rpc.archive`; Git reports `unsupported` when enabled but the local `git` executable is missing. Additional trusted client plugins can be registered explicitly with `rpc_plugins: ["module:object"]`; merely installing a package does not load it.
 
+Each plugin self-describes the family and every operation. In `GET /mappings`,
+`capabilities.rpc.<family>.description` explains the family and
+`operation_specs.<operation>` contains `description` plus a JSON
+`input_schema`. Dynamic clients should inspect this metadata instead of
+hard-coding future families such as doc/csv/sqlite.
+
 For a third-party family advertised with `read_only=true`, use `POST /mappings/<mapping_id>/rpc/<family>/<operation>` with JSON `{ "args": { ... } }`. The server checks the mapping, advertised family/operation, state, and read-only flag, then forwards exactly one RPC to the client. There is no implicit FUSE/server fallback. Generic write-capable plugins are rejected until they have a dedicated mutation permission and Context contract.
 
 Archive preview is also exposed through ordinary workspace routes: `GET /archive/list?path=<archive>&inner_path=&offset=0&limit=200` and `GET /archive/read?path=<archive>&member=<member>&offset=0&limit=65536&encoding=utf-8`. Local workspace archives are read on the server; mapped archives use the Archive client plugin. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
