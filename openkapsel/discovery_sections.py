@@ -7,7 +7,7 @@ SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sha
 
 SECTION_ENDPOINTS = {
     "files": {
-        "mapping_list", "fs_copy", "file_transfer", "recycle_purge",
+        "mapping_list", "mapping_rpc", "archive_list", "archive_read", "fs_copy", "file_transfer", "recycle_purge",
         "fs_list", "fs_read", "fs_read_many", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
         "fs_content_put", "fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_delete",
         "fs_delete_batch", "fs_move", "recycle_list", "recycle_restore", "upload_create",
@@ -122,6 +122,7 @@ SECTION_WORKFLOWS = {
         "Use expected_etag for conditional text writes; use fs_replace_batch for multiple exact, non-overlapping edits across one or more files.",
         "Binary uploads create new files only, so recycle an existing destination before uploading a replacement.",
         "Use fs_manifest for bounded multi-file synchronization preflight, and fs_delete_batch when explicitly recycling multiple independent paths.",
+        "Use archive_list/archive_read to browse supported ZIP/tar archives without extracting them; mapped paths require the Archive RPC plugin.",
         "Create directories and move paths explicitly; file API deletion is recoverable through the workspace recycle bin.",
     ],
     "context": [

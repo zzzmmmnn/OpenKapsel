@@ -205,8 +205,26 @@ class MappingManager:
         if op.startswith("task_"):
             if not row["allow_exec"]:
                 raise OSError(errno.EACCES, "mapping execution is disabled")
-        elif (op not in READ_OPERATIONS or (op == "open" and (args.get("mode", "r") != "r" or args.get("truncate")))) and not row["writable"]:
-            raise OSError(errno.EROFS, "mapping is read-only")
+        else:
+            plugin_read_only = False
+            capabilities = getattr(session, "capabilities", {})
+            rpc = capabilities.get("rpc") if isinstance(capabilities, dict) else None
+            if isinstance(rpc, dict):
+                for family, capability in rpc.items():
+                    prefix = family + "_"
+                    if not op.startswith(prefix) or not isinstance(capability, dict):
+                        continue
+                    operation = op[len(prefix):]
+                    if (capability.get("state", "available") == "available"
+                            and operation in capability.get("operations", [])
+                            and capability.get("read_only") is True):
+                        plugin_read_only = True
+                    break
+            read_operation = op in READ_OPERATIONS or plugin_read_only
+            if op == "open" and (args.get("mode", "r") != "r" or args.get("truncate")):
+                read_operation = False
+            if not read_operation and not row["writable"]:
+                raise OSError(errno.EROFS, "mapping is read-only")
         # Handle IDs are generation-bound, including file descriptors held open
         # by server tasks across a client reconnection.
         if "handle" in args:
@@ -220,9 +238,9 @@ class MappingManager:
         return result
 
     def rpc_capability(self, mid, family, *, operation=None, min_version=1, max_version=None, required=None):
-        if family not in RPC_FAMILIES:
-            raise ValueError("unknown mapping RPC family")
-        spec = RPC_FAMILIES[family]
+        if not isinstance(family, str) or not family:
+            raise ValueError("invalid mapping RPC family")
+        spec = RPC_FAMILIES.get(family, {"legacy_key": None, "fallback": None, "operations": frozenset()})
         row = self.store.get(mid)
         if not row["enabled"]:
             return MappingRpcCapability(family, "disabled", reason="mapping_disabled")

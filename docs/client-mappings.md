@@ -45,8 +45,10 @@ Keep the configuration outside the exported directory and source control. On POS
   "allow_exec": false,
   "rpc": {
     "file": true,
-    "git": true
+    "git": true,
+    "archive": true
   },
+  "rpc_plugins": [],
   "sandbox": true,
   "proxy": "socks5://127.0.0.1:1080"
 }
@@ -63,10 +65,27 @@ Use normal file APIs, server Shell, and backend filesystem operations for mapped
 Updated clients advertise a generic `capabilities.rpc` map. Each RPC family reports
 one of `available`, `unsupported`, or `disabled`; the server derives `offline`
 when the provider session is absent. The client configuration can independently
-enable or disable each implemented family with `rpc.file` and `rpc.git`. Git is
-reported as `unsupported` when enabled but the local Git executable is missing.
-Legacy `file_api` and `git_api` advertisements remain accepted during rolling
-upgrades.
+enable or disable each implemented family with `rpc.file`, `rpc.git`, and
+`rpc.archive`. Git is reported as `unsupported` when enabled but the local Git
+executable is missing. Legacy `file_api` and `git_api` advertisements remain
+accepted during rolling upgrades.
+
+Git and Archive are client RPC plugins rather than branches hard-coded into the
+filesystem provider. Built-in plugins are registered explicitly by the client.
+Additional installed packages can be loaded with `rpc_plugins` entries in
+`module:object` form. The object must expose a bounded family name, version,
+operation set, `read_only` flag, `probe(config)`, and `dispatch(files,
+operation, args)`. Loading is opt-in: merely installing a Python package does not
+execute its plugin code.
+
+Read-only third-party operations can be called without adding a server handler:
+use `POST /mappings/<id>/rpc/<family>/<operation>` with an `args` object, or
+the MCP `mapping_rpc` tool. The family/operation must be advertised by the
+connected client with `read_only=true`; there is no FUSE/server fallback.
+Write-capable generic plugins are deliberately rejected until a separate mutation
+permission and Context contract is defined. An explicitly configured plugin is
+trusted local code running in the mapping client process, so install and register
+only code you trust; the `read_only` declaration is part of that trust boundary.
 
 The file family currently uses version `3` and advertises its supported
 operations. The server automatically sends one complete file operation over the
@@ -105,6 +124,17 @@ repository configuration. Git RPC has no FUSE/server fallback: disabled,
 unsupported, and offline states fail explicitly. Host Git is required when
 `rpc.git=true`; a missing executable is advertised as `unsupported`.
 See [Git inspection](shell-and-mcp.md#git-inspection) for limits and supported layouts.
+
+Archive preview uses the built-in `archive` plugin, version `1`, with read-only
+`list` and `read` operations and no FUSE/server fallback for mapped paths.
+The plugin never extracts members to disk. It reads archives through guarded file
+handles, rejects unsafe member paths for preview, refuses link members as files,
+limits archive listings to 100000 entries, limits one member read to 256 KiB, and
+caps preview offsets at 16 MiB. Supported suffixes come from the current Python
+runtime's registered standard-library unpack formats. On Python 3.14 this normally
+includes `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
+`.tar.xz`/`.txz`, and `.tar.zst`/`.tzst`. Use `archive_list` and
+`archive_read` over REST or MCP.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 

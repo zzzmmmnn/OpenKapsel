@@ -14,15 +14,16 @@ from .mapping_transport import CHUNK_SIZE, READ_OPERATIONS
 
 
 class ClientFiles:
-    def __init__(self, root, *, writable=False, rpc_capabilities=None):
+    def __init__(self, root, *, writable=False, rpc_capabilities=None, rpc_registry=None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("export root must be a directory")
         self.writable = writable
-        self.rpc_capabilities = rpc_capabilities or {
-            "file": {"state": "available"},
-            "git": {"state": "available"},
-        }
+        if rpc_registry is None:
+            from .rpc_plugins import load_client_rpc_registry
+            rpc_registry = load_client_rpc_registry({})
+        self.rpc_registry = rpc_registry
+        self.rpc_capabilities = rpc_capabilities or rpc_registry.capability_map({})
         self.paths = SafePathAccess((self.root,))
         self.lock = threading.RLock()
         self.handles = {}
@@ -46,7 +47,8 @@ class ClientFiles:
     def dispatch(self, operation, args):
         if not isinstance(args, dict):
             raise OSError(errno.EINVAL, "arguments must be an object")
-        if operation not in READ_OPERATIONS and not self.writable:
+        read_only = operation in READ_OPERATIONS or self.rpc_registry.read_only(operation)
+        if not read_only and not self.writable:
             raise OSError(errno.EROFS, "client export is read-only")
         # POSIX directory descriptors prevent path-component substitution.
         # Windows uses a dedicated adapter rather than silently weakening this boundary.
@@ -54,16 +56,8 @@ class ClientFiles:
             return self._dispatch(operation, args)
 
     def _dispatch(self, op, args):
-        if op.startswith("git_"):
-            if self.rpc_capabilities.get("git", {}).get("state") != "available":
-                raise OSError(errno.ENOSYS, "Git RPC is not available")
-            from .git_read import inspect_git
-            from .errors import ApiError
-            try:
-                return {"status": 200, "body": inspect_git(self.paths, self.path(args.get("cwd", ".")),
-                        op[4:], args.get("options", {}), args.get("timeout_seconds", 15))}
-            except ApiError as exc:
-                return {"status": int(exc.status), "error": {"code": exc.code, "message": exc.message, "details": exc.details}}
+        if self.rpc_registry.accepts(op):
+            return self.rpc_registry.dispatch(self, op, args)
         if op.startswith("api_"):
             if self.rpc_capabilities.get("file", {}).get("state") != "available":
                 raise OSError(errno.ENOSYS, "file RPC is not available")

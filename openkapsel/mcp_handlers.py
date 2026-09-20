@@ -576,6 +576,14 @@ class McpHandlersMixin:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
                          for key, value in arguments.items()}
                 self._handle_git(name[4:], query)
+            elif name in {"archive_list", "archive_read"}:
+                query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
+                         for key, value in arguments.items()}
+                self._handle_archive(name[8:], query)
+            elif name == "mapping_rpc":
+                self._mcp_tool_arguments = {"args": arguments.get("args", {})}
+                target = f"{arguments['mapping_id']}/rpc/{arguments['family']}/{arguments['operation']}"
+                self._handle_mapping_rpc(target)
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)

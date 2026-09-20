@@ -195,6 +195,53 @@ class MappingHandlersMixin:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         self._send_json(200, {"mappings": self.server.mappings.list(self.token_record.path_prefix)})
 
+    def _handle_mapping_rpc(self, target):
+        self._require_permission(self.token_record.can_read, "read permission is not granted")
+        match = re.fullmatch(
+            r"([A-Za-z0-9_-]{24})/rpc/([a-z][a-z0-9_]{0,31})/([a-z][a-z0-9_]{0,31})",
+            target,
+        )
+        if not match:
+            raise ApiError(404, "not_found", "mapping RPC operation does not exist")
+        mid, family, operation = match.groups()
+        if family == "file":
+            raise ApiError(400, "invalid_rpc_family", "file RPC uses the normal file APIs")
+        row = self._mapping_for_caller(mid)
+        capability = self.server.mappings.rpc_capability(
+            mid,
+            family,
+            operation=operation,
+            min_version=1,
+            required={"read_only": True},
+        )
+        if not capability.available:
+            self._raise_mapping_rpc_unavailable(capability)
+        body = self._read_json()
+        if set(body) - {"args"} or not isinstance(body.get("args", {}), dict):
+            raise ApiError(400, "invalid_request", "body must contain only an args object")
+        result = self._mapping_rpc(row, family + "_" + operation, body.get("args", {}))
+        if not isinstance(result, dict) or type(result.get("status")) is not int:
+            raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin response")
+        if "error" in result:
+            error = result["error"]
+            if not isinstance(error, dict) or not 400 <= result["status"] <= 599:
+                raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin error")
+            raise ApiError(
+                result["status"],
+                error.get("code", "mapping_rpc_failed"),
+                error.get("message", "mapping RPC plugin failed"),
+                error.get("details"),
+            )
+        payload = result.get("body")
+        if result["status"] != 200 or not isinstance(payload, dict):
+            raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin result")
+        self._send_json(200, {
+            "mapping_id": mid,
+            "family": family,
+            "operation": operation,
+            "result": payload,
+        })
+
     def _start_file_transfer(self, source, destination, *, move=False):
         self._require_permission(self.token_record.can_read and self.token_record.can_write, "read and write permissions are required")
         try:
@@ -387,5 +434,6 @@ class MappingHandlersMixin:
         return "Save this credential now; it is shown only once.\n" + json.dumps({
             "url": url + "/mapping-connect/" + row["id"], "token": secret,
             "root": "/path/to/export", "writable": row["writable"], "allow_exec": False,
-            "rpc": {"file": True, "git": True},
+            "rpc": {"file": True, "git": True, "archive": True},
+            "rpc_plugins": [],
             "sandbox": True, "proxy": None}, indent=2)

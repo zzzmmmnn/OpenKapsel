@@ -112,6 +112,43 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             _object_schema(git_tool_properties(operation)), read_only=True)
       for operation in GIT_OPERATIONS),
     _tool(
+        "archive_list",
+        "List archive contents",
+        "Browse one ZIP or standard-library tar archive without extracting it. Mapped paths use the Archive RPC plugin; ordinary workspace paths are inspected locally.",
+        _object_schema({
+            "path": PATH,
+            "inner_path": {"type": "string", "default": "", "description": "Archive-internal directory path."},
+            "offset": NONNEGATIVE,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+        }, ("path",)),
+        read_only=True,
+    ),
+    _tool(
+        "archive_read",
+        "Read archive member",
+        "Read a bounded member preview from one ZIP or standard-library tar archive without extracting it. Returns text when decoding succeeds and Base64 bytes always.",
+        _object_schema({
+            "path": PATH,
+            "member": {"type": "string", "minLength": 1},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 16777216, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 262144, "default": 65536},
+            "encoding": TEXT_ENCODING,
+        }, ("path", "member")),
+        read_only=True,
+    ),
+    _tool(
+        "mapping_rpc",
+        "Call mapping RPC plugin",
+        "Call one explicitly advertised read-only RPC plugin operation on a mapped client. Third-party plugins are loaded only from client rpc_plugins configuration. No server/FUSE fallback is attempted.",
+        _object_schema({
+            "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$"},
+            "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+            "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+            "args": {"type": "object", "default": {}},
+        }, ("mapping_id", "family", "operation")),
+        read_only=True,
+    ),
+    _tool(
         "workspace_info",
         "Workspace information",
         "Return the compact Discovery index by default, or one detailed Discovery section.",
@@ -969,7 +1006,7 @@ def tools_for(
         "archive_memory",
     }
     if record.can_read:
-        readable.update({"read_files", "file_manifest"})
+        readable.update({"read_files", "file_manifest", "archive_list", "archive_read", "mapping_rpc"})
         readable.update("git_" + operation for operation in GIT_OPERATIONS)
         readable.update(
             {

@@ -7,7 +7,6 @@ import errno
 import json
 import logging
 import os
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -15,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 from .client_files import ClientFiles
 from .client_tasks import ClientTasks
-from .mapping_capabilities import client_rpc_capabilities
+from .rpc_plugins import load_client_rpc_registry
 from .mapping_transport import MAX_MESSAGE, encode
 
 LOG = logging.getLogger("openkapsel.client")
@@ -61,7 +60,8 @@ def _create_resources(config):
     for key in ("writable", "allow_exec", "sandbox", "network"):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")
-    rpc_capabilities = client_rpc_capabilities(config, git_available=shutil.which("git") is not None)
+    rpc_registry = load_client_rpc_registry(config)
+    rpc_capabilities = rpc_registry.capability_map(config)
     file_class = ClientFiles
     if os.name == "nt":
         from .client_windows import WindowsClientFiles
@@ -70,6 +70,7 @@ def _create_resources(config):
         config["root"],
         writable=config.get("writable", False),
         rpc_capabilities=rpc_capabilities,
+        rpc_registry=rpc_registry,
     )
     limits = config.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {"max_tasks", "max_seconds", "memory_mb", "processes", "cpus"}:

@@ -1,44 +1,95 @@
 """Mapping RPC capability state negotiation and client preferences."""
 
+import importlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from openkapsel.mapping_capabilities import client_rpc_capabilities
 from openkapsel.mapping_manager import MappingManager
+from openkapsel.rpc_plugins import load_client_rpc_registry
 
 
 class ClientRpcCapabilityTests(unittest.TestCase):
-    def test_defaults_enable_file_and_git_when_dependency_exists(self):
-        capabilities = client_rpc_capabilities({}, git_available=True)
+    def capabilities(self, config=None):
+        config = config or {}
+        return load_client_rpc_registry(config).capability_map(config)
+
+    def test_defaults_enable_file_git_and_archive_plugins(self):
+        capabilities = self.capabilities()
         self.assertEqual("available", capabilities["file"]["state"])
-        self.assertEqual("available", capabilities["git"]["state"])
+        self.assertIn(capabilities["git"]["state"], {"available", "unsupported"})
+        self.assertEqual("available", capabilities["archive"]["state"])
         self.assertIn("fs_read", capabilities["file"]["operations"])
         self.assertIn("log", capabilities["git"]["operations"])
+        self.assertEqual(["list", "read"], capabilities["archive"]["operations"])
+        self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])
 
     def test_client_can_disable_individual_rpc_families(self):
-        capabilities = client_rpc_capabilities(
-            {"rpc": {"file": True, "git": False}},
-            git_available=True,
-        )
+        capabilities = self.capabilities({"rpc": {"file": True, "git": False, "archive": False}})
         self.assertEqual("available", capabilities["file"]["state"])
         self.assertEqual("disabled", capabilities["git"]["state"])
+        self.assertEqual("disabled", capabilities["archive"]["state"])
         self.assertEqual("client_config", capabilities["git"]["reason"])
 
     def test_missing_git_dependency_is_unsupported(self):
-        capabilities = client_rpc_capabilities({}, git_available=False)
+        with patch("openkapsel.rpc_plugins.git.shutil.which", return_value=None):
+            capabilities = self.capabilities()
         self.assertEqual("unsupported", capabilities["git"]["state"])
         self.assertEqual("dependency_missing", capabilities["git"]["reason"])
 
-    def test_invalid_rpc_configuration_is_rejected(self):
+    def test_explicit_import_spec_registers_third_party_plugin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "vendor_rpc.py"
+            module.write_text(
+                "class Plugin:\n"
+                "    family='vendor'\n"
+                "    version=1\n"
+                "    operations=frozenset({'inspect'})\n"
+                "    read_only=True\n"
+                "    def probe(self, config): return ('available', None, {'kind':'test'})\n"
+                "    def dispatch(self, files, operation, args): return {'status':200,'body':{'ok':True}}\n"
+                "plugin=Plugin()\n"
+            )
+            sys.path.insert(0, directory)
+            try:
+                importlib.invalidate_caches()
+                config = {"rpc_plugins": ["vendor_rpc:plugin"], "rpc": {"vendor": True}}
+                registry = load_client_rpc_registry(config)
+                capabilities = registry.capability_map(config)
+                self.assertEqual("available", capabilities["vendor"]["state"])
+                self.assertEqual("vendor_rpc:plugin", capabilities["vendor"]["plugin"])
+                self.assertTrue(registry.accepts("vendor_inspect"))
+                from openkapsel.client_files import ClientFiles
+                export = Path(directory) / "export"
+                export.mkdir()
+                files = ClientFiles(
+                    export,
+                    writable=False,
+                    rpc_registry=registry,
+                    rpc_capabilities=capabilities,
+                )
+                try:
+                    result = files.dispatch("vendor_inspect", {"value": 1})
+                    self.assertEqual({"status": 200, "body": {"ok": True}}, result)
+                finally:
+                    files.close()
+            finally:
+                sys.path.remove(directory)
+                sys.modules.pop("vendor_rpc", None)
+
+    def test_invalid_rpc_configuration_and_plugin_specs_are_rejected(self):
         for config in (
             {"rpc": []},
             {"rpc": {"git": "yes"}},
             {"rpc": {"future_typo": True}},
+            {"rpc_plugins": "vendor:plugin"},
+            {"rpc_plugins": ["missing_separator"]},
         ):
-            with self.subTest(config=config), self.assertRaises(ValueError):
-                client_rpc_capabilities(config, git_available=True)
+            with self.subTest(config=config), self.assertRaises((ValueError, ModuleNotFoundError)):
+                self.capabilities(config)
 
 
 class MappingRpcCapabilityTests(unittest.TestCase):
