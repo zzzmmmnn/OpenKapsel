@@ -139,12 +139,13 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "rpc",
         "Call mapping RPC plugin",
-        "Call one dynamic RPC plugin operation on a mapping. Inspect mappings first: operation_specs.<operation> publishes description/input_schema/write. Read operations need read permission; write=true operations require write permission, control authorization, a writable mapping, and plan_id/taskname/message. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
+        "Call one dynamic RPC plugin operation on a mapping. Inspect mappings first: operation_specs.<operation> publishes description/input_schema/write/execution. execution=sync returns the result directly; execution=task returns a task_id immediately and continues on the client across provider reconnects—poll it with get_task/read_task_output and do not replay a write RPC after transport uncertainty. write=true operations require write permission, control authorization, a writable mapping, and plan_id/taskname/message. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
         _object_schema({
             "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$"},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "args": {"type": "object", "default": {}},
+            "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 86400, "description": "Optional client task deadline for execution=task; cannot exceed the client max_seconds policy."},
             "plan_id": {"type": "integer", "minimum": 1, "description": "Required owning Plan id when operation_specs.<operation>.write is true."},
             "taskname": {"type": "string", "minLength": 1, "maxLength": 32, "description": "Required task grouping name for a write RPC operation."},
             "message": {"type": "string", "minLength": 1, "maxLength": 200, "description": "Required short reason for a write RPC operation."},
@@ -1052,16 +1053,21 @@ def tools_for(
         )
         if recycle_enabled:
             readable.update({"delete_path", "restore_recycle"})
+    if record.can_read or record.can_write:
+        readable.update(
+            {
+                "get_task",
+                "list_tasks",
+                "read_task_output",
+                "interrupt_task",
+                "kill_task",
+            }
+        )
     if record.shell_mode != "none":
         readable.update(
             {
                 "run_shell",
-                "get_task",
-                "list_tasks",
-                "read_task_output",
                 "send_task_input",
-                "interrupt_task",
-                "kill_task",
             }
         )
         if record.can_schedule:

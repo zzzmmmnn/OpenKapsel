@@ -8,6 +8,7 @@ from typing import Any
 from ...errors import ApiError
 from ...git_operations import GIT_OPERATIONS
 from ...git_read import inspect_git
+from ...git_write import mutate_git
 
 
 _DESCRIPTIONS = {
@@ -59,15 +60,91 @@ class GitRpcPlugin:
     family = "git"
     version = 2
     description = (
-        "Read-only bounded Git inspection against a sanitized local snapshot. "
-        "Requires the host git executable and never falls back to server/FUSE for mappings."
+        "Git inspection plus common local mutations. Read operations use sanitized snapshots; "
+        "write operations run as persistent client tasks with hooks/signing/network helpers disabled."
     )
     operations = {
-        operation: {
-            "description": _DESCRIPTIONS[operation],
-            "input_schema": _schema(operation),
-        }
-        for operation in GIT_OPERATIONS
+        **{
+            operation: {
+                "description": _DESCRIPTIONS[operation],
+                "input_schema": _schema(operation),
+                "execution": "sync",
+            }
+            for operation in GIT_OPERATIONS
+        },
+        "add": {
+            "description": "Stage selected paths or all working-tree changes. Runs as a persistent client task.",
+            "write": True,
+            "execution": "task",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "default": "."},
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 100,
+                    },
+                },
+                "required": ["paths"],
+                "additionalProperties": False,
+            },
+        },
+        "commit": {
+            "description": "Commit the current index with a supplied message. Hooks and signing are disabled. Runs as a persistent client task.",
+            "write": True,
+            "execution": "task",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "default": "."},
+                    "message": {"type": "string", "minLength": 1, "maxLength": 10000},
+                    "amend": {"type": "boolean", "default": False},
+                    "author_name": {"type": "string", "maxLength": 200},
+                    "author_email": {"type": "string", "maxLength": 200},
+                },
+                "required": ["message"],
+                "additionalProperties": False,
+            },
+        },
+        "restore": {
+            "description": "Restore selected paths in the index and/or worktree. Runs as a persistent client task.",
+            "write": True,
+            "execution": "task",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "default": "."},
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 100,
+                    },
+                    "source": {"type": "string", "maxLength": 256},
+                    "staged": {"type": "boolean", "default": False},
+                    "worktree": {"type": "boolean", "default": True},
+                },
+                "required": ["paths"],
+                "additionalProperties": False,
+            },
+        },
+        "checkout": {
+            "description": "Switch to a revision, optionally creating a new branch. Runs as a persistent client task.",
+            "write": True,
+            "execution": "task",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "default": "."},
+                    "revision": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "new_branch": {"type": "string", "minLength": 1, "maxLength": 256},
+                },
+                "required": ["revision"],
+                "additionalProperties": False,
+            },
+        },
     }
 
     def probe(self, config: dict[str, Any]):
@@ -94,6 +171,20 @@ class GitRpcPlugin:
                 options,
                 args.get("timeout_seconds", 15),
             )
+            return {"status": 200, "body": body}
+        except ApiError as exc:
+            return {
+                "status": int(exc.status),
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            }
+
+    def dispatch_task(self, files, operation: str, args: dict[str, Any], task):
+        try:
+            body = mutate_git(files, operation, args, task)
             return {"status": 200, "body": body}
         except ApiError as exc:
             return {

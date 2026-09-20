@@ -28,6 +28,9 @@ class RpcPlugin(Protocol):
     def dispatch(self, files: Any, operation: str, args: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def dispatch_task(self, files: Any, operation: str, args: dict[str, Any], task: Any) -> dict[str, Any]:
+        ...
+
 
 @dataclass(frozen=True)
 class RegisteredPlugin:
@@ -54,9 +57,13 @@ def _operation_specs(value: Any, *, family: str) -> dict[str, dict[str, Any]]:
     for operation, raw in value.items():
         if not isinstance(operation, str) or not _NAME.fullmatch(operation):
             raise ValueError(f"RPC plugin {family} has an invalid operation name")
-        if not isinstance(raw, dict) or not {"description", "input_schema"} <= set(raw) or set(raw) - {"description", "input_schema", "write"}:
+        if (
+            not isinstance(raw, dict)
+            or not {"description", "input_schema"} <= set(raw)
+            or set(raw) - {"description", "input_schema", "write", "execution"}
+        ):
             raise ValueError(
-                f"RPC plugin {family}.{operation} must declare description/input_schema and optional write"
+                f"RPC plugin {family}.{operation} must declare description/input_schema and optional write/execution"
             )
         description = _description(raw["description"], label=f"RPC plugin {family}.{operation}")
         schema = raw["input_schema"]
@@ -71,10 +78,14 @@ def _operation_specs(value: Any, *, family: str) -> dict[str, dict[str, Any]]:
         write = raw.get("write", False)
         if not isinstance(write, bool):
             raise ValueError(f"RPC plugin {family}.{operation} write must be boolean")
+        execution = raw.get("execution", "task" if write else "sync")
+        if execution not in {"sync", "task"}:
+            raise ValueError(f"RPC plugin {family}.{operation} execution must be sync or task")
         result[operation] = {
             "description": description,
             "input_schema": json.loads(encoded.decode("utf-8")),
             "write": write,
+            "execution": execution,
         }
     return result
 
@@ -94,6 +105,10 @@ def _plugin_object(value: Any) -> tuple[RpcPlugin, str, dict[str, dict[str, Any]
     operations = _operation_specs(getattr(value, "operations", None), family=family)
     if not callable(getattr(value, "probe", None)) or not callable(getattr(value, "dispatch", None)):
         raise ValueError(f"RPC plugin {family} must implement probe and dispatch")
+    if any(spec["execution"] == "task" for spec in operations.values()) and not callable(
+        getattr(value, "dispatch_task", None)
+    ):
+        raise ValueError(f"RPC plugin {family} task operations require dispatch_task")
     return value, description, operations
 
 
@@ -184,6 +199,13 @@ class ClientRpcRegistry:
     def accepts(self, wire_operation: str) -> bool:
         return self._registered_for(wire_operation) is not None
 
+    def operation_spec(self, family: str, operation: str) -> dict[str, Any] | None:
+        registered = self._plugins.get(family)
+        if registered is None:
+            return None
+        spec = registered.operations.get(operation)
+        return dict(spec) if spec is not None else None
+
     def read_only(self, wire_operation: str) -> bool:
         registered = self._registered_for(wire_operation)
         if registered is None:
@@ -208,13 +230,39 @@ class ClientRpcRegistry:
             if not wire_operation.startswith(prefix):
                 continue
             operation = wire_operation[len(prefix):]
-            if operation not in registered.operations:
+            spec = registered.operations.get(operation)
+            if spec is None:
                 raise OSError(errno.ENOSYS, "unsupported RPC plugin operation")
+            if spec["execution"] != "sync":
+                raise OSError(errno.EINVAL, "RPC plugin operation must run as a task")
             capability = files.rpc_capabilities.get(family, {})
             if capability.get("state") != "available":
                 raise OSError(errno.ENOSYS, "RPC plugin is not available")
             return registered.plugin.dispatch(files, operation, args)
         raise OSError(errno.ENOSYS, "unsupported RPC plugin family")
+
+    def dispatch_task(
+        self,
+        files: Any,
+        family: str,
+        operation: str,
+        args: dict[str, Any],
+        task: Any,
+    ) -> dict[str, Any]:
+        registered = self._plugins.get(family)
+        if registered is None:
+            raise OSError(errno.ENOSYS, "unsupported RPC plugin family")
+        spec = registered.operations.get(operation)
+        if spec is None:
+            raise OSError(errno.ENOSYS, "unsupported RPC plugin operation")
+        if spec["execution"] != "task":
+            raise OSError(errno.EINVAL, "RPC plugin operation is not task-based")
+        capability = files.rpc_capabilities.get(family, {})
+        if capability.get("state") != "available":
+            raise OSError(errno.ENOSYS, "RPC plugin is not available")
+        if spec["write"] and not files.writable:
+            raise OSError(errno.EROFS, "client export is read-only")
+        return registered.plugin.dispatch_task(files, operation, args, task)
 
 
 def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:

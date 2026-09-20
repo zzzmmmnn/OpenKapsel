@@ -88,14 +88,27 @@ package does not execute its plugin code.
 Dynamic operations can be called without adding a server handler: first inspect
 `GET /mappings`, then use
 `POST /mappings/<id>/rpc/<family>/<operation>` with an `args` object, or the
-MCP `rpc` tool. For `write=false`, read permission is sufficient and no Plan
-Context is required. For `write=true`, the caller needs the control credential
-and token write permission, the mapping must be enabled with `writable=true`
-in administration, and `plan_id`, `taskname`, and `message` are required.
-There is no FUSE/server fallback for generic plugin operations. An explicitly
-configured plugin is trusted local code running in the mapping client process,
-so install and register only code you trust; declaring `write` correctly is
-part of that trust boundary.
+MCP `rpc` tool. Each operation publishes `write` and `execution`. The
+registry default is `execution=sync` for reads and `execution=task` for writes,
+although plugins may declare either mode explicitly. `sync` returns the result
+in the RPC response. `task` returns HTTP 202 and a unified
+`client.<mapping>.<task>` ID immediately; poll `/tasks/<id>` or
+`/tasks/<id>/output`, and use the ordinary interrupt/kill task controls.
+RPC tasks live in the client runtime, survive provider WebSocket disconnects and
+reconnects, and continue using client-local files; normal client process exit
+terminates active tasks. Do not automatically replay an uncertain write task
+start after transport loss: reconnect and query/list the original task first.
+
+For `write=false`, read permission is sufficient and no Plan Context is
+required. For `write=true`, the caller needs the control credential and token
+write permission, the mapping must be enabled with `writable=true` in
+administration, and `plan_id`, `taskname`, and `message` are required.
+Task operations additionally accept optional `timeout_seconds`; the client
+enforces its local `limits.max_seconds` policy (600 seconds by default, up to
+86400). There is no FUSE/server fallback for generic plugin operations. An
+explicitly configured plugin is trusted local code running in the mapping client
+process, so install and register only code you trust; declaring `write` and
+`execution` correctly is part of that trust boundary.
 
 The file family currently uses version `3` and advertises its supported
 operations. The server automatically sends one complete file operation over the
@@ -127,28 +140,35 @@ retrying a mutation whose result is unknown. The same applies to an oversized
 response reporting `mutation_may_have_completed: true`. Client-side path guards, protected
 internal directories, and both mapping and local write restrictions still apply.
 
-Git inspection uses RPC family `git` version `2`; all current Git
-operations advertise `write=false`. It is independent of client execution:
-read-only mappings and `allow_exec=false` work. Future Git plugin operations may
-declare `write=true`, in which case normal mapping write authorization applies.
-Git runs against a bounded local sanitized snapshot, never the original
-repository configuration. Git RPC has no FUSE/server fallback: disabled,
-unsupported, and offline states fail explicitly. Host Git is required when
-`rpc.git=true`; a missing executable is advertised as `unsupported`.
-See [Git inspection](shell-and-mcp.md#git-inspection) for limits and supported layouts.
+Git RPC family `git` version `2` keeps `status`, `diff`,
+`diff_stat`, `log`, `show`, and `ls_files` as `write=false,
+execution=sync` sanitized-snapshot reads. It also provides common mutations
+`add`, `commit`, `restore`, and `checkout` as `write=true,
+execution=task`. Git write tasks do not require Shell/`allow_exec`, but do
+require the normal writable-mapping/write-token/Plan authorization. They reject
+linked worktrees, alternate object stores, symlinked/special Git metadata, and
+repository config that enables includes, filters, hooks paths, fsmonitor,
+external attributes, SSH/credential helpers, or signing. Hooks and signing are
+also disabled on the invoked Git commands. Host Git is required when
+`rpc.git=true`; a missing executable is advertised as `unsupported`. Git RPC
+has no FUSE/server fallback. See
+[Git inspection](shell-and-mcp.md#git-inspection) for read limits and layouts.
 
-Archive preview uses the built-in `archive` plugin, version `1`; current
-`list` and `read` operations advertise `write=false` and have no FUSE/server
-fallback for mapped paths. Future archive mutation operations can declare
-`write=true` and are gated by the mapping's administrative writable setting.
-The plugin never extracts members to disk. It reads archives through guarded file
-handles, rejects unsafe member paths for preview, refuses link members as files,
-limits archive listings to 100000 entries, limits one member read to 256 KiB, and
-caps preview offsets at 16 MiB. Supported suffixes come from the current Python
-runtime's registered standard-library unpack formats. On Python 3.14 this normally
-includes `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
-`.tar.xz`/`.txz`, and `.tar.zst`/`.tzst`. Use `archive_list` and
-`archive_read` over REST or MCP.
+Archive RPC family `archive` version `1` keeps `list` and `read`
+as `write=false, execution=sync` previews and adds `create` and `extract`
+as `write=true, execution=task`. Create writes to a private
+`.openkapsel/rpc-tasks` temporary file, fsyncs it, then renames it into the
+requested destination only after success. Extract writes into a private temporary
+directory and renames that directory into a previously absent destination only
+after every member succeeds. Cancellation/failure removes the temporary artifact,
+so a provider disconnect never exposes a half-written final archive or extraction
+tree. Links/reparse points/special source or archive members are rejected.
+Listing is capped at 100000 entries, one member preview at 256 KiB, and preview
+offset at 16 MiB. Supported formats come from the current Python standard library:
+normally `.zip`, `.tar`, `.tar.gz`/`.tgz`,
+`.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available
+`.tar.zst`/`.tzst`. Use `archive_list` and `archive_read` for previews;
+use generic `rpc`/`kapsel_rpc` with the advertised schema for create/extract.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 
