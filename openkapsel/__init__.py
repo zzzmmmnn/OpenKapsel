@@ -1,6 +1,6 @@
 """OpenKapsel."""
 
-__version__ = "1.60.0"
+__version__ = "1.60.1"
 
 __all__ = ["ServerConfig", "create_server"]
 

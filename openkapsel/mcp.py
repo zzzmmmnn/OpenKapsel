@@ -905,7 +905,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "read_task_output",
         "Read incremental task output",
-        "Read stdout and stderr from byte cursors, optionally waiting for new output.",
+        "Read task output from byte cursors, optionally waiting for new output. Server tasks have separate stdout and stderr. Client tasks combine both streams in stdout (output_combined=true); stderr is empty. Advance each returned next_offset. Client retained output is capped at 2 MiB.",
         _object_schema(
             {
                 "task_id": {"type": "string"},
@@ -921,7 +921,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "send_task_input",
         "Send task input",
-        "Write UTF-8 or Base64 input to an interactive task and optionally close stdin.",
+        "Write UTF-8 or Base64 input to an interactive server or client task and optionally close stdin. A client task accepts at most 16 KiB per call (server tasks: 256 KiB). Data and close=true may be sent together.",
         _object_schema(
             {
                 "task_id": {"type": "string"},
@@ -936,7 +936,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "interrupt_task",
         "Interrupt task",
-        "Request termination of a running shell task and its process group with SIGTERM, escalating to SIGKILL after a grace period.",
+        "Interrupt a running task. Server tasks receive SIGTERM and escalate to SIGKILL after a grace period; client tasks receive SIGINT on POSIX/Podman or CTRL_BREAK on native Windows. Use kill_task for immediate force termination.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=False,
         destructive=True,
@@ -944,7 +944,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "kill_task",
         "Force-kill task",
-        "Immediately send SIGKILL to a running shell task and its process group.",
+        "Force-kill a running task. Server and POSIX/Podman client tasks receive SIGKILL; native Windows client tasks use taskkill /T /F. This does not wait for graceful termination.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=False,
         destructive=True,

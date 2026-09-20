@@ -119,7 +119,7 @@ The command runs asynchronously. `timeout_seconds` may be `null` or within the p
 | `GET` | `/tasks/<task_id>/stream` | Bounded SSE output until `done` or `reconnect` |
 | `POST` | `/tasks/<task_id>/stdin` | Send UTF-8/Base64 input or close stdin |
 | `POST` | `/tasks/<task_id>/interrupt` | Server: SIGTERM then SIGKILL; client: SIGINT or Windows CTRL_BREAK |
-| `POST` | `/tasks/<task_id>/kill` | Immediate SIGKILL of the process group |
+| `POST` | `/tasks/<task_id>/kill` | Server/POSIX client: SIGKILL; native Windows client: taskkill `/T /F` |
 | `GET` | `/sandbox/processes` | Token cgroup process/resource view for restricted Shell |
 
 ## Output polling
@@ -152,7 +152,7 @@ python3 scripts/openkapsel_http.py GET tasks/<id>/stream --stream
 
 ## Interactive input and termination
 
-`POST /tasks/<id>/stdin` JSON accepts exactly one of `data` (UTF-8) or `data_base64`, plus optional `close`. Include JSON Context fields. The task must have been created with `interactive: true`.
+`POST /tasks/<id>/stdin` JSON accepts exactly one of `data` (UTF-8) or `data_base64`, plus optional `close`. Include JSON Context fields. The task must have been created with `interactive: true`. Client tasks accept at most 16 KiB per call; server tasks accept at most 256 KiB. The final chunk and `close: true` can be sent together.
 
 Interrupt and kill have no JSON body, so send all three `OpenKapsel-*` Context headers. Prefer interrupt; use force-kill when graceful termination is inappropriate or failed.
 

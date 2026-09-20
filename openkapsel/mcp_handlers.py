@@ -150,7 +150,7 @@ class McpHandlersMixin:
                 "Use read_binary_chunk and Base64 upload_chunk for small binary chunks; for large files call prepare_download or use the raw_transfer URLs returned by start_upload. "
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
                 "delete_path is recoverable through list_recycle and restore_recycle. "
-                "run_shell returns a task_id; poll get_task until status is finished. "
+                "run_shell defaults to target=auto: a mapped cwd runs on that client, otherwise on the server. Set target=server or client explicitly when needed. Client execution follows its own sandbox and platform policy. The returned task_id works with get_task, read_task_output, send_task_input, interrupt_task, and kill_task. Client stdout and stderr are combined in stdout, and client stdin is limited to 16 KiB per call. "
                 "When schedule tools are available, use create_schedule for persistent once, interval, or strict six-field cron Shell work; use run_schedule_now for explicit immediate execution. "
                 "Use interrupt_task for normal termination and kill_task only for immediate forced termination. "
                 "When connected through OAuth, use MCP tools rather than ordinary REST URLs. "

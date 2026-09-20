@@ -123,7 +123,9 @@ Exceeding the HTTP connection limit returns `503`. Exceeding an SSE limit return
 
 These limits do not turn Caddy's Keep-Alive `idle` setting into a task deadline. See [Installation and reverse proxy](installation.md#recommended-caddy-connection-limits).
 
-`interrupt` sends SIGTERM to the process group and escalates after its grace period. `kill` sends SIGKILL immediately.
+For server tasks, `interrupt` sends SIGTERM to the process group and escalates
+after its grace period; `kill` sends SIGKILL immediately. Client task behavior
+depends on its platform as described in [Execution placement](#execution-placement).
 
 Finished output is persisted to files instead of remaining indefinitely in memory. Each token retains a bounded number of completed records, four by default, with configurable retention. Active task output remains available by cursor.
 
@@ -155,3 +157,11 @@ Tool families include:
 MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated `/transfer/...` URLs containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
 
 `workspace_info` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
+
+The Shell tools in `tools/list` use the same unified task IDs as REST:
+`run_shell` and `list_tasks` accept `target=auto|server|client`; `get_task` and
+`read_task_output` report combined stdout and empty stderr for client tasks;
+`send_task_input` accepts at most 16 KiB per client call and 256 KiB per server
+call. `interrupt_task` and `kill_task` dispatch to the task's actual location.
+Client execution requires a writable mapping with `allow_exec` and a connected
+client advertising `execution.shell_command`.
