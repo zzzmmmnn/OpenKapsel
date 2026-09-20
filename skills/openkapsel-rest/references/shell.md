@@ -74,11 +74,32 @@ Variables and rc are injected into later full, Bubblewrap, and Podman Shell task
 
 ## Start and inspect tasks
 
+Use `target: "auto"` (default), `"server"`, or `"client"`. Auto selects client
+RPC for a mapped `cwd` such as `laptop/project`, otherwise server execution.
+Client requires a mapped cwd; explicit server uses FUSE for mapped files.
+Never infer location from `cd` inside the command. Inspect mapping capabilities
+first: execution requires caller Shell/write, writable mapping `allow_exec`,
+client opt-in, and `execution.shell_command` (client 1.60.0+). Errors never cause
+fallback. Client sandbox/limits apply and server `/env` is not injected. Native
+Windows commands use cmd.exe; POSIX/Podman use `/bin/sh -c`. Null/omitted timeout
+uses the client maximum; an explicit timeout must fit its policy.
+
+All returned IDs work with ordinary `/tasks` APIs. Client output is combined in
+stdout (`output_combined: true`), with empty stderr. Status returns the first
+64 KiB plus `stdout_next_offset`; use incremental output for the rest. Client
+stdin accepts at most 16 KiB/request. Task listing `target=auto` includes server
+token tasks and workspace client tasks; `target=server|client` filters it.
+Inspect `unavailable_mappings` rather than assuming missing tasks stopped.
+Reconnect preserves client tasks while the client process remains alive;
+never automatically retry a start whose response was lost. Schedules remain
+server-side; mapping-specific argv task APIs remain available.
+
 `POST /shell/exec` returns `202` with `task_id`:
 
 ```json
 {
   "command": "python3 -m unittest",
+  "target": "auto",
   "cwd": ".",
   "timeout_seconds": 3600,
   "interactive": false,
@@ -97,7 +118,7 @@ The command runs asynchronously. `timeout_seconds` may be `null` or within the p
 | `GET` | `/tasks/<task_id>/output` | Incremental stdout/stderr by byte cursor |
 | `GET` | `/tasks/<task_id>/stream` | Bounded SSE output until `done` or `reconnect` |
 | `POST` | `/tasks/<task_id>/stdin` | Send UTF-8/Base64 input or close stdin |
-| `POST` | `/tasks/<task_id>/interrupt` | SIGTERM, then SIGKILL after grace period |
+| `POST` | `/tasks/<task_id>/interrupt` | Server: SIGTERM then SIGKILL; client: SIGINT or Windows CTRL_BREAK |
 | `POST` | `/tasks/<task_id>/kill` | Immediate SIGKILL of the process group |
 | `GET` | `/sandbox/processes` | Token cgroup process/resource view for restricted Shell |
 
@@ -118,6 +139,10 @@ GET /tasks/<id>/stream?stdout_offset=<n>&stderr_offset=<n>
 ```
 
 `reconnect` means the maximum stream duration was reached while the task is still running. Reconnect using its exact `stdout_offset` and `stderr_offset`. Concurrent streams are limited globally and per token; `429 too_many_streams` includes `Retry-After` and the published limits.
+
+A client failure during streaming produces an `error` event with byte cursors.
+Wait for the client to reconnect, then resume from those cursors; do not restart
+the command.
 
 The generic helper writes SSE directly rather than buffering it:
 

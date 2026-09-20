@@ -838,10 +838,11 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "run_shell",
         "Run shell command",
-        "Start an asynchronous shell task. Restricted mode supports normal shell syntax inside Bubblewrap; full mode inherits the OpenKapsel process. Poll get_task for completion and output.",
+        "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server. Never falls back on client errors. Use the returned task_id with normal task tools. Client Shell uses its own execution/sandbox policy, not server limits or environment; output is combined. Native Windows uses cmd.exe, POSIX/Podman uses /bin/sh.",
         _object_schema(
             {
                 "command": {"type": "string", "minLength": 1},
+                "target": {"type": "string", "enum": ["auto", "server", "client"], "default": "auto"},
                 "cwd": {
                     "type": "string",
                     "description": "Working directory. Relative paths use the token workspace; external absolute paths must be in the token's extra accessible directory list (full shell commands themselves are unsandboxed).",
@@ -868,7 +869,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "get_task",
         "Get task status",
-        "Poll an asynchronous shell task for status, exit code, stdout, and stderr.",
+        "Poll a server or client task for status, exit code and output. Client stdout/stderr are combined in stdout; the initial 64 KiB includes stdout_next_offset. Use read_task_output with that cursor for the remaining bytes.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=True,
         idempotent=True,
@@ -876,12 +877,13 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "list_tasks",
         "List shell tasks",
-        "List this token's shell tasks without embedding their full output.",
+        "List server token tasks and workspace client tasks without full output. target=auto includes both; unavailable_mappings reports clients whose tasks could not be queried.",
         _object_schema(
             {
                 "offset": {**NONNEGATIVE, "default": 0},
                 "limit": {**POSITIVE, "maximum": 1000, "default": 100},
                 "status": {"type": "string", "default": ""},
+                "target": {"type": "string", "enum": ["auto", "server", "client"], "default": "auto"},
             }
         ),
         read_only=True,

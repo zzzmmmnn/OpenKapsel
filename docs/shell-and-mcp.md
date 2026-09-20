@@ -4,6 +4,46 @@
 
 ## Shell task lifecycle
 
+### Execution placement
+
+`POST /shell/exec` and MCP `run_shell` accept `target: "auto"` (default),
+`"server"`, or `"client"`. Auto routes a `cwd` inside a mapping to that client
+through RPC; other working directories run on the server. Use workspace-relative
+paths such as `laptop/project`. Client requires a mapped cwd; explicit server
+keeps execution on the server, using FUSE to access mapped files. Commands are
+never inspected for `cd` or rewritten to translate embedded absolute paths.
+
+Client execution requires caller Shell/write permissions, a writable mapping
+with `allow_exec`, and client execution opt-in. Client 1.60.0+ advertises
+`execution.shell_command`; older/offline/denied clients fail without fallback.
+Client-local sandbox, timeout, and resource policy apply; server `/env` and
+server sandbox/network settings are not copied to the client. Omitted or null
+timeout uses the client's `max_seconds`; a supplied value cannot exceed it.
+Native Windows uses `cmd.exe /d /s /c`; POSIX and client Podman use `/bin/sh -c`.
+Choose commands for the advertised platform. The client argv limit (32768 total
+characters, including the interpreter) still applies.
+
+Responses include `location` and a unified `task_id`. Use this ID with ordinary
+`/tasks/<id>` status/output/SSE/stdin/interrupt/kill APIs (or MCP task tools).
+Client stdout and stderr are combined in `stdout`, marked `output_combined`;
+status includes up to 64 KiB and `stdout_next_offset`. Continue with output
+cursors for more data. SSE drains all retained bytes before `done`; a client
+failure after headers produces an `error` event with resumable byte cursors.
+Reconnect the client before resuming; this does not restart the task. Client stdin
+chunks are at most 16 KiB; `interactive: true` is required. Client interrupt sends
+SIGINT on POSIX/Podman or CTRL_BREAK on native Windows; force-kill terminates the
+process group/tree. Server interruption retains its existing behavior.
+
+`GET /tasks?target=auto` and MCP `list_tasks` list both the current token's server
+tasks and the workspace's accessible client tasks. `target=server|client`
+filters location; normal status/pagination still apply. `unavailable_mappings`
+reports clients whose tasks could not be listed, not that their tasks stopped.
+Client task IDs remain routable after reconnect/server restart. Retention and
+client process-exit limitations are described in [client mappings](client-mappings.md).
+Never replay an uncertain start automatically: reconnect and list tasks first.
+The existing mapping-specific argv APIs remain available; schedules still
+execute on the server.
+
 ### Git inspection
 
 Git inspection is a read-only file capability, not Shell execution. REST needs

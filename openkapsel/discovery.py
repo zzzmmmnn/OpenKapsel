@@ -1408,8 +1408,12 @@ class DiscoveryMixin:
                 "shell_exec": {
                     "method": "POST",
                     "url": f"{base}/shell/exec",
+                    "target_values": ["auto", "server", "client"],
+                    "routing": "Default auto uses client RPC when cwd is inside a mapping; otherwise server. Explicit server executes on server even for a mapped cwd; client requires a mapped cwd. Command text is never inspected for cd. Offline/denied/old clients fail closed, never fall back.",
+                    "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /tasks get/output/stream/stdin/interrupt/kill; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
                     "json": {
                         "command": "<shell command>",
+                        "target": "auto",
                         "cwd": "<path inside root>",
                         "timeout_seconds": None,
                         "interactive": False,
@@ -1513,7 +1517,9 @@ class DiscoveryMixin:
                 "task_list": {
                     "method": "GET",
                     "url": f"{base}/tasks?offset=0&limit=100&status=running",
+                    "notes": "auto lists server token tasks and workspace client tasks. unavailable_mappings reports offline/denied clients; missing entries do not mean stopped tasks.",
                     "query": {
+                        "target": "auto | server | client (default auto)",
                         "offset": 0,
                         "limit": 100,
                         "status": "running or finished; omit for all",

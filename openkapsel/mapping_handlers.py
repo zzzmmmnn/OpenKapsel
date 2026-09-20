@@ -233,6 +233,7 @@ class MappingHandlersMixin:
             return self.server.mappings.call(row["id"], operation, args)
         except OSError as exc:
             status = {errno.EROFS: 403, errno.EACCES: 403, errno.EINVAL: 400, errno.ENOENT: 404,
+                      errno.E2BIG: 413, errno.EPIPE: 409, errno.ENOTDIR: 400,
                       errno.EEXIST: 409, errno.EBUSY: 409, errno.ESTALE: 409}.get(exc.errno, 503)
             raise ApiError(status, "mapping_operation_failed", "client operation failed", {"errno": exc.errno}) from None
 
