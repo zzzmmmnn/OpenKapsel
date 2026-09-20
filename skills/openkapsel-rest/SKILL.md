@@ -52,7 +52,7 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the top-level objec
 - For persistent once, interval, or six-field cron Shell schedules and their run history, read [references/schedules.md](references/schedules.md).
 - For static preview and workspace FastAPI applications, read [references/web-and-apps.md](references/web-and-apps.md).
 - For temporary cross-workspace transfer by share ID, read [references/sharing.md](references/sharing.md).
-- For client-backed mapped directories, cross-root copying/moving, and tasks executed on a client machine, read [references/mappings.md](references/mappings.md).
+- For client-backed mapped directories, RPC plugins, archive preview, cross-root copying/moving, and tasks executed on a client machine, read [references/mappings.md](references/mappings.md).
 - For a compact inventory of every non-MCP HTTP surface, read [references/endpoint-index.md](references/endpoint-index.md).
 
 ## Helpers
