@@ -14,7 +14,11 @@ from openkapsel.client_tasks import ClientTasks
 class ClientCommandTests(unittest.TestCase):
     def test_command_and_combined_input_eof(self):
         with tempfile.TemporaryDirectory() as directory:
-            files = ClientFiles(Path(directory), writable=True)
+            file_class = ClientFiles
+            if os.name == "nt":
+                from openkapsel.client_windows import WindowsClientFiles
+                file_class = WindowsClientFiles
+            files = file_class(Path(directory), writable=True)
             tasks = ClientTasks(files, enabled=True, sandbox=False)
             try:
                 tasks.dispatch("task_start", {"task_id": "command123", "command": "echo unified"})
