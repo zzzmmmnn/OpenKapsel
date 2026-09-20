@@ -56,11 +56,24 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, raw)
             self.assertEqual(["git_log"], calls)
             self.assertIn("Initial fixture", json.loads(raw)["output"])
+
+            session.capabilities = {"rpc": {"git": {
+                "state": "available", "version": 2,
+                "operations": ["status", "commit"], "read_only": False,
+                "operation_specs": {
+                    "status": {"write": False},
+                    "commit": {"write": True},
+                },
+            }}}
+            status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
+            self.assertEqual(200, status, raw)
+            self.assertEqual(["git_log", "git_status"], calls)
+
             session.capabilities = {"git_api": {"version": 1, "enabled": True}}
             status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
             self.assertEqual(409, status)
             self.assertEqual("mapping_rpc_unsupported", json.loads(raw)["error"]["code"])
-            self.assertEqual(["git_log"], calls)
+            self.assertEqual(["git_log", "git_status"], calls)
 
             session.capabilities = {"rpc": {"git": {
                 "state": "disabled", "reason": "client_config", "version": 2,
@@ -69,7 +82,7 @@ class GitHTTPTests(unittest.TestCase):
             status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
             self.assertEqual(403, status)
             self.assertEqual("mapping_rpc_disabled", json.loads(raw)["error"]["code"])
-            self.assertEqual(["git_log"], calls)
+            self.assertEqual(["git_log", "git_status"], calls)
 
             session.capabilities = {"rpc": {"git": {
                 "state": "unsupported", "reason": "dependency_missing", "version": 2,
@@ -79,13 +92,13 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual(409, status)
             self.assertEqual("mapping_rpc_unsupported", json.loads(raw)["error"]["code"])
             self.assertEqual("dependency_missing", json.loads(raw)["error"]["details"]["reason"])
-            self.assertEqual(["git_log"], calls)
+            self.assertEqual(["git_log", "git_status"], calls)
 
             self.server.mappings.sessions.pop(row["id"])
             status, _, raw = self.request("GET", self.base + "/git/status?path=laptop")
             self.assertEqual(503, status)
             self.assertEqual("mapping_offline", json.loads(raw)["error"]["code"])
-            self.assertEqual(["git_log"], calls)
+            self.assertEqual(["git_log", "git_status"], calls)
         finally:
             self.server.mappings.sessions.clear()
             self.server.mappings.store.delete(row["id"])

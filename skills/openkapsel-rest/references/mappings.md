@@ -2,17 +2,25 @@
 
 Fetch `GET /mappings` before using client-backed paths. It returns each mapping's `id`, workspace-relative `path`, `online`, `writable`, and advertised client execution capabilities. Files live on that client, not inside the server's workspace image. Use normal file APIs for mapped paths. Offline operations fail; do not recreate an offline mountpoint or assume it is empty.
 
-Updated clients advertise a generic `capabilities.rpc` map. Each family reports `available`, `unsupported`, or `disabled`; the server derives `offline` when the provider is not connected. File RPC is version 3 and remains an optimization behind the normal file endpoints. It may fall back to FUSE only before dispatch when the family policy allows it; offline or administrator-disabled mappings never fall back. A `mapping_response_too_large` error (413) requires a smaller result limit, tree depth, or batch. After an ambiguous timeout or a response with `mutation_may_have_completed: true`, inspect the affected paths before repeating a mutation.
+Updated clients advertise a generic `capabilities.rpc` map. Each family reports `available`, `unsupported`, or `disabled`; the server derives `offline` when the provider is not connected. File RPC is version 3 and remains an optimization behind the normal file endpoints. It may fall back to FUSE only before dispatch when the family policy allows it; offline or administrator-disabled mappings never fall back. The server waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for one RPC reply; client WebSocket transport tolerance defaults to 60 seconds and clients ping every 10 seconds. A `mapping_response_too_large` error (413) requires a smaller result limit, tree depth, or batch. After an ambiguous timeout or a response with `mutation_may_have_completed: true`, inspect the affected paths before repeating a mutation.
 
 Git and Archive are client RPC plugins. Git uses version 2 and has no server/FUSE fallback. Archive uses version 1 with `list` and `read` and also has no fallback. Client config can independently enable `rpc.file`, `rpc.git`, and `rpc.archive`; Git reports `unsupported` when enabled but the local `git` executable is missing. Additional trusted client plugins can be registered explicitly with `rpc_plugins: ["module:object"]`; merely installing a package does not load it.
 
 Each plugin self-describes the family and every operation. In `GET /mappings`,
 `capabilities.rpc.<family>.description` explains the family and
-`operation_specs.<operation>` contains `description` plus a JSON
-`input_schema`. Dynamic clients should inspect this metadata instead of
-hard-coding future families such as doc/csv/sqlite.
+`operation_specs.<operation>` contains `description`, a JSON
+`input_schema`, and boolean `write`. Dynamic clients should inspect this
+metadata instead of hard-coding future families such as doc/csv/sqlite. A
+family-level `read_only` value may be present for rolling-upgrade compatibility,
+but operation `write` is authoritative.
 
-For a third-party family advertised with `read_only=true`, use `POST /mappings/<mapping_id>/rpc/<family>/<operation>` with JSON `{ "args": { ... } }`. The server checks the mapping, advertised family/operation, state, and read-only flag, then forwards exactly one RPC to the client. There is no implicit FUSE/server fallback. Generic write-capable plugins are rejected until they have a dedicated mutation permission and Context contract.
+Use `POST /mappings/<mapping_id>/rpc/<family>/<operation>` with JSON
+`{ "args": { ... } }`. For `write=false`, read permission is enough and no
+Plan Context is required. For `write=true`, the caller needs the control
+credential and token write permission, the mapping must be administratively
+`writable=true`, and the body must also include `plan_id`, `taskname`, and
+`message`. The server forwards exactly one RPC to the client and never falls
+back to server/FUSE for a generic plugin operation.
 
 Archive preview is also exposed through ordinary workspace routes: `GET /archive/list?path=<archive>&inner_path=&offset=0&limit=200` and `GET /archive/read?path=<archive>&member=<member>&offset=0&limit=65536&encoding=utf-8`. Local workspace archives are read on the server; mapped archives use the Archive client plugin. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
 

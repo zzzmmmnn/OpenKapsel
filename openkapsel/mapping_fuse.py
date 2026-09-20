@@ -22,7 +22,10 @@ class RemoteFilesystem:
 
     def rpc(self, op, **args):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(35)
+            # The server enforces mapping_rpc_timeout_seconds (max 600s).
+            # Keep the local broker socket slightly above that ceiling so it
+            # never becomes the earlier timeout.
+            sock.settimeout(605)
             sock.connect(self.socket_path)
             sock.sendall(encode({"mapping_id": self.mapping_id, "op": op, "args": args}) + b"\n")
             with sock.makefile("rb") as stream:

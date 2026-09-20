@@ -153,6 +153,8 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(8, defaults.max_concurrent_shell_tasks_per_token)
             self.assertEqual(128, defaults.max_http_connections)
             self.assertEqual(30, defaults.http_socket_timeout_seconds)
+            self.assertEqual(90, defaults.mapping_rpc_timeout_seconds)
+            self.assertEqual(60, defaults.mapping_provider_idle_timeout_seconds)
             self.assertEqual(16, defaults.max_sse_streams)
             self.assertEqual(4, defaults.max_sse_streams_per_token)
             self.assertEqual(3600, defaults.max_sse_duration_seconds)
@@ -211,6 +213,8 @@ class ConfigurationTests(unittest.TestCase):
                         "max_concurrent_shell_tasks_per_token": 4,
                         "max_http_connections": 96,
                         "http_socket_timeout_seconds": 25,
+                        "mapping_rpc_timeout_seconds": 80,
+                        "mapping_provider_idle_timeout_seconds": 45,
                         "max_sse_streams": 12,
                         "max_sse_streams_per_token": 3,
                         "max_sse_duration_seconds": 1800,
@@ -274,6 +278,8 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(4, config.max_concurrent_shell_tasks_per_token)
             self.assertEqual(96, config.max_http_connections)
             self.assertEqual(25, config.http_socket_timeout_seconds)
+            self.assertEqual(80, config.mapping_rpc_timeout_seconds)
+            self.assertEqual(45, config.mapping_provider_idle_timeout_seconds)
             self.assertEqual(12, config.max_sse_streams)
             self.assertEqual(3, config.max_sse_streams_per_token)
             self.assertEqual(1800, config.max_sse_duration_seconds)

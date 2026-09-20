@@ -196,7 +196,7 @@ class McpHandlersMixin:
             "update_memory",
             "archive_memory",
         }
-        track_operation = name not in context_tools and (
+        track_operation = name not in context_tools and name != "rpc" and (
             not tool["annotations"]["readOnlyHint"]
             or bool(str(arguments.get("message", "")).strip())
             or bool(str(arguments.get("taskname", "")).strip())
@@ -581,7 +581,11 @@ class McpHandlersMixin:
                          for key, value in arguments.items()}
                 self._handle_archive(name[8:], query)
             elif name == "rpc":
-                self._mcp_tool_arguments = {"args": arguments.get("args", {})}
+                self._mcp_tool_arguments = {
+                    key: value
+                    for key, value in arguments.items()
+                    if key in {"args", "plan_id", "taskname", "message"}
+                }
                 target = f"{arguments['mapping_id']}/rpc/{arguments['family']}/{arguments['operation']}"
                 self._handle_mapping_rpc(target)
             elif name in query_tools:

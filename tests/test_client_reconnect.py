@@ -49,6 +49,23 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertIn("result", result, result)
         return self.runtime.tasks.tasks[tid]
 
+    def test_transport_timeout_is_configurable_and_bounded(self):
+        config = dict(self.config, transport_timeout_seconds=75)
+        runtime = ClientRuntime(config)
+        class Socket:
+            def send(self, _data): pass
+            def recv(self): return ""
+            def close(self): pass
+            def ping(self, *_): pass
+        try:
+            with patch("websocket.create_connection", return_value=Socket()) as create:
+                run_once(config, runtime=runtime)
+            self.assertEqual(75.0, create.call_args.kwargs["timeout"])
+        finally:
+            runtime.close()
+        with self.assertRaises(ValueError):
+            ClientRuntime(dict(self.config, transport_timeout_seconds=5))
+
     def test_completed_offline_result_survives_long_disconnect(self):
         task = self.start("offline-result", "import time; time.sleep(.1); print('completed offline'); raise SystemExit(7)")
         self.assertTrue(task["done"].wait(5))

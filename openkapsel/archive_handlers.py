@@ -69,10 +69,11 @@ class ArchiveHandlersMixin:
                 operation=operation,
                 min_version=1,
                 max_version=1,
-                required={"read_only": True},
             )
             if not capability.available:
                 self._raise_mapping_rpc_unavailable(capability)
+            if capability.operation_spec is None or capability.operation_spec.get("write") is not False:
+                raise ApiError(409, "mapping_rpc_unsupported", "Archive preview operation is not advertised as read-only")
             body = self._archive_rpc_body(self._mapping_rpc(
                 row,
                 "archive_" + operation,

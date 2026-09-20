@@ -139,14 +139,18 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "rpc",
         "Call mapping RPC plugin",
-        "Call one dynamic read-only RPC plugin operation on a mapping. Inspect mappings first: capabilities.rpc.<family> publishes the family description and operation_specs.<operation> publishes description/input_schema. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
+        "Call one dynamic RPC plugin operation on a mapping. Inspect mappings first: operation_specs.<operation> publishes description/input_schema/write. Read operations need read permission; write=true operations require write permission, control authorization, a writable mapping, and plan_id/taskname/message. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
         _object_schema({
             "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$"},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "args": {"type": "object", "default": {}},
+            "plan_id": {"type": "integer", "minimum": 1, "description": "Required owning Plan id when operation_specs.<operation>.write is true."},
+            "taskname": {"type": "string", "minLength": 1, "maxLength": 32, "description": "Required task grouping name for a write RPC operation."},
+            "message": {"type": "string", "minLength": 1, "maxLength": 200, "description": "Required short reason for a write RPC operation."},
         }, ("mapping_id", "family", "operation")),
-        read_only=True,
+        read_only=False,
+        context_message=False,
     ),
     _tool(
         "workspace_info",
@@ -1005,8 +1009,10 @@ def tools_for(
         "update_memory",
         "archive_memory",
     }
+    if record.can_read or record.can_write:
+        readable.add("rpc")
     if record.can_read:
-        readable.update({"read_files", "file_manifest", "archive_list", "archive_read", "rpc"})
+        readable.update({"read_files", "file_manifest", "archive_list", "archive_read"})
         readable.update("git_" + operation for operation in GIT_OPERATIONS)
         readable.update(
             {

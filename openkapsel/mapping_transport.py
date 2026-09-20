@@ -14,7 +14,8 @@ import time
 MAX_MESSAGE = 1024 * 1024
 MAX_CAPABILITIES = 256 * 1024
 CHUNK_SIZE = 128 * 1024
-RPC_TIMEOUT = 30
+DEFAULT_RPC_TIMEOUT_SECONDS = 90.0
+DEFAULT_PROVIDER_IDLE_TIMEOUT_SECONDS = 60.0
 FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_read_many", "fs_tree", "fs_search", "fs_manifest"})
 FILE_API_WRITE_OPERATIONS = frozenset({"fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_move", "fs_delete", "fs_delete_batch"})
 FILE_API_OPERATIONS = FILE_API_READ_OPERATIONS | FILE_API_WRITE_OPERATIONS
@@ -40,7 +41,13 @@ def recv_line(stream):
 
 
 class ProviderSession:
-    def __init__(self, handler):
+    def __init__(
+        self,
+        handler,
+        *,
+        rpc_timeout_seconds: float = DEFAULT_RPC_TIMEOUT_SECONDS,
+        idle_timeout_seconds: float = DEFAULT_PROVIDER_IDLE_TIMEOUT_SECONDS,
+    ):
         from wsproto import WSConnection, ConnectionType
         from wsproto.events import AcceptConnection
         self.handler = handler
@@ -53,12 +60,18 @@ class ProviderSession:
         self.generation = secrets.token_hex(12)
         self.capabilities = {}
         self.last_seen = time.monotonic()
+        self.rpc_timeout_seconds = float(rpc_timeout_seconds)
+        self.idle_timeout_seconds = float(idle_timeout_seconds)
+        if not 1 <= self.rpc_timeout_seconds <= 600:
+            raise ValueError("mapping RPC timeout must be between 1 and 600 seconds")
+        if not 10 <= self.idle_timeout_seconds <= 600:
+            raise ValueError("mapping provider idle timeout must be between 10 and 600 seconds")
         headers = [(key.lower().encode("ascii"), value.encode("latin1")) for key, value in handler.headers.items()]
         self.ws.initiate_upgrade_connection(headers, handler.path)
         list(self.ws.events())
         self.socket.sendall(self.ws.send(AcceptConnection()))
         handler.close_connection = True
-        self.socket.settimeout(RPC_TIMEOUT)
+        self.socket.settimeout(self.idle_timeout_seconds)
 
     def send(self, value):
         from wsproto.events import TextMessage
@@ -79,7 +92,7 @@ class ProviderSession:
                 self.pending[rid] = answer
             self.send({"id": rid, "op": operation, "args": arguments})
             try:
-                result = answer.get(timeout=RPC_TIMEOUT)
+                result = answer.get(timeout=self.rpc_timeout_seconds)
             except queue.Empty:
                 # An ambiguous write is never replayed into another session.
                 self.close()

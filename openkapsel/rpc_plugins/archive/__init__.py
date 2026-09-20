@@ -67,14 +67,27 @@ def _timestamp(value: float | int | None) -> str | None:
         return None
 
 
-def _entry_type(mode: int | None, *, directory: bool, link: bool) -> str:
-    if directory:
+def _zip_entry_type(info: zipfile.ZipInfo) -> str:
+    if info.is_dir():
         return "directory"
-    if link:
+    mode = (info.external_attr >> 16) & 0xFFFF
+    if stat.S_ISLNK(mode):
         return "link"
-    if mode is not None and not stat.S_ISREG(mode):
-        return "special"
-    return "file"
+    file_type = stat.S_IFMT(mode)
+    # ZIP creators often store only permission bits and omit S_IFREG.
+    if file_type in {0, stat.S_IFREG}:
+        return "file"
+    return "special"
+
+
+def _tar_entry_type(member: tarfile.TarInfo) -> str:
+    if member.isdir():
+        return "directory"
+    if member.issym() or member.islnk():
+        return "link"
+    if member.isfile():
+        return "file"
+    return "special"
 
 
 def _direct_listing(entries: list[dict[str, Any]], prefix: str, offset: int, limit: int) -> dict[str, Any]:
@@ -132,15 +145,13 @@ def _zip_entries(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
         name = _member_name(info.filename)
         if not name:
             continue
-        mode = (info.external_attr >> 16) & 0xFFFF
-        link = stat.S_ISLNK(mode)
         try:
             modified = _datetime.datetime(*info.date_time, tzinfo=_datetime.timezone.utc).isoformat()
         except (TypeError, ValueError):
             modified = None
         result.append({
             "path": name,
-            "type": _entry_type(mode or None, directory=info.is_dir(), link=link),
+            "type": _zip_entry_type(info),
             "size": info.file_size if not info.is_dir() else None,
             "compressed_size": info.compress_size if not info.is_dir() else None,
             "modified_at": modified,
@@ -158,7 +169,7 @@ def _tar_entries(archive: tarfile.TarFile) -> list[dict[str, Any]]:
             continue
         result.append({
             "path": name,
-            "type": _entry_type(member.mode, directory=member.isdir(), link=member.issym() or member.islnk()),
+            "type": _tar_entry_type(member),
             "size": member.size if member.isfile() else None,
             "compressed_size": None,
             "modified_at": _timestamp(member.mtime),
@@ -311,7 +322,6 @@ class ArchiveRpcPlugin:
             },
         },
     }
-    read_only = True
 
     def probe(self, config: dict[str, Any]):
         formats = supported_extensions()

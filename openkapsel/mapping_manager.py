@@ -21,13 +21,24 @@ LOG = logging.getLogger("openkapsel.mappings")
 
 
 class MappingManager:
-    def __init__(self, root, state_dir, *, enabled=False, mount_helper=None):
+    def __init__(
+        self,
+        root,
+        state_dir,
+        *,
+        enabled=False,
+        mount_helper=None,
+        rpc_timeout_seconds=90.0,
+        provider_idle_timeout_seconds=60.0,
+    ):
         self.root = root
         self.store = MappingStore(state_dir / "mappings.sqlite3")
         self.run_dir = root.parent / "mapping-run"
         self.run_dir.mkdir(mode=0o700, exist_ok=True)
         self.enabled = enabled
         self.mount_helper = mount_helper
+        self.rpc_timeout_seconds = float(rpc_timeout_seconds)
+        self.provider_idle_timeout_seconds = float(provider_idle_timeout_seconds)
         self.host_mounts = set()
         self.workspace_available = lambda workspace: True
         self.sessions, self.workers = {}, {}
@@ -41,7 +52,7 @@ class MappingManager:
             manager = self
             class IPCHandler(socketserver.StreamRequestHandler):
                 def handle(self):
-                    self.connection.settimeout(35)
+                    self.connection.settimeout(manager.rpc_timeout_seconds + 5)
                     try:
                         request = recv_line(self.rfile)
                         result = manager.call(request["mapping_id"], request["op"], request["args"])
@@ -215,10 +226,13 @@ class MappingManager:
                     if not op.startswith(prefix) or not isinstance(capability, dict):
                         continue
                     operation = op[len(prefix):]
-                    if (capability.get("state", "available") == "available"
-                            and operation in capability.get("operations", [])
-                            and capability.get("read_only") is True):
-                        plugin_read_only = True
+                    if capability.get("state", "available") == "available" and operation in capability.get("operations", []):
+                        specs = capability.get("operation_specs")
+                        spec = specs.get(operation) if isinstance(specs, dict) else None
+                        if isinstance(spec, dict) and isinstance(spec.get("write", False), bool):
+                            plugin_read_only = not spec.get("write", False)
+                        elif capability.get("read_only") is True:
+                            plugin_read_only = True
                     break
             read_operation = op in READ_OPERATIONS or plugin_read_only
             if op == "open" and (args.get("mode", "r") != "r" or args.get("truncate")):
@@ -274,6 +288,16 @@ class MappingManager:
         operations = advertised.get("operations", ())
         if not isinstance(operations, list) or any(not isinstance(item, str) for item in operations):
             operations = ()
+        operation_spec = None
+        if operation is not None:
+            advertised_specs = advertised.get("operation_specs")
+            raw_spec = advertised_specs.get(operation) if isinstance(advertised_specs, dict) else None
+            if isinstance(raw_spec, dict) and isinstance(raw_spec.get("write", False), bool):
+                operation_spec = dict(raw_spec)
+                operation_spec["write"] = raw_spec.get("write", False)
+            elif isinstance(advertised.get("read_only"), bool):
+                # Rolling-upgrade compatibility for pre-operation-write metadata.
+                operation_spec = {"write": not advertised["read_only"]}
         details = {"advertised_reason": advertised.get("reason")} if advertised.get("reason") else None
         fallback = spec["fallback"] if state in {"unsupported", "disabled"} else None
         result = MappingRpcCapability(
@@ -283,6 +307,7 @@ class MappingManager:
             version=version if type(version) is int else None,
             operations=tuple(operations),
             fallback=fallback,
+            operation_spec=operation_spec,
             details=details,
         )
         if state != "available":
@@ -325,7 +350,6 @@ class MappingManager:
             "git",
             min_version=2,
             max_version=2,
-            required={"read_only": True},
         ).available
 
     def supports_file_api(self, mid, operation, *, min_version=1):
@@ -345,7 +369,11 @@ class MappingManager:
             existing = self.sessions.get(row["id"])
             if existing and not existing.closed:
                 raise ValueError("mapping already has an active provider")
-            session = ProviderSession(handler)
+            session = ProviderSession(
+                handler,
+                rpc_timeout_seconds=self.rpc_timeout_seconds,
+                idle_timeout_seconds=self.provider_idle_timeout_seconds,
+            )
             self.sessions[row["id"]] = session
         self.store.seen(row["id"])
         try:

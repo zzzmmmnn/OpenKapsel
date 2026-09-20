@@ -43,6 +43,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.server.mappings.store.authenticate(row["id"], config["token"])
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
+        self.assertEqual(60, config["transport_timeout_seconds"])
         self.assertEqual({"file": True, "git": True, "archive": True}, config["rpc"])
         self.assertEqual([], config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
@@ -63,6 +64,8 @@ class MappingHTTPTests(unittest.TestCase):
 
         def call(operation, args):
             calls.append((operation, args))
+            if operation == "vendor_update":
+                return {"status": 200, "body": {"updated": args.get("value")}}
             return {"status": 200, "body": {"echo": args.get("value")}}
 
         session = SimpleNamespace(
@@ -70,8 +73,8 @@ class MappingHTTPTests(unittest.TestCase):
             capabilities={"rpc": {"vendor": {
                 "state": "available",
                 "version": 1,
-                "description": "Inspect vendor metadata.",
-                "operations": ["inspect"],
+                "description": "Inspect or update vendor metadata.",
+                "operations": ["inspect", "update"],
                 "operation_specs": {
                     "inspect": {
                         "description": "Inspect one integer.",
@@ -81,9 +84,20 @@ class MappingHTTPTests(unittest.TestCase):
                             "required": ["value"],
                             "additionalProperties": False,
                         },
-                    }
+                        "write": False,
+                    },
+                    "update": {
+                        "description": "Update one integer.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"value": {"type": "integer"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                        "write": True,
+                    },
                 },
-                "read_only": True,
+                "read_only": False,
             }}},
             call=call,
             close=lambda: None,
@@ -94,7 +108,7 @@ class MappingHTTPTests(unittest.TestCase):
             status, _, raw = self.request("GET", base + "/mappings")
             self.assertEqual(200, status, raw)
             advertised = json.loads(raw)["mappings"][0]["capabilities"]["rpc"]["vendor"]
-            self.assertEqual("Inspect vendor metadata.", advertised["description"])
+            self.assertEqual("Inspect or update vendor metadata.", advertised["description"])
             self.assertEqual(
                 "integer",
                 advertised["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
@@ -109,6 +123,46 @@ class MappingHTTPTests(unittest.TestCase):
             payload = json.loads(raw)
             self.assertEqual(7, payload["result"]["echo"])
             self.assertEqual([("vendor_inspect", {"value": 7})], calls)
+
+            write_endpoint = base + f"/mappings/{row['id']}/rpc/vendor/update"
+            status, _, raw = self.request(
+                "POST", write_endpoint, json.dumps({"args": {"value": 9}}),
+                {"Authorization": "Bearer " + self.record.control_token, "Content-Type": "application/json"},
+            )
+            self.assertEqual(403, status, raw)
+            self.assertEqual("mapping_read_only", json.loads(raw)["error"]["code"])
+            self.assertEqual([("vendor_inspect", {"value": 7})], calls)
+
+            self.server.mappings.store.update(row["id"], writable=True)
+            status, _, raw = self.request(
+                "POST", write_endpoint, json.dumps({"args": {"value": 9}}),
+                {"Content-Type": "application/json"},
+            )
+            self.assertEqual(401, status, raw)
+            self.assertEqual("control_token_required", json.loads(raw)["error"]["code"])
+
+            control = {"Authorization": "Bearer " + self.record.control_token, "Content-Type": "application/json"}
+            status, _, raw = self.request(
+                "POST", base + "/context",
+                json.dumps({"type": "plan", "taskname": "rpc", "content": "RPC write test"}),
+                control,
+            )
+            self.assertEqual(201, status, raw)
+            plan_id = json.loads(raw)["id"]
+            status, _, raw = self.request(
+                "POST",
+                write_endpoint,
+                json.dumps({
+                    "args": {"value": 9},
+                    "plan_id": plan_id,
+                    "taskname": "rpc",
+                    "message": "Update vendor metadata",
+                }),
+                control,
+            )
+            self.assertEqual(200, status, raw)
+            self.assertEqual(9, json.loads(raw)["result"]["updated"])
+            self.assertEqual(("vendor_update", {"value": 9}), calls[-1])
 
             conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Plugin reads")
             tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
@@ -128,13 +182,36 @@ class MappingHTTPTests(unittest.TestCase):
             self.assertFalse(result["isError"], result)
             self.assertEqual(8, json.loads(result["content"][0]["text"])["result"]["echo"])
 
-            session.capabilities["rpc"]["vendor"]["read_only"] = False
+            write_tool = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "rpc",
+                "arguments": {
+                    "mapping_id": row["id"],
+                    "family": "vendor",
+                    "operation": "update",
+                    "args": {"value": 11},
+                    "plan_id": plan_id,
+                    "taskname": "rpc",
+                    "message": "Update vendor metadata through MCP",
+                },
+            }}
+            _, _, raw = self.request(
+                "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(write_tool),
+                {"Authorization": "Bearer " + conn["secret"], "Content-Type": "application/json"},
+            )
+            write_result = json.loads(raw)["result"]
+            self.assertFalse(write_result["isError"], write_result)
+            self.assertEqual(11, json.loads(write_result["content"][0]["text"])["result"]["updated"])
+            self.assertEqual(("vendor_update", {"value": 11}), calls[-1])
+
+            # Family read_only is compatibility metadata only; operation write is authoritative.
+            session.capabilities["rpc"]["vendor"]["read_only"] = True
+            session.capabilities["rpc"]["vendor"]["operation_specs"]["inspect"]["write"] = True
             status, _, raw = self.request(
                 "POST", endpoint, json.dumps({"args": {}}),
                 {"Content-Type": "application/json"},
             )
-            self.assertEqual(409, status, raw)
-            self.assertEqual("mapping_rpc_unsupported", json.loads(raw)["error"]["code"])
+            self.assertEqual(401, status, raw)
+            self.assertEqual("control_token_required", json.loads(raw)["error"]["code"])
         finally:
             self.server.mappings.sessions.pop(row["id"], None)
             self.server.mappings.store.delete(row["id"])

@@ -69,7 +69,6 @@ class GitRpcPlugin:
         }
         for operation in GIT_OPERATIONS
     }
-    read_only = True
 
     def probe(self, config: dict[str, Any]):
         if shutil.which("git") is None:

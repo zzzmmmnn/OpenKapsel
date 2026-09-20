@@ -21,7 +21,6 @@ class RpcPlugin(Protocol):
     version: int
     description: str
     operations: dict[str, dict[str, Any]]
-    read_only: bool
 
     def probe(self, config: dict[str, Any]) -> tuple[str, str | None, dict[str, Any] | None]:
         ...
@@ -55,9 +54,9 @@ def _operation_specs(value: Any, *, family: str) -> dict[str, dict[str, Any]]:
     for operation, raw in value.items():
         if not isinstance(operation, str) or not _NAME.fullmatch(operation):
             raise ValueError(f"RPC plugin {family} has an invalid operation name")
-        if not isinstance(raw, dict) or set(raw) != {"description", "input_schema"}:
+        if not isinstance(raw, dict) or not {"description", "input_schema"} <= set(raw) or set(raw) - {"description", "input_schema", "write"}:
             raise ValueError(
-                f"RPC plugin {family}.{operation} must declare exactly description and input_schema"
+                f"RPC plugin {family}.{operation} must declare description/input_schema and optional write"
             )
         description = _description(raw["description"], label=f"RPC plugin {family}.{operation}")
         schema = raw["input_schema"]
@@ -69,9 +68,13 @@ def _operation_specs(value: Any, *, family: str) -> dict[str, dict[str, Any]]:
             raise ValueError(f"RPC plugin {family}.{operation} input_schema must be JSON serializable") from None
         if len(encoded) > MAX_OPERATION_SCHEMA_BYTES:
             raise ValueError(f"RPC plugin {family}.{operation} input_schema is too large")
+        write = raw.get("write", False)
+        if not isinstance(write, bool):
+            raise ValueError(f"RPC plugin {family}.{operation} write must be boolean")
         result[operation] = {
             "description": description,
             "input_schema": json.loads(encoded.decode("utf-8")),
+            "write": write,
         }
     return result
 
@@ -83,13 +86,10 @@ def _plugin_object(value: Any) -> tuple[RpcPlugin, str, dict[str, dict[str, Any]
         value = value()
     family = getattr(value, "family", None)
     version = getattr(value, "version", None)
-    read_only = getattr(value, "read_only", None)
     if not isinstance(family, str) or not _NAME.fullmatch(family):
         raise ValueError("RPC plugin family must match [a-z][a-z0-9_]{0,31}")
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError(f"RPC plugin {family} has an invalid version")
-    if not isinstance(read_only, bool):
-        raise ValueError(f"RPC plugin {family} must declare read_only")
     description = _description(getattr(value, "description", None), label=f"RPC plugin {family}")
     operations = _operation_specs(getattr(value, "operations", None), family=family)
     if not callable(getattr(value, "probe", None)) or not callable(getattr(value, "dispatch", None)):
@@ -171,7 +171,7 @@ class ClientRpcRegistry:
                 "operations": sorted(registered.operations),
                 # New clients self-describe every operation for dynamic callers.
                 "operation_specs": registered.operations,
-                "read_only": plugin.read_only,
+                "read_only": not any(spec["write"] for spec in registered.operations.values()),
                 "plugin": registered.source,
             }
             if reason:
@@ -186,7 +186,10 @@ class ClientRpcRegistry:
 
     def read_only(self, wire_operation: str) -> bool:
         registered = self._registered_for(wire_operation)
-        return bool(registered and registered.plugin.read_only)
+        if registered is None:
+            return False
+        prefix = registered.family + "_"
+        return not registered.operations[wire_operation[len(prefix):]]["write"]
 
     def _registered_for(self, wire_operation: str) -> RegisteredPlugin | None:
         if not isinstance(wire_operation, str):

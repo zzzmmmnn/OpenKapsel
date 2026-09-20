@@ -196,7 +196,6 @@ class MappingHandlersMixin:
         self._send_json(200, {"mappings": self.server.mappings.list(self.token_record.path_prefix)})
 
     def _handle_mapping_rpc(self, target):
-        self._require_permission(self.token_record.can_read, "read permission is not granted")
         match = re.fullmatch(
             r"([A-Za-z0-9_-]{24})/rpc/([a-z][a-z0-9_]{0,31})/([a-z][a-z0-9_]{0,31})",
             target,
@@ -212,13 +211,37 @@ class MappingHandlersMixin:
             family,
             operation=operation,
             min_version=1,
-            required={"read_only": True},
         )
         if not capability.available:
             self._raise_mapping_rpc_unavailable(capability)
+        if capability.operation_spec is None or not isinstance(capability.operation_spec.get("write"), bool):
+            raise ApiError(
+                409,
+                "mapping_rpc_metadata_required",
+                "mapping RPC operation does not advertise read/write metadata",
+                capability.public(),
+            )
+        write = capability.operation_spec["write"]
+        if write:
+            self._require_control_token()
+            self._require_permission(self.token_record.can_write, "write permission is not granted")
+            if not row["writable"]:
+                raise ApiError(403, "mapping_read_only", "mapping is read-only")
+        else:
+            self._require_permission(self.token_record.can_read, "read permission is not granted")
+
         body = self._read_json()
-        if set(body) - {"args"} or not isinstance(body.get("args", {}), dict):
-            raise ApiError(400, "invalid_request", "body must contain only an args object")
+        if set(body) - {"args", "plan_id", "taskname", "message"} or not isinstance(body.get("args", {}), dict):
+            raise ApiError(400, "invalid_request", "body must contain args and optional Context fields")
+        if write:
+            self._begin_context_operation(
+                "mapping.rpc",
+                body.get("taskname", self._context_header_taskname()),
+                body.get("message", self._context_header_message()),
+                body.get("plan_id", self._context_header_plan_id()),
+                self._context_request_details(body),
+                plan_required=True,
+            )
         result = self._mapping_rpc(row, family + "_" + operation, body.get("args", {}))
         if not isinstance(result, dict) or type(result.get("status")) is not int:
             raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin response")
@@ -434,6 +457,7 @@ class MappingHandlersMixin:
         return "Save this credential now; it is shown only once.\n" + json.dumps({
             "url": url + "/mapping-connect/" + row["id"], "token": secret,
             "root": "/path/to/export", "writable": row["writable"], "allow_exec": False,
+            "transport_timeout_seconds": 60,
             "rpc": {"file": True, "git": True, "archive": True},
             "rpc_plugins": [],
             "sandbox": True, "proxy": None}, indent=2)

@@ -12,7 +12,7 @@ def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
         fields = hidden + f'<input type="hidden" name="id" value="{esc(row["id"], quote=True)}">'
         checks = "".join(
             f'<label><input type="checkbox" name="{key}" {"checked" if row[key] else ""}>{label}</label>'
-            for key, label in (("enabled", "Enabled"), ("writable", "Writable"), ("allow_exec", "Client execution")))
+            for key, label in (("enabled", "Enabled"), ("writable", "Writable (files + RPC writes)"), ("allow_exec", "Client execution")))
         online = row["online"] and row["enabled"]
         status = "Online" if online else "Offline" if row["enabled"] else "Disabled"
         cards.append(f'''<details class="card token-card"><summary class="token-summary">
@@ -40,6 +40,6 @@ def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
 <div class="span2"><label>Workspace</label><select name="app_id" required>{options}</select></div>
 <div><label>Directory name</label><input name="name" placeholder="e.g. laptop" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"></div>
 <div><label>Comment</label><input name="comment" maxlength="200"></div>
-<div class="span4 checks"><label><input type="checkbox" name="writable">Writable</label><label><input type="checkbox" name="allow_exec">Client execution</label></div>
+<div class="span4 checks"><label><input type="checkbox" name="writable">Writable (files + RPC writes)</label><label><input type="checkbox" name="allow_exec">Client execution</label></div>
 <div class="span4 actions"><button name="action" value="create"{'' if enabled else ' disabled'}>Create mapping</button></div></div></form>
-<p class="muted">Client execution also requires local opt-in. Editing or rotating a mapping disconnects its client. Deleting a mapping does not delete client files.</p></section></section>'''
+<p class="muted">Writable allows file mutations and RPC operations that advertise write=true. Client execution also requires local opt-in. Editing or rotating a mapping disconnects its client. Deleting a mapping does not delete client files.</p></section></section>'''

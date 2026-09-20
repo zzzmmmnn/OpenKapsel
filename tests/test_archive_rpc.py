@@ -172,6 +172,22 @@ class ArchiveHTTPTests(unittest.TestCase):
         self.assertEqual(["archive_list", "archive_read"], self.calls)
 
         self.session.capabilities["rpc"]["archive"] = {
+            "state": "available",
+            "version": 1,
+            "operations": ["list", "read", "create"],
+            "read_only": False,
+            "operation_specs": {
+                "list": {"write": False},
+                "read": {"write": False},
+                "create": {"write": True},
+            },
+        }
+        status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
+        self.assertEqual(200, status, body)
+        self.assertEqual("client", body["location"])
+        self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
+
+        self.session.capabilities["rpc"]["archive"] = {
             "state": "disabled",
             "reason": "client_config",
             "version": 1,
@@ -181,13 +197,13 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
         self.assertEqual(403, status, body)
         self.assertEqual("mapping_rpc_disabled", body["error"]["code"])
-        self.assertEqual(["archive_list", "archive_read"], self.calls)
+        self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
         status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
         self.assertEqual(503, status, body)
         self.assertEqual("mapping_offline", body["error"]["code"])
-        self.assertEqual(["archive_list", "archive_read"], self.calls)
+        self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
 
 
 if __name__ == "__main__":

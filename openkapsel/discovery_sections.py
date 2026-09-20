@@ -67,6 +67,7 @@ SECTION_LIMITS = {
         "upload_ttl_seconds", "max_incomplete_upload_bytes", "max_text_replace_bytes",
         "max_concurrent_transfers", "max_search_results", "max_search_file_bytes",
         "max_tree_nodes", "max_recursion_depth", "max_batch_file_operations",
+        "mapping_rpc_timeout_seconds", "mapping_provider_idle_timeout_seconds",
     },
     "context": {
         "max_context_query_entries", "max_context_entries", "context_trim_oldest_entries",
@@ -87,7 +88,8 @@ SECTION_LIMITS = {
         "sandbox_memory_bytes", "sandbox_cpu_percent",
         "max_environment_variables", "max_environment_name_characters",
         "max_environment_value_characters", "max_environment_total_characters",
-        "max_environment_rc_characters",
+        "max_environment_rc_characters", "mapping_rpc_timeout_seconds",
+        "mapping_provider_idle_timeout_seconds",
     },
     "schedules": {
         "min_schedule_interval_minutes", "max_schedules_per_token",

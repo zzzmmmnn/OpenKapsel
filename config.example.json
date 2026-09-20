@@ -44,6 +44,8 @@
   "max_concurrent_shell_tasks_per_token": 8,
   "max_http_connections": 128,
   "http_socket_timeout_seconds": 30,
+  "mapping_rpc_timeout_seconds": 90,
+  "mapping_provider_idle_timeout_seconds": 60,
   "max_sse_streams": 16,
   "max_sse_streams_per_token": 4,
   "schedule_misfire_grace_seconds": 300,

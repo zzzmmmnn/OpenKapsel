@@ -40,10 +40,11 @@ class GitHandlersMixin:
                 operation=operation,
                 min_version=2,
                 max_version=2,
-                required={"read_only": True},
             )
             if not capability.available:
                 self._raise_mapping_rpc_unavailable(capability)
+            if capability.operation_spec is None or capability.operation_spec.get("write") is not False:
+                raise ApiError(409, "mapping_rpc_unsupported", "Git read operation is not advertised as read-only")
             response = self._mapping_rpc(row, "git_" + operation,
                                          {"options": options, "cwd": relative.as_posix(), "timeout_seconds": timeout})
             if not isinstance(response, dict) or type(response.get("status")) is not int:

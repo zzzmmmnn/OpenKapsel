@@ -43,6 +43,7 @@ Keep the configuration outside the exported directory and source control. On POS
   "root": "/path/to/local/project",
   "writable": true,
   "allow_exec": false,
+  "transport_timeout_seconds": 60,
   "rpc": {
     "file": true,
     "git": true,
@@ -54,7 +55,7 @@ Keep the configuration outside the exported directory and source control. On POS
 }
 ```
 
-Supported proxy schemes are `http`, `socks4`, `socks4a`, `socks5`, and `socks5h`. Use the `a`/`h` variants for proxy-side DNS. Optional proxy credentials use URL userinfo. TLS verification remains enabled; a proxy connection failure never falls back to direct access. Use `--once` to disable automatic reconnection during diagnostics.
+Supported proxy schemes are `http`, `socks4`, `socks4a`, `socks5`, and `socks5h`. Use the `a`/`h` variants for proxy-side DNS. Optional proxy credentials use URL userinfo. TLS verification remains enabled; a proxy connection failure never falls back to direct access. `transport_timeout_seconds` defaults to 60 seconds and controls client WebSocket connect/receive tolerance. The server separately waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for one RPC reply and treats mutation timeouts as ambiguous, never replaying them automatically. Use `--once` to disable automatic reconnection during diagnostics.
 
 If local DNS returns a proxy's synthetic address (for example an address from `198.18.0.0/15`), use `socks5h` instead of `socks5`; this still uses SOCKS5, but sends the hostname to the proxy for resolution.
 
@@ -74,22 +75,27 @@ Git and Archive are client RPC plugins rather than branches hard-coded into the
 filesystem provider. Built-in plugins are registered explicitly by the client.
 Additional installed packages can be loaded with `rpc_plugins` entries in
 `module:object` form. The object must expose a bounded family name, version,
-family `description`, an `operations` mapping, `read_only` flag,
-`probe(config)`, and `dispatch(files, operation, args)`. Every operation maps
-to exactly `{description, input_schema}`, where `input_schema` is a bounded
-JSON object schema. The client publishes both the compatible operation-name list
-and the full `operation_specs` metadata in `GET /mappings`. Loading is opt-in:
-merely installing a Python package does not execute its plugin code.
+family `description`, an `operations` mapping, `probe(config)`, and
+`dispatch(files, operation, args)`. Every operation declares
+`{description, input_schema, write}`; `write` defaults to `false` and is the
+authoritative mutation declaration for that operation. `input_schema` is a
+bounded JSON object schema. The client publishes both the compatible
+operation-name list and the full `operation_specs` metadata in
+`GET /mappings`. A derived family `read_only` value remains only for
+rolling-upgrade compatibility. Loading is opt-in: merely installing a Python
+package does not execute its plugin code.
 
-Read-only third-party operations can be called without adding a server handler:
-first inspect `GET /mappings`, then use
-`POST /mappings/<id>/rpc/<family>/<operation>` with an `args` object, or
-the MCP `rpc` tool. The family/operation must be advertised by the
-connected client with `read_only=true`; there is no FUSE/server fallback.
-Write-capable generic plugins are deliberately rejected until a separate mutation
-permission and Context contract is defined. An explicitly configured plugin is
-trusted local code running in the mapping client process, so install and register
-only code you trust; the `read_only` declaration is part of that trust boundary.
+Dynamic operations can be called without adding a server handler: first inspect
+`GET /mappings`, then use
+`POST /mappings/<id>/rpc/<family>/<operation>` with an `args` object, or the
+MCP `rpc` tool. For `write=false`, read permission is sufficient and no Plan
+Context is required. For `write=true`, the caller needs the control credential
+and token write permission, the mapping must be enabled with `writable=true`
+in administration, and `plan_id`, `taskname`, and `message` are required.
+There is no FUSE/server fallback for generic plugin operations. An explicitly
+configured plugin is trusted local code running in the mapping client process,
+so install and register only code you trust; declaring `write` correctly is
+part of that trust boundary.
 
 The file family currently uses version `3` and advertises its supported
 operations. The server automatically sends one complete file operation over the
@@ -121,16 +127,20 @@ retrying a mutation whose result is unknown. The same applies to an oversized
 response reporting `mutation_may_have_completed: true`. Client-side path guards, protected
 internal directories, and both mapping and local write restrictions still apply.
 
-Git inspection uses RPC family `git` version `2` with `read_only=true`.
-It is independent of client execution: read-only mappings and `allow_exec=false`
-work. Git runs against a bounded local sanitized snapshot, never the original
+Git inspection uses RPC family `git` version `2`; all current Git
+operations advertise `write=false`. It is independent of client execution:
+read-only mappings and `allow_exec=false` work. Future Git plugin operations may
+declare `write=true`, in which case normal mapping write authorization applies.
+Git runs against a bounded local sanitized snapshot, never the original
 repository configuration. Git RPC has no FUSE/server fallback: disabled,
 unsupported, and offline states fail explicitly. Host Git is required when
 `rpc.git=true`; a missing executable is advertised as `unsupported`.
 See [Git inspection](shell-and-mcp.md#git-inspection) for limits and supported layouts.
 
-Archive preview uses the built-in `archive` plugin, version `1`, with read-only
-`list` and `read` operations and no FUSE/server fallback for mapped paths.
+Archive preview uses the built-in `archive` plugin, version `1`; current
+`list` and `read` operations advertise `write=false` and have no FUSE/server
+fallback for mapped paths. Future archive mutation operations can declare
+`write=true` and are gated by the mapping's administrative writable setting.
 The plugin never extracts members to disk. It reads archives through guarded file
 handles, rejects unsafe member paths for preview, refuses link members as files,
 limits archive listings to 100000 entries, limits one member read to 256 KiB, and

@@ -110,7 +110,7 @@ There is intentionally no MCP route in this skill.
 - `POST /recycle/purge`: permanently remove one explicitly confirmed recycle entry.
 
 - `GET /mappings`: mapped roots, online state, and capabilities.
-- `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised read-only client RPC plugin with JSON `{ "args": { ... } }`; no server/FUSE fallback.
+- `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised client RPC plugin operation. Inspect `operation_specs.<operation>.write`: reads send `{ "args": { ... } }`; writes also require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. No server/FUSE fallback.
 - `GET /archive/list`: browse ZIP/tar archive contents without extracting.
 - `GET /archive/read`: read a bounded archive member preview without extracting.
 - `POST /fs/copy`: start an asynchronous copy.

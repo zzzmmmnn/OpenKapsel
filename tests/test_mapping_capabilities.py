@@ -53,7 +53,10 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 "    family='vendor'\n"
                 "    version=1\n"
                 "    description='Inspect vendor metadata.'\n"
-                "    operations={'inspect': {'description':'Inspect one value.', 'input_schema': {'type':'object','properties': {'value': {'type':'integer'}}, 'required':['value'], 'additionalProperties':False}}}\n"
+                "    operations={\n"
+                "      'inspect': {'description':'Inspect one value.', 'input_schema': {'type':'object','properties': {'value': {'type':'integer'}}, 'required':['value'], 'additionalProperties':False}},\n"
+                "      'update': {'description':'Update one value.', 'input_schema': {'type':'object','properties': {'value': {'type':'integer'}}, 'required':['value'], 'additionalProperties':False}, 'write': True}\n"
+                "    }\n"
                 "    read_only=True\n"
                 "    def probe(self, config): return ('available', None, {'kind':'test'})\n"
                 "    def dispatch(self, files, operation, args): return {'status':200,'body':{'ok':True}}\n"
@@ -72,7 +75,11 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                     "integer",
                     capabilities["vendor"]["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
                 )
+                self.assertFalse(capabilities["vendor"]["operation_specs"]["inspect"]["write"])
+                self.assertTrue(capabilities["vendor"]["operation_specs"]["update"]["write"])
+                self.assertFalse(capabilities["vendor"]["read_only"])
                 self.assertTrue(registry.accepts("vendor_inspect"))
+                self.assertTrue(registry.accepts("vendor_update"))
                 from openkapsel.client_files import ClientFiles
                 export = Path(directory) / "export"
                 export.mkdir()

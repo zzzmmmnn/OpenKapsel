@@ -128,6 +128,8 @@ class ServerConfig:
     max_concurrent_shell_tasks_per_token: int = 8
     max_http_connections: int = 128
     http_socket_timeout_seconds: float = 30.0
+    mapping_rpc_timeout_seconds: float = 90.0
+    mapping_provider_idle_timeout_seconds: float = 60.0
     max_sse_streams: int = 16
     max_sse_streams_per_token: int = 4
     max_sse_duration_seconds: float = 60 * 60
@@ -251,10 +253,12 @@ class ServerConfig:
             raise ValueError("size and task limits must be positive")
         if min(
             self.http_socket_timeout_seconds,
+            self.mapping_rpc_timeout_seconds,
+            self.mapping_provider_idle_timeout_seconds,
             self.max_sse_duration_seconds,
             self.network_proxy_header_timeout_seconds,
         ) <= 0:
-            raise ValueError("HTTP and proxy timeout limits must be positive")
+            raise ValueError("HTTP, mapping, and proxy timeout limits must be positive")
         if self.default_read_chars > self.max_read_chars:
             raise ValueError("default_read_chars cannot exceed max_read_chars")
         if self.max_sse_streams_per_token > self.max_sse_streams:
@@ -266,6 +270,10 @@ class ServerConfig:
             )
         if self.http_socket_timeout_seconds > 300:
             raise ValueError("http_socket_timeout_seconds cannot exceed 300 seconds")
+        if not 1 <= self.mapping_rpc_timeout_seconds <= 600:
+            raise ValueError("mapping_rpc_timeout_seconds must be between 1 and 600 seconds")
+        if not 10 <= self.mapping_provider_idle_timeout_seconds <= 600:
+            raise ValueError("mapping_provider_idle_timeout_seconds must be between 10 and 600 seconds")
         if self.max_sse_duration_seconds > 86_400:
             raise ValueError("max_sse_duration_seconds cannot exceed 86400 seconds")
         if self.network_proxy_header_timeout_seconds > 300:
@@ -510,8 +518,14 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.cgroups = TokenCgroupManager(enabled=config.sandbox_cgroup_enabled)
         # Move the manager into its delegated leaf before spawning FUSE workers;
         # otherwise their presence prevents enabling cgroup v2 controllers.
-        self.mappings = MappingManager(config.root, config.upload_state_dir.parent, enabled=config.mappings_enabled,
-                                       mount_helper=self.workspace_images if self.workspace_images.enabled else None)
+        self.mappings = MappingManager(
+            config.root,
+            config.upload_state_dir.parent,
+            enabled=config.mappings_enabled,
+            mount_helper=self.workspace_images if self.workspace_images.enabled else None,
+            rpc_timeout_seconds=config.mapping_rpc_timeout_seconds,
+            provider_idle_timeout_seconds=config.mapping_provider_idle_timeout_seconds,
+        )
         self.mappings.workspace_available = lambda workspace: any(record.valid and record.path_prefix == workspace for record in self.tokens.list())
         self.sandboxes = SandboxRegistry(
             enabled=config.sandbox_backends,
@@ -2451,6 +2465,12 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
         max_http_connections=int(payload.get("max_http_connections", 128)),
         http_socket_timeout_seconds=float(
             payload.get("http_socket_timeout_seconds", 30)
+        ),
+        mapping_rpc_timeout_seconds=float(
+            payload.get("mapping_rpc_timeout_seconds", 90)
+        ),
+        mapping_provider_idle_timeout_seconds=float(
+            payload.get("mapping_provider_idle_timeout_seconds", 60)
         ),
         max_sse_streams=int(payload.get("max_sse_streams", 16)),
         max_sse_streams_per_token=int(payload.get("max_sse_streams_per_token", 4)),

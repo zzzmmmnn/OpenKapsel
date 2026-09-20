@@ -40,6 +40,7 @@ class MappingRpcCapability:
     version: int | None = None
     operations: tuple[str, ...] = ()
     fallback: str | None = None
+    operation_spec: dict[str, Any] | None = None
     details: dict[str, Any] | None = None
 
     @property
@@ -56,6 +57,8 @@ class MappingRpcCapability:
             result["operations"] = list(self.operations)
         if self.fallback:
             result["fallback"] = self.fallback
+        if self.operation_spec is not None:
+            result["operation_spec"] = self.operation_spec
         if self.details:
             result["details"] = self.details
         return result

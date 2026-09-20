@@ -67,7 +67,7 @@ def api_request(
     query: Iterable[tuple[str, str]] = (),
     headers: dict[str, str] | None = None,
     data: bytes | None = None,
-    timeout: float = 60.0,
+    timeout: float = 120.0,
     output_stream: BinaryIO | None = None,
 ) -> HttpResult:
     url, absolute = build_url(base_url, endpoint, query)
@@ -239,7 +239,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output", help="write the response body to this file")
     result.add_argument("--stream", action="store_true", help="stream the response to stdout")
     result.add_argument("--include-headers", action="store_true")
-    result.add_argument("--timeout", type=float, default=60.0)
+    result.add_argument("--timeout", type=float, default=120.0)
     return result
 
 

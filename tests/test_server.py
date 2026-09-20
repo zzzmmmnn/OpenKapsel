@@ -743,6 +743,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(1, payload["limits"]["max_sse_streams_per_token"])
         self.assertEqual(0.2, payload["limits"]["max_sse_duration_seconds"])
         self.assertEqual(30.0, payload["limits"]["http_socket_timeout_seconds"])
+        self.assertEqual(90.0, payload["limits"]["mapping_rpc_timeout_seconds"])
+        self.assertEqual(60.0, payload["limits"]["mapping_provider_idle_timeout_seconds"])
         self.assertEqual(
             ["output", "done", "reconnect"],
             payload["endpoints"]["task_stream"]["events"],
@@ -3028,6 +3030,7 @@ class WorkspaceServerTests(unittest.TestCase):
             if tool["annotations"]["readOnlyHint"] or tool_name in {
                 "add_context",
                 "update_plan",
+                "rpc",
             }:
                 continue
             self.assertIn(
@@ -3035,6 +3038,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 tool["inputSchema"].get("required", []),
                 tool_name,
             )
+        self.assertIn("plan_id", tools["rpc"]["inputSchema"]["properties"])
+        self.assertNotIn("plan_id", tools["rpc"]["inputSchema"].get("required", []))
         self.assertNotIn(
             "message",
             tools["read_file"]["inputSchema"].get("required", []),

@@ -60,6 +60,13 @@ def _create_resources(config):
     for key in ("writable", "allow_exec", "sandbox", "network"):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")
+    transport_timeout = config.get("transport_timeout_seconds", 60)
+    if (
+        isinstance(transport_timeout, bool)
+        or not isinstance(transport_timeout, (int, float))
+        or not 10 <= float(transport_timeout) <= 600
+    ):
+        raise ValueError("transport_timeout_seconds must be between 10 and 600 seconds")
     rpc_registry = load_client_rpc_registry(config)
     rpc_capabilities = rpc_registry.capability_map(config)
     extensions = []
@@ -102,8 +109,13 @@ def run_once(config, stop=None, *, runtime=None):
     sock = None
     stopped = threading.Event()
     try:
-        sock = websocket.create_connection(url, header={"Authorization": "Bearer " + config["token"]},
-                                           suppress_origin=True, timeout=30, **proxy_options(config.get("proxy")))
+        sock = websocket.create_connection(
+            url,
+            header={"Authorization": "Bearer " + config["token"]},
+            suppress_origin=True,
+            timeout=float(config.get("transport_timeout_seconds", 60)),
+            **proxy_options(config.get("proxy")),
+        )
         capabilities = {
             "protocol": 1,
             "writable": files.writable,
