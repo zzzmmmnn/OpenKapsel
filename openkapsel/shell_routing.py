@@ -96,6 +96,15 @@ class ShellRoutingMixin:
             return RemoteTask(self, *parts)
         return self.server.tasks.get(task_id, self.token_record.token)
 
+    def _authorize_task_access(self, task):
+        if isinstance(task, RemoteTask) and task.result.get("kind") == "rpc":
+            if task.result.get("write"):
+                self._require_permission(self.token_record.can_write, "write permission is required for this RPC task")
+            else:
+                self._require_permission(self.token_record.can_read, "read permission is required for this RPC task")
+            return
+        self._require_permission(self.token_record.shell_mode != "none", "Shell permission is required")
+
     def _start_client_shell(self, body):
         target = body.get("target", "auto")
         if target not in ("auto", "server", "client"):
@@ -158,10 +167,27 @@ class ShellRoutingMixin:
     def _list_client_shell_tasks(self):
         tasks, unavailable = [], []
         for row in self.server.mappings.store.list(self.token_record.path_prefix):
-            if not row["allow_exec"]:
+            if (
+                self.token_record.shell_mode == "none"
+                and not self.token_record.can_read
+                and not self.token_record.can_write
+            ):
                 continue
             try:
-                tasks.extend(client_summary(row["id"], result) for result in self._mapping_rpc(row, "task_list", {}))
+                results = self._mapping_rpc(row, "task_list", {})
             except ApiError as exc:
                 unavailable.append({"mapping_id": row["id"], "code": exc.code})
+                continue
+            for result in results:
+                kind = result.get("kind", "shell")
+                if kind == "rpc":
+                    visible = (
+                        self.token_record.can_write
+                        if result.get("write")
+                        else self.token_record.can_read
+                    )
+                else:
+                    visible = row["allow_exec"] and self.token_record.shell_mode != "none"
+                if visible:
+                    tasks.append(client_summary(row["id"], result))
         return tasks, unavailable

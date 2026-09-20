@@ -584,7 +584,7 @@ class McpHandlersMixin:
                 self._mcp_tool_arguments = {
                     key: value
                     for key, value in arguments.items()
-                    if key in {"args", "plan_id", "taskname", "message"}
+                    if key in {"args", "timeout_seconds", "plan_id", "taskname", "message"}
                 }
                 target = f"{arguments['mapping_id']}/rpc/{arguments['family']}/{arguments['operation']}"
                 self._handle_mapping_rpc(target)

@@ -14,6 +14,94 @@ import threading
 import time
 from pathlib import Path
 
+from .errors import ApiError
+
+
+class RpcTaskContext:
+    """Cooperative task context supplied to task-based RPC plugins."""
+
+    def __init__(self, task):
+        self.task = task
+
+    @property
+    def cancelled(self):
+        return self.task["cancel"].is_set()
+
+    def check_cancelled(self):
+        if self.cancelled:
+            raise OSError(errno.ECANCELED, "RPC task was cancelled")
+
+    def write(self, value):
+        data = value if isinstance(value, bytes) else str(value).encode("utf-8", errors="replace")
+        with self.task["output_lock"]:
+            room = max(0, 2 * 1024 * 1024 - len(self.task["output"]))
+            self.task["output"].extend(data[:room])
+            self.task["truncated"] |= len(data) > room
+
+    def cancel(self, *, force):
+        self.task["cancel"].set()
+        with self.task["process_lock"]:
+            process = self.task.get("process")
+        if process is None or process.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                if force:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
+                else:
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
+        except ProcessLookupError:
+            pass
+
+    def run_process(self, argv, *, cwd=None, env=None):
+        """Run one cancellable subprocess and stream combined output into the task."""
+        self.check_cancelled()
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            shell=False,
+        )
+        with self.task["process_lock"]:
+            self.task["process"] = process
+
+        def collect():
+            assert process.stdout is not None
+            with process.stdout:
+                while data := process.stdout.read(8192):
+                    self.write(data)
+
+        reader = threading.Thread(target=collect, daemon=True)
+        reader.start()
+        try:
+            while process.poll() is None:
+                if self.task["cancel"].wait(0.1):
+                    self.cancel(force=self.task["force_killed"])
+                else:
+                    continue
+                if process.poll() is None:
+                    time.sleep(0.05)
+            reader.join()
+            self.check_cancelled()
+            return process.returncode
+        finally:
+            with self.task["process_lock"]:
+                if self.task.get("process") is process:
+                    self.task["process"] = None
+
 
 class ClientTasks:
     def __init__(self, files, *, enabled=False, sandbox=True, backend="podman",
@@ -43,13 +131,12 @@ class ClientTasks:
                 "platform": sys.platform, "max_tasks": self.max_tasks,
                 "shell_command": True, "shell": "cmd.exe" if os.name == "nt" and not self.sandbox else "/bin/sh",
                 "reconnect_persistence": True, "result_storage": "client_memory",
+                "rpc_tasks": True,
                 "max_records": self.max_tasks + 4,
                 "uncollected_results": "retained_until_client_exit",
                 "max_seconds": self.max_seconds, "network": self.network if self.sandbox else "host"}
 
     def dispatch(self, op, args):
-        if not self.enabled:
-            raise OSError(errno.EACCES, "client execution is disabled")
         with self.lock:
             self._prune()
             if op == "task_list":
@@ -60,6 +147,10 @@ class ClientTasks:
             if op == "task_start":
                 if tid in self.tasks:
                     return self._public(self.tasks[tid])
+                if isinstance(args.get("rpc"), dict):
+                    return self._start_rpc(tid, args)
+                if not self.enabled:
+                    raise OSError(errno.EACCES, "client execution is disabled")
                 return self._start(tid, args)
             task = self.tasks.get(tid)
             if task is None:
@@ -78,6 +169,8 @@ class ClientTasks:
                 self._signal(task, force=op == "task_kill")
                 return self._public(task)
             if op == "task_stdin":
+                if task.get("kind", "shell") != "shell":
+                    raise OSError(errno.EPIPE, "RPC tasks do not accept stdin")
                 data = base64.b64decode(args.get("data", ""), validate=True)
                 if len(data) > 16384:
                     raise OSError(errno.E2BIG, "stdin chunk too large")
@@ -151,7 +244,7 @@ class ClientTasks:
                                    stderr=subprocess.STDOUT, close_fds=True,
                                    start_new_session=os.name != "nt",
                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
-        task = {"id": tid, "process": process, "started_at": time.time(), "finished_at": None,
+        task = {"id": tid, "kind": "shell", "process": process, "started_at": time.time(), "finished_at": None,
                 "collected_at": None,
                 "interactive": interactive, "stdin_closed": not interactive,
                 "interrupted": False, "force_killed": False,
@@ -164,6 +257,126 @@ class ClientTasks:
             threading.Thread(target=self._input, args=(task,), daemon=True).start()
         threading.Thread(target=self._deadline, args=(task,), daemon=True).start()
         return self._public(task)
+
+    def _start_rpc(self, tid, args):
+        rpc = args.get("rpc", {})
+        family = rpc.get("family")
+        operation = rpc.get("operation")
+        rpc_args = rpc.get("args", {})
+        if not isinstance(family, str) or not isinstance(operation, str) or not isinstance(rpc_args, dict):
+            raise OSError(errno.EINVAL, "invalid RPC task request")
+        spec = self.files.rpc_registry.operation_spec(family, operation)
+        if spec is None or spec.get("execution") != "task":
+            raise OSError(errno.EINVAL, "RPC operation is not task-based")
+        if spec.get("write") and not self.files.writable:
+            raise OSError(errno.EROFS, "client export is read-only")
+        if len(self.tasks) >= self.max_tasks + 4:
+            collected = [task for task in self.tasks.values() if task["collected_at"] is not None]
+            if collected:
+                oldest = min(collected, key=lambda task: task["collected_at"])
+                self.tasks.pop(oldest["id"], None)
+        if (
+            self.closed
+            or sum(task["finished_at"] is None for task in self.tasks.values()) >= self.max_tasks
+            or len(self.tasks) >= self.max_tasks + 4
+        ):
+            raise OSError(errno.EBUSY, "client task or retained-result limit reached")
+        timeout = args.get("timeout_seconds", self.max_seconds)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= self.max_seconds:
+            raise OSError(errno.EINVAL, "timeout exceeds local policy")
+        task = {
+            "id": tid,
+            "kind": "rpc",
+            "rpc_family": family,
+            "rpc_operation": operation,
+            "write": bool(spec.get("write")),
+            "execution": "task",
+            "started_at": time.time(),
+            "finished_at": None,
+            "collected_at": None,
+            "interactive": False,
+            "stdin_closed": True,
+            "interrupted": False,
+            "force_killed": False,
+            "output": bytearray(),
+            "output_lock": threading.Lock(),
+            "truncated": False,
+            "timeout": float(timeout),
+            "done": threading.Event(),
+            "cancel": threading.Event(),
+            "process": None,
+            "process_lock": threading.Lock(),
+            "exit_code": None,
+            "result": None,
+            "error": None,
+        }
+        task["rpc_context"] = RpcTaskContext(task)
+        self.tasks[tid] = task
+        threading.Thread(
+            target=self._run_rpc_task,
+            args=(task, family, operation, rpc_args),
+            daemon=True,
+        ).start()
+        threading.Thread(target=self._deadline, args=(task,), daemon=True).start()
+        return self._public(task)
+
+    def _run_rpc_task(self, task, family, operation, rpc_args):
+        try:
+            response = self.files.rpc_registry.dispatch_task(
+                self.files,
+                family,
+                operation,
+                rpc_args,
+                task["rpc_context"],
+            )
+            if not isinstance(response, dict) or type(response.get("status")) is not int:
+                raise OSError(errno.EPROTO, "invalid RPC task response")
+            if response["status"] == 200 and isinstance(response.get("body"), dict):
+                task["result"] = response["body"]
+                task["exit_code"] = 0
+            else:
+                error = response.get("error")
+                if not isinstance(error, dict):
+                    error = {"code": "rpc_task_failed", "message": "RPC task failed"}
+                task["error"] = {
+                    "status": response["status"],
+                    "code": error.get("code", "rpc_task_failed"),
+                    "message": error.get("message", "RPC task failed"),
+                    "details": error.get("details"),
+                }
+                task["exit_code"] = 1
+        except ApiError as exc:
+            task["exit_code"] = 1
+            task["error"] = {
+                "status": int(exc.status),
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+            }
+        except OSError as exc:
+            if task["interrupted"]:
+                task["exit_code"] = 130
+            elif task["force_killed"]:
+                task["exit_code"] = 137
+            else:
+                task["exit_code"] = 1
+            task["error"] = {
+                "status": 409 if exc.errno == errno.ECANCELED else 500,
+                "code": "rpc_task_cancelled" if exc.errno == errno.ECANCELED else "rpc_task_failed",
+                "message": "RPC task was cancelled" if exc.errno == errno.ECANCELED else "RPC task failed",
+                "details": {"errno": exc.errno or errno.EIO},
+            }
+        except Exception:
+            task["exit_code"] = 1
+            task["error"] = {
+                "status": 500,
+                "code": "rpc_task_failed",
+                "message": "RPC task failed",
+                "details": None,
+            }
+        finally:
+            task["finished_at"] = time.time()
+            task["done"].set()
 
     def _collect(self, task):
         try:
@@ -205,18 +418,45 @@ class ClientTasks:
 
     @staticmethod
     def _public(task):
-        return {"task_id": task["id"], "location": "client", "started_at": task["started_at"],
-                "finished_at": task["finished_at"], "exit_code": task["process"].poll(),
-                "interactive": task["interactive"], "stdin_open": not task["stdin_closed"] and task["finished_at"] is None,
-                "interrupted": task["interrupted"], "force_killed": task["force_killed"],
-                "running": task["finished_at"] is None, "output_truncated": task["truncated"]}
+        kind = task.get("kind", "shell")
+        exit_code = task["process"].poll() if kind == "shell" else task.get("exit_code")
+        result = {
+            "task_id": task["id"],
+            "kind": kind,
+            "location": "client",
+            "started_at": task["started_at"],
+            "finished_at": task["finished_at"],
+            "exit_code": exit_code,
+            "interactive": task["interactive"],
+            "stdin_open": not task["stdin_closed"] and task["finished_at"] is None,
+            "interrupted": task["interrupted"],
+            "force_killed": task["force_killed"],
+            "running": task["finished_at"] is None,
+            "output_truncated": task["truncated"],
+        }
+        if kind == "rpc":
+            result.update(
+                rpc_family=task["rpc_family"],
+                rpc_operation=task["rpc_operation"],
+                write=task["write"],
+                execution="task",
+            )
+            if task["finished_at"] is not None:
+                if task.get("result") is not None:
+                    result["result"] = task["result"]
+                if task.get("error") is not None:
+                    result["error"] = task["error"]
+        return result
 
     @staticmethod
     def _signal(task, *, force):
-        process = task["process"]
         if task["finished_at"] is not None:
             return
         task["force_killed" if force else "interrupted"] = True
+        if task.get("kind", "shell") == "rpc":
+            task["rpc_context"].cancel(force=force)
+            return
+        process = task["process"]
         if task["container"]:
             subprocess.run(["podman", "kill", "--signal", "KILL" if force else "INT", task["container"]],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)

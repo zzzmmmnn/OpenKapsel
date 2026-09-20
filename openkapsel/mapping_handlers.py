@@ -214,14 +214,19 @@ class MappingHandlersMixin:
         )
         if not capability.available:
             self._raise_mapping_rpc_unavailable(capability)
-        if capability.operation_spec is None or not isinstance(capability.operation_spec.get("write"), bool):
+        if (
+            capability.operation_spec is None
+            or not isinstance(capability.operation_spec.get("write"), bool)
+            or capability.operation_spec.get("execution") not in {"sync", "task"}
+        ):
             raise ApiError(
                 409,
                 "mapping_rpc_metadata_required",
-                "mapping RPC operation does not advertise read/write metadata",
+                "mapping RPC operation does not advertise write/execution metadata",
                 capability.public(),
             )
         write = capability.operation_spec["write"]
+        execution = capability.operation_spec["execution"]
         if write:
             self._require_control_token()
             self._require_permission(self.token_record.can_write, "write permission is not granted")
@@ -231,8 +236,18 @@ class MappingHandlersMixin:
             self._require_permission(self.token_record.can_read, "read permission is not granted")
 
         body = self._read_json()
-        if set(body) - {"args", "plan_id", "taskname", "message"} or not isinstance(body.get("args", {}), dict):
-            raise ApiError(400, "invalid_request", "body must contain args and optional Context fields")
+        if (
+            set(body) - {"args", "plan_id", "taskname", "message", "timeout_seconds"}
+            or not isinstance(body.get("args", {}), dict)
+        ):
+            raise ApiError(400, "invalid_request", "body must contain args plus optional Context/task timeout fields")
+        timeout = body.get("timeout_seconds")
+        if timeout is not None and (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < float(timeout) <= 86400
+        ):
+            raise ApiError(400, "invalid_request", "timeout_seconds must be between 0 and 86400")
         if write:
             self._begin_context_operation(
                 "mapping.rpc",
@@ -242,6 +257,47 @@ class MappingHandlersMixin:
                 self._context_request_details(body),
                 plan_required=True,
             )
+        if execution == "task":
+            from .shell_routing import client_summary
+
+            raw_task_id = token_urlsafe_alnum(18)
+            task_args = {
+                "task_id": raw_task_id,
+                "rpc": {
+                    "family": family,
+                    "operation": operation,
+                    "args": body.get("args", {}),
+                },
+            }
+            if timeout is not None:
+                task_args["timeout_seconds"] = float(timeout)
+            try:
+                started = self._mapping_rpc(row, "task_start", task_args)
+            except ApiError as exc:
+                ambiguous_errnos = {
+                    errno.ETIMEDOUT,
+                    errno.EHOSTDOWN,
+                    errno.EPIPE,
+                    errno.ECONNRESET,
+                    errno.ECONNABORTED,
+                }
+                details = dict(exc.details) if isinstance(exc.details, dict) else {}
+                details.update({
+                    "candidate_task_id": f"client.{mid}.{raw_task_id}",
+                    "task_start_confirmed": False,
+                    "task_may_have_started": details.get("errno") in ambiguous_errnos,
+                    "recovery": "Reconnect and query/list the candidate task before retrying a write task start.",
+                })
+                raise ApiError(exc.status, exc.code, exc.message, details, exc.headers) from None
+            task = client_summary(mid, started)
+            task.update(
+                family=family,
+                operation=operation,
+                execution="task",
+                status_url=f"{self._base_path()}/tasks/{task['task_id']}",
+            )
+            self._send_json(202, task)
+            return
         result = self._mapping_rpc(row, family + "_" + operation, body.get("args", {}))
         if not isinstance(result, dict) or type(result.get("status")) is not int:
             raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin response")
@@ -336,7 +392,12 @@ class MappingHandlersMixin:
         row = self._mapping_for_caller(mid)
         self._require_permission(self.token_record.shell_mode != "none", "Shell permission is required for client tasks")
         if self.command == "GET":
-            self._send_json(200, {"tasks": self._mapping_rpc(row, "task_list", {})})
+            tasks = [
+                task
+                for task in self._mapping_rpc(row, "task_list", {})
+                if task.get("kind", "shell") == "shell"
+            ]
+            self._send_json(200, {"tasks": tasks})
             return
         body = self._read_json()
         if not row["writable"] or not self.token_record.can_write:
@@ -351,6 +412,9 @@ class MappingHandlersMixin:
         row = self._mapping_for_caller(mid)
         self._require_permission(self.token_record.shell_mode != "none", "Shell permission is required for client tasks")
         action = action_parts[0] if action_parts else "get"
+        task_meta = self._mapping_rpc(row, "task_get", {"task_id": tid, "offset": 0})
+        if task_meta.get("kind", "shell") != "shell":
+            raise ApiError(404, "task_not_found", "task does not exist")
         if self.command == "GET" and action == "get":
             args = {"task_id": tid, "offset": self._query_int(query, "offset", 0, minimum=0)}
         elif self.command == "POST" and action in {"stdin", "interrupt", "kill"}:

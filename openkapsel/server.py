@@ -1722,18 +1722,22 @@ class WorkspaceRequestHandler(
         return environment
 
     def _handle_task(self, task_id: str) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
         if not task_id or "/" in task_id:
             raise ApiError(HTTPStatus.NOT_FOUND, "task_not_found", "task does not exist")
+        task = self._get_shell_task(task_id)
+        self._authorize_task_access(task)
         self._send_json(
             HTTPStatus.OK,
-            dict(self._get_shell_task(task_id).serialize(), location="client" if task_id.startswith("client.") else "server"),
+            dict(task.serialize(), location="client" if task_id.startswith("client.") else "server"),
         )
 
     def _handle_task_list(self, query: dict[str, list[str]]) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
+        if (
+            self.token_record.shell_mode == "none"
+            and not self.token_record.can_read
+            and not self.token_record.can_write
+        ):
+            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "task permission is not granted")
         offset = self._query_int(query, "offset", 0, minimum=0)
         limit = self._query_int(query, "limit", 100, minimum=1, maximum=1000)
         status = self._query_one(query, "status", "").strip() or None
@@ -1743,9 +1747,11 @@ class WorkspaceRequestHandler(
         if target not in {"auto", "server", "client"}:
             raise ApiError(400, "invalid_target", "target must be auto, server, or client")
         tasks, unavailable = [], []
-        if target != "client":
+        if target != "client" and self.token_record.shell_mode != "none":
             tasks, _ = self.server.tasks.list(self.token_record.token, 0, 100000, status)
             tasks = [dict(task, location="server") for task in tasks]
+        elif target == "server" and self.token_record.shell_mode == "none":
+            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "Shell permission is required for server tasks")
         if target != "server":
             remote, unavailable = self._list_client_shell_tasks()
             tasks.extend(task for task in remote if status is None or task["status"] == status)
@@ -1803,24 +1809,26 @@ class WorkspaceRequestHandler(
         )
 
     def _handle_task_interrupt(self, task_id: str) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
+        task = self._get_shell_task(task_id)
+        self._authorize_task_access(task)
         if self._client_task_control(task_id, "interrupt"):
             return
         task = self.server.tasks.interrupt(task_id, self.token_record.token)
         self._send_json(HTTPStatus.OK, task.serialize())
 
     def _handle_task_kill(self, task_id: str) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
+        task = self._get_shell_task(task_id)
+        self._authorize_task_access(task)
         if self._client_task_control(task_id, "kill"):
             return
         task = self.server.tasks.kill(task_id, self.token_record.token)
         self._send_json(HTTPStatus.OK, task.serialize())
 
     def _handle_task_stdin(self, task_id: str) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
+        task = self._get_shell_task(task_id)
+        self._authorize_task_access(task)
+        if isinstance(task, RemoteTask) and task.result.get("kind") == "rpc":
+            raise ApiError(HTTPStatus.CONFLICT, "not_interactive", "RPC tasks do not accept stdin")
         body = self._read_json()
         text_data = body.get("data")
         base64_data = body.get("data_base64")
@@ -1858,14 +1866,13 @@ class WorkspaceRequestHandler(
         )
 
     def _handle_task_output(self, task_id: str, query: dict[str, list[str]]) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
         stdout_offset = self._query_int(query, "stdout_offset", 0, minimum=0)
         stderr_offset = self._query_int(query, "stderr_offset", 0, minimum=0)
         limit = self._query_int(query, "limit", 65536, minimum=1, maximum=262144)
         wait_seconds = self._query_float(query, "wait_seconds", 0.0, minimum=0.0, maximum=30.0)
         deadline = time.monotonic() + wait_seconds
         task = self._get_shell_task(task_id)
+        self._authorize_task_access(task)
         while True:
             stdout = task.stdout.read_from(stdout_offset, limit)
             stderr = task.stderr.read_from(stderr_offset, limit)
@@ -1879,28 +1886,38 @@ class WorkspaceRequestHandler(
             ):
                 break
             time.sleep(0.05)
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "task_id": task.id,
-                "status": task.status,
-                "stdout": stdout,
-                "stderr": stderr,
-                "location": "client" if isinstance(task, RemoteTask) else "server",
-                "output_combined": isinstance(task, RemoteTask),
-                "finished": task.status == "finished",
-                "exit_code": task.exit_code,
-                "interrupted": task.interrupted,
-                "force_killed": task.force_killed,
-            },
-        )
+        payload = {
+            "task_id": task.id,
+            "status": task.status,
+            "stdout": stdout,
+            "stderr": stderr,
+            "location": "client" if isinstance(task, RemoteTask) else "server",
+            "output_combined": isinstance(task, RemoteTask),
+            "finished": task.status == "finished",
+            "exit_code": task.exit_code,
+            "interrupted": task.interrupted,
+            "force_killed": task.force_killed,
+        }
+        if isinstance(task, RemoteTask) and task.result.get("kind") == "rpc":
+            summary = task.summary()
+            for key in (
+                "kind",
+                "rpc_family",
+                "rpc_operation",
+                "write",
+                "execution",
+                "result",
+                "error",
+            ):
+                if key in summary:
+                    payload[key] = summary[key]
+        self._send_json(HTTPStatus.OK, payload)
 
     def _handle_task_stream(self, task_id: str, query: dict[str, list[str]]) -> None:
-        if self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
         stdout_offset = self._query_int(query, "stdout_offset", 0, minimum=0)
         stderr_offset = self._query_int(query, "stderr_offset", 0, minimum=0)
         task = self._get_shell_task(task_id)
+        self._authorize_task_access(task)
         limited_by = self.server.acquire_sse_stream(self.token_record.token)
         if limited_by is not None:
             raise ApiError(

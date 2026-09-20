@@ -214,7 +214,22 @@ class MappingManager:
             if session is None or session.closed:
                 raise OSError(errno.EHOSTDOWN, "mapping client is offline")
         if op.startswith("task_"):
-            if not row["allow_exec"]:
+            if op == "task_start" and isinstance(args.get("rpc"), dict):
+                rpc_request = args["rpc"]
+                family = rpc_request.get("family")
+                operation = rpc_request.get("operation")
+                capability = self.rpc_capability(mid, family, operation=operation)
+                if not capability.available or capability.operation_spec is None:
+                    raise OSError(errno.ENOSYS, "RPC task capability is unavailable")
+                if capability.operation_spec.get("execution") != "task":
+                    raise OSError(errno.EINVAL, "RPC operation is not task-based")
+                if capability.operation_spec.get("write") and not row["writable"]:
+                    raise OSError(errno.EROFS, "mapping is read-only")
+            elif op in {"task_get", "task_list", "task_interrupt", "task_kill"}:
+                # Query/control authorization is enforced by the caller-facing
+                # task endpoint after inspecting task kind/metadata.
+                pass
+            elif not row["allow_exec"]:
                 raise OSError(errno.EACCES, "mapping execution is disabled")
         else:
             plugin_read_only = False
@@ -295,9 +310,18 @@ class MappingManager:
             if isinstance(raw_spec, dict) and isinstance(raw_spec.get("write", False), bool):
                 operation_spec = dict(raw_spec)
                 operation_spec["write"] = raw_spec.get("write", False)
+                execution = raw_spec.get("execution", "sync")
+                if execution in {"sync", "task"}:
+                    operation_spec["execution"] = execution
+                else:
+                    operation_spec = None
             elif isinstance(advertised.get("read_only"), bool):
-                # Rolling-upgrade compatibility for pre-operation-write metadata.
-                operation_spec = {"write": not advertised["read_only"]}
+                # Rolling-upgrade compatibility for pre-operation metadata.
+                write = not advertised["read_only"]
+                operation_spec = {
+                    "write": write,
+                    "execution": "sync",
+                }
         details = {"advertised_reason": advertised.get("reason")} if advertised.get("reason") else None
         fallback = spec["fallback"] if state in {"unsupported", "disabled"} else None
         result = MappingRpcCapability(

@@ -279,12 +279,17 @@ class MappingTransportTests(unittest.TestCase):
                 self.assertEqual(sessions[0].capabilities["rpc"]["file"]["state"], "available")
                 self.assertEqual(sessions[0].capabilities["rpc"]["git"]["state"], "available")
                 self.assertEqual(sessions[0].capabilities["rpc"]["archive"]["state"], "available")
-                self.assertTrue(sessions[0].capabilities["rpc"]["archive"]["read_only"])
+                self.assertFalse(sessions[0].capabilities["rpc"]["archive"]["read_only"])
                 self.assertIn("archive", sessions[0].capabilities["rpc"]["archive"]["description"].lower())
+                archive_specs = sessions[0].capabilities["rpc"]["archive"]["operation_specs"]
                 self.assertEqual(
                     ["path", "member"],
-                    sessions[0].capabilities["rpc"]["archive"]["operation_specs"]["read"]["input_schema"]["required"],
+                    archive_specs["read"]["input_schema"]["required"],
                 )
+                self.assertFalse(archive_specs["read"]["write"])
+                self.assertEqual("sync", archive_specs["read"]["execution"])
+                self.assertTrue(archive_specs["create"]["write"])
+                self.assertEqual("task", archive_specs["create"]["execution"])
                 result = sessions[0].call("api_fs_stat", {"query": {"path": ["hello.txt"], "fields": ["sha256,size"]}, "display_root": "/workspace/client"})
                 self.assertEqual(result["status"], 200)
                 self.assertEqual(result["body"]["size"], 5)

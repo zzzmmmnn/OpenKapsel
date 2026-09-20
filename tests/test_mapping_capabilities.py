@@ -24,12 +24,25 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         self.assertEqual("available", capabilities["archive"]["state"])
         self.assertIn("fs_read", capabilities["file"]["operations"])
         self.assertIn("log", capabilities["git"]["operations"])
-        self.assertEqual(["list", "read"], capabilities["archive"]["operations"])
+        self.assertEqual(
+            ["create", "extract", "list", "read"],
+            capabilities["archive"]["operations"],
+        )
         self.assertIn("archive", capabilities["archive"]["description"].lower())
         self.assertEqual(
             ["path", "member"],
             capabilities["archive"]["operation_specs"]["read"]["input_schema"]["required"],
         )
+        self.assertEqual("sync", capabilities["archive"]["operation_specs"]["read"]["execution"])
+        self.assertFalse(capabilities["archive"]["operation_specs"]["read"]["write"])
+        self.assertEqual("task", capabilities["archive"]["operation_specs"]["create"]["execution"])
+        self.assertTrue(capabilities["archive"]["operation_specs"]["create"]["write"])
+        for operation in ("status", "diff", "log", "show", "ls_files", "diff_stat"):
+            self.assertEqual("sync", capabilities["git"]["operation_specs"][operation]["execution"])
+            self.assertFalse(capabilities["git"]["operation_specs"][operation]["write"])
+        for operation in ("add", "commit", "restore", "checkout"):
+            self.assertEqual("task", capabilities["git"]["operation_specs"][operation]["execution"])
+            self.assertTrue(capabilities["git"]["operation_specs"][operation]["write"])
         self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])
 
     def test_client_can_disable_individual_rpc_families(self):
@@ -60,6 +73,7 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 "    read_only=True\n"
                 "    def probe(self, config): return ('available', None, {'kind':'test'})\n"
                 "    def dispatch(self, files, operation, args): return {'status':200,'body':{'ok':True}}\n"
+                "    def dispatch_task(self, files, operation, args, task): return {'status':200,'body':{'updated':True}}\n"
                 "plugin=Plugin()\n"
             )
             sys.path.insert(0, directory)
@@ -76,7 +90,9 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                     capabilities["vendor"]["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
                 )
                 self.assertFalse(capabilities["vendor"]["operation_specs"]["inspect"]["write"])
+                self.assertEqual("sync", capabilities["vendor"]["operation_specs"]["inspect"]["execution"])
                 self.assertTrue(capabilities["vendor"]["operation_specs"]["update"]["write"])
+                self.assertEqual("task", capabilities["vendor"]["operation_specs"]["update"]["execution"])
                 self.assertFalse(capabilities["vendor"]["read_only"])
                 self.assertTrue(registry.accepts("vendor_inspect"))
                 self.assertTrue(registry.accepts("vendor_update"))
