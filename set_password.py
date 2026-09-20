@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from openkapsel.random_ids import token_urlsafe_alnum
 from openkapsel.security import PASSWORD_HASH_ALGORITHM, PASSWORD_HASH_ITERATIONS, hash_password
 
 
@@ -93,7 +94,7 @@ def main() -> None:
         parser.error(str(exc))
 
     if args.generate_username:
-        admin["username"] = secrets.token_urlsafe(6)
+        admin["username"] = token_urlsafe_alnum(6)
     elif args.username:
         admin["username"] = args.username
     if not admin.get("username"):

@@ -12,13 +12,14 @@ import hmac
 import json
 import os
 import re
-import secrets
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from .random_ids import token_urlsafe_alnum
 
 
 ACCESS_SECONDS = 3600
@@ -107,7 +108,7 @@ class OAuthStore:
         comment = comment.strip()
         if not comment or len(comment) > 200:
             raise OAuthError("invalid_request", "Comment must contain 1 to 200 characters")
-        cid = secrets.token_urlsafe(24)
+        cid = token_urlsafe_alnum(24)
         with self._db() as db:
             db.execute("INSERT INTO connections(id,app_id,workspace,comment,created_at) VALUES(?,?,?,?,?)",
                        (cid, app_id, workspace, comment, time.time()))
@@ -174,10 +175,10 @@ class OAuthStore:
             raise OAuthError("invalid_client_metadata", "Invalid client name")
         if metadata.get("scope", SCOPE) != SCOPE:
             raise OAuthError("invalid_scope", "Unsupported scope")
-        result = {"client_id": secrets.token_urlsafe(24), "client_name": name,
+        result = {"client_id": token_urlsafe_alnum(24), "client_name": name,
                   "redirect_uris": redirects, "token_endpoint_auth_method": auth,
                   "grant_types": grants, "response_types": ["code"], "scope": SCOPE}
-        secret = secrets.token_urlsafe(32) if auth != "none" else None
+        secret = token_urlsafe_alnum(32) if auth != "none" else None
         with self._db() as db:
             self._prune(db)
             conn = self._connection(db, cid)
@@ -219,7 +220,7 @@ class OAuthStore:
                 raise OAuthError("invalid_request", "State is too long")
             if db.execute("SELECT COUNT(*) FROM requests WHERE connection_id=?", (cid,)).fetchone()[0] >= 64:
                 raise OAuthError("temporarily_unavailable", "Too many pending authorization requests", 429)
-            rid = secrets.token_urlsafe(32)
+            rid = token_urlsafe_alnum(32)
             db.execute("INSERT INTO requests VALUES(?,?,?,?,?,NULL)", (rid, cid, params["client_id"], json.dumps(params), time.time() + REQUEST_SECONDS))
             return rid
 
@@ -237,7 +238,7 @@ class OAuthStore:
     def approve(self, rid: str) -> tuple[dict, str]:
         with self.lock:
             request = self.request(rid)
-            code = secrets.token_urlsafe(32)
+            code = token_urlsafe_alnum(32)
             with self._db() as db:
                 db.execute("UPDATE connections SET client_id=? WHERE id=?", (request["client_id"], request["connection_id"]))
                 db.execute("UPDATE requests SET code_hash=?,expires_at=? WHERE id=?", (digest(code), time.time() + 120, rid))
@@ -251,7 +252,7 @@ class OAuthStore:
             return request["params"]
 
     def _issue(self, db, grant_id: str, expiry: float) -> dict:
-        access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+        access, refresh = token_urlsafe_alnum(32), token_urlsafe_alnum(48)
         now = time.time()
         for raw, kind, end in ((access, "access", now + ACCESS_SECONDS), (refresh, "refresh", expiry)):
             db.execute("INSERT INTO credentials VALUES(?,?,?,?,0)", (digest(raw), grant_id, kind, end))
@@ -280,7 +281,7 @@ class OAuthStore:
                     raise OAuthError("invalid_grant", "Authorization code binding mismatch")
                 db.execute("DELETE FROM requests WHERE id=?", (row["id"],))
                 db.execute("UPDATE grants SET revoked=1 WHERE connection_id=?", (cid,))
-                gid = secrets.token_urlsafe(24)
+                gid = token_urlsafe_alnum(24)
                 expiry = now + REFRESH_SECONDS
                 db.execute("INSERT INTO grants VALUES(?,?,?,?,0)", (gid, cid, client["id"], expiry))
                 db.execute("UPDATE connections SET authenticated_at=COALESCE(authenticated_at,?),last_authorized_at=? WHERE id=?", (now, now, cid))

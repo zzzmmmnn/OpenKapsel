@@ -76,7 +76,7 @@ class HostMappingMounts:
                 "--property=DevicePolicy=closed", "--property=DeviceAllow=/dev/fuse rw",
                 "--working-directory", str(Path(__file__).resolve().parent.parent),
                 sys.executable, "-m", "openkapsel.mapping_fuse", "--socket", str(self.socket),
-                "--id", mid, "--mount", str(path)])
+                f"--id={mid}", "--mount", str(path)])
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
                 if self.mounted(path, mid):

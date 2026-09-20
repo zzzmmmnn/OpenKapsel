@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .random_ids import token_urlsafe_alnum
 from .environment_store import EnvironmentStore
 from .network_proxy import NETWORK_MODES, normalize_domain_rules
 from .workspace_layout import ensure_workspace_layout, remove_empty_workspace_layout
@@ -717,7 +718,7 @@ class TokenStore:
                 migrated = True
             if not record.preview_token:
                 while True:
-                    preview_token = secrets.token_urlsafe(PREVIEW_TOKEN_BYTES)
+                    preview_token = token_urlsafe_alnum(PREVIEW_TOKEN_BYTES)
                     if (
                         preview_token != record.token
                         and preview_token != record.control_token
@@ -730,7 +731,7 @@ class TokenStore:
                 migrated = True
             if not record.control_token:
                 while True:
-                    control_token = secrets.token_urlsafe(32)
+                    control_token = token_urlsafe_alnum(32)
                     if (
                         control_token not in {record.token, record.preview_token}
                         and control_token not in loaded
@@ -778,7 +779,7 @@ class TokenStore:
 
     def _new_preview_token_locked(self, *excluded: str) -> str:
         while True:
-            preview_token = secrets.token_urlsafe(PREVIEW_TOKEN_BYTES)
+            preview_token = token_urlsafe_alnum(PREVIEW_TOKEN_BYTES)
             if (
                 preview_token not in excluded
                 and preview_token not in self._preview_records
@@ -789,7 +790,7 @@ class TokenStore:
 
     def _new_token_locked(self, *excluded: str) -> str:
         while True:
-            token = secrets.token_urlsafe(32)
+            token = token_urlsafe_alnum(32)
             if (
                 token not in excluded
                 and token not in self._records

@@ -21,7 +21,10 @@ Clients advertising `capabilities.file_api.version = 1` execute supported same-m
 
 Client execution is separate from server Shell. Only use it when requested or appropriate to the user's testing/compute task. Inspect the mapping's advertised platform and sandbox policy first; `native-unsandboxed` means the client's OS-account permissions, not confinement to the exported directory.
 
-Create a task with `POST /mappings/<mapping_id>/tasks`:
+Prefer the unified `POST /shell/exec` with `target=auto` and workspace-relative
+mapped cwd (see [shell.md](shell.md#start-and-inspect-tasks)). Use its returned
+ID with ordinary `/tasks` endpoints. For literal argv instead of command strings,
+the existing `POST /mappings/<mapping_id>/tasks` remains available:
 
 ```json
 {

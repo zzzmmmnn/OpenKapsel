@@ -19,6 +19,7 @@ from http import HTTPStatus
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .random_ids import token_urlsafe_alnum
 from .workspace_layout import INTERNAL_DIRECTORY
 
 
@@ -356,7 +357,7 @@ class ShareStore:
     def _new_id_locked(self) -> str:
         with closing(self._connect()) as connection, connection:
             while True:
-                share_id = secrets.token_urlsafe(16)
+                share_id = token_urlsafe_alnum(16)
                 if len(share_id) == 22 and connection.execute(
                     "SELECT 1 FROM shares WHERE id = ?", (share_id,)
                 ).fetchone() is None:

@@ -6,11 +6,11 @@ import errno
 import copy
 import json
 import re
-import secrets
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from .random_ids import token_urlsafe_alnum
 from .errors import ApiError
 
 
@@ -233,6 +233,7 @@ class MappingHandlersMixin:
             return self.server.mappings.call(row["id"], operation, args)
         except OSError as exc:
             status = {errno.EROFS: 403, errno.EACCES: 403, errno.EINVAL: 400, errno.ENOENT: 404,
+                      errno.E2BIG: 413, errno.EPIPE: 409, errno.ENOTDIR: 400,
                       errno.EEXIST: 409, errno.EBUSY: 409, errno.ESTALE: 409}.get(exc.errno, 503)
             raise ApiError(status, "mapping_operation_failed", "client operation failed", {"errno": exc.errno}) from None
 
@@ -245,7 +246,7 @@ class MappingHandlersMixin:
         body = self._read_json()
         if not row["writable"] or not self.token_record.can_write:
             raise ApiError(403, "client_execution_requires_write", "client execution requires a writable mapping and caller")
-        args = {"task_id": secrets.token_urlsafe(18), "argv": body.get("argv"), "cwd": body.get("cwd", ".")}
+        args = {"task_id": token_urlsafe_alnum(18), "argv": body.get("argv"), "cwd": body.get("cwd", ".")}
         if "timeout_seconds" in body:
             args["timeout_seconds"] = body["timeout_seconds"]
         self._send_json(202, self._mapping_rpc(row, "task_start", args))

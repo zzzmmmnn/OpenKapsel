@@ -105,7 +105,7 @@ class MappingManager:
             # directory. The normal service account cannot enumerate/write it.
             backing_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             process = subprocess.Popen([sys.executable, "-m", "openkapsel.mapping_fuse",
-                                        "--socket", str(self.socket_path), "--id", row["id"], "--mount", str(path)],
+                                        "--socket", str(self.socket_path), f"--id={row['id']}", "--mount", str(path)],
                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL, close_fds=True)
             self.workers[row["id"]] = process

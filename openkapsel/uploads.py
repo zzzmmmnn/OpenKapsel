@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from .random_ids import token_urlsafe_alnum
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -126,7 +128,7 @@ class UploadRegistry:
             if reserved + expected_size > self.max_incomplete_bytes:
                 raise UploadError(507, "upload_quota_exceeded", "incomplete upload quota is exhausted")
             while True:
-                upload_id = f"upload_{secrets.token_urlsafe(18)}"
+                upload_id = f"upload_{token_urlsafe_alnum(18)}"
                 if upload_id not in self._records:
                     break
             target = target.resolve(strict=False)

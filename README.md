@@ -11,7 +11,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Read text and binary files, inspect metadata and SHA-256, list directory trees, and search across files.
 - Create directories; write, replace, move, rename, recycle, restore, upload, and download files.
 - Transfer large files with resumable raw-byte uploads and HTTP Range downloads.
-- Run asynchronous Shell tasks with stdin, incremental output, SSE streaming, process inspection, graceful interruption, and forced termination.
+- Run asynchronous Shell tasks with stdin, incremental output, SSE streaming, process inspection, graceful interruption, and forced termination. Unified execution defaults to `target=auto` (mapped cwd runs on its client); explicitly select `server` or `client` when needed.
 - Persist once, interval, and strict six-field cron Shell schedules with Context attribution and run history.
 - Store app-identity-scoped Shell variables and POSIX initialization, then inject them into full, Bubblewrap, and Podman tasks.
 - Give each token a restricted Bubblewrap or Podman sandbox, or explicitly grant trusted tokens full Shell access.

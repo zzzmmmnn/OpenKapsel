@@ -41,6 +41,7 @@ class ClientTasks:
         return {"enabled": self.enabled, "sandbox": self.sandbox,
                 "backend": self.backend if self.sandbox else "native-unsandboxed",
                 "platform": sys.platform, "max_tasks": self.max_tasks,
+                "shell_command": True, "shell": "cmd.exe" if os.name == "nt" and not self.sandbox else "/bin/sh",
                 "reconnect_persistence": True, "result_storage": "client_memory",
                 "max_records": self.max_tasks + 4,
                 "uncollected_results": "retained_until_client_exit",
@@ -68,6 +69,7 @@ class ClientTasks:
                 result = self._public(task)
                 with task["output_lock"]:
                     result.update(output=base64.b64encode(bytes(task["output"][offset:offset + 65536])).decode(),
+                                  output_size=len(task["output"]),
                                   next_offset=min(offset + 65536, len(task["output"])))
                     if task["finished_at"] is not None and offset <= len(task["output"]) and result["next_offset"] == len(task["output"]):
                         task["collected_at"] = task["collected_at"] or time.time()
@@ -79,12 +81,16 @@ class ClientTasks:
                 data = base64.b64decode(args.get("data", ""), validate=True)
                 if len(data) > 16384:
                     raise OSError(errno.E2BIG, "stdin chunk too large")
-                if task["process"].poll() is not None or task["process"].stdin.closed:
+                if not task["interactive"] or task["stdin_closed"] or task["process"].poll() is not None or task["process"].stdin.closed:
                     raise OSError(errno.EPIPE, "task stdin is closed")
                 # A separate bounded queue avoids blocking the provider on a child
                 # which does not consume stdin.
                 try:
-                    task["input"].put_nowait(data if not args.get("eof") else None)
+                    eof = args.get("eof", False)
+                    if not isinstance(eof, bool):
+                        raise OSError(errno.EINVAL, "eof must be a boolean")
+                    task["input"].put_nowait((data, eof))
+                    task["stdin_closed"] = eof
                 except __import__("queue").Full:
                     raise OSError(errno.EBUSY, "task stdin buffer is full") from None
                 return {"accepted": len(data)}
@@ -100,8 +106,17 @@ class ClientTasks:
         if self.closed or sum(t["finished_at"] is None for t in self.tasks.values()) >= self.max_tasks or len(self.tasks) >= self.max_tasks + 4:
             raise OSError(errno.EBUSY, "client task or retained-result limit reached")
         argv = args.get("argv")
+        command = args.get("command")
+        if command is not None:
+            if argv is not None or not isinstance(command, str) or not command.strip() or len(command) > 100000 or "\x00" in command:
+                raise OSError(errno.EINVAL, "provide a bounded command or argv, not both")
+            argv = (["cmd.exe", "/d", "/s", "/c", command] if os.name == "nt" and not self.sandbox
+                    else ["/bin/sh", "-c", command])
         if not isinstance(argv, list) or not argv or len(argv) > 256 or any(not isinstance(a, str) or "\x00" in a for a in argv) or sum(map(len, argv)) > 32768:
             raise OSError(errno.EINVAL, "argv must be a bounded string array")
+        interactive = args.get("interactive", command is None)
+        if not isinstance(interactive, bool):
+            raise OSError(errno.EINVAL, "interactive must be a boolean")
         cwd = self.files.path(args.get("cwd", "."))
         if os.name == "nt":
             with self.files.paths.guard(cwd, include_final=True):
@@ -124,18 +139,29 @@ class ClientTasks:
                     "--volume", f"{self.files.root}:/workspace:{mode}", "--workdir", "/workspace/" + cwd.relative_to(self.files.root).as_posix(),
                     "--tmpfs", "/workspace/.openkapsel:rw,nosuid,nodev,noexec,size=1m",
                     "--interactive", self.image, *argv]
-        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        executable = None
+        if command is not None and os.name == "nt" and not self.sandbox:
+            # cmd's /s /c grammar is not the C-runtime argv quoting grammar
+            # used by subprocess.list2cmdline. Preserve the command body
+            # literally between the outer /s quotes, including embedded quotes.
+            executable = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
+            argv = f'"{executable}" /d /s /c "{command}"'
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE if interactive else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   executable=executable,
                                    stderr=subprocess.STDOUT, close_fds=True,
                                    start_new_session=os.name != "nt",
                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
         task = {"id": tid, "process": process, "started_at": time.time(), "finished_at": None,
                 "collected_at": None,
+                "interactive": interactive, "stdin_closed": not interactive,
+                "interrupted": False, "force_killed": False,
                 "output": bytearray(), "output_lock": threading.Lock(), "truncated": False,
                 "input": queue.Queue(maxsize=8), "container": container, "timeout": timeout,
                 "done": threading.Event()}
         self.tasks[tid] = task
         threading.Thread(target=self._collect, args=(task,), daemon=True).start()
-        threading.Thread(target=self._input, args=(task,), daemon=True).start()
+        if interactive:
+            threading.Thread(target=self._input, args=(task,), daemon=True).start()
         threading.Thread(target=self._deadline, args=(task,), daemon=True).start()
         return self._public(task)
 
@@ -159,13 +185,13 @@ class ClientTasks:
         try:
             while task["process"].poll() is None:
                 try:
-                    data = task["input"].get(timeout=1)
+                    data, eof = task["input"].get(timeout=1)
                 except queue.Empty:
                     continue
-                if data is None:
-                    break
                 stream.write(data)
                 stream.flush()
+                if eof:
+                    break
         except OSError:
             pass
         finally:
@@ -181,6 +207,8 @@ class ClientTasks:
     def _public(task):
         return {"task_id": task["id"], "location": "client", "started_at": task["started_at"],
                 "finished_at": task["finished_at"], "exit_code": task["process"].poll(),
+                "interactive": task["interactive"], "stdin_open": not task["stdin_closed"] and task["finished_at"] is None,
+                "interrupted": task["interrupted"], "force_killed": task["force_killed"],
                 "running": task["finished_at"] is None, "output_truncated": task["truncated"]}
 
     @staticmethod
@@ -188,6 +216,7 @@ class ClientTasks:
         process = task["process"]
         if task["finished_at"] is not None:
             return
+        task["force_killed" if force else "interrupted"] = True
         if task["container"]:
             subprocess.run(["podman", "kill", "--signal", "KILL" if force else "INT", task["container"]],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)

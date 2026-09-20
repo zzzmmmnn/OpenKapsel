@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from .random_ids import token_urlsafe_alnum
 from .admin_ui import render_discovery, render_http_error
 from .admin_handlers import AdminHandlersMixin
 from .oauth_handlers import OAuthHandlersMixin
@@ -83,6 +84,7 @@ from .security import (
 from .scheduler import SchedulerManager
 from .scheduler_store import ScheduleStore
 from .shell_execution import start_shell_task
+from .shell_routing import ShellRoutingMixin, RemoteTask
 from .share_handlers import ShareHandlersMixin
 from .share_store import ShareStore
 from .skill_handlers import SkillHandlersMixin
@@ -381,8 +383,8 @@ class AdminSessions:
 
     def create(self) -> AdminSession:
         session = AdminSession(
-            id=secrets.token_urlsafe(32),
-            csrf=secrets.token_urlsafe(24),
+            id=token_urlsafe_alnum(32),
+            csrf=token_urlsafe_alnum(24),
             expires_at=time.time() + 12 * 60 * 60,
         )
         with self._lock:
@@ -717,6 +719,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
 
 class WorkspaceRequestHandler(
+    ShellRoutingMixin,
     GitHandlersMixin,
     MappingHandlersMixin,
     AdminHandlersMixin,
@@ -1667,6 +1670,8 @@ class WorkspaceRequestHandler(
     def _handle_shell_exec(self) -> None:
         body = self._read_json()
         command = self._required_string(body, "command")
+        if self._start_client_shell(body):
+            return
         cwd_value = body.get("cwd", "")
         timeout = body.get("timeout_seconds", self.server.config.default_command_timeout)
         interactive = self._optional_bool(body, "interactive", False)
@@ -1681,7 +1686,7 @@ class WorkspaceRequestHandler(
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
-            {"task_id": task.id, "status": task.status, "status_url": f"{self._base_path()}/tasks/{task.id}"},
+            {"task_id": task.id, "status": task.status, "location": "server", "status_url": f"{self._base_path()}/tasks/{task.id}"},
         )
 
     def _full_shell_process_environment(self) -> dict[str, str]:
@@ -1707,7 +1712,7 @@ class WorkspaceRequestHandler(
             raise ApiError(HTTPStatus.NOT_FOUND, "task_not_found", "task does not exist")
         self._send_json(
             HTTPStatus.OK,
-            self.server.tasks.get(task_id, self.token_record.token).serialize(),
+            dict(self._get_shell_task(task_id).serialize(), location="client" if task_id.startswith("client.") else "server"),
         )
 
     def _handle_task_list(self, query: dict[str, list[str]]) -> None:
@@ -1718,7 +1723,23 @@ class WorkspaceRequestHandler(
         status = self._query_one(query, "status", "").strip() or None
         if status not in {None, "running", "finished"}:
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_status", "status must be running or finished")
-        tasks, total = self.server.tasks.list(self.token_record.token, offset, limit, status)
+        target = self._query_one(query, "target", "auto")
+        if target not in {"auto", "server", "client"}:
+            raise ApiError(400, "invalid_target", "target must be auto, server, or client")
+        tasks, unavailable = [], []
+        if target != "client":
+            tasks, _ = self.server.tasks.list(self.token_record.token, 0, 100000, status)
+            tasks = [dict(task, location="server") for task in tasks]
+        if target != "server":
+            remote, unavailable = self._list_client_shell_tasks()
+            tasks.extend(task for task in remote if status is None or task["status"] == status)
+        # ISO server timestamps and epoch client timestamps cannot be compared.
+        def started(task):
+            value = task["started_at"]
+            return float(value) if isinstance(value, (int, float)) else datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        tasks.sort(key=started, reverse=True)
+        total = len(tasks)
+        tasks = tasks[offset:offset + limit]
         self._send_json(
             HTTPStatus.OK,
             {
@@ -1727,6 +1748,7 @@ class WorkspaceRequestHandler(
                 "limit": limit,
                 "total": total,
                 "truncated": offset + len(tasks) < total,
+                "unavailable_mappings": unavailable,
             },
         )
 
@@ -1767,12 +1789,16 @@ class WorkspaceRequestHandler(
     def _handle_task_interrupt(self, task_id: str) -> None:
         if self.token_record.shell_mode == "none":
             raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
+        if self._client_task_control(task_id, "interrupt"):
+            return
         task = self.server.tasks.interrupt(task_id, self.token_record.token)
         self._send_json(HTTPStatus.OK, task.serialize())
 
     def _handle_task_kill(self, task_id: str) -> None:
         if self.token_record.shell_mode == "none":
             raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
+        if self._client_task_control(task_id, "kill"):
+            return
         task = self.server.tasks.kill(task_id, self.token_record.token)
         self._send_json(HTTPStatus.OK, task.serialize())
 
@@ -1800,6 +1826,10 @@ class WorkspaceRequestHandler(
         if len(data) > 256 * 1024:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "input_too_large", "task input is limited to 262144 bytes per request")
         close = self._optional_bool(body, "close", False)
+        if self._client_task_parts(task_id) and len(data) > 16384:
+            raise ApiError(413, "input_too_large", "client task input is limited to 16384 bytes per request")
+        if self._client_task_control(task_id, "stdin", data=base64.b64encode(data).decode("ascii"), eof=close):
+            return
         try:
             task = self.server.tasks.write_stdin(task_id, self.token_record.token, data, close)
         except ValueError as exc:
@@ -1819,8 +1849,8 @@ class WorkspaceRequestHandler(
         limit = self._query_int(query, "limit", 65536, minimum=1, maximum=262144)
         wait_seconds = self._query_float(query, "wait_seconds", 0.0, minimum=0.0, maximum=30.0)
         deadline = time.monotonic() + wait_seconds
+        task = self._get_shell_task(task_id)
         while True:
-            task = self.server.tasks.get(task_id, self.token_record.token)
             stdout = task.stdout.read_from(stdout_offset, limit)
             stderr = task.stderr.read_from(stderr_offset, limit)
             if (
@@ -1840,6 +1870,8 @@ class WorkspaceRequestHandler(
                 "status": task.status,
                 "stdout": stdout,
                 "stderr": stderr,
+                "location": "client" if isinstance(task, RemoteTask) else "server",
+                "output_combined": isinstance(task, RemoteTask),
                 "finished": task.status == "finished",
                 "exit_code": task.exit_code,
                 "interrupted": task.interrupted,
@@ -1852,7 +1884,7 @@ class WorkspaceRequestHandler(
             raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "shell permission is not granted")
         stdout_offset = self._query_int(query, "stdout_offset", 0, minimum=0)
         stderr_offset = self._query_int(query, "stderr_offset", 0, minimum=0)
-        task = self.server.tasks.get(task_id, self.token_record.token)
+        task = self._get_shell_task(task_id)
         limited_by = self.server.acquire_sse_stream(self.token_record.token)
         if limited_by is not None:
             raise ApiError(
@@ -1866,6 +1898,7 @@ class WorkspaceRequestHandler(
                 },
                 headers={"Retry-After": "1"},
             )
+        stream_started = False
         try:
             context_id = self._finalize_context_operation(
                 HTTPStatus.OK,
@@ -1879,6 +1912,7 @@ class WorkspaceRequestHandler(
             if context_id is not None:
                 self.send_header("OpenKapsel-Context-ID", str(context_id))
             self.end_headers()
+            stream_started = True
             self.close_connection = True
             started_at = time.monotonic()
             last_heartbeat = started_at
@@ -1893,7 +1927,7 @@ class WorkspaceRequestHandler(
                         {"task_id": task.id, "status": task.status, "stdout": stdout, "stderr": stderr},
                     )
                     last_heartbeat = time.monotonic()
-                if task.status == "finished":
+                if task.status == "finished" and (not isinstance(task, RemoteTask) or stdout_offset >= stdout["available_end"]):
                     self._send_sse("done", task.summary())
                     return
                 now = time.monotonic()
@@ -1914,6 +1948,13 @@ class WorkspaceRequestHandler(
                     self.wfile.flush()
                     last_heartbeat = now
                 time.sleep(0.05)
+        except ApiError as exc:
+            if not stream_started:
+                raise
+            # Headers have already been sent. End the stream with a structured
+            # event rather than appending an HTTP/JSON response to SSE bytes.
+            self._send_sse("error", {"task_id": task.id, "code": exc.code,
+                                     "stdout_offset": stdout_offset, "stderr_offset": stderr_offset})
         finally:
             self.server.release_sse_stream(self.token_record.token)
 

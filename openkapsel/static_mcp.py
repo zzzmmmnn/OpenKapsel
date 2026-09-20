@@ -2,10 +2,10 @@
 
 import hmac
 import os
-import secrets
 import threading
 import time
 
+from .random_ids import token_urlsafe_alnum
 from .oauth_store import OAuthError, OAuthStore, digest
 from .errors import ApiError
 
@@ -47,10 +47,10 @@ class StaticMcpStore(OAuthStore):
         comment = comment.strip()
         if not comment or len(comment) > 200:
             raise OAuthError("invalid_request", "Comment must contain 1 to 200 characters")
-        cid = secrets.token_urlsafe(24)
+        cid = token_urlsafe_alnum(24)
         with self._db() as db:
             db.execute("INSERT INTO connections(id,app_id,workspace,comment,created_at,secret,expires_at) VALUES(?,?,?,?,?,?,?)",
-                       (cid, app_id, workspace, comment, time.time(), secrets.token_urlsafe(32), expiry))
+                       (cid, app_id, workspace, comment, time.time(), token_urlsafe_alnum(32), expiry))
             return self._connection(db, cid)
 
     def update(self, cid, comment, days=None, *, app_id=None, workspace=None):

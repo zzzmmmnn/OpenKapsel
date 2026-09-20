@@ -69,7 +69,7 @@ same-mapping manifest/replace/delete batches, multi-file text reads, glob-filter
 search, and recursive manifests with optional SHA256. The latter three require
 version 2; older clients retain the FUSE fallback. REST and MCP callers keep their
 existing endpoints, request fields, permissions, and Context attribution. Server
-Shell and application filesystem access still use FUSE. Binary streaming,
+Explicit server-target Shell and application filesystem access still use FUSE. Binary streaming,
 resumable uploads, cross-root transfers, and batches spanning multiple storage
 roots retain their existing paths.
 
@@ -99,7 +99,9 @@ Execution requires server caller Shell/write permissions, a writable mapping wit
 
 To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
 
-Client tasks use argv arrays and export-relative working directories. Output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
+The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/tasks` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
+
+Mapping-specific task APIs also accept argv arrays and export-relative working directories. Output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
 
 ### Task lifetime across reconnects
 

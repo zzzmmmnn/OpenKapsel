@@ -6,12 +6,12 @@ import hashlib
 import errno
 import json
 import os
-import secrets
 import stat
 import threading
 import time
 from pathlib import Path
 
+from .random_ids import token_urlsafe_alnum
 from .safe_paths import SafePathAccess
 
 
@@ -59,7 +59,7 @@ class FileTransferManager:
         with self.lock:
             if sum(j["state"] == "running" for j in self.jobs.values()) >= 4:
                 raise ValueError("transfer concurrency limit reached")
-            tid = secrets.token_urlsafe(18)
+            tid = token_urlsafe_alnum(18)
             job = {"id": tid, "source": str(source), "destination": str(destination), "scope": str(scope),
                    "stage": str(destination.with_name(".openkapsel-transfer-" + tid)), "move": move,
                    "state": "pending", "bytes_copied": 0, "files_copied": 0, "error": None,
