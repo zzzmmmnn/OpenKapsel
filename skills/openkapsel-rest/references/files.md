@@ -2,6 +2,8 @@
 
 Read `GET /discovery/files` first when server-specific limits or availability matter.
 
+For parsed configuration edits or table queries, use the optional [structured/tabular RPC families](data-rpc.md) instead of reading an entire binary or multi-gigabyte CSV through text APIs.
+
 ## Read operations
 
 All paths are workspace-relative unless they are absolute paths inside the workspace or an administrator-granted extra path. Symlink escapes are rejected. `.openkapsel` is private.

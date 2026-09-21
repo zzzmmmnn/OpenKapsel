@@ -140,7 +140,7 @@ class ClientTasks:
         with self.lock:
             self._prune()
             if op == "task_list":
-                return [self._public(task) for task in self.tasks.values()]
+                return [self._public(task, include_result=False) for task in self.tasks.values()]
             tid = args.get("task_id", "")
             if not isinstance(tid, str) or not 8 <= len(tid) <= 64 or not tid.replace("-", "").replace("_", "").isalnum():
                 raise OSError(errno.EINVAL, "invalid task id")
@@ -417,7 +417,7 @@ class ClientTasks:
             self._signal(task, force=True)
 
     @staticmethod
-    def _public(task):
+    def _public(task, *, include_result=True):
         kind = task.get("kind", "shell")
         exit_code = task["process"].poll() if kind == "shell" else task.get("exit_code")
         result = {
@@ -443,7 +443,11 @@ class ClientTasks:
             )
             if task["finished_at"] is not None:
                 if task.get("result") is not None:
-                    result["result"] = task["result"]
+                    # Listing many bounded table results must not combine them
+                    # into a response larger than the mapping transport limit.
+                    result["result_available"] = True
+                    if include_result:
+                        result["result"] = task["result"]
                 if task.get("error") is not None:
                     result["error"] = task["error"]
         return result

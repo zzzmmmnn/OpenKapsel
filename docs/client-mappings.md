@@ -223,6 +223,10 @@ Local task limits can be set in `limits`: `max_tasks` (1–16), `max_seconds` (1
 
 `POST /recycle/purge` removes one selected recycle entry permanently. It requires the root selector, entry ID, normal mutation Context, and `confirm: true`.
 
+## Structured and table RPC
+
+The built-in `structured` and `tabular` families are enabled by default, with optional per-format dependencies. Set `rpc.structured` or `rpc.tabular` to false to disable a family. JSON/CSV work without additional parser packages. See [data-rpc.md](data-rpc.md) for installation, conditional edits, large CSV cursors and bounded read-only scans.
+
 ## Validation status
 
 The deployment checks below describe the original always-mounted implementation.

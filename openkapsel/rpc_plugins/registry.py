@@ -268,6 +268,10 @@ def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:
 
     registry.register(git_plugin, source="openkapsel.rpc_plugins.git:plugin")
     registry.register(archive_plugin, source="openkapsel.rpc_plugins.archive:plugin")
+    from .structured import plugin as structured_plugin
+    from .tabular import plugin as tabular_plugin
+    registry.register(structured_plugin, source="openkapsel.rpc_plugins.structured:plugin")
+    registry.register(tabular_plugin, source="openkapsel.rpc_plugins.tabular:plugin")
 
     specs = config.get("rpc_plugins", [])
     if specs is None:

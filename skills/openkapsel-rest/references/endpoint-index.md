@@ -128,3 +128,5 @@ There is intentionally no MCP route in this skill.
 - `POST /mappings/<mapping_id>/tasks/<task_id>/stdin`, `/interrupt`, `/kill`: control a client task.
 
 See [mappings.md](mappings.md) for permissions, request fields, and root-scoped recycling.
+
+`structured` and `tabular` use the same generic mapping RPC route. See [data-rpc.md](data-rpc.md); `tabular.scan` is a read-only task, not a mutating Shell operation.

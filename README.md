@@ -172,3 +172,7 @@ Client mappings now keep provider RPC connections independent of native mounts.
 File APIs, binary transfer, static preview and cross-root copy/move do not start
 FUSE workers. Server Shell and FastAPI acquire leased native views only for their
 declared mapping dependencies. See [configuration and migration](docs/mapping-rpc-first.md).
+
+## Parsed configuration and large tables
+
+Optional `structured` and `tabular` client RPC families support JSON/YAML/TOML read/write and read-only CSV/Excel access. Large CSVs use bounded streaming pages and asynchronous segment scans without FUSE or whole-file loading. See [data RPC setup and validation](docs/data-rpc.md).

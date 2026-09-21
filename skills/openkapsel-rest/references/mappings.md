@@ -100,6 +100,20 @@ operations, static preview and client execution still work. A native mount error
 does not authorize automatic client/server fallback. The active mount limit is
 not a limit on mapping registrations or online RPC providers.
 
+## Structured and tabular data
+
+The `structured` family reads/validates JSON, YAML and TOML, previews patches,
+and performs conditional atomic write/patch tasks. The `tabular` family provides
+read-only CSV/Excel inspection, cursor-based pages, and asynchronous segment
+count/aggregation. CSV handles 2-10 GiB without whole-file loading or repeated
+deep row-offset scans. Inspect `details.formats` for optional parser dependencies.
+See [data-rpc.md](data-rpc.md) for argument examples, budgets and failure handling.
+
+RPC task listings are summaries: completed tasks advertise `result_available`
+without duplicating large result objects. Fetch `/tasks/<id>` or its output
+endpoint for the result. This keeps a list of several table scans within the
+transport response limit.
+
 ## Cross-root transfers
 
 - `POST /fs/copy`: JSON `source`, `destination`, `plan_id`, `taskname`, `message`. The destination parent must exist. Overwrite is not supported.

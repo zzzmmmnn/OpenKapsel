@@ -61,6 +61,7 @@ client setting rpc.file has been removed; see the mappings reference.
 - For static preview and workspace FastAPI applications, read [references/web-and-apps.md](references/web-and-apps.md).
 - For temporary cross-workspace transfer by share ID, read [references/sharing.md](references/sharing.md).
 - For client-backed mapped directories, RPC plugins, archive preview, cross-root copying/moving, and tasks executed on a client machine, read [references/mappings.md](references/mappings.md).
+- For JSON/YAML/TOML reads and conditional edits, and read-only CSV/Excel pages or large-file scans, read [references/data-rpc.md](references/data-rpc.md).
 - For a compact inventory of every non-MCP HTTP surface, read [references/endpoint-index.md](references/endpoint-index.md).
 
 ## Helpers
