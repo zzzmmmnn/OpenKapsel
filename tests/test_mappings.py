@@ -153,6 +153,7 @@ class MappingTests(unittest.TestCase):
         class Session:
             generation = "new"
             closed = False
+            ready = True
         manager.sessions[row["id"]] = Session()
         with self.assertRaises(OSError) as error:
             manager.call(row["id"], "read", {"handle": "old:1", "size": 1})
@@ -257,8 +258,7 @@ class MappingTransportTests(unittest.TestCase):
                 def do_GET(self):
                     session = ProviderSession(self)
                     sessions.append(session)
-                    connected.set()
-                    session.run(lambda: None)
+                    session.run(connected.set)
                 def log_message(self, *args):
                     pass
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

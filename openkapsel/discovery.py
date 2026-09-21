@@ -42,6 +42,7 @@ from .environment_store import (
 from .mcp import (
     MCP_PROTOCOL_VERSION,
     PUBLIC_SERVER_VERSION,
+    SERVER_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
     tools_for,
 )
@@ -1649,9 +1650,27 @@ class DiscoveryMixin:
             ],
         }
 
-        from .mapping_transport import FILE_API_OPERATIONS, MAX_MESSAGE
+        from .mapping_transport import (
+            FILE_API_OPERATIONS,
+            MAPPING_HANDSHAKE_VERSION,
+            MAPPING_HELLO_TIMEOUT_SECONDS,
+            MINIMUM_MAPPING_CLIENT_VERSION,
+            SERVER_SOURCE_FINGERPRINT,
+            MAX_MESSAGE,
+        )
         payload["capabilities"]["mappings"] = {
             "enabled": self.server.config.mappings_enabled,
+            "handshake": {
+                "authentication": "mapping Bearer credential is verified during the HTTP WebSocket Upgrade",
+                "server_first": True,
+                "handshake_version": MAPPING_HANDSHAKE_VERSION,
+                "server_version": SERVER_VERSION,
+                "server_fingerprint": SERVER_SOURCE_FINGERPRINT,
+                "minimum_client_version": MINIMUM_MAPPING_CLIENT_VERSION,
+                "client_hello_timeout_seconds": MAPPING_HELLO_TIMEOUT_SECONDS,
+                "ready_required_for_online": True,
+                "client_fingerprint": "change detector only; fingerprint equality is not a compatibility requirement",
+            },
             "native_mounts": {
                 "enabled": self.server.config.mapping_fuse_enabled,
                 "max_active": self.server.config.max_active_mapping_mounts,

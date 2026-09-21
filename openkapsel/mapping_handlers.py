@@ -523,6 +523,7 @@ class MappingHandlersMixin:
         return "Save this credential now; it is shown only once.\n" + json.dumps({
             "url": url + "/mapping-connect/" + row["id"], "token": secret,
             "root": "/path/to/export", "writable": row["writable"], "allow_exec": False,
+            "source_root": "/path/to/OpenKapsel", "auto_reload": False,
             "transport_timeout_seconds": 60,
             "rpc": {"git": True, "archive": True},
             "rpc_plugins": [],

@@ -109,7 +109,7 @@ class ArchiveHTTPTests(unittest.TestCase):
             return self.files.dispatch(op, args)
 
         self.session = SimpleNamespace(
-            closed=False,
+            closed=False, ready=True,
             capabilities={"rpc": self.files.rpc_capabilities},
             call=call,
             close=lambda: None,

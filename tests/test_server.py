@@ -745,6 +745,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(30.0, payload["limits"]["http_socket_timeout_seconds"])
         self.assertEqual(90.0, payload["limits"]["mapping_rpc_timeout_seconds"])
         self.assertEqual(60.0, payload["limits"]["mapping_provider_idle_timeout_seconds"])
+        mapping_handshake = payload["capabilities"]["mappings"]["handshake"]
+        self.assertTrue(mapping_handshake["server_first"])
+        self.assertEqual(2, mapping_handshake["handshake_version"])
+        self.assertEqual("1.62.0", mapping_handshake["minimum_client_version"])
+        self.assertEqual(30, mapping_handshake["client_hello_timeout_seconds"])
+        self.assertEqual(44, len(mapping_handshake["server_fingerprint"]))
         self.assertEqual(
             ["output", "done", "reconnect"],
             payload["endpoints"]["task_stream"]["events"],

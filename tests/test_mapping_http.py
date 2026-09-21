@@ -44,6 +44,8 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
         self.assertEqual(60, config["transport_timeout_seconds"])
+        self.assertEqual("/path/to/OpenKapsel", config["source_root"])
+        self.assertFalse(config["auto_reload"])
         self.assertEqual({"git": True, "archive": True}, config["rpc"])
         self.assertEqual([], config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
@@ -69,7 +71,7 @@ class MappingHTTPTests(unittest.TestCase):
             return {"status": 200, "body": {"echo": args.get("value")}}
 
         session = SimpleNamespace(
-            closed=False,
+            closed=False, ready=True,
             capabilities={"rpc": {"vendor": {
                 "state": "available",
                 "version": 1,

@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from openkapsel.client import ClientRuntime, run_once
+from openkapsel.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
 
 
 class ClientReconnectTests(unittest.TestCase):
@@ -31,8 +32,24 @@ class ClientReconnectTests(unittest.TestCase):
                 task["done"].wait(5)
             self.directory.cleanup()
 
+    @staticmethod
+    def server_hello():
+        return json.dumps({
+            "type": "server_hello",
+            "handshake_version": MAPPING_HANDSHAKE_VERSION,
+            "server_version": MINIMUM_MAPPING_CLIENT_VERSION,
+            "server_fingerprint": SERVER_SOURCE_FINGERPRINT,
+            "minimum_client_version": MINIMUM_MAPPING_CLIENT_VERSION,
+            "hello_timeout_seconds": 30,
+        })
+
     def connection(self, op, args):
-        messages = iter([json.dumps({"id": "rpc", "op": op, "args": args}), ""])
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+            json.dumps({"id": "rpc", "op": op, "args": args}),
+            "",
+        ])
         replies = []
         class Socket:
             def send(self, data): replies.append(json.loads(data))
@@ -52,9 +69,14 @@ class ClientReconnectTests(unittest.TestCase):
     def test_transport_timeout_is_configurable_and_bounded(self):
         config = dict(self.config, transport_timeout_seconds=75)
         runtime = ClientRuntime(config)
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+            "",
+        ])
         class Socket:
             def send(self, _data): pass
-            def recv(self): return ""
+            def recv(self): return next(messages)
             def close(self): pass
             def ping(self, *_): pass
         try:
@@ -134,8 +156,7 @@ class ClientReconnectTests(unittest.TestCase):
             def do_GET(self):
                 session = ProviderSession(self)
                 sessions.append(session)
-                connected.set()
-                session.run(lambda: None)
+                session.run(connected.set)
             def log_message(self, *_): pass
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         serving = threading.Thread(target=server.serve_forever, daemon=True)

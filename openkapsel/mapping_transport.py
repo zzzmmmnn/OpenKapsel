@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import errno
 import json
 import queue
@@ -10,12 +12,19 @@ import socket
 import threading
 import time
 
+from . import __version__
+from .source_fingerprint import running_fingerprint, version_at_least
+
 
 MAX_MESSAGE = 1024 * 1024
 MAX_CAPABILITIES = 256 * 1024
 CHUNK_SIZE = 128 * 1024
 DEFAULT_RPC_TIMEOUT_SECONDS = 90.0
 DEFAULT_PROVIDER_IDLE_TIMEOUT_SECONDS = 60.0
+MAPPING_HANDSHAKE_VERSION = 2
+MAPPING_HELLO_TIMEOUT_SECONDS = 30
+MINIMUM_MAPPING_CLIENT_VERSION = "1.62.0"
+SERVER_SOURCE_FINGERPRINT = running_fingerprint("server")
 FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_read_many", "fs_tree", "fs_search", "fs_manifest"})
 FILE_API_WRITE_OPERATIONS = frozenset({"fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_move", "fs_delete", "fs_delete_batch"})
 FILE_API_OPERATIONS = FILE_API_READ_OPERATIONS | FILE_API_WRITE_OPERATIONS
@@ -59,6 +68,9 @@ class ProviderSession:
         self.closed = False
         self.generation = secrets.token_hex(12)
         self.capabilities = {}
+        self.ready = False
+        self.client_version = None
+        self.client_fingerprint = None
         self.last_seen = time.monotonic()
         self.rpc_timeout_seconds = float(rpc_timeout_seconds)
         self.idle_timeout_seconds = float(idle_timeout_seconds)
@@ -71,7 +83,15 @@ class ProviderSession:
         list(self.ws.events())
         self.socket.sendall(self.ws.send(AcceptConnection()))
         handler.close_connection = True
-        self.socket.settimeout(self.idle_timeout_seconds)
+        self.socket.settimeout(MAPPING_HELLO_TIMEOUT_SECONDS)
+        self.send({
+            "type": "server_hello",
+            "handshake_version": MAPPING_HANDSHAKE_VERSION,
+            "server_version": __version__,
+            "server_fingerprint": SERVER_SOURCE_FINGERPRINT,
+            "minimum_client_version": MINIMUM_MAPPING_CLIENT_VERSION,
+            "hello_timeout_seconds": MAPPING_HELLO_TIMEOUT_SECONDS,
+        })
 
     def send(self, value):
         from wsproto.events import TextMessage
@@ -81,6 +101,8 @@ class ProviderSession:
             self.socket.sendall(self.ws.send(TextMessage(data=encode(value).decode())))
 
     def call(self, operation, arguments):
+        if not self.ready:
+            raise OSError(errno.EHOSTDOWN, "mapping client handshake is not ready")
         if not self.slots.acquire(timeout=2):
             raise OSError(errno.EBUSY, "mapping request limit reached")
         rid = secrets.token_hex(12)
@@ -108,8 +130,14 @@ class ProviderSession:
     def run(self, on_seen):
         from wsproto.events import TextMessage, BytesMessage, CloseConnection, Ping
         fragments, length = [], 0
+        hello_deadline = time.monotonic() + MAPPING_HELLO_TIMEOUT_SECONDS
         try:
             while not self.closed:
+                if not self.ready:
+                    remaining = hello_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("mapping client hello timed out")
+                    self.socket.settimeout(remaining)
                 data = self.socket.recv(65536)
                 if not data:
                     break
@@ -121,7 +149,8 @@ class ProviderSession:
                         with self.lock:
                             self.socket.sendall(self.ws.send(event.response()))
                         self.last_seen = time.monotonic()
-                        on_seen()
+                        if self.ready:
+                            on_seen()
                     elif isinstance(event, TextMessage):
                         length += len(event.data)
                         if length > MAX_MESSAGE:
@@ -132,14 +161,39 @@ class ProviderSession:
                             fragments, length = [], 0
                             if not isinstance(value, dict):
                                 raise ValueError("invalid mapping message")
-                            if value.get("type") == "hello":
-                                if self.capabilities:
-                                    raise ValueError("duplicate provider hello")
+                            if not self.ready:
+                                if value.get("type") != "client_hello":
+                                    raise ValueError("client_hello required before mapping RPC")
+                                if value.get("handshake_version") != MAPPING_HANDSHAKE_VERSION:
+                                    raise ValueError("unsupported mapping handshake version")
+                                version = value.get("client_version")
+                                fingerprint = value.get("client_fingerprint")
+                                if not isinstance(version, str) or not version_at_least(
+                                    version, MINIMUM_MAPPING_CLIENT_VERSION
+                                ):
+                                    raise ValueError("mapping client version is below the server minimum")
+                                if not isinstance(fingerprint, str) or len(fingerprint) != 44:
+                                    raise ValueError("invalid mapping client fingerprint")
+                                try:
+                                    decoded = base64.b64decode(fingerprint, validate=True)
+                                except (binascii.Error, ValueError):
+                                    raise ValueError("invalid mapping client fingerprint") from None
+                                if len(decoded) != 32:
+                                    raise ValueError("invalid mapping client fingerprint")
                                 caps = value.get("capabilities", {})
                                 if not isinstance(caps, dict) or len(encode(caps)) > MAX_CAPABILITIES:
                                     raise ValueError("invalid capabilities")
+                                self.client_version = version
+                                self.client_fingerprint = fingerprint
                                 self.capabilities = caps
+                                self.ready = True
+                                self.last_seen = time.monotonic()
+                                self.socket.settimeout(self.idle_timeout_seconds)
+                                on_seen()
+                                self.send({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION})
                             else:
+                                if value.get("type") in {"hello", "client_hello"}:
+                                    raise ValueError("duplicate provider hello")
                                 if not isinstance(value.get("id"), str):
                                     raise ValueError("invalid reply id")
                                 with self.lock:

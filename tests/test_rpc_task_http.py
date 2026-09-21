@@ -47,7 +47,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
             return self.files.dispatch(operation, args)
 
         self.session = SimpleNamespace(
-            closed=False,
+            closed=False, ready=True,
             generation="g" * 24,
             capabilities={
                 "rpc": self.files.rpc_capabilities,

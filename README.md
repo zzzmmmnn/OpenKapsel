@@ -171,7 +171,12 @@ Read-only Git inspection, multi-file reads, recursive manifests, and glob-filter
 Client mappings now keep provider RPC connections independent of native mounts.
 File APIs, binary transfer, static preview and cross-root copy/move do not start
 FUSE workers. Server Shell and FastAPI acquire leased native views only for their
-declared mapping dependencies. See [configuration and migration](docs/mapping-rpc-first.md).
+declared mapping dependencies. Mapping client 1.62.0+ uses an authenticated
+server-first version handshake; an optional trusted local source checkout can be
+reloaded automatically when the server generation changes or the local client
+source changes after the 24-hour refresh interval. See
+[client mapping configuration](docs/client-mappings.md) and
+[configuration and migration](docs/mapping-rpc-first.md).
 
 ## Parsed configuration and large tables
 

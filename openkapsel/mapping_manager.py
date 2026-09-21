@@ -298,9 +298,15 @@ class MappingManager:
             for row in rows:
                 session = self.sessions.get(row["id"])
                 worker = self.workers.get(row["id"])
-                row.update(online=bool(session and not session.closed and session.capabilities),
+                ready = bool(session and not session.closed and getattr(session, "ready", False))
+                row.update(
+                           online=ready,
                            mounted=bool(row["id"] in self.host_mounts or (worker and worker.poll() is None)),
-                           path=row["name"], capabilities=session.capabilities if session else {},
+                           path=row["name"],
+                           capabilities=session.capabilities if ready else {},
+                           client_version=getattr(session, "client_version", None) if ready else None,
+                           client_fingerprint=getattr(session, "client_fingerprint", None) if ready else None,
+                           handshake_ready=ready,
                            mount_references=self.mount_references.get(row["id"], 0),
                            native_mounts_enabled=self.fuse_enabled)
         return rows
@@ -323,7 +329,7 @@ class MappingManager:
                 session = self.sessions.get(row["id"])
                 if not row["enabled"]:
                     raise OSError(errno.EACCES, "mapping is disabled")
-                if session is None or session.closed:
+                if session is None or session.closed or not session.ready:
                     raise OSError(errno.EHOSTDOWN, "mapping client is offline")
             if write and not row["writable"]:
                 raise OSError(errno.EROFS, "mapping is read-only")
@@ -338,7 +344,7 @@ class MappingManager:
             session = self.sessions.get(mid)
             if not row["enabled"]:
                 raise OSError(errno.EACCES, "mapping is disabled")
-            if session is None or session.closed:
+            if session is None or session.closed or not session.ready:
                 raise OSError(errno.EHOSTDOWN, "mapping client is offline")
         if generation is not None and session.generation != generation:
             raise OSError(errno.ESTALE, "mapping provider changed during the operation")
@@ -404,7 +410,7 @@ class MappingManager:
             return MappingRpcCapability(family, "disabled", reason="mapping_disabled")
         with self.lock:
             session = self.sessions.get(mid)
-            if session is None or session.closed:
+            if session is None or session.closed or not session.ready:
                 return MappingRpcCapability(family, "offline", reason="client_offline")
             capabilities = session.capabilities
 
@@ -528,7 +534,6 @@ class MappingManager:
                 idle_timeout_seconds=self.provider_idle_timeout_seconds,
             )
             self.sessions[row["id"]] = session
-        self.store.seen(row["id"])
         try:
             def seen():
                 if not self.workspace_available(row["workspace"]):

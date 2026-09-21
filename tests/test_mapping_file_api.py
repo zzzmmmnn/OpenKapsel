@@ -39,7 +39,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         def call(op, args):
             self.calls.append((op, args))
             return self.files.dispatch(op, args)
-        self.session = SimpleNamespace(closed=False, generation="fixture", capabilities={"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
+        self.session = SimpleNamespace(closed=False, ready=True, generation="fixture", capabilities={"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
         self.server.mappings.sessions[self.row["id"]] = self.session
 
     def tearDown(self):

@@ -173,7 +173,7 @@ class MappingRpcCapabilityTests(unittest.TestCase):
         self.temp.cleanup()
 
     def session(self, capabilities):
-        session = SimpleNamespace(closed=False, capabilities=capabilities, close=lambda: None)
+        session = SimpleNamespace(closed=False, ready=True, capabilities=capabilities, close=lambda: None)
         self.manager.sessions[self.row["id"]] = session
         return session
 

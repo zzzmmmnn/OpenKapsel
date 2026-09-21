@@ -11,6 +11,7 @@ from unittest.mock import patch
 from openkapsel.client import ClientRuntime, run_once
 from openkapsel.client_files import ClientFiles
 from openkapsel.client_tasks import ClientTasks
+from openkapsel.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
 
 
 class RpcPluginTaskTests(unittest.TestCase):
@@ -143,12 +144,28 @@ class RpcPluginTaskTests(unittest.TestCase):
                 self.assertTrue(started.wait(2))
                 self.assertTrue(started_task["running"])
 
+                messages = iter([
+                    json.dumps({
+                        "type": "server_hello",
+                        "handshake_version": MAPPING_HANDSHAKE_VERSION,
+                        "server_version": MINIMUM_MAPPING_CLIENT_VERSION,
+                        "server_fingerprint": SERVER_SOURCE_FINGERPRINT,
+                        "minimum_client_version": MINIMUM_MAPPING_CLIENT_VERSION,
+                        "hello_timeout_seconds": 30,
+                    }),
+                    json.dumps({
+                        "type": "ready",
+                        "handshake_version": MAPPING_HANDSHAKE_VERSION,
+                    }),
+                    "",
+                ])
+
                 class Socket:
                     def send(self, _data):
                         pass
 
                     def recv(self):
-                        return ""
+                        return next(messages)
 
                     def ping(self, *_args):
                         pass

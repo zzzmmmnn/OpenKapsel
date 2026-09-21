@@ -43,6 +43,8 @@ Keep the configuration outside the exported directory and source control. On POS
   "root": "/path/to/local/project",
   "writable": true,
   "allow_exec": false,
+  "source_root": "/path/to/OpenKapsel",
+  "auto_reload": true,
   "transport_timeout_seconds": 60,
   "rpc": {
     "git": true,
@@ -55,6 +57,20 @@ Keep the configuration outside the exported directory and source control. On POS
 ```
 
 Supported proxy schemes are `http`, `socks4`, `socks4a`, `socks5`, and `socks5h`. Use the `a`/`h` variants for proxy-side DNS. Optional proxy credentials use URL userinfo. TLS verification remains enabled; a proxy connection failure never falls back to direct access. `transport_timeout_seconds` defaults to 60 seconds and controls client WebSocket connect/receive tolerance. The server separately waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for one RPC reply and treats mutation timeouts as ambiguous, never replaying them automatically. Use `--once` to disable automatic reconnection during diagnostics.
+
+### Version handshake and local source reload
+
+Mapping client 1.62.0+ keeps provider authentication in the HTTP WebSocket Upgrade. Once that Bearer credential succeeds, the server sends the first application frame with the mapping handshake version, full server version, a 44-character SHA-256/Base64 server source fingerprint, the minimum compatible client version, and a 30-second client-hello deadline. The provider is not online and cannot serve file/RPC/task traffic until it replies with a valid `client_hello` containing its full client version, its own 44-character client source fingerprint, and the existing capability document. The server then sends `ready`. There is no silent fallback to the old client-first hello.
+
+Server and client fingerprints are separate deterministic change detectors. Shared protocol files affect both fingerprints; side-specific files affect only their corresponding fingerprint. Fingerprints hash an ordered, explicit source manifest using raw file bytes and the manifest itself. Fingerprint equality is not a compatibility requirement: compatibility is governed by `minimum_client_version` plus the existing RPC/capability versions.
+
+`source_root` and `auto_reload` are optional. When `auto_reload=true`, `source_root` must be the explicit absolute path of a trusted local OpenKapsel source checkout. The client never scans arbitrary directories and never imports candidate source just to inspect it; it reads the version/fingerprint as data. When a reload is selected, the process is replaced and the configured source root is inserted ahead of the current working directory/import path.
+
+Before the first READY session, a client below the server minimum checks that local source. If a changed local source satisfies the minimum it reloads; otherwise required-version retries use delays of 0, 60, 120, then 300 seconds for the fourth and later attempts. Ordinary network reconnect failures do not advance this backoff.
+
+After a successful READY session, reconnect compares the newly received server fingerprint with the last successful server fingerprint. A changed server fingerprint triggers an immediate local-source check. Even when the server fingerprint is unchanged, a disconnect triggers the same check when at least 24 hours have elapsed since the process last loaded/reloaded code. A changed compatible local client fingerprint reloads immediately. Optional reload is deferred while client-local tasks are still running; normal transport reconnects continue preserving the in-memory task runtime. A client below the server minimum never becomes READY merely to preserve tasks.
+
+Reload state is stored atomically beside the client config as `<client.json>.state.json` with restrictive permissions. The successful server fingerprint is recorded only after READY, never just after seeing `server_hello`.
 
 If local DNS returns a proxy's synthetic address (for example an address from `198.18.0.0/15`), use `socks5h` instead of `socks5`; this still uses SOCKS5, but sends the hostname to the proxy for resolution.
 

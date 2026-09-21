@@ -49,7 +49,7 @@ class GitHTTPTests(unittest.TestCase):
         def call(op, args):
             calls.append(op)
             return files.dispatch(op, args)
-        session = SimpleNamespace(closed=False, capabilities={"git_api": {"version": 2, "read_only": True}}, call=call)
+        session = SimpleNamespace(closed=False, ready=True, capabilities={"git_api": {"version": 2, "read_only": True}}, call=call)
         self.server.mappings.sessions[row["id"]] = session
         try:
             status, _, raw = self.request("GET", self.base + "/git/log?path=laptop")
