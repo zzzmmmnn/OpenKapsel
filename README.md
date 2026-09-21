@@ -129,6 +129,7 @@ The Python package is grouped by functional domain rather than kept as one flat 
 - `openkapsel/files/`: file APIs, safe paths, recycle, uploads/shares, Git, and archive handlers.
 - `openkapsel/mapping/`: provider transport, registry, RPC/native mapping, transfers, and mapping administration.
 - `openkapsel/rpc_plugins/`: extensible client RPC families.
+- `openkapsel/server_runtime/`: server configuration, listener lifecycle, dispatch, Context/task HTTP, and shared HTTP support.
 - `openkapsel/workspace/`: workspace layout and workspace-image helpers.
 
 `server.py` and `client.py` remain stable top-level entry points; only genuinely cross-cutting primitives remain beside them.

@@ -21,6 +21,16 @@ SHARED_FILES = (
 
 SERVER_FILES = (
     "openkapsel/server.py",
+    "openkapsel/server_runtime/__init__.py",
+    "openkapsel/server_runtime/admin_sessions.py",
+    "openkapsel/server_runtime/config.py",
+    "openkapsel/server_runtime/context_http.py",
+    "openkapsel/server_runtime/dispatch.py",
+    "openkapsel/server_runtime/http_server.py",
+    "openkapsel/server_runtime/http_support.py",
+    "openkapsel/server_runtime/request_handler.py",
+    "openkapsel/server_runtime/startup.py",
+    "openkapsel/server_runtime/task_http.py",
     "openkapsel/mapping/mapping_api.py",
     "openkapsel/mapping/mapping_fuse.py",
     "openkapsel/mapping/mapping_handlers.py",
@@ -138,6 +148,10 @@ def guarded_source_files(root: str | Path, side: str) -> set[str]:
             for path in (root / "openkapsel" / "mapping").glob("mapping_*.py")
         )
         result.add("openkapsel/server.py")
+        result.update(
+            path.relative_to(root).as_posix()
+            for path in (root / "openkapsel" / "server_runtime").glob("*.py")
+        )
         result.add("openkapsel/execution/shell_routing.py")
     elif side == "client":
         result.update(

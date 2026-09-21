@@ -4592,16 +4592,16 @@ class WorkspaceServerTests(unittest.TestCase):
         limiter = AdminLoginLimiter()
         address = "198.51.100.40"
         for now in (0.0, 1.0, 2.0):
-            with patch("openkapsel.server.time.time", return_value=now):
+            with patch("openkapsel.server_runtime.admin_sessions.time.time", return_value=now):
                 self.assertEqual(0, limiter.retry_after(address))
                 limiter.failed(address)
-        with patch("openkapsel.server.time.time", return_value=2.0):
+        with patch("openkapsel.server_runtime.admin_sessions.time.time", return_value=2.0):
             self.assertEqual(58, limiter.retry_after(address))
-        with patch("openkapsel.server.time.time", return_value=60.0):
+        with patch("openkapsel.server_runtime.admin_sessions.time.time", return_value=60.0):
             self.assertEqual(0, limiter.retry_after(address))
             limiter.failed(address)
             self.assertEqual(60, limiter.retry_after(address))
-        with patch("openkapsel.server.time.time", return_value=120.0):
+        with patch("openkapsel.server_runtime.admin_sessions.time.time", return_value=120.0):
             self.assertEqual(0, limiter.retry_after(address))
             limiter.failed(address)
             self.assertEqual(60, limiter.retry_after(address))
