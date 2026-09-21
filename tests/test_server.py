@@ -4427,13 +4427,17 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(403, status)
         self.assertEqual("permission_denied", payload["error"]["code"])
 
-        status, payload = self.request(
-            "POST",
-            f"/kapsel/w/{record.token}/shell/exec",
-            {"command": "python3 --version"},
-        )
+        # A fast task can be archived before the HTTP response arrives. Capture
+        # the real launch arguments without relying on the live-task registry.
+        with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as start_task:
+            status, payload = self.request(
+                "POST",
+                f"/kapsel/w/{record.token}/shell/exec",
+                {"command": "python3 --version"},
+            )
         self.assertEqual(202, status)
-        launch_argv = self.server.tasks._tasks[payload["task_id"]].argv
+        start_task.assert_called_once()
+        launch_argv = start_task.call_args.kwargs["argv"]
         restricted_task = self.wait_for_task(payload["task_id"], token=record.token)
         self.assertEqual(0, restricted_task["exit_code"])
         self.assertTrue(restricted_task["sandboxed"])
@@ -4473,13 +4477,15 @@ class WorkspaceServerTests(unittest.TestCase):
                 PathGrant(path=str(read_only_external), read_only=True),
             ),
         )
-        status, payload = self.request(
-            "POST",
-            f"/kapsel/w/{record.token}/shell/exec",
-            {"command": "python3 --version"},
-        )
+        with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as start_task:
+            status, payload = self.request(
+                "POST",
+                f"/kapsel/w/{record.token}/shell/exec",
+                {"command": "python3 --version"},
+            )
         self.assertEqual(202, status)
-        enabled_argv = self.server.tasks._tasks[payload["task_id"]].argv
+        start_task.assert_called_once()
+        enabled_argv = start_task.call_args.kwargs["argv"]
         enabled_task = self.wait_for_task(payload["task_id"], token=record.token)
         self.assertTrue(enabled_task["sandboxed"])
         self.assertTrue(enabled_task["network_access"])
