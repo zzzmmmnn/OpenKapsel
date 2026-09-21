@@ -103,6 +103,41 @@ class MappingQueryTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(b"remote data").hexdigest(), remote_file["sha256"])
         self.assertEqual(["api_fs_manifest"], [op for op, _ in self.calls])
 
+    def test_recursive_tree_and_manifest_keep_inaccessible_siblings(self):
+        from openkapsel.errors import ApiError
+        from openkapsel.file_support import FileOperationSupportMixin
+
+        (self.scope / "lost+found").mkdir()
+        (self.scope / "visible").mkdir()
+        (self.scope / "visible" / "ok.txt").write_text("ok")
+
+        original = FileOperationSupportMixin._directory_entries
+
+        def guarded(handler, path):
+            if path.name == "lost+found":
+                raise ApiError(403, "path_access_denied", "permission denied")
+            return original(handler, path)
+
+        with patch.object(FileOperationSupportMixin, "_directory_entries", guarded):
+            status, result = self.api("/fs/tree?path=.&depth=3")
+            self.assertEqual(200, status, result)
+            children = {item["name"]: item for item in result["tree"]["children"]}
+            denied = children["lost+found"]
+            self.assertTrue(denied["unavailable"])
+            self.assertEqual("directory", denied["type"])
+            self.assertEqual("path_access_denied", denied["error"]["code"])
+            self.assertEqual("ok.txt", children["visible"]["children"][0]["name"])
+
+            status, manifest = self.api(
+                "/fs/manifest",
+                {"path": ".", "recursive": True, "depth": 3},
+            )
+            self.assertEqual(200, status, manifest)
+            by_name = {item["name"]: item for item in manifest["items"]}
+            self.assertTrue(by_name["lost+found"]["unavailable"])
+            self.assertEqual("path_access_denied", by_name["lost+found"]["error"]["code"])
+            self.assertIn("ok.txt", by_name)
+
     def test_tree_depth_and_node_budget_are_global(self):
         (self.export / "a").write_text("a")
         (self.export / "b").write_text("b")

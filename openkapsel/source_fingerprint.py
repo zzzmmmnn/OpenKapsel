@@ -14,6 +14,7 @@ _VERSION_RE = re.compile(rb'^__version__\s*=\s*["\']([0-9]+(?:\.[0-9]+){2})["\']
 SHARED_FILES = (
     "openkapsel/__init__.py",
     "openkapsel/source_fingerprint.py",
+    "openkapsel/file_support.py",
     "openkapsel/mapping_transport.py",
     "openkapsel/mapping_capabilities.py",
 )

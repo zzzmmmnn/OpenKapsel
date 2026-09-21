@@ -432,6 +432,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
         max_depth: int,
         level: int,
         state: dict[str, Any],
+        known_stat: os.stat_result | None = None,
     ) -> dict[str, Any]:
         if state["count"] >= self.server.config.max_tree_nodes:
             state["truncated"] = True
@@ -441,14 +442,20 @@ class FileOperationSupportMixin(MappingQueryMixin):
             return self._mapping_tree(mapping, path, max_depth - level, state)
         state["count"] += 1
         try:
-            file_stat = self._file_stat(path)
+            file_stat = known_stat if known_stat is not None else self._file_stat(path)
         except ApiError as exc:
             manager = getattr(self.server, "mappings", None)
             row = manager.at_path(path) if manager is not None else None
-            if row is None or path != manager.mount_path(row):
+            if row is not None and path == manager.mount_path(row):
+                return {"name": path.name, "path": str(path), "type": "directory",
+                        "is_mapping": True, "mapping_id": row["id"], "unavailable": True,
+                        "error": {"code": exc.code, "message": exc.message}}
+            # The request root itself must still be accessible, but a child
+            # which disappeared or became inaccessible must not abort siblings.
+            if level == 0:
                 raise
-            return {"name": path.name, "path": str(path), "type": "directory",
-                    "is_mapping": True, "mapping_id": row["id"], "unavailable": True,
+            return {"name": path.name, "path": str(path), "type": "unknown",
+                    "unavailable": True,
                     "error": {"code": exc.code, "message": exc.message}}
         if stat.S_ISDIR(file_stat.st_mode):
             kind = "directory"
@@ -456,7 +463,6 @@ class FileOperationSupportMixin(MappingQueryMixin):
             kind = "file"
         else:
             kind = "other"
-        entries = self._directory_entries(path) if kind == "directory" and level < max_depth else []
         node: dict[str, Any] = {
             "name": path.name or str(path),
             "path": str(path),
@@ -465,6 +471,15 @@ class FileOperationSupportMixin(MappingQueryMixin):
             "modified_at": datetime.fromtimestamp(file_stat.st_mtime, timezone.utc).isoformat(),
         }
         if kind == "directory" and level < max_depth:
+            try:
+                entries = self._directory_entries(path)
+            except ApiError as exc:
+                # A root-level filesystem can legitimately contain directories
+                # the service account may stat but not enter (ext4 lost+found is
+                # the common case). Preserve the node and continue siblings.
+                node["unavailable"] = True
+                node["error"] = {"code": exc.code, "message": exc.message}
+                return node
             children = []
             entries.sort(
                 key=lambda item: (
@@ -495,7 +510,12 @@ class FileOperationSupportMixin(MappingQueryMixin):
                     )
                     continue
                 try:
-                    children.append(self._tree_node(root, entry, max_depth, level + 1, state))
+                    children.append(
+                        self._tree_node(
+                            root, entry, max_depth, level + 1, state,
+                            known_stat=entry_stat,
+                        )
+                    )
                 except ApiError as exc:
                     if exc.code not in {"path_not_found", "path_changed"}:
                         raise
