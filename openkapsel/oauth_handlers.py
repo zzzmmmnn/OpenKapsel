@@ -8,7 +8,9 @@ import html
 import re
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
-from .admin_ui import _page, render_login
+from .admin_ui import _page
+from .oauth_consent import consent_page, consent_metadata
+from .oauth_consent_handlers import OAuthConsentMixin
 from .errors import ApiError
 from .oauth_store import OAuthError, SCOPE
 
@@ -16,11 +18,14 @@ from .oauth_store import OAuthError, SCOPE
 CONNECTION_ID = r"[A-Za-z0-9_-]{32}"
 
 
-class OAuthHandlersMixin:
+class OAuthHandlersMixin(OAuthConsentMixin):
     def _oauth_base(self, cid: str) -> str:
         # Never derive an OAuth issuer or redirect from caller-controlled Host.
-        if not self.server.config.public_base_url or not self.server.config.admin_enabled:
-            raise OAuthError("temporarily_unavailable", "OAuth requires public_base_url and administrator login", 503)
+        if not self.server.config.public_base_url:
+            raise OAuthError("temporarily_unavailable", "OAuth requires a configured public_base_url", 503)
+        public = urlsplit(self.server.config.public_base_url)
+        if public.scheme != "https" and not (public.scheme == "http" and public.hostname in {"127.0.0.1", "::1", "localhost"}):
+            raise OAuthError("temporarily_unavailable", "OAuth requires HTTPS (HTTP loopback is allowed for local development)", 503)
         return self._public_base_url() + "/oauth/" + cid
 
     def _oauth_resource(self, cid: str) -> str:
@@ -50,7 +55,25 @@ class OAuthHandlersMixin:
         as_match = re.fullmatch(r"/\.well-known/oauth-authorization-server" + re.escape(base_path) + r"/oauth/(" + CONNECTION_ID + r")", path)
         resource_match = re.fullmatch(r"/\.well-known/oauth-protected-resource" + re.escape(base_path) + r"/connect/(" + CONNECTION_ID + r")/mcp", path)
         local = path[len(base_path):] if path.startswith(base_path + "/") else path if not base_path else ""
-        endpoint = re.fullmatch(r"/oauth/(" + CONNECTION_ID + r")/(resource|register|authorize|token|\.well-known/oauth-authorization-server)", local)
+        # Legacy GET links land on the new page, never on administrator login.
+        # Reject old POSTs instead of forwarding any credential-bearing body.
+        if local == "/admin/oauth/approve":
+            try:
+                if method != "GET":
+                    raise OAuthError("invalid_request", "Reload authorization in the client; the old approval form is no longer accepted")
+                self._discard_request_body()
+                query = self._oauth_fields(parse_qs(raw_query, keep_blank_values=True, max_num_fields=4))
+                if set(query) != {"request"}:
+                    raise OAuthError("invalid_request", "Invalid authorization request")
+                pending = self.server.oauth.request(query["request"])
+                self._redirect(self._oauth_base(pending["connection_id"]) + "/consent?request=" + pending["id"])
+            except (OAuthError, ValueError) as exc:
+                self._send_html(getattr(exc, "status", 400), consent_page(error="Restart authorization from the client"), script_src="'none'")
+            return True
+        endpoint = re.fullmatch(r"/oauth/(" + CONNECTION_ID + r")/(resource|register|authorize|consent|token|\.well-known/oauth-authorization-server)", local)
+        if endpoint and endpoint.group(2) == "consent":
+            self._handle_oauth_consent(method, endpoint.group(1), raw_query)
+            return True
         if not as_match and not resource_match and not endpoint:
             return False
         try:
@@ -69,6 +92,7 @@ class OAuthHandlersMixin:
                     "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
                     "code_challenge_methods_supported": ["S256"], "scopes_supported": [SCOPE],
                     "client_id_metadata_document_supported": False,
+                    "openkapsel_consent": consent_metadata(),
                 })
             elif method in {"GET", "HEAD"} and action == "resource":
                 self._discard_request_body()
@@ -79,8 +103,10 @@ class OAuthHandlersMixin:
             elif method == "GET" and action == "authorize":
                 self._discard_request_body()
                 params = self._oauth_fields(parse_qs(raw_query, keep_blank_values=True, max_num_fields=32))
+                if "control_token" in params:
+                    raise OAuthError("invalid_request", "Control credentials must not be sent in authorization URLs")
                 rid = self.server.oauth.start(cid, params, resource)
-                self._redirect(self._admin_path() + "/oauth/approve?request=" + rid)
+                self._redirect(base + "/consent?request=" + rid)
             elif method == "POST" and action == "token":
                 form = self._oauth_fields(self._read_form())
                 auth_method = "client_secret_post" if "client_secret" in form else "none"
@@ -136,42 +162,7 @@ class OAuthHandlersMixin:
 
     def _handle_admin_oauth(self, method: str, path: str, raw_query: str) -> None:
         try:
-            if path == "/admin/oauth/approve":
-                if method == "GET":
-                    rid = self._oauth_fields(parse_qs(raw_query, keep_blank_values=True)).get("request", "")
-                    request = self.server.oauth.request(rid)
-                    session = self._admin_session()
-                    if session is None:
-                        self._send_html(200, render_login(self._admin_path(), oauth_request=rid))
-                        return
-                    callback = urlsplit(request["params"]["redirect_uri"])
-                    # Browsers also enforce form-action on the post-consent
-                    # redirect. Permit only this already-registered origin.
-                    self._send_html(200, self._oauth_consent(request, session.csrf),
-                                    form_action=f"'self' {callback.scheme}://{callback.netloc}")
-                    return
-                if method == "POST":
-                    session = self._require_admin_session()
-                    if session is None:
-                        return
-                    form = self._read_form()
-                    if not self._valid_csrf(session, form):
-                        raise OAuthError("access_denied", "CSRF validation failed", 403)
-                    rid = self._form_one(form, "request")
-                    request = self.server.oauth.request(rid)
-                    self._oauth_record(request["connection_id"])
-                    if self._form_one(form, "decision") != "approve":
-                        params = self.server.oauth.deny(rid)
-                        query = {"error": "access_denied"}
-                    else:
-                        params, code = self.server.oauth.approve(rid)
-                        query = {"code": code}
-                    if "state" in params:
-                        query["state"] = params["state"]
-                    uri = params["redirect_uri"]
-                    self._redirect(uri + ("&" if "?" in uri else "?") + urlencode(query))
-                    return
-            elif path in {"/admin/oauth", "/admin/static-mcp"} and method == "POST":
+            if path in {"/admin/oauth", "/admin/static-mcp"} and method == "POST":
                 session = self._require_admin_session()
                 if session is None:
                     return
@@ -209,20 +200,3 @@ class OAuthHandlersMixin:
             raise OAuthError("invalid_request", "Endpoint does not exist", 404)
         except OAuthError as exc:
             self._send_html(exc.status, _page("MCP connection", f'<main><h1>MCP connection</h1><p>{html.escape(str(exc))}</p><a href="{html.escape(self._admin_path())}">Administration</a></main>'))
-
-    def _oauth_consent(self, request: dict, csrf: str) -> str:
-        esc = html.escape
-        conn, client = request["connection"], request["client"]
-        record = self._oauth_record(conn["id"])
-        return _page("Authorize MCP connection", f'''<main><section class="card"><h1>Authorize MCP connection</h1>
-            <p>Connection: <strong>{esc(conn['comment'])}</strong></p>
-            <p>Workspace: <strong>{esc(conn['workspace'])}</strong> · configuration: {esc(record.name)}</p>
-            <p>Client (self-reported): {esc(client['client_name'])}</p>
-            <p>Return address: <code>{esc(request['params']['redirect_uri'])}</code></p>
-            <p>This client will receive the linked configuration's permissions, including enabled file, Shell and schedule operations. Later permission changes also apply to this connection.</p>
-            <p>Read: {record.can_read} · Write: {record.can_write} · Shell: {esc(record.shell_mode)} · Schedules: {record.can_schedule}</p>
-            <form method="post" action="{esc(self._admin_path())}/oauth/approve">
-            <input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">
-            <input type="hidden" name="request" value="{esc(request['id'], quote=True)}">
-            <button name="decision" value="approve">Authorize connection</button>
-            <button name="decision" value="deny" class="secondary">Cancel</button></form></section></main>''')

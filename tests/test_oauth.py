@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import re
 import tempfile
 import threading
 import time
@@ -172,23 +173,22 @@ class OAuthHTTPTests(unittest.TestCase):
         self.assertEqual(303, status)
         location = headers["Location"]
         rid = parse_qs(urlsplit(location).query)["request"][0]
-        status, _, raw = self.request("GET", location)
-        self.assertIn(b'name="oauth_request"', raw)
-        status, _, raw = self.form("/kapsel/admin/login", {"username": "admin", "password": "incorrect-password", "oauth_request": rid})
-        self.assertEqual(401, status)
-        self.assertIn(rid.encode(), raw)
-        status, headers, raw = self.form("/kapsel/admin/login", {"username": "admin", "password": "test-password-123", "oauth_request": rid})
-        self.assertEqual(303, status, raw)
-        cookie = headers["Set-Cookie"].split(";", 1)[0]
-        self.assertEqual(location, headers["Location"])
-        status, consent_headers, raw = self.request("GET", location, headers={"Cookie": cookie})
-        self.assertIn(b"Authorize MCP connection", raw)
+        self.assertNotIn("/admin", location)
+        status, consent_headers, raw = self.request("GET", location)
+        self.assertEqual(200, status, raw)
+        self.assertIn(b'name="control_token"', raw)
+        self.assertNotIn(b'name="password"', raw)
+        cookie = consent_headers["Set-Cookie"].split(";", 1)[0]
+        csrf = re.search(r'name="csrf" value="([^"]+)"', raw.decode()).group(1)
         self.assertIn("form-action 'self' https://client.test", consent_headers["Content-Security-Policy"])
-        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
-        status, _, _ = self.form("/kapsel/admin/oauth/approve", {"request": rid, "decision": "approve", "csrf": "wrong"}, {"Cookie": cookie})
+        self.assertIn("script-src 'none'", consent_headers["Content-Security-Policy"])
+        session = None  # Browser consent is not an administrator session.
+        status, _, _ = self.form(self.prefix + "/consent", {"request": rid, "decision": "approve", "csrf": "wrong", "control_token": self.record.control_token}, {"Cookie": cookie})
         self.assertEqual(403, status)
-        status, headers, raw = self.form("/kapsel/admin/oauth/approve", {"request": rid, "decision": "approve", "csrf": session.csrf}, {"Cookie": cookie})
+        status, headers, raw = self.form(self.prefix + "/consent", {"request": rid, "decision": "approve", "csrf": csrf, "control_token": self.record.control_token}, {"Cookie": cookie, "Origin": "https://example.test"})
         self.assertEqual(303, status, raw)
+        self.assertNotIn(self.record.control_token, headers["Location"])
+        self.assertNotIn("ws_admin", headers.get("Set-Cookie", ""))
         callback = parse_qs(urlsplit(headers["Location"]).query)
         self.assertEqual(["state-123"], callback["state"])
         form = {"grant_type": "authorization_code", "client_id": client["client_id"], "code": callback["code"][0], "redirect_uri": metadata["redirect_uris"][0], "code_verifier": verifier, "resource": self.resource}
@@ -255,6 +255,13 @@ class OAuthHTTPTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(["new.txt"], [item["name"] for item in payload["result"]["structuredContent"]["entries"]])
         self.assertEqual("Client reassigned", self.server.oauth.get(self.cid)["comment"])
+        status, _, raw = self.request("GET", "/kapsel/admin", headers={"Cookie": cookie})
+        self.assertEqual(200, status)
+        self.assertIn(b"Sign in to administration", raw)
+        status, headers, _ = self.form("/kapsel/admin/login", {"username": "admin", "password": "test-password-123"})
+        self.assertEqual(303, status)
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
         status, _, raw = self.request("GET", "/kapsel/admin", headers={"Cookie": cookie})
         self.assertEqual(200, status)
         self.assertIn(b"OAuth connections", raw)

@@ -61,6 +61,10 @@ Each token controls:
 
 New restricted tokens default to 64 workload processes/threads, 256 MiB aggregate memory, and 100% CPU, where 100% is one logical core. Bubblewrap adds 16 infrastructure PIDs when creating its cgroup; Podman enforces the configured value directly.
 
+## OAuth owner consent
+
+OAuth approval uses an independent authorization page with the current control token for the exact linked configuration, not the administrator login. It never creates a backend session or grants administration privileges. The client receives independent OAuth credentials, not the control token. See [OAuth consent and migration](oauth-connections.md).
+
 ## Renewal and rotation
 
 Administrator renewal replaces the read and control tokens atomically and sets their shared expiration to 1–30 days from renewal time. The default is three days.

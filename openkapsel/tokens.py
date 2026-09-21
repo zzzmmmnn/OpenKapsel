@@ -9,6 +9,7 @@ import re
 import secrets
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -257,6 +258,16 @@ class TokenStore:
                 if secrets.compare_digest(supplied, token):
                     found = record
             return found if found is not None and found.credentials_valid else None
+
+    @contextmanager
+    def control_authorization(self, supplied: str):
+        """Pin a verified configuration until a short authorization decision ends.
+
+        Callers must not acquire this guard while holding an OAuth store lock.
+        This prevents credential rotation/permission changes racing approval.
+        """
+        with self._lock:
+            yield self.authenticate_control(supplied)
 
     def get(self, token: str) -> TokenRecord:
         with self._lock:

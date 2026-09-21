@@ -38,6 +38,7 @@ from .admin_ui import render_discovery, render_http_error
 from .admin_handlers import AdminHandlersMixin
 from .oauth_handlers import OAuthHandlersMixin
 from .oauth_store import OAuthStore
+from .oauth_consent import ConsentProtector, ConsentLimiter
 from .static_mcp import StaticMcpStore, StaticMcpHandlersMixin
 from .api_workers import ApiWorkerManager
 from .cgroups import (
@@ -514,6 +515,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.memory_stores_lock = threading.Lock()
         self.tokens = TokenStore(config.root, config.token_data_file, config.token)
         self.oauth = OAuthStore(config.upload_state_dir.parent / "oauth.sqlite3")
+        self.oauth_consent = ConsentProtector()
+        self.oauth_consent_limiter = ConsentLimiter()
         self.static_mcp = StaticMcpStore(config.upload_state_dir.parent / "static-mcp.sqlite3")
         self.workspace_images = WorkspaceImageClient(config.workspace_image_socket)
         self.workspace_admin_lock = threading.RLock()

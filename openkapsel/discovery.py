@@ -28,6 +28,7 @@ from .discovery_sections import (
     SECTION_WORKFLOWS,
 )
 from .errors import ApiError
+from .oauth_consent import consent_metadata
 from .git_operations import git_discovery
 from .environment_store import (
     EnvironmentStore,
@@ -1939,6 +1940,8 @@ class DiscoveryMixin:
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
                 "rest_access": "OAuth grants cover this connection's MCP endpoint and returned raw transfer URLs only. Other REST URLs require separate read/control credentials.",
             }
+            if cid:
+                payload["authentication"]["consent"] = consent_metadata()
             if static_cid:
                 conn = self.server.static_mcp.get(static_cid)
                 payload["authentication"].update(

@@ -21,7 +21,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Record mutation history and hierarchical Plans in Context, and retain longer project knowledge in Memory.
 - Move one file or directory between workspaces through short-lived, capability-addressed shares.
 - Expose focused Discovery documents, a portable REST Skill, and a stateless Streamable HTTP MCP endpoint.
-- Connect remote MCP clients through individually revocable OAuth connections with stable URLs and administrator-approved access.
+- Connect remote MCP clients through individually revocable OAuth connections with stable URLs and control-token owner-approved access.
 - Manage token lifetimes, permissions, workspace images, sandbox limits, preview credentials, and administrator credentials from a browser console.
 
 ## Credential model
@@ -133,7 +133,7 @@ Authorization: Bearer <CONTROL_TOKEN>
 
 The portable `skills/openkapsel-rest` Skill translates the REST interface into higher-level file, directory, retry, resumable-upload, and batch workflows. MCP clients use administrator-created static or OAuth connections with independent credentials. REST Discovery describes only REST and Skill usage. Runtime Discovery is authoritative for the permissions and limits of the current token.
 
-For an OAuth-capable remote MCP client, open **Administration → OAuth connections**, select a workspace configuration, enter a comment, and copy the generated MCP URL into the client. Approve its authorization request in OpenKapsel. Each connection binds one OAuth client, survives read/control token renewal, and can be deleted independently. See [OAuth connections](docs/oauth-connections.md), including the required reverse-proxy metadata routes.
+For an OAuth-capable remote MCP client, open **Administration → OAuth connections**, select a workspace configuration, enter a comment, and copy the generated MCP URL into the client. On OpenKapsel's independent authorization page, review the permissions and enter that exact configuration's current control token; administrator login is not needed for approval. Each connection binds one OAuth client, survives read/control token renewal, and can be deleted independently. See [OAuth connections](docs/oauth-connections.md), including the required reverse-proxy metadata routes.
 
 ## Documentation
 

@@ -1,7 +1,8 @@
 """Persistent, connection-scoped OAuth grants for remote MCP clients.
 
-Only administrators create connections and approve grants. Public registration
-does not confer access or claim a connection. All bearer secrets are hashed.
+Administrators manage connections; the matching control-token holder approves
+grants through the consent handler. Registration alone confers no access. OAuth
+bearer secrets are hashed; control tokens never enter this database.
 """
 
 from __future__ import annotations
@@ -75,6 +76,13 @@ class OAuthStore:
                 );
                 CREATE INDEX IF NOT EXISTS credentials_grant ON credentials(grant_id);
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(requests)")}
+            for name in ("app_id", "workspace"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE requests ADD COLUMN {name} TEXT")
+            # A pre-upgrade pending request has no trustworthy owner snapshot.
+            # Restart that handshake, without touching established grants.
+            db.execute("DELETE FROM requests WHERE app_id IS NULL OR workspace IS NULL")
         os.chmod(path, 0o600)
 
     @contextmanager
@@ -130,10 +138,17 @@ class OAuthStore:
         if not comment or len(comment) > 200:
             raise OAuthError("invalid_request", "Comment must contain 1 to 200 characters")
         with self._db() as db:
-            self._connection(db, cid)
+            db.execute("BEGIN IMMEDIATE")
+            previous = self._connection(db, cid)
+            binding = (app_id if app_id is not None else previous["app_id"],
+                       workspace if workspace is not None else previous["workspace"])
+            if binding != (previous["app_id"], previous["workspace"]):
+                # Administrative reassignment remains supported for existing
+                # grants, but pending approvals/codes may not change owners.
+                db.execute("DELETE FROM requests WHERE connection_id=?", (cid,))
             db.execute(
-                "UPDATE connections SET comment=?,app_id=COALESCE(?,app_id),workspace=COALESCE(?,workspace) WHERE id=?",
-                (comment, app_id, workspace, cid),
+                "UPDATE connections SET comment=?,app_id=?,workspace=? WHERE id=?",
+                (comment, *binding, cid),
             )
 
     def list(self) -> list[dict]:
@@ -221,34 +236,45 @@ class OAuthStore:
             if db.execute("SELECT COUNT(*) FROM requests WHERE connection_id=?", (cid,)).fetchone()[0] >= 64:
                 raise OAuthError("temporarily_unavailable", "Too many pending authorization requests", 429)
             rid = token_urlsafe_alnum(32)
-            db.execute("INSERT INTO requests VALUES(?,?,?,?,?,NULL)", (rid, cid, params["client_id"], json.dumps(params), time.time() + REQUEST_SECONDS))
+            owner = self._connection(db, cid)
+            db.execute("INSERT INTO requests(id,connection_id,client_id,params,expires_at,code_hash,app_id,workspace) VALUES(?,?,?,?,?,NULL,?,?)",
+                       (rid, cid, params["client_id"], json.dumps(params), time.time() + REQUEST_SECONDS,
+                        owner["app_id"], owner["workspace"]))
             return rid
+
+    def _request(self, db, rid: str) -> dict:
+        row = db.execute("SELECT * FROM requests WHERE id=? AND expires_at>? AND code_hash IS NULL", (rid, time.time())).fetchone()
+        if row is None:
+            raise OAuthError("invalid_request", "Authorization request expired or already used")
+        result = dict(row)
+        result["params"] = json.loads(row["params"])
+        result["connection"] = self._connection(db, row["connection_id"])
+        if (row["app_id"], row["workspace"]) != (result["connection"]["app_id"], result["connection"]["workspace"]):
+            raise OAuthError("access_denied", "Connection ownership changed; restart authorization", 403)
+        result["client"] = json.loads(self._client(db, row["connection_id"], row["client_id"])["metadata"])
+        return result
 
     def request(self, rid: str) -> dict:
         with self._db() as db:
-            row = db.execute("SELECT * FROM requests WHERE id=? AND expires_at>? AND code_hash IS NULL", (rid, time.time())).fetchone()
-            if row is None:
-                raise OAuthError("invalid_request", "Authorization request expired or already used")
-            result = dict(row)
-            result["params"] = json.loads(row["params"])
-            result["connection"] = self._connection(db, row["connection_id"])
-            result["client"] = json.loads(self._client(db, row["connection_id"], row["client_id"])["metadata"])
-            return result
+            return self._request(db, rid)
 
-    def approve(self, rid: str) -> tuple[dict, str]:
-        with self.lock:
-            request = self.request(rid)
+    def approve(self, rid: str, *, expected_binding: tuple[str, str] | None = None) -> tuple[dict, str]:
+        # One database transaction also serializes separate store instances.
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            request = self._request(db, rid)
+            if expected_binding is not None and expected_binding != (request["app_id"], request["workspace"]):
+                raise OAuthError("access_denied", "Control token does not match the requested configuration", 403)
             code = token_urlsafe_alnum(32)
-            with self._db() as db:
-                db.execute("UPDATE connections SET client_id=? WHERE id=?", (request["client_id"], request["connection_id"]))
-                db.execute("UPDATE requests SET code_hash=?,expires_at=? WHERE id=?", (digest(code), time.time() + 120, rid))
+            db.execute("UPDATE connections SET client_id=? WHERE id=?", (request["client_id"], request["connection_id"]))
+            db.execute("UPDATE requests SET code_hash=?,expires_at=? WHERE id=?", (digest(code), time.time() + 120, rid))
             return request["params"], code
 
     def deny(self, rid: str) -> dict:
-        with self.lock:
-            request = self.request(rid)
-            with self._db() as db:
-                db.execute("DELETE FROM requests WHERE id=?", (rid,))
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            request = self._request(db, rid)
+            db.execute("DELETE FROM requests WHERE id=?", (rid,))
             return request["params"]
 
     def _issue(self, db, grant_id: str, expiry: float) -> dict:

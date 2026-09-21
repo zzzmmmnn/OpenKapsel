@@ -618,6 +618,7 @@ class AdminHandlersMixin:
         headers: dict[str, str] | None = None,
         *,
         form_action: str = "'self'",
+        script_src: str = "'unsafe-inline'",
     ) -> None:
         data = content.encode("utf-8")
         self.send_response(status)
@@ -631,7 +632,7 @@ class AdminHandlersMixin:
             self.close_connection = True
         self.send_header(
             "Content-Security-Policy",
-            f"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action {form_action}; base-uri 'none'; frame-ancestors 'none'",
+            f"default-src 'none'; style-src 'unsafe-inline'; script-src {script_src}; form-action {form_action}; base-uri 'none'; frame-ancestors 'none'",
         )
         for key, value in (headers or {}).items():
             self.send_header(key, value)
