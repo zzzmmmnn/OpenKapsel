@@ -72,6 +72,11 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `POST` | `<workspace_url>/tasks/<task_id>/kill` |
 | `GET` | `<workspace_url>/sandbox/processes` |
 
+Server `POST /shell/exec` accepts optional `mount_mappings` for extra native
+dependencies; its cwd mapping is automatic. It does not change `target=auto`
+routing, and client execution rejects non-empty declarations. See
+[shell.md](shell.md#native-mapping-dependencies).
+
 ## Schedules
 
 | Method | Route |
@@ -109,7 +114,9 @@ There is intentionally no MCP route in this skill.
 
 - `POST /recycle/purge`: permanently remove one explicitly confirmed recycle entry.
 
-- `GET /mappings`: mapped roots, online state, and capabilities.
+- `GET /mappings`: mapped roots, `online`, `mounted`, `mount_references`,
+  `native_mounts_enabled`, execution/RPC and `file_stream` capabilities. Online
+  and unmounted is normal; file endpoints never start native mounts.
 - `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. No server/FUSE fallback.
 - `GET /archive/list`: browse ZIP/tar archive contents without extracting.
 - `GET /archive/read`: read a bounded archive member preview without extracting.

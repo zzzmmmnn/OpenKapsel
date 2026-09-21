@@ -110,3 +110,5 @@ Errors are JSON and use non-2xx status codes:
 - On upload offset conflict, use the returned current offset rather than restarting blindly.
 - On ETag or revision conflict, re-read the resource, reconcile, and retry with the new validator.
 - Treat an ambiguous network failure after a mutation as unknown outcome; inspect state before repeating it.
+- Never automatically replay a Shell or RPC task start after timeout, cancellation or lost response; inspect `/tasks` and reuse the original task ID.
+- On RPC-first servers, 413 requires smaller file/RPC budgets or binary transfer, not FUSE fallback. Inspect `unavailable_mappings` and `truncated` before treating a query result as complete.

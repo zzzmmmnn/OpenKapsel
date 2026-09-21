@@ -42,6 +42,14 @@ For directory-scoped credentials, the helpers cache the published expiration in 
 
 JSON mutations carry `plan_id`, `taskname`, and `message` in the top-level object. Raw-byte requests and bodyless mutations carry `OpenKapsel-Plan-Id`, `OpenKapsel-Taskname`, and `OpenKapsel-Message` headers. Context Plan/Note endpoints and Memory endpoints have their own documented metadata shapes.
 
+On RPC-first servers (1.61.0+), use ordinary file/RPC endpoints for client mappings;
+`online=true` with `mounted=false` is normal. Only intentional server execution
+needs native mapping dependencies: `mount_mappings` for Shell and
+`api/mappings.json` for FastAPI. Keep default `target=auto` placement and never
+mount everything to work around an error. Inspect incomplete query metadata and
+never automatically replay a Shell/RPC write after transport uncertainty. The
+client setting rpc.file has been removed; see the mappings reference.
+
 ## Route to the needed reference
 
 - For credentials, Discovery, errors, request helpers, and raw transfer aliases, read [references/api-basics.md](references/api-basics.md).

@@ -35,7 +35,10 @@ Linked worktrees, external object alternates, and symlinks/reparse points or
 special files encountered in copied paths are rejected. Repository-local
 configuration (including custom filters, ignore settings and autocrlf) is not
 applied; output may therefore differ from normal developer Git commands.
-Snapshots are not transactional across files.
+Snapshots are not transactional across files. A server Git snapshot cannot cross
+a virtual mapping root (`git_mapping_boundary`); inspect a repository entirely
+in one backend or use its client Git RPC. Do not substitute an unapproved Shell
+command for a read-authorized inspection.
 
 Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
 `output_truncated`, `stderr_truncated`, and `snapshot_bytes`; there is no
@@ -76,9 +79,10 @@ Variables and rc are injected into later full, Bubblewrap, and Podman Shell task
 
 Use `target: "auto"` (default), `"server"`, or `"client"`. Auto selects client
 RPC for a mapped `cwd` such as `laptop/project`, otherwise server execution.
-Client requires a mapped cwd; explicit server uses FUSE for mapped files.
+Client requires a mapped cwd and uses RPC without a server mount. Server
+execution acquires native mapping dependencies only when needed (see below).
 Never infer location from `cd` inside the command. Inspect mapping capabilities
-first: execution requires caller Shell/write, writable mapping `allow_exec`,
+first: client execution requires caller Shell/write, writable mapping `allow_exec`,
 client opt-in, and `execution.shell_command` (client 1.60.0+). Errors never cause
 fallback. Client sandbox/limits apply and server `/env` is not injected. Native
 Windows commands use cmd.exe; POSIX/Podman use `/bin/sh -c`. Null/omitted timeout
@@ -121,6 +125,45 @@ The command runs asynchronously. `timeout_seconds` may be `null` or within the p
 | `POST` | `/tasks/<task_id>/interrupt` | Server: SIGTERM then SIGKILL; client: SIGINT or Windows CTRL_BREAK |
 | `POST` | `/tasks/<task_id>/kill` | Server/POSIX client: SIGKILL; native Windows client: taskkill `/T /F` |
 | `GET` | `/sandbox/processes` | Token cgroup process/resource view for restricted Shell |
+
+## Native mapping dependencies
+
+On RPC-first servers (1.61.0+), a server task automatically leases the mapping
+containing its cwd. For paths outside cwd, send `mount_mappings` explicitly:
+
+```json
+{
+  "command": "python laptop/project/main.py",
+  "target": "server",
+  "cwd": ".",
+  "mount_mappings": ["laptop"],
+  "plan_id": 42,
+  "taskname": "build",
+  "message": "Run the mapped project using the server runtime"
+}
+```
+
+The optional array accepts up to 256 non-empty names or IDs from this workspace.
+Omitting it preserves existing cwd-based placement; it never implicitly selects
+server execution. Non-empty dependencies are rejected for client execution.
+The server resolves dependencies before cwd validation and sandbox creation;
+it does not inspect shell source, scripts or environment variables to guess them.
+Missing/disabled native support fails explicitly; do not mount all mappings or
+switch execution location automatically. File/RPC tools and client tasks need
+no FUSE. `online=true, mounted=false` is a healthy RPC-only state.
+
+Leases follow the managed task/process group. Run consumers in the foreground;
+deliberately detached processes are outside this lifetime guarantee. Restricted
+sandboxes mask undeclared mappings, while full Shell is intentionally unsandboxed
+and cannot promise per-task namespace masking. Schedules use the same server
+launch path for their cwd mapping, but schedule records do not yet accept extra
+`mount_mappings` declarations.
+
+The HTTP client's request wait is separate from the task's `timeout_seconds`.
+A slow native setup can delay the initial 202 response. A request timeout,
+cancellation, or lost response does not prove the task was never started or has
+stopped. Inspect `/tasks` and use an existing task ID; never automatically replay
+a Shell start or an uncertain write.
 
 ## Output polling
 

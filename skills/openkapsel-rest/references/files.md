@@ -27,7 +27,18 @@ Prefer `POST /fs/read_many` with `{"paths":["src/main.py","README.md"],"limit":6
 
 Search supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters.
 
-These operations run in one RPC for a single mapping with an updated client. Reduce batch size, text budget, or depth if the RPC response exceeds its size limit (413).
+For a single mapping, these operations run client-locally in one RPC with an
+updated client. RPC-first servers do not fall back to FUSE. Reduce batch size,
+text budget or depth on 413, or use binary transfer for large payloads.
+
+Workspace-root listing merges virtual mapping registrations without requiring
+providers to be online or mounted. Search, tree and recursive manifests delegate
+visited mapping subtrees while preserving global depth/result/node limits.
+Inspect `unavailable_mappings`, `truncated` and unavailable nodes: an incomplete
+result does not mean no matching files exist. Mixed-backend batches retain their
+per-item results and preflight rules; they do not require native mounts. Binary
+and mixed-root access need current client `file_stream` metadata; see
+[mappings.md](mappings.md) for upgrade and reconnect behavior.
 
 Search skips binary, non-UTF-8, oversized, private, and symlinked content. Depth `0` means only the named root; consult Discovery for the maximum.
 

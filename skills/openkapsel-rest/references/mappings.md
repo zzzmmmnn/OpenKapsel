@@ -1,15 +1,47 @@
 # Client-backed directories and execution
 
-Fetch `GET /mappings` before using client-backed paths. It returns each mapping's `id`, workspace-relative `path`, `online`, `writable`, and advertised client execution capabilities. Files live on that client, not inside the server's workspace image. Use normal file APIs for mapped paths. Offline operations fail; do not recreate an offline mountpoint or assume it is empty.
+Fetch `GET /mappings` before using client-backed paths. It returns each mapping's
+`id`, workspace-relative `path`, `online`, `writable`, `mounted`,
+`mount_references`, `native_mounts_enabled`, and advertised client capabilities.
+Files live on the client, not inside the server workspace image. On OpenKapsel
+1.61.0+ RPC-first servers, `online=true` with `mounted=false` is normal: use file
+and RPC endpoints without starting a native mount. Registration, provider
+connection, and native filesystem view have independent lifetimes. Offline
+operations fail; never recreate a mapping root or treat it as an empty local
+directory. Runtime Discovery remains authoritative for older servers.
 
-Updated clients advertise a generic `capabilities.rpc` map. Each family reports `available`, `unsupported`, or `disabled`; the server derives `offline` when the provider is not connected. File RPC is version 3 and remains an optimization behind the normal file endpoints. It may fall back to FUSE only before dispatch when the family policy allows it; offline or administrator-disabled mappings never fall back. The server waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for one RPC reply; client WebSocket transport tolerance defaults to 60 seconds and clients ping every 10 seconds. A `mapping_response_too_large` error (413) requires a smaller result limit, tree depth, or batch. After an ambiguous timeout or a response with `mutation_may_have_completed: true`, inspect the affected paths before repeating a mutation.
+Clients advertise a generic `capabilities.rpc` map. Optional extensions report
+`available`, `unsupported`, or `disabled`; the server derives `offline` from
+provider connectivity. Core file RPC uses version 3 and is always enabled on
+current clients. **rpc.file has been removed**; delete that key from older client
+configurations rather than setting it to true or false. Permissions and operation
+version checks still apply. File operations never fall back to FUSE, including
+unsupported old clients, legacy disabled capabilities, or oversized requests.
+
+Binary and mixed-root operations additionally require `capabilities.file_stream`
+with `version=1`, `descriptor_stat=true`, and `directory_details=true`.
+`search_prefix=true` supports query-root-relative filters in delegated searches.
+Upgrade both server and client when these capabilities are missing; do not try
+to repair compatibility by mounting a directory. Same-mapping reads, hashes and
+searches run client-locally. Root listing uses virtual registration metadata;
+root search, tree and recursive manifest delegate visited mapping subtrees with
+remaining global limits. Search may return `unavailable_mappings` and
+`truncated=true`; tree/manifest can contain unavailable nodes. These results are
+incomplete, not proof that files do not exist.
+
+The server waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for
+one RPC reply. Client transport tolerance defaults to 60 seconds with pings every
+10 seconds. A `mapping_response_too_large` error (413) needs a smaller result
+budget, tree depth or batch; use binary transfer for large payloads. After a
+timeout, disconnect, or `mutation_may_have_completed: true`, inspect affected
+paths and existing tasks before retrying. Never automatically replay a write.
 
 Git and Archive are client RPC plugins with no server/FUSE fallback. Git
 version 2 exposes synchronous reads `status`, `diff`, `diff_stat`, `log`,
 `show`, and `ls_files`, plus task mutations `add`, `commit`, `restore`,
 and `checkout`. Archive version 1 exposes synchronous `list`/`read` plus
 task mutations `create`/`extract`. Client config can independently enable
-`rpc.file`, `rpc.git`, and `rpc.archive`; Git reports `unsupported` when
+`rpc.git` and `rpc.archive`; Git reports `unsupported` when
 enabled but the local `git` executable is missing. Additional trusted client
 plugins can be registered explicitly with `rpc_plugins: ["module:object"]`;
 merely installing a package does not load it.
@@ -48,6 +80,26 @@ Archive preview is also exposed through ordinary workspace routes: `GET /archive
 
 `POST /recycle/purge` permanently deletes one entry and requires `root`, `recycle_id`, `confirm: true`, and mutation Context. Use it only when permanent deletion is authorized; ordinary cleanup should use recoverable deletion instead.
 
+## Native server execution
+
+Only server Shell tasks and FastAPI workers that need native filesystem paths
+acquire reference-counted FUSE leases. A server command leases its cwd mapping
+automatically. Declare other dependencies with `mount_mappings`, an optional
+array of at most 256 non-empty workspace mapping names or IDs. The field does
+not change `target=auto` routing and non-empty dependencies are rejected when the
+selected execution location is the client. Use `target=server` intentionally;
+do not parse command strings or mount every mapping as a convenience.
+See [shell.md](shell.md#native-mapping-dependencies) for an example.
+
+FastAPI dependencies are declared in the application's `api/mappings.json`;
+see [web-and-apps.md](web-and-apps.md#mapped-applications-and-native-dependencies).
+Leases follow task/process or application-worker lifetime, not individual HTTP
+requests. Idle unmounting leaves the provider and its RPC tasks connected. The
+server may disable native views with `mapping_fuse_enabled=false`; ordinary file
+operations, static preview and client execution still work. A native mount error
+does not authorize automatic client/server fallback. The active mount limit is
+not a limit on mapping registrations or online RPC providers.
+
 ## Cross-root transfers
 
 - `POST /fs/copy`: JSON `source`, `destination`, `plan_id`, `taskname`, `message`. The destination parent must exist. Overwrite is not supported.
@@ -56,6 +108,15 @@ Archive preview is also exposed through ordinary workspace routes: `GET /archive
 - `POST /fs/transfers/<id>/cancel` or `/resume`: supply normal mutation Context. Resume validates the source and partial destination before continuing. Do not start a second transfer to resume the first one.
 - `completed` is success. `copied_source_retained` means a move copied the destination but could not safely recycle the source. Do not delete the source blindly.
 - Partial data is staged on the destination storage, not buffered as an entire file on the server. Cancel preserves partial data for resumption.
+
+Binary downloads/uploads, static preview, shares and cross-root transfers use
+RPC without FUSE. Transfer staging is on the destination filesystem. Resumable
+uploads retain a bounded server spool until publication; shares remain immutable
+server-owned snapshots and consume share quota. In-progress handles are provider-
+generation-bound. Resume the existing transfer after reconnect and inspection;
+never redirect an uncertain write to a different mapping. Upload/transfer records
+bind mapping IDs, so renamed/replaced registrations cannot redirect publication.
+Pending legacy mapped uploads without recorded mapping identity must restart.
 
 ## Client tasks
 
