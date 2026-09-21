@@ -87,6 +87,7 @@ while (($#)); do
 done
 
 [[ ${EUID} -eq 0 ]] || die "run this installer as root"
+BUBBLEWRAP_PATH=$(command -v bwrap || true)
 
 canonical_dir() {
     [[ -d $1 ]] || die "directory does not exist: $1"
@@ -165,7 +166,7 @@ PY
             ) || failed=1
         fi
     fi
-    if command -v bwrap >/dev/null 2>&1 \
+    if [[ -n $BUBBLEWRAP_PATH ]] \
         && command -v rootlesskit >/dev/null 2>&1 \
         && command -v systemd-run >/dev/null 2>&1 \
         && id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -180,7 +181,7 @@ PY
             "$INSTALL_DIR/venv/bin/python" -m openkapsel.sandbox_verify \
             --workspace-root "$WORKSPACE_ROOT" \
             --worker-root "$DATA_DIR/api-workers" \
-            --bubblewrap /usr/bin/bwrap \
+            --bubblewrap "$BUBBLEWRAP_PATH" \
             --rootlesskit /usr/bin/rootlesskit || failed=1
     fi
     if ((failed)); then
@@ -330,7 +331,7 @@ if [[ -n $MIGRATE_FROM && -d $MIGRATE_FROM/state/tasks && -z $(find "$TASK_HISTO
     cp -a -- "$MIGRATE_FROM/state/tasks/." "$TASK_HISTORY_DIR/"
 fi
 
-/usr/bin/python3 - "$CONFIG_FILE" "$WORKSPACE_ROOT" "$ENABLE_PODMAN" <<'PY'
+/usr/bin/python3 - "$CONFIG_FILE" "$WORKSPACE_ROOT" "$ENABLE_PODMAN" "$BUBBLEWRAP_PATH" <<'PY'
 import json
 import os
 import sys
@@ -340,6 +341,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 workspace = sys.argv[2]
 enable_podman = sys.argv[3] == "1"
+bubblewrap_path = sys.argv[4]
 payload = json.loads(path.read_text(encoding="utf-8"))
 payload["workspace_name"] = payload.get("workspace_name") or "OpenKapsel"
 payload["workspace_root"] = workspace
@@ -365,7 +367,7 @@ payload.setdefault("max_sse_duration_seconds", 3600)
 payload.setdefault("max_network_proxy_connections", 64)
 payload.setdefault("max_network_proxy_connections_per_instance", 16)
 payload.setdefault("network_proxy_header_timeout_seconds", 15)
-payload["bubblewrap_path"] = "/usr/bin/bwrap"
+payload["bubblewrap_path"] = bubblewrap_path
 payload["rootlesskit_path"] = "/usr/bin/rootlesskit"
 payload["podman_path"] = "/usr/bin/podman"
 payload.setdefault("podman_image", "docker.io/library/python:3.12-slim")

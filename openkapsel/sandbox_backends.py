@@ -132,18 +132,23 @@ class BubblewrapBackend:
         argv.extend(
             [
                 "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
-                "--symlink", "usr/sbin", "/sbin", "--symlink", "usr/lib", "/lib",
-                "--symlink", "usr/lib64", "/lib64", "--dev", "/dev", "--dir", "/etc",
+                "--symlink", "usr/sbin", "/sbin", "--dev", "/dev", "--dir", "/etc",
                 "--dir", "/var", "--tmpfs", "/tmp", "--tmpfs", "/var/tmp",
                 "--tmpfs", "/run", "--proc", "/proc",
             ]
         )
+        # Bind rather than symlink the ELF loader roots. This is needed for
+        # EL8's /lib64 loader with modern Bubblewrap, while retaining the same
+        # read-only runtime boundary on distributions with merged /usr.
+        for library_root in ("/usr/lib", "/usr/lib64", "/lib", "/lib64"):
+            if Path(library_root).exists():
+                argv.extend(["--ro-bind", library_root, library_root])
         for host_path in (
             "/etc/ssl", "/etc/ca-certificates", "/etc/ld.so.conf.d", "/etc/passwd",
             "/etc/group", "/etc/nsswitch.conf", "/etc/hosts", "/etc/services",
             "/etc/protocols", "/etc/gai.conf", "/etc/localtime", "/etc/timezone",
             "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/fonts", "/etc/gitconfig",
-            "/etc/ssh/ssh_config",
+            "/etc/ssh/ssh_config", "/etc/alternatives",
         ):
             if Path(host_path).exists():
                 self._append_parent_dirs(argv, Path(host_path).parent)

@@ -304,12 +304,16 @@ class ApiWorkerManager(MappingApiMixin):
             "--ro-bind", "/usr", "/usr",
             "--symlink", "usr/bin", "/bin",
             "--symlink", "usr/sbin", "/sbin",
-            "--symlink", "usr/lib", "/lib",
-            "--symlink", "usr/lib64", "/lib64",
             "--dev", "/dev", "--dir", "/etc", "--dir", "/var", "--dir", "/opt",
             "--tmpfs", "/tmp", "--tmpfs", "/var/tmp", "--dir", "/run",
             "--proc", "/proc",
         ])
+        # EL8's Python interpreter uses /lib64 as its ELF loader. A symlink
+        # into /usr/lib64 is not sufficient with newer Bubblewrap releases,
+        # so bind the host library roots explicitly when present.
+        for library_root in ("/usr/lib", "/usr/lib64", "/lib", "/lib64"):
+            if Path(library_root).exists():
+                mounts.extend(["--ro-bind", library_root, library_root])
         self._append_parent_dirs(mounts, Path("/opt/openkapsel"))
         mounts.extend([
             "--ro-bind", "/opt/openkapsel/venv", "/opt/openkapsel/venv",
@@ -317,7 +321,7 @@ class ApiWorkerManager(MappingApiMixin):
         for host_path in ("/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/hosts",
                           "/etc/resolv.conf", "/etc/ssl", "/etc/ca-certificates",
                           "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/fonts",
-                          "/etc/localtime", "/etc/timezone"):
+                          "/etc/localtime", "/etc/timezone", "/etc/alternatives"):
             path = Path(host_path)
             if path.exists():
                 self._append_parent_dirs(mounts, path.parent)

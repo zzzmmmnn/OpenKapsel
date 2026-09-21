@@ -147,6 +147,9 @@ class ApiWorkerSandboxTests(unittest.TestCase):
                 ),
                 triples,
             )
+            for library_root in ("/usr/lib", "/usr/lib64", "/lib", "/lib64"):
+                if Path(library_root).exists():
+                    self.assertIn(("--ro-bind", library_root, library_root), triples)
             self.assertNotIn(
                 ("--ro-bind", "/opt/openkapsel", "/opt/openkapsel"),
                 triples,
