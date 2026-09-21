@@ -169,15 +169,13 @@ PY
         && command -v rootlesskit >/dev/null 2>&1 \
         && command -v systemd-run >/dev/null 2>&1 \
         && id "$SERVICE_USER" >/dev/null 2>&1; then
+        # This is a functional Bubblewrap/RootlessKit smoke test. Keep its
+        # transient unit properties to the systemd 239 baseline used by EL8;
+        # the real service's supported hardening settings remain in its unit.
         systemd-run --quiet --wait --collect --pipe \
             --unit="${SERVICE_NAME}-sandbox-verify-$$" \
             --property="User=$SERVICE_USER" \
             --property="Group=$SERVICE_GROUP" \
-            --property=ProtectProc=invisible \
-            --property=ProtectKernelTunables=false \
-            --property=ProtectKernelModules=true \
-            --property=ProtectKernelLogs=false \
-            --property=ProtectClock=true \
             -- \
             "$INSTALL_DIR/venv/bin/python" -m openkapsel.sandbox_verify \
             --workspace-root "$WORKSPACE_ROOT" \

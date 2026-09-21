@@ -222,6 +222,8 @@ class MappingTests(unittest.TestCase):
                 argv = run.call_args.args[0]
                 self.assertEqual(argv[argv.index("--uid") + 1], str(os.getuid()))
                 self.assertIn("openkapsel.mapping_fuse", argv)
+                self.assertNotIn("--working-directory", argv)
+                self.assertIn("--property=WorkingDirectory=" + str(Path(__file__).resolve().parents[1]), argv)
                 self.assertEqual(argv[-1], str(parent / "laptop"))
             for field, value in (("workspace", "../outside"), ("workspace", "/root"),
                                  ("id", "--evil"), ("name", "../outside"), ("action", "arbitrary")):

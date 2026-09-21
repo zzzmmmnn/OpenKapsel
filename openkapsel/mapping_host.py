@@ -74,7 +74,10 @@ class HostMappingMounts:
                 "--property=PrivateMounts=no", "--property=RestrictAddressFamilies=AF_UNIX",
                 "--property=UMask=0077", "--property=TimeoutStopSec=5",
                 "--property=DevicePolicy=closed", "--property=DeviceAllow=/dev/fuse rw",
-                "--working-directory", str(Path(__file__).resolve().parent.parent),
+                # `--working-directory` is a newer systemd-run option. Use
+                # the unit property instead so the privileged helper also
+                # works on EL8's systemd 239.
+                "--property=WorkingDirectory=" + str(Path(__file__).resolve().parent.parent),
                 sys.executable, "-m", "openkapsel.mapping_fuse", "--socket", str(self.socket),
                 f"--id={mid}", "--mount", str(path)])
             deadline = time.monotonic() + 8
