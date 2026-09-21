@@ -103,6 +103,24 @@ class ReloadDecisionTests(unittest.TestCase):
             self.last_server_fingerprint = last_server
             self.last_reload_at = time.time() if last_reload is None else last_reload
 
+    def test_local_source_defaults_to_running_project_root_and_allows_override(self):
+        from openkapsel.client_reload import inspect_local_source
+
+        current = inspect_local_source({"auto_reload": True})
+        self.assertIsNotNone(current)
+        self.assertEqual(project_root(), current.root)
+        self.assertEqual(source_fingerprint(project_root(), "client"), current.fingerprint)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            FingerprintTests().copy_manifest(root)
+            override = inspect_local_source({
+                "auto_reload": True,
+                "source_root": str(root),
+            })
+            self.assertIsNotNone(override)
+            self.assertEqual(root.resolve(), override.root)
+
     def test_required_version_reloads_suitable_changed_source(self):
         runtime = self.Runtime()
         source = LocalSource(Path("/source"), "9.0.0", "L" * 44)

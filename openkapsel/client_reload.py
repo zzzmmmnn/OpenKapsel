@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .source_fingerprint import source_fingerprint, source_version, version_at_least
+from .source_fingerprint import project_root, source_fingerprint, source_version, version_at_least
 
 STATE_VERSION = 1
 LOCAL_REFRESH_SECONDS = 24 * 60 * 60
@@ -111,9 +111,11 @@ def inspect_local_source(config: dict) -> LocalSource | None:
     if config.get("auto_reload") is not True:
         return None
     raw = config.get("source_root")
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    root = Path(raw).expanduser().resolve()
+    root = (
+        Path(raw).expanduser().resolve()
+        if isinstance(raw, str) and raw.strip()
+        else project_root()
+    )
     try:
         return LocalSource(root, source_version(root), source_fingerprint(root, "client"))
     except (OSError, ValueError):

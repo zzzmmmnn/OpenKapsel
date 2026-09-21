@@ -43,7 +43,6 @@ Keep the configuration outside the exported directory and source control. On POS
   "root": "/path/to/local/project",
   "writable": true,
   "allow_exec": false,
-  "source_root": "/path/to/OpenKapsel",
   "auto_reload": true,
   "transport_timeout_seconds": 60,
   "rpc": {
@@ -64,7 +63,7 @@ Mapping client 1.62.0+ keeps provider authentication in the HTTP WebSocket Upgra
 
 Server and client fingerprints are separate deterministic change detectors. Shared protocol files affect both fingerprints; side-specific files affect only their corresponding fingerprint. Fingerprints hash an ordered, explicit source manifest using raw file bytes and the manifest itself. Fingerprint equality is not a compatibility requirement: compatibility is governed by `minimum_client_version` plus the existing RPC/capability versions.
 
-`source_root` and `auto_reload` are optional. When `auto_reload=true`, `source_root` must be the explicit absolute path of a trusted local OpenKapsel source checkout. The client never scans arbitrary directories and never imports candidate source just to inspect it; it reads the version/fingerprint as data. When a reload is selected, the process is replaced and the configured source root is inserted ahead of the current working directory/import path.
+`auto_reload` is optional. When `auto_reload=true` and `source_root` is omitted, the client uses the OpenKapsel project root that contains the currently running source modules; it does not use the process working directory. `source_root` remains an optional absolute-path override for advanced setups that want to reload into a different trusted checkout. The client never scans arbitrary directories and never imports candidate source just to inspect it; it reads the version/fingerprint as data. When a reload is selected, the process is replaced and the selected source root is inserted ahead of the current working directory/import path.
 
 Before the first READY session, a client below the server minimum checks that local source. If a changed local source satisfies the minimum it reloads; otherwise required-version retries use delays of 0, 60, 120, then 300 seconds for the fourth and later attempts. Ordinary network reconnect failures do not advance this backoff.
 

@@ -44,7 +44,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
         self.assertEqual(60, config["transport_timeout_seconds"])
-        self.assertEqual("/path/to/OpenKapsel", config["source_root"])
+        self.assertNotIn("source_root", config)
         self.assertFalse(config["auto_reload"])
         self.assertEqual({"git": True, "archive": True}, config["rpc"])
         self.assertEqual([], config["rpc_plugins"])
