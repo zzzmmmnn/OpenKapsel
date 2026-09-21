@@ -1,0 +1,1 @@
+"""OpenKapsel mapping components."""

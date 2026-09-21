@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.api_workers import ApiWorker, ApiWorkerManager
-from openkapsel.cgroups import TokenCgroupManager
-from openkapsel.tokens import TokenRecord, utc_now
+from openkapsel.execution.api_workers import ApiWorker, ApiWorkerManager
+from openkapsel.execution.cgroups import TokenCgroupManager
+from openkapsel.auth.tokens import TokenRecord, utc_now
 
 
 class ApiWorkerSandboxTests(unittest.TestCase):
@@ -119,7 +119,7 @@ class ApiWorkerSandboxTests(unittest.TestCase):
             )
             try:
                 with patch(
-                    "openkapsel.api_workers.apparmor_restricts_user_namespaces",
+                    "openkapsel.execution.api_workers.apparmor_restricts_user_namespaces",
                     return_value=False,
                 ):
                     argv = manager._sandbox_argv(

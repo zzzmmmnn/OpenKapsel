@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from openkapsel.random_ids import token_urlsafe_alnum
-from openkapsel.security import PASSWORD_HASH_ALGORITHM, PASSWORD_HASH_ITERATIONS, hash_password
+from openkapsel.auth.security import PASSWORD_HASH_ALGORITHM, PASSWORD_HASH_ITERATIONS, hash_password
 
 
 def atomic_write(path: Path, payload: dict[str, Any]) -> None:

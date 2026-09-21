@@ -11,8 +11,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.context_store import ContextStore
-from openkapsel.context_plans import PlanRequestConflict, normalize_plan_request
+from openkapsel.context.context_store import ContextStore
+from openkapsel.context.context_plans import PlanRequestConflict, normalize_plan_request
 
 
 class PlanCreationTests(unittest.TestCase):
@@ -194,7 +194,7 @@ class PlanCreationTests(unittest.TestCase):
         self.assertEqual(4, self.count())
 
     def test_trim_protects_new_batch_and_pruned_keys_are_not_reused(self):
-        with patch("openkapsel.context_store.MAX_CONTEXT_ENTRIES", 2), patch("openkapsel.context_store.CONTEXT_TRIM_ENTRIES", 100):
+        with patch("openkapsel.context.context_store.MAX_CONTEXT_ENTRIES", 2), patch("openkapsel.context.context_store.CONTEXT_TRIM_ENTRIES", 100):
             self.store.add("note", "Old note", taskname="old")
             result = self.create(dict(self.body, request_id="retained-key"))
             self.assertEqual(4, self.count())
@@ -207,7 +207,7 @@ class PlanCreationTests(unittest.TestCase):
         self.assertEqual(count, self.count())
 
     def test_bounded_request_ledger_keeps_existing_replays(self):
-        with patch("openkapsel.context_plans.MAX_PLAN_REQUESTS", 1):
+        with patch("openkapsel.context.context_plans.MAX_PLAN_REQUESTS", 1):
             body = dict(self.body, request_id="first")
             first = self.create(body)
             with self.assertRaises(PlanRequestConflict) as error:

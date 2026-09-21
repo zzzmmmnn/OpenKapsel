@@ -117,6 +117,22 @@ python3 -m openkapsel --config config.json
 
 The service can run locally without HTTPS when both public URLs are configured for local HTTP use. Restricted Linux sandbox features are unavailable on macOS, but regular workspace APIs and trusted full-Shell development remain usable. See [Development and testing](docs/development.md).
 
+### Source layout
+
+The Python package is grouped by functional domain rather than kept as one flat module directory:
+
+- `openkapsel/api/`: Discovery, MCP, preview, and Skill-facing API composition.
+- `openkapsel/auth/`: administrator UI, token policy, OAuth, Static MCP, and authentication security.
+- `openkapsel/client_runtime/`: mapping-client filesystem, task, reload, and Windows runtime support.
+- `openkapsel/context/`: Context plans and Memory storage/handlers.
+- `openkapsel/execution/`: sandboxing, cgroups, Shell/tasks, schedules, environment, and network proxying.
+- `openkapsel/files/`: file APIs, safe paths, recycle, uploads/shares, Git, and archive handlers.
+- `openkapsel/mapping/`: provider transport, registry, RPC/native mapping, transfers, and mapping administration.
+- `openkapsel/rpc_plugins/`: extensible client RPC families.
+- `openkapsel/workspace/`: workspace layout and workspace-image helpers.
+
+`server.py` and `client.py` remain stable top-level entry points; only genuinely cross-cutting primitives remain beside them.
+
 ## Connecting an AI client
 
 The canonical Workspace URL is:

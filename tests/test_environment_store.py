@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from openkapsel.environment_store import EnvironmentConfigError, EnvironmentStore
+from openkapsel.execution.environment_store import EnvironmentConfigError, EnvironmentStore
 
 
 class EnvironmentStoreTests(unittest.TestCase):

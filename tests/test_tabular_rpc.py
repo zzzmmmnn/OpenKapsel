@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.client_files import ClientFiles
+from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.rpc_plugins.tabular import plugin
 from openkapsel.rpc_plugins.tabular.csv_stream import CSVStream, csv_options, _encode_cursor, _digest
 from openkapsel.rpc_plugins.tabular.excel import available_formats
@@ -50,7 +50,7 @@ class TabularTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         cls = ClientFiles
         if os.name == "nt":
-            from openkapsel.client_windows import WindowsClientFiles
+            from openkapsel.client_runtime.client_windows import WindowsClientFiles
             cls = WindowsClientFiles
         self.files = cls(self.root, writable=False)
     def tearDown(self):

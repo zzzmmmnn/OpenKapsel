@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openkapsel.client_files import ClientFiles
-from openkapsel.client_tasks import ClientTasks
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_tasks import ClientTasks
 
 
 class ClientCommandTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class ClientCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             file_class = ClientFiles
             if os.name == "nt":
-                from openkapsel.client_windows import WindowsClientFiles
+                from openkapsel.client_runtime.client_windows import WindowsClientFiles
                 file_class = WindowsClientFiles
             files = file_class(Path(directory), writable=True)
             tasks = ClientTasks(files, enabled=True, sandbox=False)

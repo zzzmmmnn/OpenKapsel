@@ -7,8 +7,8 @@ import time
 import unittest
 from urllib.parse import urlsplit
 
-from openkapsel.oauth_store import OAuthError
-from openkapsel.static_mcp import StaticMcpStore
+from openkapsel.auth.oauth_store import OAuthError
+from openkapsel.auth.static_mcp import StaticMcpStore
 from tests import test_oauth
 
 

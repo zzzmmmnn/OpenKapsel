@@ -21,13 +21,13 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from openkapsel.security import (
+from openkapsel.auth.security import (
     LEGACY_PASSWORD_SALT,
     hash_password,
     password_hash_needs_upgrade,
     verify_password,
 )
-from openkapsel.cgroups import TokenCgroupManager
+from openkapsel.execution.cgroups import TokenCgroupManager
 from openkapsel.server import (
     AdminLoginLimiter,
     ApiError,
@@ -36,10 +36,10 @@ from openkapsel.server import (
     WorkspaceRequestHandler,
     create_server,
 )
-from openkapsel.tokens import PathGrant, TokenStore
-from openkapsel.tasks import BoundedOutput
-from openkapsel.uploads import UploadRegistry
-from openkapsel.workspace_images import WorkspaceImage
+from openkapsel.auth.tokens import PathGrant, TokenStore
+from openkapsel.execution.tasks import BoundedOutput
+from openkapsel.files.uploads import UploadRegistry
+from openkapsel.workspace.workspace_images import WorkspaceImage
 
 
 class WorkspaceServerTests(unittest.TestCase):

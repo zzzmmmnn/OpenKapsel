@@ -6,7 +6,7 @@ import os
 import time
 import unittest
 from unittest.mock import patch
-from openkapsel.client_tasks import ClientTasks
+from openkapsel.client_runtime.client_tasks import ClientTasks
 from tests import test_mapping_file_api as fixture
 from tests import test_oauth
 

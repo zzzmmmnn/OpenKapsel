@@ -13,10 +13,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from openkapsel.api_workers import ApiWorker, ApiWorkerError
-from openkapsel.client_files import ClientFiles
-from openkapsel.mapping_io import WorkspaceFiles, stream_stat
-from openkapsel.mapping_manager import MappingManager
+from openkapsel.execution.api_workers import ApiWorker, ApiWorkerError
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.mapping.mapping_io import WorkspaceFiles, stream_stat
+from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.server import WorkspaceRequestHandler
 from tests import test_mapping_file_api as fixture
 
@@ -209,7 +209,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         (self.export / "folder").mkdir()
         (self.export / "folder/data").write_bytes(b"snapshot")
         handler = self.handler()
-        from openkapsel.mapping_shares import create_share, import_share
+        from openkapsel.mapping.mapping_shares import create_share, import_share
         record, _ = create_share(handler, self.mount / "folder")
         (self.export / "folder/data").write_bytes(b"modified")
         import_share(handler, record.id, self.mount / "imported")
@@ -288,7 +288,7 @@ class NativeExecutionTests(unittest.TestCase):
         record = self.server.tokens.update(self.record.token, network_mode="none")
         api = self.server.api_workers
         worker_dir = api.worker_root / "mask-test"
-        with patch("openkapsel.api_workers.apparmor_restricts_user_namespaces", return_value=False):
+        with patch("openkapsel.execution.api_workers.apparmor_restricts_user_namespaces", return_value=False):
             argv = api._sandbox_argv(record, self.scope, worker_dir, worker_dir / "app.sock", "/api")
         triples = [argv[i:i + 3] for i in range(len(argv) - 2)]
         self.assertIn(["--ro-bind", str(self.server.mappings.empty_view()), str(self.mount)], triples)
@@ -352,7 +352,7 @@ class MappingLeaseTests(unittest.TestCase):
         self.assertIsNone(self.manager.ipc)
         self.assertFalse(self.manager.workers)
         self.assertFalse(self.manager.socket_path.exists())
-        with patch("openkapsel.mapping_manager.sys.platform", "darwin"), patch("openkapsel.mapping_manager.subprocess.Popen", side_effect=AssertionError("eager FUSE")):
+        with patch("openkapsel.mapping.mapping_manager.sys.platform", "darwin"), patch("openkapsel.mapping.mapping_manager.subprocess.Popen", side_effect=AssertionError("eager FUSE")):
             other = MappingManager(self.root, self.manager.store.path.parent, enabled=True)
             self.assertIsNone(other.ipc)
             other.close()
@@ -392,7 +392,7 @@ class MappingLeaseTests(unittest.TestCase):
         process.poll.return_value = None
         process.terminate.side_effect = lambda: setattr(process.poll, "return_value", 0)
         self.manager.workers["occupied"] = process
-        with patch("openkapsel.mapping_manager.sys.platform", "linux"):
+        with patch("openkapsel.mapping.mapping_manager.sys.platform", "linux"):
             with self.assertRaises(OSError) as error:
                 self.manager.acquire([self.row])
         self.assertEqual(errno.EBUSY, error.exception.errno)

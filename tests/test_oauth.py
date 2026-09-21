@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from openkapsel.oauth_store import OAuthError, OAuthStore, challenge
-from openkapsel.security import hash_password
+from openkapsel.auth.oauth_store import OAuthError, OAuthStore, challenge
+from openkapsel.auth.security import hash_password
 from openkapsel.server import ServerConfig, create_server
 
 

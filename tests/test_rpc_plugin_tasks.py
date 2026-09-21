@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openkapsel.client import ClientRuntime, run_once
-from openkapsel.client_files import ClientFiles
-from openkapsel.client_tasks import ClientTasks
-from openkapsel.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_tasks import ClientTasks
+from openkapsel.mapping.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
 
 
 class RpcPluginTaskTests(unittest.TestCase):

@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from openkapsel.client import ClientRuntime, run_once
-from openkapsel.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
+from openkapsel.mapping.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
 
 
 class ClientReconnectTests(unittest.TestCase):
@@ -91,7 +91,7 @@ class ClientReconnectTests(unittest.TestCase):
     def test_completed_offline_result_survives_long_disconnect(self):
         task = self.start("offline-result", "import time; time.sleep(.1); print('completed offline'); raise SystemExit(7)")
         self.assertTrue(task["done"].wait(5))
-        with patch("openkapsel.client_tasks.time.time", return_value=time.time() + 7200):
+        with patch("openkapsel.client_runtime.client_tasks.time.time", return_value=time.time() + 7200):
             listed = self.connection("task_list", {})["result"]
             self.assertEqual("offline-result", listed[0]["task_id"])
             result = self.connection("task_get", {"task_id": "offline-result"})["result"]
@@ -149,7 +149,7 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertIn("git v2", output)
 
     def test_real_websocket_reconnect_reads_completed_result(self):
-        from openkapsel.mapping_transport import ProviderSession
+        from openkapsel.mapping.mapping_transport import ProviderSession
         connected = threading.Event()
         sessions, clients, failures = [], [], []
         class Handler(BaseHTTPRequestHandler):

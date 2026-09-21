@@ -10,8 +10,8 @@ from dataclasses import replace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from openkapsel.oauth_consent import ConsentLimiter, ConsentProtector
-from openkapsel.oauth_store import OAuthError, OAuthStore, challenge
+from openkapsel.auth.oauth_consent import ConsentLimiter, ConsentProtector
+from openkapsel.auth.oauth_store import OAuthError, OAuthStore, challenge
 from tests import test_oauth
 
 
@@ -52,7 +52,7 @@ class ControlConsentHTTPTests(unittest.TestCase):
         self.assertIsNone(self.server.oauth.get(self.cid)["client_id"])
 
     def test_standalone_page_security_headers_and_no_admin_session(self):
-        from openkapsel.tokens import PathGrant
+        from openkapsel.auth.tokens import PathGrant
         external = self.server.config.root.parent / "permitted-external-fixture"
         external.mkdir()
         self.server.tokens.update(self.record.token, shell_mode="full", allowed_paths=(PathGrant(str(external)),))
@@ -298,11 +298,11 @@ class ControlConsentHTTPTests(unittest.TestCase):
 class ConsentLimiterTests(unittest.TestCase):
     def test_atomic_address_and_request_budgets_and_expiration(self):
         limiter = ConsentLimiter()
-        with patch("openkapsel.oauth_consent.time.monotonic", return_value=100):
+        with patch("openkapsel.auth.oauth_consent.time.monotonic", return_value=100):
             with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
                 results = list(pool.map(lambda i: limiter.take("one-address", str(i)), range(20)))
             self.assertEqual(10, results.count(0))
-        with patch("openkapsel.oauth_consent.time.monotonic", return_value=161):
+        with patch("openkapsel.auth.oauth_consent.time.monotonic", return_value=161):
             self.assertEqual(0, limiter.take("one-address", "new"))
         limiter = ConsentLimiter()
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
@@ -311,7 +311,7 @@ class ConsentLimiterTests(unittest.TestCase):
 
     def test_memory_is_bounded_and_does_not_evict_live_buckets(self):
         limiter = ConsentLimiter()
-        with patch("openkapsel.oauth_consent.MAX_CONSENT_BUCKETS", 2):
+        with patch("openkapsel.auth.oauth_consent.MAX_CONSENT_BUCKETS", 2):
             self.assertEqual(0, limiter.take("address", "request"))
             self.assertGreater(limiter.take("other", "different"), 0)
             self.assertEqual(2, len(limiter._buckets))

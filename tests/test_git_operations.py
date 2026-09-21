@@ -9,10 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.client_files import ClientFiles
-from openkapsel.client_tasks import ClientTasks
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.errors import ApiError
-from openkapsel.git_operations import GIT_OPERATIONS, git_arguments
+from openkapsel.files.git_operations import GIT_OPERATIONS, git_arguments
 
 
 def make_repo(root):
@@ -57,7 +57,7 @@ class GitClientTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         factory = ClientFiles
         if os.name == "nt":
-            from openkapsel.client_windows import WindowsClientFiles
+            from openkapsel.client_runtime.client_windows import WindowsClientFiles
             factory = WindowsClientFiles
         self.files = factory(self.root, writable=False)
         self.tasks = ClientTasks(self.files, enabled=False, sandbox=False)
@@ -91,7 +91,7 @@ class GitClientTests(unittest.TestCase):
     def test_policy_output_budget_and_bad_revision(self):
         with self.assertRaises(OSError):
             self.tasks.dispatch("task_start", {"task_id": "denied123", "argv": ["git", "status"]})
-        from openkapsel.git_read import inspect_git
+        from openkapsel.files.git_read import inspect_git
         try:
             inspect_git(self.files.paths, self.root, "show", {"revision": "bad-ref"})
         except ApiError as exc:
@@ -153,7 +153,7 @@ class GitClientTests(unittest.TestCase):
                         yield entry
                 yield iterate()
 
-        with patch("openkapsel.git_read.os.scandir", racing_scandir):
+        with patch("openkapsel.files.git_read.os.scandir", racing_scandir):
             response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
         self.assertEqual([True], injected)
         self.assertEqual(422, response["status"], response)

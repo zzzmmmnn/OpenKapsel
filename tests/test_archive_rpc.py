@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from openkapsel.client_files import ClientFiles
+from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.rpc_plugins.archive import supported_extensions
 from tests import test_oauth
 

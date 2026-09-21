@@ -9,8 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openkapsel.client_files import ClientFiles
-from openkapsel.mapping_transport import FILE_API_OPERATIONS
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS
 from openkapsel.server import WorkspaceRequestHandler
 from openkapsel.errors import ApiError
 from tests import test_oauth
@@ -137,7 +137,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual("mapping_disabled", body["error"]["code"])
 
     def test_binary_stream_and_direct_rpc_etags_share_client_identity(self):
-        from openkapsel.mapping_io import WorkspaceFiles, stream_stat
+        from openkapsel.mapping.mapping_io import WorkspaceFiles, stream_stat
         (self.export / "a").write_text("same file")
         scope = self.server.tokens.scope_root(self.record)
         backend = WorkspaceFiles(self.server.mappings, (scope,))

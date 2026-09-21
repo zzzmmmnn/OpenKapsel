@@ -5,10 +5,10 @@ from __future__ import annotations
 import shutil
 from typing import Any
 
-from ...errors import ApiError
-from ...git_operations import GIT_OPERATIONS
-from ...git_read import inspect_git
-from ...git_write import mutate_git
+from openkapsel.errors import ApiError
+from openkapsel.files.git_operations import GIT_OPERATIONS
+from openkapsel.files.git_read import inspect_git
+from openkapsel.files.git_write import mutate_git
 
 
 _DESCRIPTIONS = {

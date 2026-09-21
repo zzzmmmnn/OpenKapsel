@@ -15,12 +15,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openkapsel.client import proxy_options, run_once
-from openkapsel.client_files import ClientFiles
-from openkapsel.client_tasks import ClientTasks
-from openkapsel.mapping_manager import MappingManager
-from openkapsel.mapping_store import MappingStore
-from openkapsel.mapping_transport import ProviderSession
-from openkapsel.mapping_transfers import FileTransferManager
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_tasks import ClientTasks
+from openkapsel.mapping.mapping_manager import MappingManager
+from openkapsel.mapping.mapping_store import MappingStore
+from openkapsel.mapping.mapping_transport import ProviderSession
+from openkapsel.mapping.mapping_transfers import FileTransferManager
 
 
 @unittest.skipIf(os.name == "nt", "POSIX descriptor tests; see test_client_windows")
@@ -109,7 +109,7 @@ class MappingTests(unittest.TestCase):
             proxy_options("ftp://127.0.0.1:1")
 
     def test_shell_private_scan_does_not_walk_remote_exports(self):
-        from openkapsel.shell_execution import sandbox_hidden_paths
+        from openkapsel.execution.shell_execution import sandbox_hidden_paths
         remote = self.export / "remote"
         remote.mkdir()
         (remote / "project").mkdir()
@@ -203,8 +203,8 @@ class MappingTests(unittest.TestCase):
             tasks.close()
 
     def test_host_helper_only_launches_fixed_unprivileged_worker(self):
-        from openkapsel.mapping_host import HostMappingMounts
-        from openkapsel.workspace_images import WorkspaceImageError
+        from openkapsel.mapping.mapping_host import HostMappingMounts
+        from openkapsel.workspace.workspace_images import WorkspaceImageError
         root = self.root / "workspace"
         root.mkdir()
         parent = root / "project space"
@@ -221,7 +221,7 @@ class MappingTests(unittest.TestCase):
                 self.assertTrue(helper.dispatch(request)["mounted"])
                 argv = run.call_args.args[0]
                 self.assertEqual(argv[argv.index("--uid") + 1], str(os.getuid()))
-                self.assertIn("openkapsel.mapping_fuse", argv)
+                self.assertIn("openkapsel.mapping.mapping_fuse", argv)
                 self.assertNotIn("--working-directory", argv)
                 self.assertIn("--property=WorkingDirectory=" + str(Path(__file__).resolve().parents[1]), argv)
                 self.assertEqual(argv[-1], str(parent / "laptop"))
@@ -327,7 +327,7 @@ class MappingTransportTests(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "server-side transfers require Linux/POSIX")
 class FileTransferTests(unittest.TestCase):
     def test_copy_move_and_no_overwrite(self):
-        from openkapsel.recycle import RecycleBin
+        from openkapsel.files.recycle import RecycleBin
         with tempfile.TemporaryDirectory() as directory:
             scope = Path(directory).resolve() / "project"
             scope.mkdir()
@@ -357,7 +357,7 @@ class FileTransferTests(unittest.TestCase):
                 transfers.close()
 
     def test_resume_after_cancel_and_detect_changed_source(self):
-        from openkapsel.recycle import RecycleBin
+        from openkapsel.files.recycle import RecycleBin
         with tempfile.TemporaryDirectory() as directory:
             scope = Path(directory).resolve() / "project"
             scope.mkdir()

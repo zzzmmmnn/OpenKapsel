@@ -8,7 +8,7 @@ import json
 import time
 import zipfile
 
-from ...errors import ApiError
+from openkapsel.errors import ApiError
 from .._data import (MAX_RESULT_BYTES, Snapshot, check_etag, export_path, fail,
                      object_schema, response, validate)
 from .csv_stream import CSVStream, CSV_SCHEMA, MAX_CSV_BYTES, MAX_COLUMNS, csv_options

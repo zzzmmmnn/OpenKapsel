@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openkapsel.workspace_layout import (
+from openkapsel.workspace.workspace_layout import (
     WorkspaceLayoutError,
     ensure_workspace_layout,
 )

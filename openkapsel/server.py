@@ -33,69 +33,69 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from .random_ids import token_urlsafe_alnum
-from .admin_ui import render_discovery, render_http_error
-from .admin_handlers import AdminHandlersMixin
-from .oauth_handlers import OAuthHandlersMixin
-from .oauth_store import OAuthStore
-from .oauth_consent import ConsentProtector, ConsentLimiter
-from .static_mcp import StaticMcpStore, StaticMcpHandlersMixin
-from .api_workers import ApiWorkerManager
-from .cgroups import (
+from openkapsel.random_ids import token_urlsafe_alnum
+from openkapsel.auth.admin_ui import render_discovery, render_http_error
+from openkapsel.auth.admin_handlers import AdminHandlersMixin
+from openkapsel.auth.oauth_handlers import OAuthHandlersMixin
+from openkapsel.auth.oauth_store import OAuthStore
+from openkapsel.auth.oauth_consent import ConsentProtector, ConsentLimiter
+from openkapsel.auth.static_mcp import StaticMcpStore, StaticMcpHandlersMixin
+from openkapsel.execution.api_workers import ApiWorkerManager
+from openkapsel.execution.cgroups import (
     BUBBLEWRAP_PROCESS_OVERHEAD,
     SandboxLimits,
     TokenCgroupManager,
 )
-from .context_store import (
+from openkapsel.context.context_store import (
     MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
     MAX_CONTEXT_QUERY_LIMIT,
     MAX_CONTEXT_TASKNAME_CHARS,
     ContextStore,
 )
-from .context_handlers import ContextCreationMixin
-from .discovery import DiscoveryMixin
-from .errors import ApiError
-from .environment_handlers import EnvironmentHandlersMixin
-from .mapping_handlers import MappingHandlersMixin
-from .git_handlers import GitHandlersMixin
-from .archive_handlers import ArchiveHandlersMixin
-from .mapping_manager import MappingManager
-from .mapping_transfers import FileTransferManager
-from .file_handlers import FileHandlersMixin
-from .mcp_handlers import McpHandlersMixin
-from .memory_handlers import MemoryHandlersMixin
-from .memory_store import MemoryStore
-from .network_proxy import (
+from openkapsel.context.context_handlers import ContextCreationMixin
+from openkapsel.api.discovery import DiscoveryMixin
+from openkapsel.errors import ApiError
+from openkapsel.execution.environment_handlers import EnvironmentHandlersMixin
+from openkapsel.mapping.mapping_handlers import MappingHandlersMixin
+from openkapsel.files.git_handlers import GitHandlersMixin
+from openkapsel.files.archive_handlers import ArchiveHandlersMixin
+from openkapsel.mapping.mapping_manager import MappingManager
+from openkapsel.mapping.mapping_transfers import FileTransferManager
+from openkapsel.files.file_handlers import FileHandlersMixin
+from openkapsel.api.mcp_handlers import McpHandlersMixin
+from openkapsel.context.memory_handlers import MemoryHandlersMixin
+from openkapsel.context.memory_store import MemoryStore
+from openkapsel.execution.network_proxy import (
     DEFAULT_NETWORK_DOMAINS,
     configure_proxy_limits,
     normalize_domain_rules,
     prepare_proxy_root,
 )
-from .preview_handlers import PreviewHandlersMixin
-from .recycle import RecycleBin, RecycleError
-from .routes import EndpointSpec, match_endpoint
-from .sandbox import SandboxMixin
-from .schedule_handlers import ScheduleHandlersMixin
-from .sandbox_backends import SandboxRegistry
-from .safe_paths import SafePathAccess, SafePathError
-from .security import (
+from openkapsel.api.preview_handlers import PreviewHandlersMixin
+from openkapsel.files.recycle import RecycleBin, RecycleError
+from openkapsel.routes import EndpointSpec, match_endpoint
+from openkapsel.execution.sandbox import SandboxMixin
+from openkapsel.execution.schedule_handlers import ScheduleHandlersMixin
+from openkapsel.execution.sandbox_backends import SandboxRegistry
+from openkapsel.files.safe_paths import SafePathAccess, SafePathError
+from openkapsel.auth.security import (
     hash_password,
     is_password_hash_supported,
     password_hash_needs_upgrade,
     verify_password,
 )
-from .scheduler import SchedulerManager
-from .scheduler_store import ScheduleStore
-from .shell_execution import start_shell_task
-from .shell_routing import ShellRoutingMixin, RemoteTask
-from .share_handlers import ShareHandlersMixin
-from .share_store import ShareStore
-from .skill_handlers import SkillHandlersMixin
-from .tasks import TaskRegistry
-from .tokens import CONTAINER_IMAGE_RE, CredentialRenewalNotDue, TokenStore
-from .uploads import UploadRegistry
-from .workspace_layout import INTERNAL_DIRECTORY
-from .workspace_images import WorkspaceImageClient
+from openkapsel.execution.scheduler import SchedulerManager
+from openkapsel.execution.scheduler_store import ScheduleStore
+from openkapsel.execution.shell_execution import start_shell_task
+from openkapsel.execution.shell_routing import ShellRoutingMixin, RemoteTask
+from openkapsel.files.share_handlers import ShareHandlersMixin
+from openkapsel.files.share_store import ShareStore
+from openkapsel.api.skill_handlers import SkillHandlersMixin
+from openkapsel.execution.tasks import TaskRegistry
+from openkapsel.auth.tokens import CONTAINER_IMAGE_RE, CredentialRenewalNotDue, TokenStore
+from openkapsel.files.uploads import UploadRegistry
+from openkapsel.workspace.workspace_layout import INTERNAL_DIRECTORY
+from openkapsel.workspace.workspace_images import WorkspaceImageClient
 
 
 LOGGER = logging.getLogger("openkapsel")

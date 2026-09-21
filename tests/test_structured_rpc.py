@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.client_files import ClientFiles
+from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.rpc_plugins.structured import plugin, _installed
 from openkapsel.rpc_plugins._data import Snapshot
 
@@ -30,7 +30,7 @@ class StructuredTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         cls = ClientFiles
         if os.name == "nt":
-            from openkapsel.client_windows import WindowsClientFiles
+            from openkapsel.client_runtime.client_windows import WindowsClientFiles
             cls = WindowsClientFiles
         self.files = cls(self.root, writable=True)
     def tearDown(self):

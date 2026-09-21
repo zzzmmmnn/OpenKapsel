@@ -7,7 +7,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from openkapsel.share_store import ShareError, ShareStore
+from openkapsel.files.share_store import ShareError, ShareStore
 
 
 class ShareStoreTests(unittest.TestCase):

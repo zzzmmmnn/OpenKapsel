@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from openkapsel.scheduler_store import (
+from openkapsel.execution.scheduler_store import (
     MAX_ACTIVE_SCHEDULES_PER_APP,
     MAX_SCHEDULE_RUNS_PER_SCHEDULE,
     CronExpression,

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openkapsel.client_files import ClientFiles
+from openkapsel.client_runtime.client_files import ClientFiles
 
 
 class ClientFileAPITests(unittest.TestCase):
@@ -16,7 +16,7 @@ class ClientFileAPITests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         factory = ClientFiles
         if os.name == "nt":
-            from openkapsel.client_windows import WindowsClientFiles
+            from openkapsel.client_runtime.client_windows import WindowsClientFiles
             factory = WindowsClientFiles
         self.files = factory(self.root, writable=True)
 

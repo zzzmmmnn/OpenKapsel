@@ -14,43 +14,43 @@ _VERSION_RE = re.compile(rb'^__version__\s*=\s*["\']([0-9]+(?:\.[0-9]+){2})["\']
 SHARED_FILES = (
     "openkapsel/__init__.py",
     "openkapsel/source_fingerprint.py",
-    "openkapsel/file_support.py",
-    "openkapsel/mapping_transport.py",
-    "openkapsel/mapping_capabilities.py",
+    "openkapsel/files/file_support.py",
+    "openkapsel/mapping/mapping_transport.py",
+    "openkapsel/mapping/mapping_capabilities.py",
 )
 
 SERVER_FILES = (
     "openkapsel/server.py",
-    "openkapsel/mapping_api.py",
-    "openkapsel/mapping_fuse.py",
-    "openkapsel/mapping_handlers.py",
-    "openkapsel/mapping_host.py",
-    "openkapsel/mapping_io.py",
-    "openkapsel/mapping_leases.py",
-    "openkapsel/mapping_manager.py",
-    "openkapsel/mapping_process.py",
-    "openkapsel/mapping_queries.py",
-    "openkapsel/mapping_shares.py",
-    "openkapsel/mapping_store.py",
-    "openkapsel/mapping_transfers.py",
-    "openkapsel/mapping_ui.py",
-    "openkapsel/mapping_uploads.py",
-    "openkapsel/shell_routing.py",
+    "openkapsel/mapping/mapping_api.py",
+    "openkapsel/mapping/mapping_fuse.py",
+    "openkapsel/mapping/mapping_handlers.py",
+    "openkapsel/mapping/mapping_host.py",
+    "openkapsel/mapping/mapping_io.py",
+    "openkapsel/mapping/mapping_leases.py",
+    "openkapsel/mapping/mapping_manager.py",
+    "openkapsel/mapping/mapping_process.py",
+    "openkapsel/mapping/mapping_queries.py",
+    "openkapsel/mapping/mapping_shares.py",
+    "openkapsel/mapping/mapping_store.py",
+    "openkapsel/mapping/mapping_transfers.py",
+    "openkapsel/mapping/mapping_ui.py",
+    "openkapsel/mapping/mapping_uploads.py",
+    "openkapsel/execution/shell_routing.py",
 )
 
 CLIENT_FILES = (
     "openkapsel/client.py",
-    "openkapsel/client_reload.py",
-    "openkapsel/client_file_api.py",
-    "openkapsel/client_files.py",
-    "openkapsel/client_tasks.py",
-    "openkapsel/client_windows.py",
-    "openkapsel/git_operations.py",
-    "openkapsel/git_read.py",
-    "openkapsel/git_write.py",
-    "openkapsel/rename_exclusive.py",
-    "openkapsel/safe_paths.py",
-    "openkapsel/text_encoding.py",
+    "openkapsel/client_runtime/client_reload.py",
+    "openkapsel/client_runtime/client_file_api.py",
+    "openkapsel/client_runtime/client_files.py",
+    "openkapsel/client_runtime/client_tasks.py",
+    "openkapsel/client_runtime/client_windows.py",
+    "openkapsel/files/git_operations.py",
+    "openkapsel/files/git_read.py",
+    "openkapsel/files/git_write.py",
+    "openkapsel/files/rename_exclusive.py",
+    "openkapsel/files/safe_paths.py",
+    "openkapsel/files/text_encoding.py",
     "openkapsel/rpc_plugins/__init__.py",
     "openkapsel/rpc_plugins/_data.py",
     "openkapsel/rpc_plugins/registry.py",
@@ -135,23 +135,23 @@ def guarded_source_files(root: str | Path, side: str) -> set[str]:
     if side == "server":
         result.update(
             path.relative_to(root).as_posix()
-            for path in (root / "openkapsel").glob("mapping_*.py")
+            for path in (root / "openkapsel" / "mapping").glob("mapping_*.py")
         )
         result.add("openkapsel/server.py")
-        result.add("openkapsel/shell_routing.py")
+        result.add("openkapsel/execution/shell_routing.py")
     elif side == "client":
         result.update(
             path.relative_to(root).as_posix()
-            for path in (root / "openkapsel").glob("client*.py")
+            for path in (root / "openkapsel" / "client_runtime").glob("client*.py")
         )
         result.update(
             path.relative_to(root).as_posix()
             for path in (root / "openkapsel" / "rpc_plugins").rglob("*.py")
         )
         result.update({
-            "openkapsel/git_operations.py", "openkapsel/git_read.py",
-            "openkapsel/git_write.py", "openkapsel/rename_exclusive.py",
-            "openkapsel/safe_paths.py", "openkapsel/text_encoding.py",
+            "openkapsel/files/git_operations.py", "openkapsel/files/git_read.py",
+            "openkapsel/files/git_write.py", "openkapsel/files/rename_exclusive.py",
+            "openkapsel/files/safe_paths.py", "openkapsel/files/text_encoding.py",
         })
     else:
         raise ValueError("fingerprint side must be server or client")

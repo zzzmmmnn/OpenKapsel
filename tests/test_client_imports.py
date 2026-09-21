@@ -23,7 +23,7 @@ for name in ("UnixStreamServer", "UnixDatagramServer"):
 import openkapsel
 from openkapsel import client, client_files, client_tasks, client_file_api, git_read
 assert "openkapsel.server" not in sys.modules
-assert "openkapsel.network_proxy" not in sys.modules
+assert "openkapsel.execution.network_proxy" not in sys.modules
 assert openkapsel.__version__
 try:
     openkapsel.nonexistent_attribute

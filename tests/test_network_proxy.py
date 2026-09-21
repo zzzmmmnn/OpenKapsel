@@ -8,14 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.network_proxy import (
+from openkapsel.execution.network_proxy import (
     DomainProxy,
     ProxyPolicyError,
     domain_allowed,
     normalize_domain_rules,
     public_destination,
 )
-from openkapsel.tokens import TokenStore
+from openkapsel.auth.tokens import TokenStore
 
 
 class DomainProxyTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class DomainProxyTests(unittest.TestCase):
                 with self.assertRaisesRegex(ProxyPolicyError, "IP-literal"):
                     proxy.connect("140.82.112.4", 443)
                 with patch(
-                    "openkapsel.network_proxy.socket.getaddrinfo",
+                    "openkapsel.execution.network_proxy.socket.getaddrinfo",
                     return_value=[
                         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
                     ],

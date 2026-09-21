@@ -15,8 +15,8 @@ import secrets
 import stat
 from collections.abc import Mapping
 
-from ..errors import ApiError
-from ..file_support import FileOperationSupportMixin
+from openkapsel.errors import ApiError
+from openkapsel.files.file_support import FileOperationSupportMixin
 
 MAX_RESULT_BYTES = 256 * 1024
 MAX_DEPTH = 64
@@ -205,7 +205,7 @@ def commit_text(files, path, content, expected, task, *, create_parents=False):
 The file lock serializes managed writers. Like the existing file API, ETags are
 optimistic conflict detection, not a distributed CAS against hostile OS writers.
 """
-    from ..client_file_api import ClientFileAPI
+    from openkapsel.client_runtime.client_file_api import ClientFileAPI
     if not files.writable:
         fail("mapping_read_only", "structured writes require a writable export", 403)
     with files.lock:

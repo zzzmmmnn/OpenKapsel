@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ...errors import ApiError
+from openkapsel.errors import ApiError
 
 
 MAX_ARCHIVE_ENTRIES = 100_000

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from openkapsel.sandbox_verify import verify_api_worker_isolation
+from openkapsel.execution.sandbox_verify import verify_api_worker_isolation
 
 
 class SandboxVerificationTests(unittest.TestCase):
@@ -23,10 +23,10 @@ class SandboxVerificationTests(unittest.TestCase):
                 stderr=b"",
             )
             with mock.patch(
-                "openkapsel.sandbox_verify.ApiWorkerManager",
+                "openkapsel.execution.sandbox_verify.ApiWorkerManager",
                 return_value=manager,
             ), mock.patch(
-                "openkapsel.sandbox_verify.subprocess.run",
+                "openkapsel.execution.sandbox_verify.subprocess.run",
                 return_value=completed,
             ):
                 verify_api_worker_isolation(

@@ -15,16 +15,16 @@ from urllib.parse import unquote, urlsplit
 
 from . import __version__
 
-from .client_files import ClientFiles
-from .client_tasks import ClientTasks
-from .rpc_plugins import load_client_rpc_registry
-from .mapping_transport import (
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_tasks import ClientTasks
+from openkapsel.rpc_plugins import load_client_rpc_registry
+from openkapsel.mapping.mapping_transport import (
     MAPPING_HANDSHAKE_VERSION,
     MAX_MESSAGE,
     encode,
 )
-from .source_fingerprint import running_fingerprint, version_at_least
-from .client_reload import (
+from openkapsel.source_fingerprint import running_fingerprint, version_at_least
+from openkapsel.client_runtime.client_reload import (
     LOCAL_REFRESH_SECONDS,
     ClientReloadState,
     exec_local_source,
@@ -120,7 +120,7 @@ def _create_resources(config):
     LOG.info("Loaded RPC extensions: %s", ", ".join(extensions) or "none")
     file_class = ClientFiles
     if os.name == "nt":
-        from .client_windows import WindowsClientFiles
+        from openkapsel.client_runtime.client_windows import WindowsClientFiles
         file_class = WindowsClientFiles
     files = file_class(
         config["root"],

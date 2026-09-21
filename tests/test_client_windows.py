@@ -12,7 +12,7 @@ from pathlib import Path
 @unittest.skipUnless(os.name == "nt", "Windows native handles required")
 class WindowsClientTests(unittest.TestCase):
     def setUp(self):
-        from openkapsel.client_windows import WindowsClientFiles
+        from openkapsel.client_runtime.client_windows import WindowsClientFiles
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.export = self.root / "export"
@@ -48,7 +48,7 @@ class WindowsClientTests(unittest.TestCase):
                 self.files.dispatch("open", {"path": path})
 
     def test_native_task_uses_configured_directory(self):
-        from openkapsel.client_tasks import ClientTasks
+        from openkapsel.client_runtime.client_tasks import ClientTasks
         tasks = ClientTasks(self.files, enabled=True, sandbox=False)
         try:
             row = tasks.dispatch("task_start", {"task_id": "w" * 24, "argv": [sys.executable, "-c", "print('windows-client')"], "cwd": "."})

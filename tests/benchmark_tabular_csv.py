@@ -20,7 +20,7 @@ from pathlib import Path
 WORKER = r'''
 import json, resource, sys, time
 from pathlib import Path
-from openkapsel.client_files import ClientFiles
+from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.rpc_plugins.tabular import plugin
 class Task:
     def check_cancelled(self): pass

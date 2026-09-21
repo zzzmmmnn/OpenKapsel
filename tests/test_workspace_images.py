@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openkapsel.tokens import TokenStore
-from openkapsel.workspace_images import (
+from openkapsel.auth.tokens import TokenStore
+from openkapsel.workspace.workspace_images import (
     MIN_IMAGE_BYTES,
     WorkspaceImageEngine,
     WorkspaceImageError,

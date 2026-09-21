@@ -105,7 +105,7 @@ class MappingQueryTests(unittest.TestCase):
 
     def test_recursive_tree_and_manifest_keep_inaccessible_siblings(self):
         from openkapsel.errors import ApiError
-        from openkapsel.file_support import FileOperationSupportMixin
+        from openkapsel.files.file_support import FileOperationSupportMixin
 
         (self.scope / "lost+found").mkdir()
         (self.scope / "visible").mkdir()

@@ -178,7 +178,7 @@ PY
             --property="User=$SERVICE_USER" \
             --property="Group=$SERVICE_GROUP" \
             -- \
-            "$INSTALL_DIR/venv/bin/python" -m openkapsel.sandbox_verify \
+            "$INSTALL_DIR/venv/bin/python" -m openkapsel.execution.sandbox_verify \
             --workspace-root "$WORKSPACE_ROOT" \
             --worker-root "$DATA_DIR/api-workers" \
             --bubblewrap "$BUBBLEWRAP_PATH" \
@@ -401,7 +401,7 @@ PY
 if ! "$INSTALL_DIR/venv/bin/python" - "$CONFIG_FILE" <<'PY'
 import json, sys
 sys.path.insert(0, "/opt/openkapsel")
-from openkapsel.security import is_password_hash_supported
+from openkapsel.auth.security import is_password_hash_supported
 admin = json.load(open(sys.argv[1], encoding="utf-8")).get("admin", {})
 value = admin.get("password_hash", admin.get("password_sha256", ""))
 raise SystemExit(0 if isinstance(value, str) and is_password_hash_supported(value) else 1)

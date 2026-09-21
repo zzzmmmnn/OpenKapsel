@@ -156,7 +156,7 @@ class ClientRpcRegistry:
         if unknown:
             raise ValueError("unsupported rpc categories: " + ", ".join(sorted(unknown)))
 
-        from ..mapping_transport import FILE_API_OPERATIONS
+        from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS
         result: dict[str, dict[str, Any]] = {
             "file": {
                 "state": "available",

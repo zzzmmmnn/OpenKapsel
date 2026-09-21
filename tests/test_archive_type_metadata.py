@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from openkapsel.client_files import ClientFiles
+from openkapsel.client_runtime.client_files import ClientFiles
 
 
 class ArchiveTypeMetadataTests(unittest.TestCase):

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.context_store import ContextStore
+from openkapsel.context.context_store import ContextStore
 
 
 class ContextStoreTests(unittest.TestCase):
@@ -28,8 +28,8 @@ class ContextStoreTests(unittest.TestCase):
 
     def test_unfinished_root_plan_hints_are_compact_and_exclude_subplans(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch(
-            "openkapsel.context_store.MAX_UNFINISHED_ROOT_PLAN_HINTS", 1
-        ), patch("openkapsel.context_store.MAX_PLAN_HINT_CONTENT_CHARS", 8):
+            "openkapsel.context.context_store.MAX_UNFINISHED_ROOT_PLAN_HINTS", 1
+        ), patch("openkapsel.context.context_store.MAX_PLAN_HINT_CONTENT_CHARS", 8):
             store = ContextStore(Path(raw))
             older_root = store.add(
                 "plan",
@@ -221,8 +221,8 @@ class ContextStoreTests(unittest.TestCase):
 
     def test_over_capacity_deletes_oldest_batch(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch(
-            "openkapsel.context_store.MAX_CONTEXT_ENTRIES", 5
-        ), patch("openkapsel.context_store.CONTEXT_TRIM_ENTRIES", 2):
+            "openkapsel.context.context_store.MAX_CONTEXT_ENTRIES", 5
+        ), patch("openkapsel.context.context_store.CONTEXT_TRIM_ENTRIES", 2):
             workspace = Path(directory) / "workspace"
             workspace.mkdir()
             store = ContextStore(workspace)
@@ -236,8 +236,8 @@ class ContextStoreTests(unittest.TestCase):
 
     def test_capacity_trim_preserves_referenced_plan(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch(
-            "openkapsel.context_store.MAX_CONTEXT_ENTRIES", 5
-        ), patch("openkapsel.context_store.CONTEXT_TRIM_ENTRIES", 2):
+            "openkapsel.context.context_store.MAX_CONTEXT_ENTRIES", 5
+        ), patch("openkapsel.context.context_store.CONTEXT_TRIM_ENTRIES", 2):
             workspace = Path(directory) / "workspace"
             workspace.mkdir()
             store = ContextStore(workspace)

@@ -9,7 +9,7 @@ import json
 import re
 from collections.abc import Mapping, MutableSequence
 
-from ...errors import ApiError
+from openkapsel.errors import ApiError
 from .._data import (MAX_NODES, MAX_DEPTH, Snapshot, check_etag, commit_text, export_path,
                      fail, json_view, object_schema, response, validate)
 

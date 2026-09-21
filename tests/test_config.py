@@ -10,8 +10,8 @@ import time
 import unittest
 from pathlib import Path
 
-from openkapsel.cgroups import SandboxLimits, TokenCgroupManager
-from openkapsel.security import (
+from openkapsel.execution.cgroups import SandboxLimits, TokenCgroupManager
+from openkapsel.auth.security import (
     LEGACY_PASSWORD_SALT,
     PASSWORD_HASH_ITERATIONS,
     hash_password,

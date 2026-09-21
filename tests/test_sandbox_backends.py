@@ -6,16 +6,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openkapsel.admin_ui import _sandbox_backend_options
-from openkapsel.cgroups import SandboxLimits
-from openkapsel.sandbox_backends import (
+from openkapsel.auth.admin_ui import _sandbox_backend_options
+from openkapsel.execution.cgroups import SandboxLimits
+from openkapsel.execution.sandbox_backends import (
     BubblewrapBackend,
     PodmanBackend,
     PodmanController,
     ProxyController,
     SandboxSpec,
 )
-from openkapsel.tokens import PathGrant
+from openkapsel.auth.tokens import PathGrant
 
 
 class PodmanBackendTests(unittest.TestCase):
@@ -59,7 +59,7 @@ class PodmanBackendTests(unittest.TestCase):
                 environment_file=environment_file,
             )
             probe = subprocess.CompletedProcess([], 0, "crun\n", "")
-            with patch("openkapsel.sandbox_backends.subprocess.run", return_value=probe):
+            with patch("openkapsel.execution.sandbox_backends.subprocess.run", return_value=probe):
                 launch = self._backend(executable).build_shell(spec)
             argv = launch.argv
             self.assertEqual("podman", launch.backend)
@@ -104,7 +104,7 @@ class PodmanBackendTests(unittest.TestCase):
                 "",
             )
             with patch(
-                "openkapsel.sandbox_backends.subprocess.run",
+                "openkapsel.execution.sandbox_backends.subprocess.run",
                 side_effect=[probe, images],
             ):
                 installed = self._backend(executable).installed_images()
@@ -133,7 +133,7 @@ class PodmanBackendTests(unittest.TestCase):
     def test_controller_uses_stop_kill_and_forced_cleanup(self) -> None:
         controller = PodmanController(Path("/usr/bin/podman"), "openkapsel-test")
         completed = subprocess.CompletedProcess([], 0, "", "")
-        with patch("openkapsel.sandbox_backends.subprocess.run", return_value=completed) as run:
+        with patch("openkapsel.execution.sandbox_backends.subprocess.run", return_value=completed) as run:
             controller.terminate()
             controller.kill()
             controller.cleanup()
@@ -163,7 +163,7 @@ class PodmanBackendTests(unittest.TestCase):
                 limits=SandboxLimits(4, 16 * 1024 * 1024, 100), owner_token="token",
             )
             probe = subprocess.CompletedProcess([], 0, "crun\n", "")
-            with patch("openkapsel.sandbox_backends.subprocess.run", return_value=probe):
+            with patch("openkapsel.execution.sandbox_backends.subprocess.run", return_value=probe):
                 with self.assertRaisesRegex(RuntimeError, "cannot guarantee"):
                     backend.build_shell(spec)
 
@@ -194,7 +194,7 @@ class PodmanBackendTests(unittest.TestCase):
                 environment_file=environment_file,
             )
             with patch(
-                "openkapsel.sandbox_backends.apparmor_restricts_user_namespaces",
+                "openkapsel.execution.sandbox_backends.apparmor_restricts_user_namespaces",
                 return_value=False,
             ):
                 launch = BubblewrapBackend(

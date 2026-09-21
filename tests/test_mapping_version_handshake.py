@@ -18,8 +18,8 @@ from openkapsel.client import (
     ClientVersionRequired,
     _reload_decision,
 )
-from openkapsel.client_reload import ClientReloadState, LocalSource, exec_local_source
-from openkapsel.mapping_transport import (
+from openkapsel.client_runtime.client_reload import ClientReloadState, LocalSource, exec_local_source
+from openkapsel.mapping.mapping_transport import (
     MAPPING_HANDSHAKE_VERSION,
     MINIMUM_MAPPING_CLIENT_VERSION,
     ProviderSession,
@@ -59,19 +59,19 @@ class FingerprintTests(unittest.TestCase):
             base_server = source_fingerprint(root, "server")
             base_client = source_fingerprint(root, "client")
 
-            shared = root / "openkapsel/mapping_transport.py"
+            shared = root / "openkapsel/mapping/mapping_transport.py"
             shared.write_bytes(shared.read_bytes() + b"\n# fingerprint shared change\n")
             self.assertNotEqual(base_server, source_fingerprint(root, "server"))
             self.assertNotEqual(base_client, source_fingerprint(root, "client"))
 
             self.copy_manifest(root)
-            server_only = root / "openkapsel/mapping_manager.py"
+            server_only = root / "openkapsel/mapping/mapping_manager.py"
             server_only.write_bytes(server_only.read_bytes() + b"\n# server change\n")
             self.assertNotEqual(base_server, source_fingerprint(root, "server"))
             self.assertEqual(base_client, source_fingerprint(root, "client"))
 
             self.copy_manifest(root)
-            client_only = root / "openkapsel/client_tasks.py"
+            client_only = root / "openkapsel/client_runtime/client_tasks.py"
             client_only.write_bytes(client_only.read_bytes() + b"\n# client change\n")
             self.assertEqual(base_server, source_fingerprint(root, "server"))
             self.assertNotEqual(base_client, source_fingerprint(root, "client"))
@@ -104,7 +104,7 @@ class ReloadDecisionTests(unittest.TestCase):
             self.last_reload_at = time.time() if last_reload is None else last_reload
 
     def test_local_source_defaults_to_running_project_root_and_allows_override(self):
-        from openkapsel.client_reload import inspect_local_source
+        from openkapsel.client_runtime.client_reload import inspect_local_source
 
         current = inspect_local_source({"auto_reload": True})
         self.assertIsNotNone(current)
@@ -198,7 +198,7 @@ class ServerFirstHandshakeTests(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(inner_self):
                 context = (
-                    patch("openkapsel.mapping_transport.MAPPING_HELLO_TIMEOUT_SECONDS", timeout)
+                    patch("openkapsel.mapping.mapping_transport.MAPPING_HELLO_TIMEOUT_SECONDS", timeout)
                     if timeout is not None else patch("time.time", wraps=time.time)
                 )
                 with context:

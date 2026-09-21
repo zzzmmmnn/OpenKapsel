@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openkapsel.mapping_manager import MappingManager
+from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.rpc_plugins import load_client_rpc_registry
 
 
@@ -58,7 +58,7 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 self.capabilities({"rpc": {"file": value}})
 
     def test_core_files_work_with_extensions_disabled_and_respect_readonly(self):
-        from openkapsel.client_files import ClientFiles
+        from openkapsel.client_runtime.client_files import ClientFiles
         config = {"rpc": {"git": False, "archive": False}}
         registry = load_client_rpc_registry(config)
         capabilities = registry.capability_map(config)
@@ -127,7 +127,7 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 self.assertFalse(capabilities["vendor"]["read_only"])
                 self.assertTrue(registry.accepts("vendor_inspect"))
                 self.assertTrue(registry.accepts("vendor_update"))
-                from openkapsel.client_files import ClientFiles
+                from openkapsel.client_runtime.client_files import ClientFiles
                 export = Path(directory) / "export"
                 export.mkdir()
                 files = ClientFiles(

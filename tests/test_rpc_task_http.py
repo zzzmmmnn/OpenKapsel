@@ -8,8 +8,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from openkapsel.client_files import ClientFiles
-from openkapsel.client_tasks import ClientTasks
+from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_tasks import ClientTasks
 from tests import test_oauth
 
 

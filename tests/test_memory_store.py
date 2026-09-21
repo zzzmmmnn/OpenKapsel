@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openkapsel.memory_store import MemoryStore
+from openkapsel.context.memory_store import MemoryStore
 
 
 class MemoryStoreTests(unittest.TestCase):
