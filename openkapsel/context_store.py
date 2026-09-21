@@ -161,6 +161,14 @@ class ContextStore:
                         )
                         """
                     )
+                    # Keep retry receipts independent of Context pruning. A pruned
+                    # plan must not make a previously used request ID reusable.
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS context_plan_requests ("
+                        "actor_id TEXT NOT NULL, request_id TEXT NOT NULL, "
+                        "fingerprint TEXT NOT NULL, created_at TEXT NOT NULL, "
+                        "response_json TEXT NOT NULL, PRIMARY KEY (actor_id, request_id))"
+                    )
                     self._backfill_paths(connection)
             os.chmod(self.database, 0o600)
 
@@ -395,29 +403,43 @@ class ContextStore:
                 connection.commit()
         return entry_id
 
+    def create_plans(
+        self, body: dict[str, Any], *, actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically create one plan and optional direct children, with retry IDs."""
+        from .context_plans import create_plans
+        return create_plans(self, body, actor_id=actor_id)
+
     @staticmethod
-    def _trim_if_needed(connection: sqlite3.Connection) -> None:
+    def _trim_if_needed(
+        connection: sqlite3.Connection, *, protected_ids: tuple[int, ...] = (),
+    ) -> None:
         count = int(
             connection.execute("SELECT COUNT(*) FROM context_entries").fetchone()[0]
         )
         if count > MAX_CONTEXT_ENTRIES:
+            protected = (
+                "AND candidate.id NOT IN (" + ",".join("?" for _ in protected_ids) + ")"
+                if protected_ids else ""
+            )
             connection.execute(
-                """
+                f"""
                 DELETE FROM context_entries
                 WHERE id IN (
                     SELECT candidate.id
                     FROM context_entries AS candidate
-                    WHERE candidate.entry_type != 'plan'
+                    WHERE (candidate.entry_type != 'plan'
                        OR NOT EXISTS (
                             SELECT 1
                             FROM context_entries AS dependent
                             WHERE dependent.plan_id = candidate.id
-                       )
+                       ))
+                    {protected}
                     ORDER BY candidate.id ASC
                     LIMIT ?
                 )
                 """,
-                (CONTEXT_TRIM_ENTRIES,),
+                (*protected_ids, CONTEXT_TRIM_ENTRIES),
             )
 
     def update_plan(

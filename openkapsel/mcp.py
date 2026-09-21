@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 from .memory_contracts import plan_debrief_schema
+from .context_plans import creation_properties
 from .tokens import TokenRecord
 from .git_operations import GIT_OPERATIONS, git_tool_properties
 from . import __version__
@@ -250,13 +251,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "add_context",
         "Add workspace context",
-        "Append an AI-authored plan or note. Creating a plan also returns compact hints for unfinished root plans.",
+        "Append an AI-authored plan or note. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
         _object_schema(
             {
                 "type": {
                     "type": "string",
                     "description": "plan or note",
                 },
+                **creation_properties(),
                 "content": {"type": "string", "minLength": 1},
                 "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
                 "plan_id": {

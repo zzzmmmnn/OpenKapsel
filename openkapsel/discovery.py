@@ -17,6 +17,7 @@ from .context_store import (
     MAX_UNFINISHED_ROOT_PLAN_HINTS,
     PLAN_STATUSES,
 )
+from .context_plans import MAX_SUBPLANS, MAX_PLAN_REQUEST_BYTES, MAX_PLAN_REQUESTS, creation_properties
 from .cgroups import BUBBLEWRAP_PROCESS_OVERHEAD
 from .discovery_sections import (
     SECTION_CAPABILITIES,
@@ -492,6 +493,18 @@ class DiscoveryMixin:
                     "unmessaged_reads_recorded": False,
                     "plan_updates_in_place": True,
                     "plan_creation_returns_unfinished_root_plans": True,
+                    "plan_creation": {
+                        "atomic_subplans": True, "max_direct_subplans": MAX_SUBPLANS,
+                        "max_normalized_request_bytes": MAX_PLAN_REQUEST_BYTES,
+                        "child_taskname_inherits": True, "nested_subplans": False,
+                        "child_refs": "optional unique request-local labels echoed beside IDs",
+                        "request_id": "optional durable key scoped to workspace and stable actor; same normalized request returns original creation IDs",
+                        "max_idempotency_keys_per_workspace": MAX_PLAN_REQUESTS,
+                        "replay": "HTTP 200 with replayed=true and original creation fields; hints are refreshed; query current plan state separately",
+                        "conflicts": ["context_request_conflict", "context_request_gone", "context_request_limit"],
+                        "pruned_receipts": "used keys are never silently reused; reset only with the workspace Context database",
+                        "memory_hints": "one lookup using combined content and union of paths/tags; at most 64 distinct paths and 32 tags across the request",
+                    },
                     "unfinished_root_plan_hint_limit": MAX_UNFINISHED_ROOT_PLAN_HINTS,
                     "note_edits_create_new_id_and_delete_old": True,
                     "storage": "private OpenKapsel Context storage",
@@ -998,9 +1011,16 @@ class DiscoveryMixin:
                         "status": "in_progress, completed, or cancelled; plans only; defaults to in_progress",
                         "scope_paths": ["<optional paths used to retrieve related Memory for a plan>"],
                         "memory_tags": ["<optional exact tags used to retrieve related Memory for a plan>"],
+                        "subplans": [{"ref": "implementation", "content": "Implement one part; taskname inherits when omitted"}],
+                        "request_id": "<optional caller-generated stable retry key; plans only>",
                     },
+                    "plan_extension_schema": creation_properties(),
                     "response": {
-                        "related_memory": "relevant Memory summaries for a created plan",
+                        "id": "ID of the newly created top-level plan (or the original ID on retry)",
+                        "subplans": "compact children in request order with index/id/plan_id/taskname/status and optional ref; no repeated content or hints",
+                        "request_id": "echoed when supplied",
+                        "replayed": "false for first keyed creation (HTTP 201), true for matching retry (HTTP 200)",
+                        "related_memory": "one deduplicated Memory result for the complete plan batch",
                         "unfinished_root_plans": "array of up to 20 newest previously existing in_progress root-plan summaries; sub-plans and the newly created plan are excluded",
                         "unfinished_root_plans_total": "total matching unfinished root plans",
                         "unfinished_root_plans_truncated": "true when more than 20 unfinished root plans exist",

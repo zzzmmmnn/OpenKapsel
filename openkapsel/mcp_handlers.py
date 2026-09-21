@@ -145,7 +145,7 @@ class McpHandlersMixin:
             },
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer replace_text for focused edits. "
-                "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived overview, architecture, conventions, decisions, and known issues. Tags and paths are primary Memory relevance signals. Use add_memory/update_memory during work, or complete a plan with debrief containing summary, outcome, and memory_actions; an empty memory_actions array explicitly retains nothing. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
+                "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one add_context call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived overview, architecture, conventions, decisions, and known issues. Tags and paths are primary Memory relevance signals. Use add_memory/update_memory during work, or complete a plan with debrief containing summary, outcome, and memory_actions; an empty memory_actions array explicitly retains nothing. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
                 "Pass expected_etag to write_file or replace_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use read_binary_chunk and Base64 upload_chunk for small binary chunks; for large files call prepare_download or use the raw_transfer URLs returned by start_upload. "
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
@@ -320,63 +320,7 @@ class McpHandlersMixin:
                     message,
                 ) from None
         if name == "add_context":
-            entry_type = str(arguments["type"])
-            if entry_type not in {"plan", "note"}:
-                raise ApiError(
-                    HTTPStatus.BAD_REQUEST,
-                    "invalid_context_type",
-                    "manually added context type must be plan or note",
-                )
-            try:
-                plan_id = (
-                    int(arguments["plan_id"])
-                    if "plan_id" in arguments
-                    else None
-                )
-                if entry_type == "note" and plan_id is None:
-                    raise ValueError("notes must reference a plan_id")
-                plan_status = (
-                    str(arguments["status"])
-                    if "status" in arguments
-                    else None
-                )
-                if entry_type == "note" and plan_status is not None:
-                    raise ValueError("note context cannot have a plan status")
-                entry_id = self.server.context_for(self.token_scope_root).add(
-                    entry_type,
-                    str(arguments["content"]),
-                    taskname=str(arguments["taskname"]),
-                    actor_id=self.token_record.actor_id,
-                    plan_status=plan_status,
-                    plan_id=plan_id,
-                )
-            except ValueError as exc:
-                raise ApiError(
-                    HTTPStatus.BAD_REQUEST,
-                    "invalid_context_entry",
-                    str(exc),
-                ) from None
-            entries, _ = self.server.context_for(self.token_scope_root).query(
-                entry_id=entry_id,
-            )
-            entry = entries[0]
-            if entry_type == "plan":
-                scope_paths = arguments.get("scope_paths")
-                memory_tags = arguments.get("memory_tags")
-                entry["scope_paths"] = scope_paths or []
-                entry["memory_tags"] = memory_tags or []
-                entry["related_memory"] = self._related_memories(
-                    str(arguments["content"]),
-                    scope_paths,
-                    memory_tags,
-                )
-                unfinished = self.server.context_for(
-                    self.token_scope_root
-                ).unfinished_root_plan_hints(exclude_plan_id=entry_id)
-                entry["unfinished_root_plans"] = unfinished["plans"]
-                entry["unfinished_root_plans_total"] = unfinished["total"]
-                entry["unfinished_root_plans_truncated"] = unfinished["truncated"]
-            return entry
+            return self._create_context_entry(arguments)
         if name == "update_plan":
             try:
                 changes: dict[str, Any] = {

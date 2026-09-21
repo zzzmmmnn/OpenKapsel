@@ -51,6 +51,7 @@ from .context_store import (
     MAX_CONTEXT_TASKNAME_CHARS,
     ContextStore,
 )
+from .context_handlers import ContextCreationMixin
 from .discovery import DiscoveryMixin
 from .errors import ApiError
 from .environment_handlers import EnvironmentHandlersMixin
@@ -747,6 +748,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
 
 
 class WorkspaceRequestHandler(
+    ContextCreationMixin,
     ShellRoutingMixin,
     GitHandlersMixin,
     ArchiveHandlersMixin,
@@ -1482,65 +1484,8 @@ class WorkspaceRequestHandler(
         )
 
     def _handle_context_add(self) -> None:
-        body = self._read_json()
-        entry_type = self._required_string(body, "type")
-        if entry_type not in {"plan", "note"}:
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_context_type",
-                "manually added context type must be plan or note",
-            )
-        content = self._required_string(body, "content")
-        taskname = self._required_string(body, "taskname")
-        try:
-            raw_plan_id = body.get("plan_id")
-            if entry_type == "note" and raw_plan_id is None:
-                raise ValueError("notes must reference a plan_id")
-            plan_id = (
-                self._parse_operation_plan_id(raw_plan_id, required=True)
-                if raw_plan_id is not None
-                else None
-            )
-            plan_status = body.get("status")
-            if plan_status is not None and not isinstance(plan_status, str):
-                raise ValueError("status must be a string")
-            if entry_type == "note" and plan_status is not None:
-                raise ValueError("note context cannot have a plan status")
-            entry_id = self.server.context_for(self.token_scope_root).add(
-                entry_type,
-                content,
-                taskname=taskname,
-                actor_id=self.token_record.actor_id,
-                plan_status=plan_status,
-                plan_id=plan_id,
-            )
-        except ValueError as exc:
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_context_entry",
-                str(exc),
-            ) from None
-        entries, _ = self.server.context_for(self.token_scope_root).query(
-            entry_id=entry_id,
-        )
-        entry = entries[0]
-        if entry_type == "plan":
-            scope_paths = body.get("scope_paths")
-            memory_tags = body.get("memory_tags")
-            entry["scope_paths"] = scope_paths or []
-            entry["memory_tags"] = memory_tags or []
-            entry["related_memory"] = self._related_memories(
-                content,
-                scope_paths,
-                memory_tags,
-            )
-            unfinished = self.server.context_for(
-                self.token_scope_root
-            ).unfinished_root_plan_hints(exclude_plan_id=entry_id)
-            entry["unfinished_root_plans"] = unfinished["plans"]
-            entry["unfinished_root_plans_total"] = unfinished["total"]
-            entry["unfinished_root_plans_truncated"] = unfinished["truncated"]
-        self._send_json(HTTPStatus.CREATED, entry)
+        entry = self._create_context_entry(self._read_json())
+        self._send_json(HTTPStatus.OK if entry.get("replayed") else HTTPStatus.CREATED, entry)
 
     @staticmethod
     def _parse_context_entry_id(value: str) -> int:

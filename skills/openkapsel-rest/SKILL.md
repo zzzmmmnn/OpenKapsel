@@ -35,7 +35,7 @@ For directory-scoped credentials, the helpers cache the published expiration in 
 
 1. Fetch `GET /` once. Add the matching Bearer token when privileged capability availability matters. Runtime Discovery is authoritative for permissions, limits, URLs, and version differences.
 2. Load only the relevant Discovery section and matching reference below. Avoid `discovery/full` unless auditing compatibility across the entire server.
-3. Before changing workspace state, query for a suitable active root Plan or create one. Every ordinary modifying endpoint requires `plan_id`, `taskname`, and `message`. Configure persistent Shell variables or POSIX initialization through `/env`, not the local credential file.
+3. Before changing workspace state, query for a suitable active root Plan or create one. Every ordinary modifying endpoint requires `plan_id`, `taskname`, and `message`. When the task already has distinct parts, prefer one plan creation with `subplans` and a stable `request_id`; see the Context reference and runtime Discovery for support. Configure persistent Shell variables or POSIX initialization through `/env`, not the local credential file.
 4. Keep `taskname` stable for one task and messages brief. Ordinary reads should omit Context fields unless recording the read is genuinely useful.
 5. Use ETags for concurrent text or Memory updates. For several exact edits in one or more files, prefer the replace-only batch endpoint so every rule is checked against original text before publication. Binary destinations are create-only: recycle an existing file before uploading its replacement.
 6. On completion, update the Plan with a debrief and explicit `memory_actions`, using `[]` when nothing deserves long-term retention.
