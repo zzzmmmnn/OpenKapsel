@@ -48,6 +48,7 @@ class UploadRecord:
     create_parents: bool
     created_at: str
     expires_at: str
+    mapping_id: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "UploadRecord":
@@ -66,6 +67,7 @@ class UploadRecord:
             create_parents=bool(payload.get("create_parents", False)),
             created_at=str(payload["created_at"]),
             expires_at=str(payload["expires_at"]),
+            mapping_id=payload.get("mapping_id"),
         )
 
     def public(self, recommended_chunk_size: int) -> dict[str, Any]:
@@ -115,6 +117,7 @@ class UploadRegistry:
         expected_size: int,
         expected_sha256: str | None,
         create_parents: bool,
+        mapping_id: str | None = None,
     ) -> UploadRecord:
         if expected_size < 0:
             raise UploadError(400, "invalid_size", "size must be non-negative")
@@ -131,7 +134,7 @@ class UploadRegistry:
                 upload_id = f"upload_{token_urlsafe_alnum(18)}"
                 if upload_id not in self._records:
                     break
-            target = target.resolve(strict=False)
+            target = Path(os.path.abspath(target))
             # Incomplete bytes live in the service-owned state directory, not in
             # a token-writable parent that can be renamed while an upload is active.
             temp_path = self.state_dir / f".{upload_id}.part"
@@ -156,6 +159,7 @@ class UploadRegistry:
                 create_parents=create_parents,
                 created_at=_iso(now),
                 expires_at=_iso(now + timedelta(seconds=self.ttl_seconds)),
+                mapping_id=mapping_id,
             )
             self._records[upload_id] = record
             try:
@@ -249,6 +253,7 @@ class UploadRegistry:
             if record is None or not secrets.compare_digest(record.owner_hash, self.owner_hash(token)):
                 raise UploadError(404, "upload_not_found", "upload does not exist")
             self._records.pop(upload_id, None)
+            Path(record.temp_path).unlink(missing_ok=True)
             self._metadata_path(record.upload_id).unlink(missing_ok=True)
 
     def cancel(self, upload_id: str, token: str) -> UploadRecord:

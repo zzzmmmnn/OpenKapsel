@@ -59,6 +59,9 @@ class ArchiveHandlersMixin:
             }
 
         row = self.server.mappings.at_path(candidate)
+        if row is None:
+            candidate = self._resolve_path(value)
+            row = self.server.mappings.at_path(candidate)
         if row:
             relative = candidate.relative_to(self.server.mappings.mount_path(row))
             if ".openkapsel" in relative.parts:

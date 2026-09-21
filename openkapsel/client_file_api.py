@@ -62,6 +62,11 @@ class ClientFileAPI(FileHandlersMixin):
         self.display_root = arguments.get("display_root", ".")
         if not isinstance(self.display_root, str) or len(self.display_root) > 4096:
             raise OSError(errno.EINVAL, "invalid display root")
+        self.search_prefix = arguments.get("search_prefix", "")
+        if (not isinstance(self.search_prefix, str) or len(self.search_prefix) > 4096
+                or "\x00" in self.search_prefix or "\\" in self.search_prefix
+                or self.search_prefix.startswith("/") or ".." in self.search_prefix.split("/")):
+            raise OSError(errno.EINVAL, "invalid search prefix")
         self.response = None
 
     @classmethod

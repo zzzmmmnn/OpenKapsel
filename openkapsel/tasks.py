@@ -107,6 +107,7 @@ class ShellTask:
     sandbox_controller: Any | None = field(default=None, repr=False)
     environment_file: Path | None = field(default=None, repr=False)
     process_environment: dict[str, str] | None = field(default=None, repr=False)
+    mount_lease: Any | None = field(default=None, repr=False)
     status: str = "running"
     exit_code: int | None = None
     error: str | None = None
@@ -231,6 +232,7 @@ class TaskRegistry:
         process_environment: dict[str, str] | None = None,
         network_access: bool = True,
         resource_limits: SandboxLimits | None = None,
+        mount_lease: Any | None = None,
     ) -> ShellTask:
         with self._lock:
             if self._closing:
@@ -271,6 +273,7 @@ class TaskRegistry:
             sandbox_controller=sandbox_controller,
             environment_file=environment_file,
             process_environment=process_environment,
+            mount_lease=mount_lease,
             network_access=network_access,
             resource_limited=cgroup_procs_file is not None,
             cgroup_procs_file=cgroup_procs_file,
@@ -520,13 +523,17 @@ class TaskRegistry:
             )
             stdout_thread.start()
             stderr_thread.start()
-            try:
-                exit_code = process.wait(timeout=task.timeout_seconds)
-            except subprocess.TimeoutExpired:
-                task.timed_out = True
-                task.stderr.append(b"\n[workspace] command timed out; terminating process group\n")
-                self._terminate_task(task, process)
-                exit_code = process.wait()
+            if task.mount_lease is not None:
+                from .mapping_process import wait_for_native_task
+                exit_code = wait_for_native_task(task, process)
+            else:
+                try:
+                    exit_code = process.wait(timeout=task.timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    task.timed_out = True
+                    task.stderr.append(b"\n[workspace] command timed out; terminating process group\n")
+                    self._terminate_task(task, process)
+                    exit_code = process.wait()
             stdout_thread.join()
             stderr_thread.join()
             with task._lock:
@@ -538,7 +545,14 @@ class TaskRegistry:
                 task.exit_code = None
         finally:
             if task.sandbox_controller is not None:
-                task.sandbox_controller.cleanup()
+                try:
+                    task.sandbox_controller.cleanup()
+                except Exception:
+                    LOGGER.exception("sandbox cleanup failed for task %s", task.id)
+            if task.mount_lease is not None:
+                from .mapping_process import release_native_task
+                if not release_native_task(task):
+                    LOGGER.error("retaining mapping lease for live process group of task %s", task.id)
             if injected_file is not None:
                 injected_file.close()
             if task.process is not None and task.process.stdin is not None and not task.process.stdin.closed:

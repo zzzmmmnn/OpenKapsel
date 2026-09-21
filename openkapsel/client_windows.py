@@ -143,7 +143,14 @@ class WindowsClientFiles(ClientFiles):
             return None
         with self.paths.guard(path, include_final=True):
             if op == "stat":
-                return self.details(path.stat())
+                details = path.stat()
+                if stat.S_ISREG(details.st_mode):
+                    descriptor = self.paths.open(path, os.O_RDONLY)
+                    try:
+                        details = os.fstat(descriptor)
+                    finally:
+                        os.close(descriptor)
+                return self.details(details)
             if op == "list":
                 names = []
                 with os.scandir(path) as items:
@@ -155,7 +162,11 @@ class WindowsClientFiles(ClientFiles):
                             raise OSError(errno.E2BIG, "directory exceeds listing limit")
                 names.sort()
                 offset = self._number(args.get("offset", 0))
-                return {"names": names[offset:offset + 500], "total": len(names)}
+                selected = names[offset:offset + 500]
+                result = {"names": selected, "total": len(names)}
+                if args.get("include_details"):
+                    result["entries"] = {name: self.details((path / name).stat(follow_symlinks=False)) for name in selected}
+                return result
             if op == "utimens":
                 os.utime(path, times=args.get("times"))
             # POSIX permission bits have no equivalent ACL semantics here.

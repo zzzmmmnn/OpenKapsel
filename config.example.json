@@ -1,5 +1,8 @@
 {
   "mappings_enabled": false,
+  "mapping_fuse_enabled": true,
+  "max_active_mapping_mounts": 16,
+  "mapping_mount_idle_seconds": 30,
   "workspace_name": "OpenKapsel",
   "workspace_root": "/absolute/path/to/workspace",
   "listen_host": "127.0.0.1",

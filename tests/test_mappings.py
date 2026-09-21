@@ -178,7 +178,7 @@ class MappingTests(unittest.TestCase):
             self.assertEqual((occupied / "keep").read_text(), "unchanged")
             with self.assertRaises(ValueError):
                 manager.rename(row["id"], "../escape")
-        with patch.object(manager, "unmount"), patch.object(manager, "mount", side_effect=[OSError("mount failed"), None]):
+        with patch.object(manager, "unmount"), patch.object(manager.store, "update", side_effect=OSError("state update failed")):
             with self.assertRaises(OSError):
                 manager.rename(row["id"], "failed")
         self.assertEqual(manager.store.authenticate(row["id"], key)["name"], "after")

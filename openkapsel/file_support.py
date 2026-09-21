@@ -17,26 +17,73 @@ from typing import Any
 from .errors import ApiError
 from .safe_paths import ParentHandle, SafePathError
 from .workspace_layout import INTERNAL_DIRECTORY
+from .mapping_queries import MappingQueryMixin
 
 
-class FileOperationSupportMixin:
+class FileOperationSupportMixin(MappingQueryMixin):
+    def _workspace_files(self):
+        manager = getattr(self.server, "mappings", None)
+        if manager is None or not hasattr(manager, "store"):
+            return None  # ClientFileAPI and standalone local handlers.
+        from .mapping_io import WorkspaceFiles
+        roots = (self.token_scope_root, *(Path(p.path) for p in getattr(self.token_record, "allowed_paths", ())))
+        return WorkspaceFiles(manager, roots)
+
+    def _open_binary(self, path):
+        files = self._workspace_files()
+        try:
+            if files is not None:
+                return files.open(path)
+            return os.fdopen(self._safe_open_descriptor(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)), "rb")
+        except OSError as exc:
+            self._raise_file_io_error(exc)
+
+    @staticmethod
+    def _stream_stat(handle):
+        from .mapping_io import stream_stat
+        return stream_stat(handle)
+
+    @staticmethod
+    def _raise_file_io_error(exc):
+        if isinstance(exc, SafePathError):
+            FileOperationSupportMixin._raise_safe_path_error(exc)
+        status, code = {
+            errno.ENOENT: (404, "path_not_found"), errno.ENOTDIR: (400, "not_a_directory"),
+            errno.EINVAL: (400, "not_a_file"),
+            errno.EHOSTDOWN: (503, "mapping_offline"), errno.ESTALE: (409, "mapping_session_changed"),
+            errno.EACCES: (403, "path_access_denied"), errno.EPERM: (403, "path_access_denied"),
+            errno.EROFS: (403, "mapping_read_only"), errno.EEXIST: (409, "path_exists"),
+            errno.ENOSYS: (409, "mapping_client_upgrade_required"), errno.E2BIG: (413, "mapping_request_too_large"),
+        }.get(exc.errno, (503, "file_operation_failed"))
+        raise ApiError(status, code, str(exc)) from None
+
+    def _guard_native_mapping_access(self, path):
+        manager = getattr(self.server, "mappings", None)
+        if manager is not None and manager.at_path(path) is not None:
+            raise ApiError(409, "mapping_native_access_forbidden", "this file operation requires an RPC path, not native mapping access")
+
     def _path_etag(self, path, details):
         return self._stat_etag(details)
 
     def _sha256_snapshot(self, path, expected):
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        with os.fdopen(descriptor, "rb") as handle:
-            before = os.fstat(handle.fileno())
+        with self._open_binary(path) as handle:
+            before = self._stream_stat(handle)
             if self._stat_etag(before) != self._stat_etag(expected):
                 raise ApiError(409, "path_changed", "file changed while reading metadata; retry the request")
             digest = hashlib.sha256()
             while chunk := handle.read(1024 * 1024):
                 digest.update(chunk)
-            if self._stat_etag(os.fstat(handle.fileno())) != self._stat_etag(before):
+            if self._stat_etag(self._stream_stat(handle)) != self._stat_etag(before):
                 raise ApiError(409, "path_changed", "file changed while calculating its hash; retry the request")
             return digest.hexdigest()
 
     def _file_stat(self, path):
+        files = self._workspace_files()
+        if files is not None:
+            try:
+                return files.stat(path)
+            except OSError as exc:
+                self._raise_file_io_error(exc)
         descriptor = self._safe_open_descriptor(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
         try:
             return os.fstat(descriptor)
@@ -44,6 +91,12 @@ class FileOperationSupportMixin:
             os.close(descriptor)
 
     def _directory_entries(self, path):
+        files = self._workspace_files()
+        if files is not None:
+            try:
+                return files.entries(path)
+            except OSError as exc:
+                self._raise_file_io_error(exc)
         descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
         try:
             with os.scandir(descriptor) as iterator:
@@ -63,12 +116,14 @@ class FileOperationSupportMixin:
         flags: int = os.O_RDONLY,
         mode: int = 0o600,
     ) -> int:
+        self._guard_native_mapping_access(path)
         try:
             return self._safe_path_access().open(path, flags, mode)
         except SafePathError as exc:
             self._raise_safe_path_error(exc)
 
     def _safe_parent(self, path: Path, *, create_parents: bool = False) -> ParentHandle:
+        self._guard_native_mapping_access(path)
         try:
             return self._safe_path_access().parent(path, create_parents=create_parents)
         except SafePathError as exc:
@@ -109,6 +164,29 @@ class FileOperationSupportMixin:
     ) -> tuple[bool, os.stat_result]:
         from .text_encoding import encode_text, text_encoding
         data = encode_text(content, text_encoding(encoding))
+        manager = getattr(self.server, "mappings", None)
+        row = manager.at_path(path) if manager is not None else None
+        if row is not None:
+            from types import SimpleNamespace
+            from .client_file_api import FILE_API_LIMITS
+            from .mapping_transport import encode
+            capability = manager.rpc_capability(row["id"], "file", operation="fs_write", min_version=3, max_version=3)
+            if not capability.available:
+                self._raise_mapping_rpc_unavailable(capability)
+            arguments = {"body": {"path": path.relative_to(manager.mount_path(row)).as_posix(),
+                         "content": content, "encoding": encoding, "expected_etag": expected_etag,
+                         "create_parents": create_parents},
+                         "limits": {n: getattr(self.server.config, n) for n in FILE_API_LIMITS}}
+            try:
+                encode({"id": "0" * 24, "op": "api_fs_write", "args": arguments})
+            except OSError as exc:
+                self._raise_file_io_error(exc)
+            result = self._mapping_rpc(row, "api_fs_write", arguments)
+            if "error" in result:
+                error = result["error"]
+                raise ApiError(result["status"], error["code"], error["message"], error.get("details"))
+            payload = result["body"]
+            return payload["created"], SimpleNamespace(_mapping_etag=payload["etag"])
         try:
             parent = self._safe_parent(path, create_parents=create_parents)
         except ApiError as exc:
@@ -321,6 +399,9 @@ class FileOperationSupportMixin:
         stack = [(root, 0)]
         while stack:
             directory, level = stack.pop()
+            if self._mapping_root(directory) is not None:
+                yield directory  # The caller sends one query for this subtree.
+                continue
             try:
                 entries = self._directory_entries(directory)
                 entries.sort(key=lambda item: item[0].casefold(), reverse=True)
@@ -332,6 +413,9 @@ class FileOperationSupportMixin:
                 if self._is_hidden_internal_path(directory, entry) or stat.S_ISLNK(entry_stat.st_mode):
                     continue
                 relative = entry.relative_to(root).as_posix()
+                prefix = getattr(self, "search_prefix", "")
+                if prefix:
+                    relative = prefix + "/" + relative
                 if self._matches_glob(relative, excludes):
                     continue
                 if stat.S_ISREG(entry_stat.st_mode):
@@ -352,8 +436,20 @@ class FileOperationSupportMixin:
         if state["count"] >= self.server.config.max_tree_nodes:
             state["truncated"] = True
             return {"name": path.name or str(path), "path": str(path), "truncated": True}
+        mapping = self._mapping_root(path)
+        if mapping is not None:
+            return self._mapping_tree(mapping, path, max_depth - level, state)
         state["count"] += 1
-        file_stat = self._file_stat(path)
+        try:
+            file_stat = self._file_stat(path)
+        except ApiError as exc:
+            manager = getattr(self.server, "mappings", None)
+            row = manager.at_path(path) if manager is not None else None
+            if row is None or path != manager.mount_path(row):
+                raise
+            return {"name": path.name, "path": str(path), "type": "directory",
+                    "is_mapping": True, "mapping_id": row["id"], "unavailable": True,
+                    "error": {"code": exc.code, "message": exc.message}}
         if stat.S_ISDIR(file_stat.st_mode):
             kind = "directory"
         elif stat.S_ISREG(file_stat.st_mode):

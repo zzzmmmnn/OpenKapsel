@@ -72,6 +72,9 @@ class SandboxSpec:
     owner_token: str
     sandbox_image: str | None = None
     environment_file: Path | None = None
+    native_mapping_paths: tuple[Path, ...] = ()
+    denied_mapping_paths: tuple[Path, ...] = ()
+    mapping_mask_source: Path | None = None
 
 
 class SandboxBackend(Protocol):
@@ -161,6 +164,10 @@ class BubblewrapBackend:
             mode = "--ro-bind" if not spec.can_write or grant.read_only else "--bind"
             self._append_parent_dirs(argv, Path(grant.path).parent)
             argv.extend([mode, grant.path, grant.path])
+        for path in spec.native_mapping_paths:
+            argv.extend(["--bind" if spec.can_write else "--ro-bind", str(path), str(path)])
+        for path in spec.denied_mapping_paths:
+            argv.extend(["--ro-bind", str(spec.mapping_mask_source), str(path)])
         controller = None
         shell_command = spec.command
         if spec.environment_file is not None:
@@ -386,6 +393,10 @@ class PodmanBackend:
         for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
             mode = "ro" if not spec.can_write or grant.read_only else "rw"
             argv.extend(["--volume", f"{grant.path}:{grant.path}:{mode}"])
+        for path in spec.native_mapping_paths:
+            argv.extend(["--volume", f"{path}:{path}:{'rw' if spec.can_write else 'ro'}"])
+        for path in spec.denied_mapping_paths:
+            argv.extend(["--volume", f"{spec.mapping_mask_source}:{path}:ro"])
         podman_controller = PodmanController(self.executable, container_name)
         proxy = None
         try:

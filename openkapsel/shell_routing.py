@@ -129,6 +129,8 @@ class ShellRoutingMixin:
             if target == "client":
                 raise ApiError(400, "mapping_required", "client target requires cwd inside a mapping")
             return False
+        if body.get("mount_mappings"):
+            raise ApiError(400, "server_mapping_dependencies", "mount_mappings applies only to server execution")
         row = self._mapping_for_caller(row["id"])
         if not row["writable"] or not self.token_record.can_write:
             raise ApiError(403, "client_execution_requires_write", "client execution requires a writable mapping and caller")

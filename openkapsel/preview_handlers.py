@@ -65,7 +65,9 @@ class PreviewHandlersMixin:
                 ) from None
             raise
         try:
-            target.relative_to(self.token_scope_root)
+            resolved_relative = target.relative_to(self.token_scope_root)
+            if "api" in resolved_relative.parts:
+                raise ApiError(404, "preview_not_found", "preview file does not exist")
         except ValueError:
             raise ApiError(
                 HTTPStatus.FORBIDDEN,
@@ -73,34 +75,24 @@ class PreviewHandlersMixin:
                 "web preview only serves files inside the token workspace",
             ) from None
         try:
-            descriptor = self._safe_open_descriptor(target, os.O_RDONLY)
+            target_stat = self._file_stat(target)
+            if stat.S_ISDIR(target_stat.st_mode):
+                if not request_path.endswith("/"):
+                    location = request_path + "/"
+                    if raw_query:
+                        location += "?" + raw_query
+                    self._send_preview_redirect(location)
+                    return
+                target = target / "index.html"
+            handle = self._open_binary(target)
         except ApiError as exc:
             if exc.code == "path_not_found":
                 raise ApiError(HTTPStatus.NOT_FOUND, "preview_not_found", "preview file does not exist") from None
             raise
-        target_stat = os.fstat(descriptor)
-        if stat.S_ISDIR(target_stat.st_mode):
-            os.close(descriptor)
-            if not request_path.endswith("/"):
-                location = request_path + "/"
-                if raw_query:
-                    location += "?" + raw_query
-                self._send_preview_redirect(location)
-                return
-            target = target / "index.html"
-            try:
-                descriptor = self._safe_open_descriptor(target, os.O_RDONLY)
-            except ApiError as exc:
-                if exc.code == "path_not_found":
-                    raise ApiError(HTTPStatus.NOT_FOUND, "preview_not_found", "preview file does not exist") from None
-                raise
-            target_stat = os.fstat(descriptor)
-        if not stat.S_ISREG(target_stat.st_mode):
-            os.close(descriptor)
-            raise ApiError(HTTPStatus.BAD_REQUEST, "preview_not_a_file", "preview path is not a regular file")
-        handle = os.fdopen(descriptor, "rb")
         with handle:
-            file_stat = os.fstat(handle.fileno())
+            file_stat = self._stream_stat(handle)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "preview_not_a_file", "preview path is not a regular file")
             size = file_stat.st_size
             etag = self._path_etag(target, file_stat)
             if self.headers.get("If-None-Match") == etag:
@@ -195,9 +187,11 @@ class PreviewHandlersMixin:
         if ".." in parts[:api_index] or INTERNAL_DIRECTORY in parts[:api_index]:
             raise ApiError(HTTPStatus.NOT_FOUND, "api_not_found", "Workspace API does not exist")
 
+        self._require_permission(self.token_record.can_preview, "web preview permission is not granted")
         app_relative = Path(*parts[:api_index]) if api_index else Path(".")
         lexical_root = self.token_scope_root / app_relative
-        app_root = lexical_root.resolve(strict=False)
+        mapping = self.server.mappings.at_path(lexical_root)
+        app_root = lexical_root if mapping else lexical_root.resolve(strict=False)
         try:
             app_root.relative_to(self.token_scope_root)
         except ValueError:
@@ -206,17 +200,25 @@ class PreviewHandlersMixin:
                 "api_outside_workspace",
                 "Workspace API must be inside the token workspace",
             ) from None
-        if app_root != lexical_root.absolute() or not app_root.is_dir():
-            raise ApiError(HTTPStatus.NOT_FOUND, "api_not_found", "Workspace API does not exist")
-        api_root = app_root / "api"
-        entry = api_root / "app.py"
-        if (
-            api_root.is_symlink()
-            or not api_root.is_dir()
-            or entry.is_symlink()
-            or not entry.is_file()
-        ):
-            raise ApiError(HTTPStatus.NOT_FOUND, "api_not_found", "Workspace API does not exist")
+        if mapping:
+            try:
+                valid = (stat.S_ISDIR(self._file_stat(app_root).st_mode)
+                         and stat.S_ISDIR(self._file_stat(app_root / "api").st_mode)
+                         and stat.S_ISREG(self._file_stat(app_root / "api" / "app.py").st_mode))
+            except ApiError as exc:
+                if exc.code != "path_not_found":
+                    raise
+                valid = False
+            if not valid:
+                raise ApiError(404, "api_not_found", "Workspace API does not exist")
+        else:
+            if app_root != lexical_root.absolute() or not app_root.is_dir():
+                raise ApiError(HTTPStatus.NOT_FOUND, "api_not_found", "Workspace API does not exist")
+            api_root = app_root / "api"
+            entry = api_root / "app.py"
+            if (api_root.is_symlink() or not api_root.is_dir()
+                    or entry.is_symlink() or not entry.is_file()):
+                raise ApiError(HTTPStatus.NOT_FOUND, "api_not_found", "Workspace API does not exist")
 
         app_label = "" if app_relative == Path(".") else app_relative.as_posix()
         root_path = self._web_root_path().rstrip("/")

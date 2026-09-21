@@ -42,7 +42,8 @@ class ClientFiles:
         if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
             raise OSError(errno.EACCES, "only regular files and directories are exported")
         return {key: getattr(st, key) for key in
-                ("st_mode", "st_size", "st_atime", "st_mtime", "st_ctime", "st_nlink", "st_ino")}
+                ("st_mode", "st_size", "st_atime", "st_mtime", "st_ctime", "st_nlink", "st_ino",
+                 "st_dev", "st_atime_ns", "st_mtime_ns", "st_ctime_ns")}
 
     def dispatch(self, operation, args):
         if not isinstance(args, dict):
@@ -59,10 +60,10 @@ class ClientFiles:
         if self.rpc_registry.accepts(op):
             return self.rpc_registry.dispatch(self, op, args)
         if op.startswith("api_"):
-            if self.rpc_capabilities.get("file", {}).get("state") != "available":
-                raise OSError(errno.ENOSYS, "file RPC is not available")
             from .client_file_api import ClientFileAPI
             return ClientFileAPI.dispatch(self, op[4:], args)
+        if op == "fstat":
+            return self.details(os.fstat(self.handles[int(args["handle"])]))
         if op == "close":
             fd = self.handles.pop(int(args["handle"]), None)
             if fd is not None:
@@ -123,7 +124,11 @@ class ClientFiles:
                         if len(names) > 100000:
                             raise OSError(errno.E2BIG, "directory exceeds provider listing limit")
                 names.sort()
-                return {"names": names[offset:offset + 500], "total": len(names)}
+                selected = names[offset:offset + 500]
+                result = {"names": selected, "total": len(names)}
+                if args.get("include_details"):
+                    result["entries"] = {name: self.details(os.stat(name, dir_fd=fd, follow_symlinks=False)) for name in selected}
+                return result
             finally:
                 os.close(fd)
         if op in {"open", "create"}:

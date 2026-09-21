@@ -702,9 +702,8 @@ class McpHandlersMixin:
                 "chunk_too_large",
                 f"MCP binary chunks are limited to {self.server.config.mcp_binary_chunk_bytes} bytes",
             )
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        with os.fdopen(descriptor, "rb") as handle:
-            file_stat = os.fstat(handle.fileno())
+        with self._open_binary(path) as handle:
+            file_stat = self._stream_stat(handle)
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
             size = file_stat.st_size
@@ -732,13 +731,9 @@ class McpHandlersMixin:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         requested = str(arguments["path"])
         path = self._resolve_path(requested)
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        try:
-            file_stat = os.fstat(descriptor)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
-        finally:
-            os.close(descriptor)
+        file_stat = self._file_stat(path)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
         return {
             "path": str(path),
             "size": file_stat.st_size,
@@ -789,10 +784,8 @@ class McpHandlersMixin:
             url += "/" + encoded_path
         else:
             url += "/"
-        descriptor: int | None = None
         try:
-            descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-            file_stat = os.fstat(descriptor)
+            file_stat = self._file_stat(path)
             exists = True
             kind = "directory" if stat.S_ISDIR(file_stat.st_mode) else "file" if stat.S_ISREG(file_stat.st_mode) else None
         except ApiError as exc:
@@ -800,9 +793,6 @@ class McpHandlersMixin:
                 raise
             exists = False
             kind = None
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
         if kind == "directory" and not url.endswith("/"):
             url += "/"
         return {

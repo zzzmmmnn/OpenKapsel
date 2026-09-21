@@ -5,6 +5,7 @@ import json
 import os
 import time
 import unittest
+from unittest.mock import patch
 from openkapsel.client_tasks import ClientTasks
 from tests import test_mapping_file_api as fixture
 from tests import test_oauth
@@ -50,7 +51,9 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.finished(remote["task_id"])
         self.assertEqual("client", (self.export / "nested/result").read_text())
         self.assertFalse((self.mount / "nested/result").exists())
-        status, local = self.api("/shell/exec", {"command": "printf server", "cwd": "laptop", "target": "server"})
+        with patch.object(self.server.mappings, "mount") as mounted:
+            status, local = self.api("/shell/exec", {"command": "printf server", "cwd": "laptop", "target": "server"})
+        mounted.assert_called_once()
         self.assertEqual(202, status, local)
         self.assertEqual("server", local["location"])
         self.assertEqual("server", self.finished(local["task_id"])["stdout"])

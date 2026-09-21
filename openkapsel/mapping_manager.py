@@ -1,4 +1,4 @@
-"""Mapping lifecycle, session fencing, and isolated per-mount FUSE workers."""
+"""RPC-first mappings, session fencing, and leased native FUSE views."""
 
 from __future__ import annotations
 
@@ -22,20 +22,18 @@ LOG = logging.getLogger("openkapsel.mappings")
 
 class MappingManager:
     def __init__(
-        self,
-        root,
-        state_dir,
-        *,
-        enabled=False,
-        mount_helper=None,
-        rpc_timeout_seconds=90.0,
-        provider_idle_timeout_seconds=60.0,
+        self, root, state_dir, *, enabled=False, mount_helper=None,
+        rpc_timeout_seconds=90.0, provider_idle_timeout_seconds=60.0,
+        fuse_enabled=True, max_active_mounts=16, mount_idle_seconds=30.0,
     ):
         self.root = root
         self.store = MappingStore(state_dir / "mappings.sqlite3")
         self.run_dir = root.parent / "mapping-run"
         self.run_dir.mkdir(mode=0o700, exist_ok=True)
         self.enabled = enabled
+        self.fuse_enabled = fuse_enabled
+        self.max_active_mounts = max_active_mounts
+        self.mount_idle_seconds = float(mount_idle_seconds)
         self.mount_helper = mount_helper
         self.rpc_timeout_seconds = float(rpc_timeout_seconds)
         self.provider_idle_timeout_seconds = float(provider_idle_timeout_seconds)
@@ -46,45 +44,164 @@ class MappingManager:
         self.ipc = None
         self.socket_path = self.run_dir / "broker.sock"
         self.slots = threading.BoundedSemaphore(64)
+        self.mount_references = {}
+        self.mount_idle_since = {}
+        self._closing = threading.Event()
+        self._mount_janitor = None
         if enabled:
-            if sys.platform != "linux":
-                raise ValueError("server mappings require Linux FUSE")
-            manager = self
-            class IPCHandler(socketserver.StreamRequestHandler):
-                def handle(self):
-                    self.connection.settimeout(manager.rpc_timeout_seconds + 5)
-                    try:
-                        request = recv_line(self.rfile)
-                        result = manager.call(request["mapping_id"], request["op"], request["args"])
-                        response = {"result": result}
-                    except (OSError, ValueError, KeyError) as exc:
-                        response = {"error": getattr(exc, "errno", None) or errno.EIO}
-                    self.wfile.write(encode(response) + b"\n")
-            class IPCServer(socketserver.ThreadingUnixStreamServer):
-                daemon_threads = True
-                def process_request(self, request, address):
-                    if not manager.slots.acquire(blocking=False):
-                        request.close()
-                        return
-                    try:
-                        super().process_request(request, address)
-                    except BaseException:
-                        manager.slots.release()
-                        raise
-                def process_request_thread(self, request, address):
-                    try:
-                        super().process_request_thread(request, address)
-                    finally:
-                        manager.slots.release()
-            self.socket_path.unlink(missing_ok=True)
-            self.ipc = IPCServer(str(self.socket_path), IPCHandler)
-            os.chmod(self.socket_path, 0o600)
-            threading.Thread(target=self.ipc.serve_forever, daemon=True).start()
+            # Configuration and provider connections do not require Linux/FUSE.
+            # Detach mounts belonging to an earlier server generation, then keep
+            # an inaccessible reservation so missed native access fails closed.
             for row in self.store.list():
                 try:
+                    if os.path.ismount(self.mount_path(row)):
+                        self.unmount(row)
+                    self.prepare(row)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    LOG.error("Could not reserve mapping path %s", row["id"])
+
+    def prepare(self, row):
+        """Reserve a name without exposing a writable local backing directory."""
+        with self.lock:
+            path = self.mount_path(row)
+            if os.path.ismount(path):
+                return path
+            if path.is_symlink():
+                raise ValueError("mapping mountpoint cannot be a symlink")
+            path.mkdir(mode=0o700, exist_ok=True)
+            path.chmod(0o700)
+            try:
+                if next(path.iterdir(), None) is not None:
+                    raise ValueError("mapping mountpoint must be empty")
+            finally:
+                path.chmod(0)
+            return path
+
+    def _start_broker(self):
+        if self.ipc is not None:
+            return
+        manager = self
+        class IPCHandler(socketserver.StreamRequestHandler):
+            def handle(self):
+                self.connection.settimeout(manager.rpc_timeout_seconds + 5)
+                try:
+                    request = recv_line(self.rfile)
+                    result = manager.call(request["mapping_id"], request["op"], request["args"])
+                    response = {"result": result}
+                except (OSError, ValueError, KeyError) as exc:
+                    response = {"error": getattr(exc, "errno", None) or errno.EIO}
+                self.wfile.write(encode(response) + b"\n")
+        class IPCServer(socketserver.ThreadingUnixStreamServer):
+            daemon_threads = True
+            def process_request(self, request, address):
+                if not manager.slots.acquire(blocking=False):
+                    request.close()
+                    return
+                try:
+                    super().process_request(request, address)
+                except BaseException:
+                    manager.slots.release()
+                    raise
+            def process_request_thread(self, request, address):
+                try:
+                    super().process_request_thread(request, address)
+                finally:
+                    manager.slots.release()
+        self.socket_path.unlink(missing_ok=True)
+        self.ipc = IPCServer(str(self.socket_path), IPCHandler)
+        os.chmod(self.socket_path, 0o600)
+        threading.Thread(target=self.ipc.serve_forever, daemon=True).start()
+
+    def _is_mounted(self, row):
+        worker = self.workers.get(row["id"])
+        return bool(row["id"] in self.host_mounts or (worker and worker.poll() is None))
+
+    def acquire(self, rows):
+        """Pin native mounts for one server process, all-or-rollback."""
+        from .mapping_leases import MountLease
+        acquired = []
+        with self.lock:
+            if self._closing.is_set():
+                raise OSError(errno.EBUSY, "mapping manager is shutting down")
+            try:
+                for mid in sorted({row["id"] for row in rows}):
+                    row = self.store.get(mid)
+                    self.check_path(self.mount_path(row))
+                    if not self.workspace_available(row["workspace"]):
+                        raise OSError(errno.EACCES, "workspace is unavailable")
                     self.mount(row)
-                except (OSError, ValueError):
-                    LOG.error("Could not mount mapping %s; access remains unavailable", row["id"])
+                    self.mount_references[mid] = self.mount_references.get(mid, 0) + 1
+                    self.mount_idle_since.pop(mid, None)
+                    acquired.append(mid)
+            except BaseException:
+                self.release(acquired, immediate=True)
+                raise
+            if acquired and self._mount_janitor is None:
+                self._mount_janitor = threading.Thread(target=self._reap_loop, daemon=True)
+                self._mount_janitor.start()
+        return MountLease(self, acquired)
+
+    def execution_mappings(self, workspace, cwd, names=()):
+        """Resolve declared dependencies; never guess paths in shell source."""
+        if not isinstance(names, (list, tuple)) or len(names) > 256 or any(not isinstance(n, str) or not n for n in names):
+            raise ValueError("mount_mappings must be an array of at most 256 mapping names or IDs")
+        rows = self.store.list(workspace)
+        selected = {}
+        for name in names:
+            row = next((r for r in rows if name in (r["name"], r["id"])), None)
+            if row is None:
+                raise ValueError("declared mapping does not belong to this workspace")
+            selected[row["id"]] = row
+        row = self.at_path(Path(os.path.abspath(cwd)))
+        if row is not None:
+            if row["workspace"] != workspace:
+                raise ValueError("mapping does not belong to this workspace")
+            selected[row["id"]] = row
+        return list(selected.values())
+
+    def release(self, ids, *, immediate=False):
+        with self.lock:
+            for mid in ids:
+                count = self.mount_references.get(mid, 0)
+                if count > 1:
+                    self.mount_references[mid] = count - 1
+                    continue
+                self.mount_references.pop(mid, None)
+                self.mount_idle_since[mid] = time.monotonic()
+                if immediate or self.mount_idle_seconds == 0:
+                    try:
+                        self.unmount(self.store.get(mid))
+                    except (KeyError, OSError, ValueError, subprocess.SubprocessError):
+                        LOG.warning("Could not release mapping mount %s", mid)
+
+    def require_idle(self, mid):
+        if self.mount_references.get(mid, 0):
+            raise OSError(errno.EBUSY, "mapping is used by a server task or API worker; stop it first")
+
+    def reap_idle_mounts(self):
+        with self.lock:
+            now = time.monotonic()
+            for mid, idle_since in list(self.mount_idle_since.items()):
+                if self.mount_references.get(mid, 0) or now - idle_since < self.mount_idle_seconds:
+                    continue
+                try:
+                    self.unmount(self.store.get(mid))
+                except (KeyError, OSError, ValueError, subprocess.SubprocessError):
+                    LOG.warning("Could not reap mapping mount %s", mid)
+
+    def _reap_loop(self):
+        while not self._closing.wait(5):
+            self.reap_idle_mounts()
+
+    def empty_view(self):
+        """Read-only, inaccessible source for undeclared sandbox mappings."""
+        with self.lock:
+            path = self.run_dir / "unavailable"
+            if path.is_symlink():
+                raise ValueError("mapping mask cannot be a symlink")
+            path.mkdir(mode=0, exist_ok=True)
+            path.chmod(0)
+            return path
 
     def mount_path(self, row):
         workspace = self.root / row["workspace"]
@@ -93,9 +210,17 @@ class MappingManager:
         return workspace / row["name"]
 
     def mount(self, row):
-        if not self.enabled:
-            raise ValueError("mappings_enabled must be enabled in server configuration")
+        if not self.enabled or not self.fuse_enabled:
+            raise OSError(errno.ENOTSUP, "native mapping mounts are disabled; use client execution or RPC")
+        if sys.platform != "linux":
+            raise OSError(errno.ENOTSUP, "native mapping mounts require Linux FUSE; RPC does not")
         with self.lock:
+            if not self._is_mounted(row):
+                self.reap_idle_mounts()
+                active = len(self.host_mounts) + sum(p.poll() is None for p in self.workers.values())
+                if active >= self.max_active_mounts:
+                    raise OSError(errno.EBUSY, "active mapping mount limit reached")
+            self._start_broker()
             if self.mount_helper is not None:
                 self._host_mount(row)
                 return
@@ -175,7 +300,9 @@ class MappingManager:
                 worker = self.workers.get(row["id"])
                 row.update(online=bool(session and not session.closed and session.capabilities),
                            mounted=bool(row["id"] in self.host_mounts or (worker and worker.poll() is None)),
-                           path=row["name"], capabilities=session.capabilities if session else {})
+                           path=row["name"], capabilities=session.capabilities if session else {},
+                           mount_references=self.mount_references.get(row["id"], 0),
+                           native_mounts_enabled=self.fuse_enabled)
         return rows
 
     def at_path(self, path):
@@ -202,7 +329,7 @@ class MappingManager:
                 raise OSError(errno.EROFS, "mapping is read-only")
         return row
 
-    def call(self, mid, op, args):
+    def call(self, mid, op, args, *, generation=None):
         row = self.store.get(mid)
         if not self.workspace_available(row["workspace"]):
             self.disconnect(mid)
@@ -213,6 +340,8 @@ class MappingManager:
                 raise OSError(errno.EACCES, "mapping is disabled")
             if session is None or session.closed:
                 raise OSError(errno.EHOSTDOWN, "mapping client is offline")
+        if generation is not None and session.generation != generation:
+            raise OSError(errno.ESTALE, "mapping provider changed during the operation")
         if op.startswith("task_"):
             if op == "task_start" and isinstance(args.get("rpc"), dict):
                 rpc_request = args["rpc"]
@@ -389,7 +518,7 @@ class MappingManager:
         with self.lock:
             # Authentication may precede a concurrent rename or rotation.
             row = self.store.authenticate(row["id"], handler.headers["Authorization"][7:])
-            self.mount(row)
+            self.prepare(row)
             existing = self.sessions.get(row["id"])
             if existing and not existing.closed:
                 raise ValueError("mapping already has an active provider")
@@ -422,66 +551,62 @@ class MappingManager:
             session.close()
 
     def rename(self, mid, name):
-        """Change only the server mountpoint; provider identity stays stable."""
+        """Rename an idle virtual root without mounting or changing identity."""
         self.store.validate_name(name)
         with self.lock:
             row = self.store.get(mid)
             if name == row["name"]:
                 return row
+            self.require_idle(mid)
             if any(r["name"] == name for r in self.store.list(row["workspace"])):
                 raise ValueError("mapping name is already registered")
             old_path = self.mount_path(row)
             new_path = old_path.with_name(name)
-            # Reserve exclusively, rejecting files, directories and dangling links.
-            new_path.mkdir(mode=0o700)
-            changed = False
+            new_path.mkdir(mode=0)
             try:
                 self.unmount(row)
                 updated, _ = self.store.update(mid, name=name)
-                changed = True
-                self.mount(updated)
-            except Exception:
-                if changed:
-                    self.unmount(self.store.get(mid))
-                    self.store.update(mid, name=row["name"])
-                try:
-                    self.mount(row)
-                finally:
-                    # Only remove our empty reservation, never client content.
-                    if not os.path.ismount(new_path):
-                        try:
-                            new_path.rmdir()
-                        except OSError:
-                            pass
+            except BaseException:
+                new_path.rmdir()
                 raise
-            # An old backing directory contains no client data. Refuse to delete
-            # unexpected contents if another local process populated it.
-            old_path.rmdir()
+            try:
+                old_path.rmdir()
+            except FileNotFoundError:
+                pass
             return updated
 
-    def unmount(self, row):
-        self.disconnect(row["id"])
-        if self.mount_helper is not None:
-            from .workspace_images import WorkspaceImageError
-            try:
-                self.mount_helper._request("mapping_unmount", id=row["id"], workspace=row["workspace"], name=row["name"])
-                self.host_mounts.discard(row["id"])
-                return
-            except WorkspaceImageError as exc:
-                raise OSError(errno.EIO, str(exc)) from None
+    def unmount(self, row, *, force=False):
+        """Release only the native view. Provider sessions and RPC stay alive."""
         with self.lock:
-            process = self.workers.pop(row["id"], None)
+            if not force:
+                self.require_idle(row["id"])
             path = self.mount_path(row)
-            if os.path.ismount(path):
-                subprocess.run([self._fusermount(), "-uz", str(path)], check=True, capture_output=True, timeout=10)
-            if process and process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
+            if self.mount_helper is not None:
+                from .workspace_images import WorkspaceImageError
+                try:
+                    if row["id"] in self.host_mounts or os.path.ismount(path):
+                        self.mount_helper._request("mapping_unmount", id=row["id"], workspace=row["workspace"], name=row["name"])
+                    self.host_mounts.discard(row["id"])
+                except WorkspaceImageError as exc:
+                    raise OSError(errno.EIO, str(exc)) from None
+            else:
+                process = self.workers.get(row["id"])
+                if os.path.ismount(path):
+                    subprocess.run([self._fusermount(), "-uz", str(path)], check=True, capture_output=True, timeout=10)
+                if process and process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                self.workers.pop(row["id"], None)
+            self.mount_idle_since.pop(row["id"], None)
 
     def close(self):
+        self._closing.set()
+        if self._mount_janitor is not None:
+            self._mount_janitor.join(timeout=2)
         for row in self.store.list():
+            self.disconnect(row["id"])
             try:
-                self.unmount(row)
+                self.unmount(row, force=True)
             except (OSError, ValueError, subprocess.SubprocessError):
                 LOG.warning("Mapping unmount needs attention: %s", row["id"])
         if self.ipc:

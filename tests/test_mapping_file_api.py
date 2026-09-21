@@ -39,7 +39,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         def call(op, args):
             self.calls.append((op, args))
             return self.files.dispatch(op, args)
-        self.session = SimpleNamespace(closed=False, capabilities={"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
+        self.session = SimpleNamespace(closed=False, generation="fixture", capabilities={"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
         self.server.mappings.sessions[self.row["id"]] = self.session
 
     def tearDown(self):
@@ -98,17 +98,17 @@ class MappingFileHTTPTests(unittest.TestCase):
             self.assertEqual(before + 1, len(self.calls))
         self.session.capabilities["file_api"]["version"] = 1
         self.assertFalse(self.server.mappings.supports_file_api(self.row["id"], "fs_manifest", min_version=2))
-        # Simulate the old client's FUSE view and ensure filters are not silently
-        # sent to a client which cannot implement them.
+        # An old native backing view must not turn into an RPC fallback or
+        # receive filters the old client cannot implement.
         (self.mount / "a.py").write_text("needle")
         (self.mount / "b.txt").write_text("needle")
         before = len(self.calls)
         status, result = self.api("/fs/search?path=laptop&query=needle&include=*.py")
-        self.assertEqual(200, status, result)
-        self.assertEqual(1, result["match_count"])
+        self.assertEqual(409, status, result)
+        self.assertEqual("mapping_rpc_unsupported", result["error"]["code"])
         self.assertEqual(before, len(self.calls))
 
-    def test_file_rpc_disabled_can_fallback_but_offline_and_mapping_disabled_do_not(self):
+    def test_legacy_disabled_file_rpc_offline_and_mapping_disabled_never_fallback(self):
         (self.mount / "fallback").write_text("fuse")
         self.session.capabilities = {
             "rpc": {
@@ -121,8 +121,8 @@ class MappingFileHTTPTests(unittest.TestCase):
             }
         }
         status, body = self.api("/fs/list?path=laptop")
-        self.assertEqual(200, status, body)
-        self.assertEqual(["fallback"], [entry["name"] for entry in body["entries"]])
+        self.assertEqual(403, status, body)
+        self.assertEqual("mapping_rpc_disabled", body["error"]["code"])
         self.assertEqual([], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
@@ -136,22 +136,20 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual(403, status, body)
         self.assertEqual("mapping_disabled", body["error"]["code"])
 
-    def test_fuse_and_direct_rpc_etags_share_client_identity(self):
+    def test_binary_stream_and_direct_rpc_etags_share_client_identity(self):
+        from openkapsel.mapping_io import WorkspaceFiles, stream_stat
         (self.export / "a").write_text("same file")
-        actual = (self.export / "a").stat()
-        # FUSE synthesizes device/inode values, while timestamps describe the
-        # provider's file. Binary/preview and mixed-root paths must agree with RPC.
-        synthetic = SimpleNamespace(st_dev=actual.st_dev + 1, st_ino=actual.st_ino + 1,
-                                    st_size=actual.st_size, st_mtime=actual.st_mtime,
-                                    st_ctime=actual.st_ctime, st_mtime_ns=actual.st_mtime_ns)
-        handler = object.__new__(WorkspaceRequestHandler)
-        handler.server = self.server
-        self.assertNotEqual(handler._stat_etag(actual), handler._stat_etag(synthetic))
-        self.assertEqual(handler._stat_etag(actual), handler._path_etag(self.mount / "a", synthetic))
+        scope = self.server.tokens.scope_root(self.record)
+        backend = WorkspaceFiles(self.server.mappings, (scope,))
+        with backend.open(self.mount / "a") as stream:
+            actual = stream_stat(stream)
+        status, body = self.api("/fs/stat?path=laptop/a&fields=etag")
+        self.assertEqual(200, status, body)
+        self.assertEqual(WorkspaceRequestHandler._stat_etag(actual), body["etag"])
+        old_etag = body["etag"]
         (self.export / "a").write_text("changed file")
-        with self.assertRaises(ApiError) as error:
-            handler._path_etag(self.mount / "a", synthetic)
-        self.assertEqual(error.exception.code, "path_changed")
+        status, body = self.api("/fs/stat?path=laptop/a&fields=etag")
+        self.assertNotEqual(old_etag, body["etag"])
 
     def test_missing_context_readonly_mapping_and_protected_paths_are_rejected_before_rpc(self):
         status, _, _ = self.request("POST", self.base + "/fs/write", json.dumps({"path": "laptop/a", "content": "x"}), self.headers)
@@ -166,12 +164,12 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual(errno.EROFS, error.exception.errno)
         self.assertEqual([], self.calls)
 
-    def test_old_client_falls_back_before_send_but_ambiguous_write_is_never_replayed(self):
+    def test_old_client_is_rejected_and_ambiguous_write_is_never_replayed(self):
         self.session.capabilities = {}
         (self.mount / "fallback").write_text("old transport")
         status, body = self.api("/fs/list?path=laptop")
-        self.assertEqual(200, status, body)
-        self.assertEqual("fallback", body["entries"][0]["name"])
+        self.assertEqual(409, status, body)
+        self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
         self.assertEqual([], self.calls)
         self.session.capabilities = {"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}
         original = self.session.call

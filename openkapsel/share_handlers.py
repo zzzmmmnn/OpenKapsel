@@ -30,17 +30,26 @@ class ShareHandlersMixin:
                 "share_workspace_root_forbidden",
                 "share one file or one directory, not the entire workspace root",
             )
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        try:
-            record, evicted = self.server.shares.create(
-                descriptor,
-                path.name,
-                self.token_record.app_id,
-            )
-        except ShareError as exc:
-            self._raise_share_error(exc)
-        finally:
-            os.close(descriptor)
+        if self.server.mappings.at_path(path) is not None:
+            from .mapping_shares import create_share
+            try:
+                record, evicted = create_share(self, path)
+            except ShareError as exc:
+                self._raise_share_error(exc)
+            except OSError as exc:
+                self._raise_file_io_error(exc)
+        else:
+            descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
+            try:
+                record, evicted = self.server.shares.create(
+                    descriptor,
+                    path.name,
+                    self.token_record.app_id,
+                )
+            except ShareError as exc:
+                self._raise_share_error(exc)
+            finally:
+                os.close(descriptor)
         payload = record.public()
         payload["query_url"] = self._share_query_url(record.id)
         if evicted is not None:
@@ -90,11 +99,20 @@ class ShareHandlersMixin:
                 "share_import_workspace_root_forbidden",
                 "destination must name a new file or directory inside the workspace",
             )
-        with self._safe_parent(destination, create_parents=create_parents) as parent:
+        if self.server.mappings.at_path(destination) is not None:
+            from .mapping_shares import import_share
             try:
-                record = self.server.shares.import_into(share_id, parent.fd, parent.name)
+                record = import_share(self, share_id, destination, create_parents=create_parents)
             except ShareError as exc:
                 self._raise_share_error(exc)
+            except OSError as exc:
+                self._raise_file_io_error(exc)
+        else:
+            with self._safe_parent(destination, create_parents=create_parents) as parent:
+                try:
+                    record = self.server.shares.import_into(share_id, parent.fd, parent.name)
+                except ShareError as exc:
+                    self._raise_share_error(exc)
         self._send_json(
             HTTPStatus.CREATED,
             {

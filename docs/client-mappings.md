@@ -4,7 +4,7 @@
 
 ## Direction and storage
 
-A Python client exports a local directory to a Linux OpenKapsel server over an outbound WebSocket connection. FUSE makes it appear below a workspace. No client FUSE driver, inbound client port, directory synchronization, or full server-side copy is required.
+A Python client exports a local directory over an outbound WebSocket connection. File APIs expose it as a virtual child directory and operate directly over RPC. Native FUSE mounts are optional and are acquired only when a server Shell task or FastAPI application needs a real filesystem path. Neither registration nor provider connection starts a FUSE worker. No client FUSE driver, inbound client port, directory synchronization, or full server-side copy is required. See [RPC-first operation and migration](mapping-rpc-first.md).
 
 Each mapping is independently registered for one workspace and a single child directory name. Multiple mappings may share a workspace. All caller permissions still apply. Provider tokens are independent of the rotating REST tokens and are stored hashed by the server. Editing or rotating a mapping disconnects the provider. Only one active provider is accepted per mapping.
 
@@ -12,11 +12,11 @@ Mapped content consumes client storage, not the workspace image quota. Server AP
 
 ## Server setup
 
-Install the declared Python dependencies and Linux FUSE userspace support (`libfuse2` or the distribution's `libfuse2t64`, plus `fuse3` providing `fusermount`). The service unit allows `/dev/fuse`; do not run the main service as root or enable `allow_other`.
+Install the declared Python dependencies. RPC-only file operations do not need `/dev/fuse` or a native mount helper. For optional server-side native execution, also install Linux FUSE userspace support (`libfuse2` or the distribution's `libfuse2t64`, plus `fuse3` providing `fusermount`). The service unit allows `/dev/fuse`; do not run the main service as root or enable `allow_other`. Set `mapping_fuse_enabled=false` to prohibit native mounts altogether.
 
 Set `"mappings_enabled": true` in the server configuration and restart the service. The default is false. The existing reverse proxy must forward WebSocket upgrades on the normal application prefix. Caddy's normal `reverse_proxy` handles this; no separate client-facing port is needed.
 
-Open **Administration → Client mappings**, choose the workspace, directory name, writable state, and optional client execution permission. Save the generated client configuration: the provider token is shown only once. The name must not already exist. Up to 16 mappings are supported.
+Open **Administration → Client mappings**, choose the workspace, directory name, writable state, and optional client execution permission. Save the generated client configuration: the provider token is shown only once. The name must not already exist. There is no fixed 16-registration limit. `max_active_mapping_mounts` defaults to 16 and limits concurrently active native FUSE mounts, not registrations or connected providers.
 
 Expand an existing mapping to edit its directory name. Renaming changes only the server mountpoint: the mapping ID, provider credential, client root and recycle store remain unchanged. The provider disconnects and can reconnect with its existing configuration. Stop active transfers/tasks first; open handles and running sandboxes may still refer to the old mount. Existing destination names are never overwritten.
 
@@ -45,7 +45,6 @@ Keep the configuration outside the exported directory and source control. On POS
   "allow_exec": false,
   "transport_timeout_seconds": 60,
   "rpc": {
-    "file": true,
     "git": true,
     "archive": true
   },
@@ -61,13 +60,18 @@ If local DNS returns a proxy's synthetic address (for example an address from `1
 
 ## Files, recycling, and transfers
 
-Use normal file APIs, server Shell, and backend filesystem operations for mapped paths. `GET /mappings` reports online state, writable state, and client capabilities. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
+Use normal file APIs and client RPC for mapped paths; explicit server Shell and FastAPI execution acquire native views only when needed. `GET /mappings` reports online state, writable state, client capabilities, mount state, and native mount reference counts. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
 
-Updated clients advertise a generic `capabilities.rpc` map. Each RPC family reports
-one of `available`, `unsupported`, or `disabled`; the server derives `offline`
-when the provider session is absent. The client configuration can independently
-enable or disable each implemented family with `rpc.file`, `rpc.git`, and
-`rpc.archive`. Git is reported as `unsupported` when enabled but the local Git
+Updated clients advertise a generic `capabilities.rpc` map. Core file RPC is
+always enabled and reports `available`; its version and supported operations
+are still negotiated. Optional extensions report `available`, `unsupported`, or
+`disabled`; the server derives `offline` when the provider session is absent.
+The client configuration can independently enable or disable extensions with
+`rpc.git`, `rpc.archive`, and registered plugin family names. The removed
+`rpc.file` key is rejected: delete it from older client configurations before
+starting the updated client. Read/write restrictions remain controlled by the
+caller token, mapping permissions, and client `writable` setting.
+Git is reported as `unsupported` when enabled but the local Git
 executable is missing. Legacy `file_api` and `git_api` advertisements remain
 accepted during rolling upgrades.
 
@@ -118,27 +122,46 @@ the normal REST response. For example, SHA-256 calculation sends back the digest
 rather than transferring the file to the server, and directory listing returns
 metadata in one RPC.
 
-The fast path supports list, stat/hash, text read (including byte offsets), tree,
-search, text write, replace, mkdir, same-mapping move, recoverable delete, and
-same-mapping manifest/replace/delete batches, multi-file text reads, glob-filtered
-search, and recursive manifests with optional SHA256. The latter three require
-version 2; older clients retain the FUSE fallback. REST and MCP callers keep their
-existing endpoints, request fields, permissions, and Context attribution. Server
-Explicit server-target Shell and application filesystem access still use FUSE. Binary streaming,
-resumable uploads, cross-root transfers, and batches spanning multiple storage
-roots retain their existing paths.
+The file RPC path supports list, stat/hash, text read (including byte offsets),
+tree, search, text write, replace, mkdir, same-mapping move, recoverable delete,
+and same-mapping manifest/replace/delete batches. Multi-file reads, filtered
+search and recursive manifests require the corresponding client capabilities;
+text codecs and exact newline preservation require file RPC version 3.
 
-File RPC is an optimization over the existing FUSE path, so an older client,
-a client with `rpc.file=false`, an unsupported file operation, an oversized
-request, or a server limit above the client operation ceiling may use FUSE when
-that fallback is decided before an RPC is sent. An offline mapping or an
-administrator-disabled mapping never falls back to FUSE. RPC messages are bounded
-to 1 MiB. An oversized response returns `mapping_response_too_large` (413): use
-a smaller page, read limit, tree depth, or batch. A timeout or disconnection after
-dispatch is never automatically replayed; check the affected paths before
-retrying a mutation whose result is unknown. The same applies to an oversized
-response reporting `mutation_may_have_completed: true`. Client-side path guards, protected
-internal directories, and both mapping and local write restrictions still apply.
+Binary downloads, static Web Preview, direct uploads, resumable upload commits,
+shared snapshots/imports, cross-root copies/moves, and mixed-root batches use a
+common guarded local/RPC backend. Root listings merge registered mappings without
+opening native mountpoints or contacting providers. A root search, tree, or
+recursive manifest sends one coarse query per visited mapping, with the remaining
+depth and result/node budget. Search filtering and SHA-256 calculation stay on
+the client; the server merges results rather than downloading remote files.
+Search globs remain relative to the original request root. Slash-containing
+globs across a mapping boundary require the client's `file_stream.search_prefix`
+capability; older clients return an upgrade error rather than ignoring filters.
+Search reports failed mappings in `unavailable_mappings` and sets `truncated=true`;
+tree/recursive manifest entries use `is_mapping`, `mapping_id`, `unavailable`,
+and `error`. In both cases successful local/other-mapping results remain usable.
+Traversal crosses a mapping boundary through RPC;
+an unavailable mapping remains identified rather than appearing as an empty
+ordinary directory. Direct streaming clients advertise `file_stream.version=1`
+and provide descriptor metadata, including device/inode identity and nanosecond
+timestamps. Upgrade clients before using these paths with an RPC-first server.
+
+File RPC is not a FUSE optimization anymore: unsupported client operations
+return a capability error, and oversized requests return an explicit size error.
+Legacy clients advertising disabled file RPC are still rejected, not overridden.
+No ordinary file request mounts FUSE or silently accesses an existing native view.
+RPC messages remain bounded to 1 MiB; raw file streams use bounded chunks. An
+oversized response returns `mapping_response_too_large` (413): use a smaller page,
+read limit, tree depth, or batch, or a binary transfer for large content.
+
+A timeout or disconnect after dispatch is never automatically replayed. Inspect
+the affected paths before retrying a mutation with an unknown result. This also
+applies to an oversized response with `mutation_may_have_completed: true`.
+Streams remain bound to one provider generation; reconnecting invalidates old
+handles instead of redirecting in-progress I/O to a replacement provider.
+Client path guards, protected internal directories, and mapping/client write
+restrictions still apply. Unmounted backing directories are inaccessible.
 
 Git RPC family `git` version `2` keeps `status`, `diff`,
 `diff_stat`, `log`, `show`, and `ls_files` as `write=false,
@@ -201,6 +224,9 @@ Local task limits can be set in `limits`: `max_tasks` (1–16), `max_seconds` (1
 `POST /recycle/purge` removes one selected recycle entry permanently. It requires the root selector, entry ID, normal mutation Context, and `confirm: true`.
 
 ## Validation status
+
+The deployment checks below describe the original always-mounted implementation.
+For the RPC-first refactor, consult [validation and remaining deployment checks](mapping-rpc-first.md#validation). Its automated regression coverage does not by itself validate a real Linux FUSE mount or native Windows behavior.
 
 Validated with a Linux server and a native macOS client over a SOCKS5 proxy: REST read/write/rename, client-local recycle/restore, cross-root copy/move, Podman Shell access, client stdin/output/interrupt/kill, offline errors, and reconnect after service restart. A 300 MiB sparse client file was visible without consuming that size in the server workspace image; this is not a large-file throughput benchmark.
 

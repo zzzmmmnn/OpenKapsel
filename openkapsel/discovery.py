@@ -1105,7 +1105,7 @@ class DiscoveryMixin:
                 "fs_list": {
                     "method": "GET",
                     "url": f"{base}/fs/list?path=<path>&offset=0&limit=1000",
-                    "notes": "path may be root-relative or an absolute path inside root",
+                    "notes": "path may be root-relative or an absolute path inside root. Root listings show virtual mapping entries with is_mapping and mapping_id without contacting providers; listing inside a mapping uses client RPC, not a native mount.",
                     "query": {
                         "path": ".",
                         "offset": 0,
@@ -1168,13 +1168,13 @@ class DiscoveryMixin:
                     },
                     "response_statuses": ["missing", "same", "conflict", "exists"],
                     "recursive_json": {"recursive": True, "path": ".", "depth": 8, "include_sha256": False},
-                    "recursive_notes": "Alternative to items (mutually exclusive): flat recursive metadata including root, bounded by depth and max_tree_nodes. Returns path/type/size/modified_at, optional SHA256 for regular files, total and truncated. Depth 0 includes only root; depth 1 includes direct children. Symlinks are never followed. SHA256 reads file contents locally on a mapping client; results are not a transactional directory snapshot.",
+                    "recursive_notes": "Alternative to items (mutually exclusive): flat recursive metadata including root, bounded by depth and max_tree_nodes. Returns path/type/size/modified_at, optional SHA256 for regular files, total and truncated. Depth 0 includes only root; depth 1 includes direct children. Symlinks are never followed. Mapping subtrees are queried and hashed on each client with the remaining global budget; unavailable mapping nodes include is_mapping, mapping_id, unavailable and error. Results are not a transactional directory snapshot.",
                     "notes": "bounded multi-path status and synchronization preflight; hashes are calculated only when expected or explicitly requested",
                 },
                 "fs_search": {
                     "method": "GET",
                     "url": f"{base}/fs/search?path=.&query=<text>&depth=8&max_results=100",
-                    "notes": "searches UTF-8 text; supports regex and case_sensitive flags. Repeated include/exclude globs: slash-free patterns match basenames, others match root-relative POSIX paths; case-sensitive fnmatch semantics (* spans /). Exclude wins and prunes matching directories. Up to 64 patterns per group, 512 characters each.",
+                    "notes": "searches UTF-8 text; supports regex and case_sensitive flags. Repeated include/exclude globs: slash-free patterns match basenames, others match root-relative POSIX paths; case-sensitive fnmatch semantics (* spans /). Exclude wins and prunes matching directories. Up to 64 patterns per group, 512 characters each. Each visited mapping subtree is searched on its client, preserving the original glob root and remaining depth/result budget. unavailable_mappings plus truncated=true report incomplete results; never assume an unavailable mapping has no matches.",
                     "query": {
                         "path": ".",
                         "query": "<required text or regex>",
@@ -1190,7 +1190,7 @@ class DiscoveryMixin:
                 "fs_tree": {
                     "method": "GET",
                     "url": f"{base}/fs/tree?path=.&depth=2",
-                    "notes": "returns a nested directory tree bounded by depth and max_tree_nodes",
+                    "notes": "returns a nested directory tree bounded by depth and max_tree_nodes; mapping subtrees are listed on their clients with the remaining global budget, without native mounts. Mapping roots have is_mapping and mapping_id; unavailable roots also contain unavailable and error.",
                     "query": {
                         "path": ".",
                         "depth": 2,
@@ -1411,11 +1411,13 @@ class DiscoveryMixin:
                     "method": "POST",
                     "url": f"{base}/shell/exec",
                     "target_values": ["auto", "server", "client"],
+                    "native_dependencies": "Server tasks acquire the cwd mapping automatically. Declare other workspace mapping names/IDs with mount_mappings; command text is not inspected. FastAPI uses api/mappings.json with the same field. Native mounts are leased for the process lifetime, not per HTTP request.",
                     "routing": "Default auto uses client RPC when cwd is inside a mapping; otherwise server. Explicit server executes on server even for a mapped cwd; client requires a mapped cwd. Command text is never inspected for cd. Offline/denied/old clients fail closed, never fall back.",
                     "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /tasks get/output/stream/stdin/interrupt/kill; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
                     "json": {
                         "command": "<shell command>",
                         "target": "auto",
+                        "mount_mappings": [],
                         "cwd": "<path inside root>",
                         "timeout_seconds": None,
                         "interactive": False,
@@ -1629,15 +1631,22 @@ class DiscoveryMixin:
         from .mapping_transport import FILE_API_OPERATIONS, MAX_MESSAGE
         payload["capabilities"]["mappings"] = {
             "enabled": self.server.config.mappings_enabled,
+            "native_mounts": {
+                "enabled": self.server.config.mapping_fuse_enabled,
+                "max_active": self.server.config.max_active_mapping_mounts,
+                "idle_seconds": self.server.config.mapping_mount_idle_seconds,
+                "policy": "Only server Shell and FastAPI dependencies acquire native mounts. Provider connections and all file APIs remain RPC-only.",
+            },
+            "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True},
             "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
             "rpc": {
                 "states": ["available", "unsupported", "disabled", "offline"],
-                "routing": "The client advertises available/unsupported/disabled per RPC family; the server derives offline from provider connectivity. Family policy decides whether a pre-dispatch fallback is safe.",
+                "routing": "Core file RPC is always enabled; rpc.file is not a client setting. File operation/version negotiation and read/write permissions still apply. Optional RPC extensions advertise available/unsupported/disabled; the server derives offline from provider connectivity. File and plugin RPC operations never fall back to native mounts.",
                 "configuration": "Client config rpc.<family>=true|false selectively enables implemented families. Missing local dependencies are unsupported, not disabled. Plugin families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mappings. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
                 "families": {
-                    "file": {"version": 3, "fallback": "fuse before dispatch only", "operations": sorted(FILE_API_OPERATIONS)},
+                    "file": {"version": 3, "fallback": None, "operations": sorted(FILE_API_OPERATIONS)},
                     "git": {"version": 2, "fallback": "none", "sync_reads": ["status", "diff", "log", "show", "ls_files", "diff_stat"], "task_writes": ["add", "commit", "restore", "checkout"]},
                     "archive": {"version": 1, "fallback": "none", "sync_reads": ["list", "read"], "task_writes": ["create", "extract"],
                                 "formats": "Runtime-advertised Python standard-library archive extensions."},
@@ -1647,8 +1656,8 @@ class DiscoveryMixin:
                         "routing": "Legacy advertisement accepted for rolling upgrades; mapped Git has no FUSE/server fallback."},
             "file_api": {
                 "version": 3, "legacy": True, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
-                "routing": "Legacy advertisement accepted for rolling upgrades. File RPC may fall back to FUSE only before dispatch when family policy allows it.",
-                "batching": "Keep batch items within one mapping for client-local execution; cross-root batches retain the existing file path.",
+                "routing": "Legacy advertisements remain accepted for supported operations. File APIs never mount or fall back to FUSE; unsupported clients must be upgraded.",
+                "batching": "Same-mapping batches execute on the client. Mixed-root batches use the guarded local/RPC backend and never require FUSE.",
                 "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
             },
         }

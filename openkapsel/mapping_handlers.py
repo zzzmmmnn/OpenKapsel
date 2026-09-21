@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import copy
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime
@@ -26,34 +27,12 @@ class MappingHandlersMixin:
         raise ApiError(409, "mapping_rpc_unsupported", "mapping RPC capability is unsupported", details)
 
     def _path_etag(self, path, details):
-        """Use client identity consistently even when the data path is FUSE."""
-        row = self.server.mappings.at_path(path)
-        if row is None or not self.server.mappings.supports_file_api(row["id"], "fs_stat"):
-            return self._stat_etag(details)
-        mount = self.server.mappings.mount_path(row)
-        result = self._mapping_rpc(row, "api_fs_stat", {"query": {
-            "path": [path.relative_to(mount).as_posix()], "fields": ["etag,size,modified_at,changed_at"]},
-            "display_root": str(mount)})
-        try:
-            if result["status"] != 200:
-                raise ValueError("metadata unavailable")
-            body = result["body"]
-            etag = body["etag"]
-            if not isinstance(etag, str):
-                raise ValueError("invalid etag")
-            unchanged = path == mount or (body["size"] == details.st_size and all(
-                abs(datetime.fromisoformat(body[key]).timestamp() - observed) < .00001
-                for key, observed in (("modified_at", details.st_mtime), ("changed_at", details.st_ctime))))
-        except (KeyError, TypeError, ValueError):
-            raise ApiError(409, "path_changed", "mapping file metadata is no longer available; retry the request") from None
-        if not unchanged:
-            raise ApiError(409, "path_changed", "mapping file changed while being accessed; retry the request")
-        return etag
+        # Both direct RPC and binary streams now use provider device/inode/ns.
+        return getattr(details, "_mapping_etag", None) or self._stat_etag(details)
 
     def _try_mapping_file_api(self, operation, *, query=None, body=None):
         """Route a complete same-mapping operation before touching its FUSE path."""
-        from .client_file_api import FILE_API_LIMITS
-        from .mapping_transport import FILE_API_WRITE_OPERATIONS, encode
+        from .mapping_transport import FILE_API_WRITE_OPERATIONS
 
         query = copy.deepcopy(query or {})
         original = body or {}
@@ -91,9 +70,11 @@ class MappingHandlersMixin:
             if not candidate.is_absolute():
                 candidate = self.token_scope_root / candidate
             # Let the existing resolver handle aliases and non-mapping paths.
-            if ".." in candidate.parts:
-                return False
+            candidate = Path(os.path.abspath(candidate))
             row = self.server.mappings.at_path(candidate)
+            if row is None:
+                candidate = candidate.resolve(strict=False)
+                row = self.server.mappings.at_path(candidate)
             if row is None or (selected and selected["id"] != row["id"]):
                 return False
             self._assert_inside_root(candidate)
@@ -121,6 +102,28 @@ class MappingHandlersMixin:
             min_version = 3  # Explicit codecs and literal newline preservation.
         if selected is None:
             return False
+        status, payload = self._call_mapping_file_api(
+            selected, operation, query=query, body=body, min_version=min_version)
+        if operation in {"fs_manifest", "fs_replace_batch", "fs_delete_batch", "fs_read_many"} and not original.get("recursive"):
+            originals = original.get("paths") if operation in {"fs_delete_batch", "fs_read_many"} else [item["path"] for item in original["items"]]
+            for item in payload.get("items", []):
+                index = item.get("index")
+                if isinstance(index, int) and 0 <= index < len(originals):
+                    item["path"] = originals[index]
+                if operation == "fs_delete_batch" and item.get("recycled"):
+                    item["root"] = selected["name"]
+        elif operation == "fs_delete":
+            payload["root"] = selected["name"]
+        self._send_json(status, payload)
+        return True
+
+    def _call_mapping_file_api(self, selected, operation, *, query=None, body=None,
+                               min_version=1, limits_override=None, search_prefix=None):
+        """Return a coarse RPC result, also usable inside mixed-root traversal."""
+        from .client_file_api import FILE_API_LIMITS
+        from .mapping_transport import encode
+
+        query, body = copy.deepcopy(query or {}), copy.deepcopy(body or {})
         capability = self.server.mappings.rpc_capability(
             selected["id"],
             "file",
@@ -129,21 +132,28 @@ class MappingHandlersMixin:
             max_version=3,
         )
         if not capability.available:
-            if capability.fallback == "fuse":
-                return False
             self._raise_mapping_rpc_unavailable(capability)
         limits = {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}
+        limits.update(limits_override or {})
         if any(value > FILE_API_LIMITS[name] for name, value in limits.items()):
-            return False
+            raise ApiError(409, "mapping_limits_incompatible", "server file limits exceed client RPC capabilities")
         for key in ("plan_id", "taskname", "message"):
             body.pop(key, None)
             query.pop(key, None)
         arguments = {"query": query, "body": body, "limits": limits,
                      "display_root": str(self.server.mappings.mount_path(selected))}
+        if search_prefix is not None:
+            with self.server.mappings.lock:
+                session = self.server.mappings.sessions.get(selected["id"])
+                features = session.capabilities.get("file_stream", {}) if session else {}
+            if not isinstance(features, dict) or features.get("search_prefix") is not True:
+                raise ApiError(409, "mapping_client_upgrade_required",
+                               "update the mapping client for workspace-relative search filters")
+            arguments["search_prefix"] = search_prefix
         try:
             encode({"id": "0" * 24, "op": "api_" + operation, "args": arguments})
         except OSError:
-            return False  # Nothing has been sent; large requests retain the old path.
+            raise ApiError(413, "mapping_request_too_large", "use binary upload or a smaller file request; no native fallback") from None
         result = self._mapping_rpc(selected, "api_" + operation, arguments)
         if not isinstance(result, dict) or not isinstance(result.get("status"), int):
             raise ApiError(502, "invalid_mapping_response", "client returned an invalid file API response")
@@ -156,18 +166,7 @@ class MappingHandlersMixin:
         payload = result.get("body")
         if not isinstance(payload, dict) or result["status"] not in {200, 201, 207}:
             raise ApiError(502, "invalid_mapping_response", "client returned an invalid file API result")
-        if operation in {"fs_manifest", "fs_replace_batch", "fs_delete_batch", "fs_read_many"} and not original.get("recursive"):
-            originals = original.get("paths") if operation in {"fs_delete_batch", "fs_read_many"} else [item["path"] for item in original["items"]]
-            for item in payload.get("items", []):
-                index = item.get("index")
-                if isinstance(index, int) and 0 <= index < len(originals):
-                    item["path"] = originals[index]
-                if operation == "fs_delete_batch" and item.get("recycled"):
-                    item["root"] = selected["name"]
-        elif operation == "fs_delete":
-            payload["root"] = selected["name"]
-        self._send_json(result["status"], payload)
-        return True
+        return result["status"], payload
 
     def _handle_mapping_provider(self, method, path):
         match = re.fullmatch(r"/mapping-connect/([A-Za-z0-9_-]{24})", path)
@@ -189,7 +188,7 @@ class MappingHandlersMixin:
         except PermissionError:
             raise ApiError(401, "invalid_mapping_credential", "mapping credential or workspace is unavailable") from None
         except (ValueError, OSError):
-            raise ApiError(409, "mapping_unavailable", "mapping could not accept the provider; check mount and active session") from None
+            raise ApiError(409, "mapping_unavailable", "mapping could not accept the provider; check reservation and active session") from None
 
     def _handle_mapping_list(self):
         self._require_permission(self.token_record.can_read, "read permission is not granted")
@@ -478,20 +477,23 @@ class MappingHandlersMixin:
                     record = self.server.tokens.get_by_app_id(app_id)
                     if not record or not record.valid:
                         raise ValueError("select an active workspace")
-                    if len(manager.store.list()) >= 16:
-                        raise ValueError("mapping limit is 16")
                     name = self._form_one(form, "name")
                     scope = self.server.tokens.scope_root(record)
-                    if (scope / name).exists():
+                    if (scope / name).exists() or (scope / name).is_symlink():
                         raise ValueError("mapping name already exists in the workspace")
                     row, secret = manager.store.create(record.path_prefix, name,
                         comment=self._form_one(form, "comment"), writable=self._form_one(form, "writable") == "on",
                         allow_exec=self._form_one(form, "allow_exec") == "on")
-                    manager.mount(row)
+                    try:
+                        manager.prepare(row)
+                    except BaseException:
+                        manager.store.delete(row["id"])
+                        raise
                     message = self._mapping_client_config(row, secret)
                 else:
                     mid = self._form_one(form, "id")
                     row = manager.store.get(mid)
+                    manager.require_idle(mid)
                     manager.disconnect(mid)
                     if action == "delete":
                         manager.unmount(row)
@@ -522,6 +524,6 @@ class MappingHandlersMixin:
             "url": url + "/mapping-connect/" + row["id"], "token": secret,
             "root": "/path/to/export", "writable": row["writable"], "allow_exec": False,
             "transport_timeout_seconds": 60,
-            "rpc": {"file": True, "git": True, "archive": True},
+            "rpc": {"git": True, "archive": True},
             "rpc_plugins": [],
             "sandbox": True, "proxy": None}, indent=2)

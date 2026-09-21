@@ -21,6 +21,7 @@ from .cgroups import (
 )
 from .network_proxy import DomainProxy, PROXY_MOUNT, PROXY_PORT
 from .tokens import TokenRecord
+from .mapping_api import MappingApiMixin
 from .workspace_layout import ensure_workspace_layout
 
 
@@ -78,9 +79,10 @@ class ApiWorker:
     log_handle: object
     network_proxy: DomainProxy | None = None
     active_connections: int = 0
+    mount_lease: object | None = None
 
 
-class ApiWorkerManager:
+class ApiWorkerManager(MappingApiMixin):
     def __init__(
         self,
         *,
@@ -91,8 +93,10 @@ class ApiWorkerManager:
         network_proxy_root: Path | None = None,
         idle_seconds: int = 600,
         start_timeout: float = 15,
+        mappings=None,
     ):
         self.worker_root = worker_root
+        self.mappings = mappings
         self.bubblewrap_path = bubblewrap_path
         self.rootlesskit_path = rootlesskit_path
         self.cgroups = cgroups
@@ -154,18 +158,19 @@ class ApiWorkerManager:
             self._terminate(worker)
         self._janitor.join(timeout=2)
 
-    def _ensure(
+    def _ensure_native(
         self,
         record: TokenRecord,
         workspace: Path,
         root_path: str,
         worker_key: str,
+        mount_lease=None,
     ) -> ApiWorker:
         api_root = workspace / "api"
         entry = api_root / "app.py"
         if api_root.is_symlink() or not api_root.is_dir() or not entry.is_file() or entry.is_symlink():
             raise ApiWorkerError("Workspace api/app.py does not exist")
-        fingerprint = self._fingerprint(record, workspace, root_path)
+        fingerprint = self._fingerprint(record, workspace, root_path) + (self._mapping_fingerprint(mount_lease),)
         with self._lock:
             current = self._workers.get(worker_key)
             if current is not None and (
@@ -177,8 +182,10 @@ class ApiWorkerManager:
             if current is not None:
                 return current
             worker = self._start(
-                record, workspace, root_path, worker_key, fingerprint
+                record, workspace, root_path, worker_key, fingerprint,
+                mount_lease=mount_lease,
             )
+            worker.mount_lease = mount_lease
             self._workers[worker_key] = worker
             return worker
 
@@ -189,6 +196,7 @@ class ApiWorkerManager:
         root_path: str,
         worker_key: str,
         fingerprint: tuple[object, ...],
+        mount_lease=None,
     ) -> ApiWorker:
         if not self.bubblewrap_path.is_file() or not os.access(self.bubblewrap_path, os.X_OK):
             raise ApiWorkerError(f"Bubblewrap is unavailable at {self.bubblewrap_path}")
@@ -208,6 +216,7 @@ class ApiWorkerManager:
             argv = self._sandbox_argv(
                 record, workspace, worker_dir, socket_path, root_path,
                 network_proxy=network_proxy,
+                mapping_ids=mount_lease.ids if mount_lease else (),
             )
         except Exception:
             log_handle.close()
@@ -245,6 +254,7 @@ class ApiWorkerManager:
         deadline = time.monotonic() + self.start_timeout
         while time.monotonic() < deadline:
             if process.poll() is not None:
+                self._stop_process(process)
                 log_handle.close()
                 if network_proxy is not None:
                     network_proxy.close()
@@ -261,7 +271,7 @@ class ApiWorkerManager:
                     network_proxy,
                 )
             time.sleep(0.05)
-        process.terminate()
+        self._stop_process(process)
         log_handle.close()
         if network_proxy is not None:
             network_proxy.close()
@@ -276,10 +286,11 @@ class ApiWorkerManager:
         root_path: str,
         command: list[str] | None = None,
         network_proxy: DomainProxy | None = None,
+        mapping_ids=(),
     ) -> list[str]:
         executable = str(self.bubblewrap_path)
         workspace_text = str(workspace)
-        layout = ensure_workspace_layout(workspace)
+        layout, mapped_app = self._app_layout(workspace, worker_dir)
         sql_root = layout.sql
         mounts = [
             executable,
@@ -315,7 +326,9 @@ class ApiWorkerManager:
         scope_mode = "--bind" if record.can_write else "--ro-bind"
         mounts.extend([scope_mode, workspace_text, workspace_text])
         mounts.extend(["--bind", str(sql_root), "/run/openkapsel-sql"])
-        mounts.extend(["--tmpfs", str(layout.root)])
+        if not mapped_app:
+            mounts.extend(["--tmpfs", str(layout.root)])
+        self._append_mapping_mounts(mounts, record, workspace, mapping_ids)
         self._append_parent_dirs(mounts, worker_dir.parent)
         mounts.extend(["--bind", str(worker_dir), str(worker_dir)])
         python = "/opt/openkapsel/venv/bin/python"
@@ -403,17 +416,35 @@ class ApiWorkerManager:
         )
 
     @staticmethod
-    def _terminate(worker: ApiWorker) -> None:
-        if worker.process.poll() is None:
-            worker.process.terminate()
+    def _stop_process(process):
+        if process.poll() is None:
+            process.terminate()
             try:
-                worker.process.wait(timeout=3)
+                process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                worker.process.kill()
-                worker.process.wait(timeout=2)
+                process.kill()
+                process.wait(timeout=2)
+        if getattr(process, "pid", None) is not None:
+            import signal
+            from .mapping_process import group_alive, signal_group
+            if group_alive(process):
+                signal_group(process, signal.SIGKILL)
+                deadline = time.monotonic() + 3
+                while group_alive(process) and time.monotonic() < deadline:
+                    time.sleep(.05)
+                if group_alive(process):
+                    error = ApiWorkerError("API process group did not exit; retaining native mounts")
+                    error.retain_mount_lease = True
+                    raise error
+
+    @staticmethod
+    def _terminate(worker: ApiWorker) -> None:
+        ApiWorkerManager._stop_process(worker.process)
         worker.log_handle.close()
         if worker.network_proxy is not None:
             worker.network_proxy.close()
+        if worker.mount_lease is not None:
+            worker.mount_lease.close()
 
     @staticmethod
     def _log_tail(path: Path) -> str:

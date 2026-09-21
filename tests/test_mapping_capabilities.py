@@ -45,12 +45,43 @@ class ClientRpcCapabilityTests(unittest.TestCase):
             self.assertTrue(capabilities["git"]["operation_specs"][operation]["write"])
         self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])
 
-    def test_client_can_disable_individual_rpc_families(self):
-        capabilities = self.capabilities({"rpc": {"file": True, "git": False, "archive": False}})
+    def test_client_can_disable_extensions_but_core_files_remain_available(self):
+        capabilities = self.capabilities({"rpc": {"git": False, "archive": False}})
         self.assertEqual("available", capabilities["file"]["state"])
         self.assertEqual("disabled", capabilities["git"]["state"])
         self.assertEqual("disabled", capabilities["archive"]["state"])
         self.assertEqual("client_config", capabilities["git"]["reason"])
+
+    def test_removed_file_switch_is_rejected_with_migration_guidance(self):
+        for value in (True, False, "disabled", None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "rpc.file has been removed"):
+                self.capabilities({"rpc": {"file": value}})
+
+    def test_core_files_work_with_extensions_disabled_and_respect_readonly(self):
+        from openkapsel.client_files import ClientFiles
+        config = {"rpc": {"git": False, "archive": False}}
+        registry = load_client_rpc_registry(config)
+        capabilities = registry.capability_map(config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.txt"
+            path.write_text("sample", encoding="utf-8")
+            for writable in (False, True):
+                with self.subTest(writable=writable):
+                    files = ClientFiles(directory, writable=writable,
+                                        rpc_capabilities=capabilities, rpc_registry=registry)
+                    try:
+                        response = files.dispatch("api_fs_read", {"query": {"path": ["sample.txt"]}})
+                        self.assertEqual(200, response["status"])
+                        self.assertEqual("sample", response["body"]["content"])
+                        arguments = {"body": {"path": "new.txt", "content": "new"}}
+                        if writable:
+                            self.assertEqual(201, files.dispatch("api_fs_write", arguments)["status"])
+                        else:
+                            with self.assertRaises(OSError):
+                                files.dispatch("api_fs_write", arguments)
+                            self.assertFalse((Path(directory) / "new.txt").exists())
+                    finally:
+                        files.close()
 
     def test_missing_git_dependency_is_unsupported(self):
         with patch("openkapsel.rpc_plugins.git.shutil.which", return_value=None):
@@ -158,7 +189,7 @@ class MappingRpcCapabilityTests(unittest.TestCase):
         self.assertEqual("offline", state.state)
         self.assertEqual("client_offline", state.reason)
 
-    def test_legacy_client_is_translated_and_old_file_rpc_can_fallback(self):
+    def test_legacy_client_is_translated_without_native_fallback(self):
         self.session({
             "file_api": {"version": 1, "operations": ["fs_list"]},
             "git_api": {"version": 2, "read_only": True},
@@ -168,7 +199,7 @@ class MappingRpcCapabilityTests(unittest.TestCase):
         )
         self.assertEqual("unsupported", file_state.state)
         self.assertEqual("version_mismatch", file_state.reason)
-        self.assertEqual("fuse", file_state.fallback)
+        self.assertIsNone(file_state.fallback)
 
         git_state = self.manager.rpc_capability(
             self.row["id"], "git", operation="status", min_version=2, max_version=2,
@@ -188,7 +219,7 @@ class MappingRpcCapabilityTests(unittest.TestCase):
             self.row["id"], "file", operation="fs_list", min_version=1, max_version=3
         )
         self.assertEqual("disabled", file_state.state)
-        self.assertEqual("fuse", file_state.fallback)
+        self.assertIsNone(file_state.fallback)
 
         git_state = self.manager.rpc_capability(
             self.row["id"], "git", operation="status", min_version=2, max_version=2,

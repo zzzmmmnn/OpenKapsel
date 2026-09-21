@@ -149,25 +149,21 @@ class ClientRpcRegistry:
             raw = {}
         if not isinstance(raw, dict):
             raise ValueError("rpc must be an object")
-        allowed = {"file"} | set(self._plugins)
+        if "file" in raw:
+            raise ValueError("rpc.file has been removed; remove this key, core file RPC is always enabled")
+        allowed = set(self._plugins)
         unknown = set(raw) - allowed
         if unknown:
             raise ValueError("unsupported rpc categories: " + ", ".join(sorted(unknown)))
 
-        file_enabled = raw.get("file", True)
-        if not isinstance(file_enabled, bool):
-            raise ValueError("rpc.file must be a boolean")
         from ..mapping_transport import FILE_API_OPERATIONS
         result: dict[str, dict[str, Any]] = {
             "file": {
-                "state": "available" if file_enabled else "disabled",
+                "state": "available",
                 "version": 3,
                 "operations": sorted(FILE_API_OPERATIONS),
             }
         }
-        if not file_enabled:
-            result["file"]["reason"] = "client_config"
-
         for family, registered in self._plugins.items():
             enabled = raw.get(family, True)
             if not isinstance(enabled, bool):

@@ -19,7 +19,7 @@ DEFAULT_PROVIDER_IDLE_TIMEOUT_SECONDS = 60.0
 FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_read_many", "fs_tree", "fs_search", "fs_manifest"})
 FILE_API_WRITE_OPERATIONS = frozenset({"fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_move", "fs_delete", "fs_delete_batch"})
 FILE_API_OPERATIONS = FILE_API_READ_OPERATIONS | FILE_API_WRITE_OPERATIONS
-READ_OPERATIONS = frozenset({"stat", "list", "read", "open", "close", "flush", "statfs", "recycle_list",
+READ_OPERATIONS = frozenset({"fstat", "stat", "list", "read", "open", "close", "flush", "statfs", "recycle_list",
                              "task_get", "task_list", "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat"}) | frozenset("api_" + op for op in FILE_API_READ_OPERATIONS)
 
 

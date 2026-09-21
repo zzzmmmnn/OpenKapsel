@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import mimetypes
 import os
 import re
@@ -134,14 +135,15 @@ class FileHandlersMixin(FileOperationSupportMixin):
             root = self._resolve_path(self._required_string({"path": body.get("path", ".")}, "path"))
             depth = self._body_read_limit(body, "depth", 8, self.server.config.max_recursion_depth, minimum=0)
             include_sha256 = self._optional_bool(body, "include_sha256", False)
-            state = {"count": 0, "truncated": False}
+            state = {"count": 0, "truncated": False, "manifest": True,
+                     "include_sha256": include_sha256}
             tree = self._tree_node(root, root, depth, 0, state)
             results = []
             stack = [tree]
             while stack:
                 node = dict(stack.pop())
                 stack.extend(reversed(node.pop("children", [])))
-                if include_sha256:
+                if include_sha256 and "sha256" not in node:
                     path = Path(node["path"])
                     node["sha256"] = None
                     if node.get("type") == "file":
@@ -314,13 +316,31 @@ class FileHandlersMixin(FileOperationSupportMixin):
         skipped_binary = 0
         skipped_large = 0
         truncated = False
+        unavailable_mappings = []
         includes = self._glob_patterns(query.get("include", []))
         excludes = self._glob_patterns(query.get("exclude", []))
         for file_path in self._search_files(root, depth, includes=includes, excludes=excludes):
+            mapping = self._mapping_root(file_path)
+            if mapping is not None:
+                try:
+                    result = self._mapping_search(mapping, file_path, root, query,
+                        depth - len(file_path.relative_to(root).parts), max_results - len(matches),
+                        includes, excludes)
+                except ApiError as exc:
+                    unavailable_mappings.append(self._unavailable_mapping(mapping, file_path, exc))
+                    continue
+                matches.extend(result["matches"])
+                files_searched += result["files_searched"]
+                skipped_binary += result["skipped_binary"]
+                skipped_large += result["skipped_large"]
+                truncated |= bool(result.get("truncated"))
+                if len(matches) >= max_results:
+                    truncated = True
+                    break
+                continue
             try:
-                descriptor = self._safe_path_access().open(file_path, os.O_RDONLY)
-                with os.fdopen(descriptor, "rb") as handle:
-                    file_stat = os.fstat(handle.fileno())
+                with self._open_binary(file_path) as handle:
+                    file_stat = self._stream_stat(handle)
                     if not stat.S_ISREG(file_stat.st_mode):
                         continue
                     if file_stat.st_size > self.server.config.max_search_file_bytes:
@@ -370,7 +390,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "files_searched": files_searched,
                 "skipped_binary": skipped_binary,
                 "skipped_large": skipped_large,
-                "truncated": truncated,
+                "truncated": truncated or bool(unavailable_mappings),
+                **({"unavailable_mappings": unavailable_mappings} if unavailable_mappings else {}),
             },
         )
 
@@ -402,10 +423,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
     def _handle_fs_content(self, query: dict[str, list[str]], *, head_only: bool) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         path = self._resolve_path(self._required_query(query, "path"))
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        handle = os.fdopen(descriptor, "rb")
+        handle = self._open_binary(path)
         with handle:
-            file_stat = os.fstat(handle.fileno())
+            file_stat = self._stream_stat(handle)
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
             size = file_stat.st_size
@@ -470,6 +490,10 @@ class FileHandlersMixin(FileOperationSupportMixin):
         expected_sha256 = self.headers.get("X-Content-SHA256")
         if expected_sha256 is not None and not self._valid_sha256(expected_sha256):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_sha256", "X-Content-SHA256 must be 64 hexadecimal characters")
+        if self.server.mappings.at_path(path) is not None:
+            from .mapping_uploads import put_stream
+            put_stream(self, path, length, expected_sha256, create_parents=create_parents)
+            return
         try:
             parent = self._safe_parent(path, create_parents=create_parents)
         except ApiError as exc:
@@ -574,14 +598,13 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 if remaining == 0:
                     raise ApiError(413, "read_budget_exhausted", "total character budget exhausted; request remaining paths separately")
                 path = self._resolve_path(requested)
-                descriptor = self._safe_open_descriptor(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-                with os.fdopen(descriptor, "r", encoding=encoding, newline="") as handle:
-                    details = os.fstat(handle.fileno())
+                with self._open_binary(path) as binary, io.TextIOWrapper(binary, encoding=encoding, newline="") as handle:
+                    details = self._stream_stat(handle)
                     if not stat.S_ISREG(details.st_mode):
                         raise ApiError(400, "not_a_file", "path is not a regular file")
                     count = min(limit, remaining)
                     window = handle.read(count + 1)
-                    after = os.fstat(handle.fileno())
+                    after = self._stream_stat(handle)
                     if self._stat_etag(details) != self._stat_etag(after):
                         raise ApiError(409, "path_changed", "file changed during read")
                 content = window[:count]
@@ -626,9 +649,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
             maximum=self.server.config.max_read_chars,
         )
         try:
-            descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-            with os.fdopen(descriptor, "r", encoding=encoding, newline="") as handle:
-                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            with self._open_binary(path) as binary, io.TextIOWrapper(binary, encoding=encoding, newline="") as handle:
+                if not stat.S_ISREG(self._stream_stat(handle).st_mode):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
                 remaining = offset
                 while remaining:
@@ -666,10 +688,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
             minimum=1,
             maximum=self.server.config.max_read_chars,
         )
-        descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
-        handle = os.fdopen(descriptor, "rb")
+        handle = self._open_binary(path)
         with handle:
-            file_stat = os.fstat(handle.fileno())
+            file_stat = self._stream_stat(handle)
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
             size = file_stat.st_size
@@ -780,7 +801,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
         descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
         try:
             with os.fdopen(descriptor, "r", encoding=encoding, newline="") as handle:
-                file_stat = os.fstat(handle.fileno())
+                file_stat = self._stream_stat(handle)
                 if not stat.S_ISREG(file_stat.st_mode):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
                 if file_stat.st_size > self.server.config.max_text_replace_bytes:
@@ -910,13 +931,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
 
         total_replacements = 0
         for item in validated:
-            descriptor = self._safe_open_descriptor(
-                item["path"], os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-            )
             try:
-                with os.fdopen(descriptor, "r", encoding=item["encoding"], newline="") as handle:
-                    descriptor = -1
-                    file_stat = os.fstat(handle.fileno())
+                with self._open_binary(item["path"]) as binary, io.TextIOWrapper(binary, encoding=item["encoding"], newline="") as handle:
+                    file_stat = self._stream_stat(handle)
                     if not stat.S_ISREG(file_stat.st_mode):
                         raise ApiError(
                             HTTPStatus.BAD_REQUEST,
@@ -933,9 +950,6 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     text = handle.read()
             except UnicodeDecodeError:
                 raise decode_error(item["encoding"]) from None
-            finally:
-                if descriptor >= 0:
-                    os.close(descriptor)
 
             observed_etag = self._path_etag(item["path"], file_stat)
             self._check_expected_etag(item["expected_etag"], observed_etag)
@@ -1187,7 +1201,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
         for index, requested_path, path in validated:
             try:
                 result = self._recycle_path(path)
-            except RecycleError as exc:
+            except (RecycleError, ApiError) as exc:
                 failures += 1
                 results.append(
                     {
@@ -1244,8 +1258,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 raise ApiError(400, "overwrite_not_supported", "cross-root moves never overwrite; recycle the destination first")
             if create_parents:
                 try:
-                    with self._safe_parent(destination, create_parents=True):
-                        pass
+                    self._workspace_files().mkdir(destination.parent, parents=True, exist_ok=True)
                 except OSError:
                     raise ApiError(409, "parent_unavailable", "could not create destination parents") from None
             self._start_file_transfer(source, destination, move=True)
@@ -1361,18 +1374,26 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "expected_etag_not_supported",
                 "uploads only create new files and do not accept expected_etag",
             )
-        try:
-            parent = self._safe_parent(path, create_parents=create_parents)
-        except ApiError as exc:
-            if exc.code == "path_not_found":
-                raise ApiError(HTTPStatus.BAD_REQUEST, "parent_not_found", "parent directory does not exist") from None
-            raise
-        with parent:
-            initial_stat = parent.lstat()
-            if initial_stat is not None and not stat.S_ISREG(initial_stat.st_mode):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
-            if initial_stat is not None:
-                raise ApiError(HTTPStatus.CONFLICT, "path_exists", "destination already exists")
+        mapping = self.server.mappings.at_path(path)
+        if mapping is not None:
+            from .mapping_uploads import prepare_destination
+            try:
+                prepare_destination(self._workspace_files(), path, create_parents=create_parents)
+            except OSError as exc:
+                self._raise_file_io_error(exc)
+        else:
+            try:
+                parent = self._safe_parent(path, create_parents=create_parents)
+            except ApiError as exc:
+                if exc.code == "path_not_found":
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "parent_not_found", "parent directory does not exist") from None
+                raise
+            with parent:
+                initial_stat = parent.lstat()
+                if initial_stat is not None and not stat.S_ISREG(initial_stat.st_mode):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+                if initial_stat is not None:
+                    raise ApiError(HTTPStatus.CONFLICT, "path_exists", "destination already exists")
         try:
             record = self.server.uploads.create(
                 token=self.token_record.token,
@@ -1380,6 +1401,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 expected_size=size,
                 expected_sha256=sha256,
                 create_parents=create_parents,
+                mapping_id=mapping["id"] if mapping else None,
             )
         except UploadError as exc:
             self._raise_upload_error(exc)
@@ -1432,12 +1454,22 @@ class FileHandlersMixin(FileOperationSupportMixin):
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         record = self._upload_record(upload_id)
         target = self._resolve_path(record.target_path, write=True)
+        mapping = self.server.mappings.at_path(target)
+        if (mapping["id"] if mapping else None) != record.mapping_id:
+            raise ApiError(409, "upload_mapping_changed", "upload destination mapping identity changed; start a new upload")
         if str(target) != record.target_path:
             raise ApiError(HTTPStatus.CONFLICT, "upload_target_changed", "upload target changed")
         try:
             verified, actual_sha256 = self.server.uploads.verify(upload_id, self.token_record.token)
         except UploadError as exc:
             self._raise_upload_error(exc)
+        if mapping is not None:
+            from .mapping_uploads import commit_upload
+            try:
+                commit_upload(self, upload_id, record, verified, actual_sha256, target)
+            except UploadError as exc:
+                self._raise_upload_error(exc)
+            return
         try:
             parent = self._safe_parent(target, create_parents=record.create_parents)
         except ApiError as exc:

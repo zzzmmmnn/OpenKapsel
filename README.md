@@ -165,3 +165,10 @@ enabled by default. See [client mappings and execution](docs/client-mappings.md)
 for setup, proxy support, permissions, and current platform limitations.
 
 Read-only Git inspection, multi-file reads, recursive manifests, and glob-filtered search are available through REST and MCP. Fixed RPC operations do not require Shell/client execution permission; write RPCs still require write access. Git uses bounded sanitized snapshots; see [Git inspection and limits](docs/shell-and-mcp.md#git-inspection).
+
+### RPC-first client mappings
+
+Client mappings now keep provider RPC connections independent of native mounts.
+File APIs, binary transfer, static preview and cross-root copy/move do not start
+FUSE workers. Server Shell and FastAPI acquire leased native views only for their
+declared mapping dependencies. See [configuration and migration](docs/mapping-rpc-first.md).

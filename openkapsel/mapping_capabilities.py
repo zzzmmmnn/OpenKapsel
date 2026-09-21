@@ -15,7 +15,7 @@ RPC_FAMILIES = {
         "version": 3,
         "legacy_key": "file_api",
         "operations": frozenset(FILE_API_OPERATIONS),
-        "fallback": "fuse",
+        "fallback": None,
     },
     "git": {
         "version": 2,

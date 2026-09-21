@@ -45,6 +45,10 @@ class RemoteFilesystem:
             return dict(st_mode=stat.S_IFDIR | 0o700, st_nlink=2, st_size=0,
                         st_uid=self.uid, st_gid=self.gid, st_mtime=0, st_ctime=0, st_atime=0)
         details = self.rpc("stat", path=self.relative(path))
+        # Extra descriptor identity metadata is for direct RPC, not the native
+        # mount's device identity or fusepy's portable stat structure.
+        for key in ("st_dev", "st_atime_ns", "st_mtime_ns", "st_ctime_ns"):
+            details.pop(key, None)
         details.update(st_uid=self.uid, st_gid=self.gid)
         return details
 

@@ -117,18 +117,19 @@ def run_once(config, stop=None, *, runtime=None):
             **proxy_options(config.get("proxy")),
         )
         capabilities = {
+            "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True,
+                            "search_prefix": True},
             "protocol": 1,
             "writable": files.writable,
             "rpc": files.rpc_capabilities,
             "execution": tasks.capabilities(),
         }
-        # Retain legacy advertisements only for enabled/usable families so a
-        # rolling-upgrade server never mistakes disabled RPC for available RPC.
-        if files.rpc_capabilities["file"]["state"] == "available":
-            capabilities["file_api"] = {
-                "version": files.rpc_capabilities["file"]["version"],
-                "operations": files.rpc_capabilities["file"]["operations"],
-            }
+        # Core file RPC is mandatory. Optional extensions are advertised only
+        # when usable, including to rolling-upgrade servers.
+        capabilities["file_api"] = {
+            "version": files.rpc_capabilities["file"]["version"],
+            "operations": files.rpc_capabilities["file"]["operations"],
+        }
         if files.rpc_capabilities["git"]["state"] == "available":
             capabilities["git_api"] = {
                 "version": files.rpc_capabilities["git"]["version"],

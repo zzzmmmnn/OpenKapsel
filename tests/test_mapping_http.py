@@ -44,7 +44,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
         self.assertEqual(60, config["transport_timeout_seconds"])
-        self.assertEqual({"file": True, "git": True, "archive": True}, config["rpc"])
+        self.assertEqual({"git": True, "archive": True}, config["rpc"])
         self.assertEqual([], config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
         base = "/kapsel/w/" + self.record.token

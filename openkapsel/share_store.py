@@ -102,7 +102,7 @@ class ShareStore:
         with self._lock:
             self._cleanup_locked(time.time())
 
-    def create(self, source_fd: int, name: str, owner_id: str) -> tuple[ShareRecord, str | None]:
+    def create(self, source_fd: int | None, name: str, owner_id: str, *, copier=None) -> tuple[ShareRecord, str | None]:
         if not name or name in {".", ".."} or "/" in name or "\x00" in name:
             raise ShareError(HTTPStatus.BAD_REQUEST, "invalid_share_source", "source name is invalid")
         if name in RESERVED_NAMES or name.startswith(".openkapsel-"):
@@ -120,9 +120,11 @@ class ShareStore:
             stage.mkdir(mode=0o700)
             payload.mkdir(mode=0o700)
             try:
-                source_stat = os.fstat(source_fd)
+                source_stat = os.fstat(source_fd) if copier is None else None
                 state = {"bytes": 0, "files": 0}
-                if stat.S_ISREG(source_stat.st_mode):
+                if copier is not None:
+                    kind = copier(payload / name, state)
+                elif stat.S_ISREG(source_stat.st_mode):
                     kind = "file"
                     self._copy_file_fd(source_fd, payload / name, source_stat, state)
                 elif stat.S_ISDIR(source_stat.st_mode):

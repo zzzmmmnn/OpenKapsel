@@ -884,6 +884,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         _object_schema(
             {
                 "command": {"type": "string", "minLength": 1},
+                "mount_mappings": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Server-only native mapping dependencies by name or ID. Mapped cwd is automatic; command text is not inspected."},
                 "target": {"type": "string", "enum": ["auto", "server", "client"], "default": "auto"},
                 "cwd": {
                     "type": "string",

@@ -122,6 +122,7 @@ def sandbox_launch(
     command: str,
     cwd: Path,
     environment_file: Path | None,
+    mount_ids=(),
 ) -> SandboxLaunch:
     try:
         backend = server.sandboxes.resolve(record.sandbox_backend)
@@ -137,7 +138,14 @@ def sandbox_launch(
             "sandbox_unavailable",
             str(exc),
         ) from None
+    manager = getattr(server, "mappings", None)
+    rows = manager.store.list(record.path_prefix) if manager is not None else []
+    native = tuple(manager.mount_path(r) for r in rows if r["id"] in mount_ids)
+    denied = tuple(manager.mount_path(r) for r in rows if r["id"] not in mount_ids)
     spec = SandboxSpec(
+        native_mapping_paths=native,
+        denied_mapping_paths=denied,
+        mapping_mask_source=manager.empty_view() if denied else None,
         command=command,
         cwd=cwd,
         scope_root=scope_root,
@@ -169,7 +177,49 @@ def sandbox_launch(
         ) from None
 
 
-def start_shell_task(
+def start_shell_task(server, record, scope_root, *, command, cwd_value,
+                     timeout_seconds, interactive=False, mount_mappings=()):
+    """Authorize dependencies and mount before cwd resolution or sandbox setup."""
+    if record.shell_mode == "none":
+        raise ApiError(403, "permission_denied", "shell permission is not granted")
+    if not isinstance(cwd_value, str) or "\x00" in cwd_value:
+        raise ApiError(400, "invalid_path", "cwd must be a NUL-free string")
+    if not isinstance(command, str) or not command or len(command) > 100000:
+        raise ApiError(400, "invalid_request", "command must contain 1-100000 characters")
+    if timeout_seconds is not None and (isinstance(timeout_seconds, bool) or
+            not isinstance(timeout_seconds, (int, float)) or not .1 <= timeout_seconds <= 86400):
+        raise ApiError(400, "invalid_request", "invalid command timeout")
+    raw = Path(cwd_value or ".").expanduser()
+    candidate = Path(os.path.abspath(raw if raw.is_absolute() else scope_root / raw))
+    manager = getattr(server, "mappings", None)
+    if manager is None or manager.at_path(candidate) is None:
+        candidate = candidate.resolve(strict=False)
+    authorized = (scope_root, *(Path(p.path) for p in record.allowed_paths))
+    if not any(candidate == root or root in candidate.parents for root in authorized):
+        raise ApiError(403, "path_outside_scope", "cwd is outside authorized paths")
+    lease = None
+    if manager is not None:
+        try:
+            rows = manager.execution_mappings(record.path_prefix, candidate, mount_mappings)
+            if rows:
+                lease = manager.acquire(rows)
+        except ValueError as exc:
+            raise ApiError(400, "invalid_mapping_dependency", str(exc)) from None
+        except OSError as exc:
+            raise ApiError(503, "mapping_mount_unavailable", str(exc), {"errno": exc.errno}) from None
+    elif mount_mappings:
+        raise ApiError(409, "mappings_unavailable", "mapping manager is unavailable")
+    try:
+        return _start_shell_task(server, record, scope_root, command=command,
+            cwd_value=cwd_value, timeout_seconds=timeout_seconds,
+            interactive=interactive, mount_lease=lease)
+    except BaseException:
+        if lease is not None:
+            lease.close()
+        raise
+
+
+def _start_shell_task(
     server: Any,
     record: TokenRecord,
     scope_root: Path,
@@ -178,6 +228,7 @@ def start_shell_task(
     cwd_value: str,
     timeout_seconds: float | None,
     interactive: bool = False,
+    mount_lease=None,
 ):
     if record.shell_mode == "none":
         raise ApiError(
@@ -218,7 +269,8 @@ def start_shell_task(
     launch = None
     if sandboxed:
         launch = sandbox_launch(
-            server, record, scope_root, command, cwd, environment_file
+            server, record, scope_root, command, cwd, environment_file,
+            mount_ids=mount_lease.ids if mount_lease else (),
         )
     backend_name = None if launch is None else launch.backend
     resource_limits = None
@@ -243,6 +295,7 @@ def start_shell_task(
             ),
             network_access=network_access,
             resource_limits=resource_limits,
+            mount_lease=mount_lease,
         )
     except Exception:
         if controller is not None:

@@ -168,10 +168,19 @@ class ServerConfig:
     max_share_bytes: int = 256 * 1024 * 1024
     schedule_misfire_grace_seconds: int = 300
     mappings_enabled: bool = False
+    mapping_fuse_enabled: bool = True
+    max_active_mapping_mounts: int = 16
+    mapping_mount_idle_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.mappings_enabled, bool):
             raise ValueError("mappings_enabled must be boolean")
+        if not isinstance(self.mapping_fuse_enabled, bool):
+            raise ValueError("mapping_fuse_enabled must be boolean")
+        if type(self.max_active_mapping_mounts) is not int or not 1 <= self.max_active_mapping_mounts <= 256:
+            raise ValueError("max_active_mapping_mounts must be between 1 and 256")
+        if isinstance(self.mapping_mount_idle_seconds, bool) or not isinstance(self.mapping_mount_idle_seconds, (int, float)) or not 0 <= self.mapping_mount_idle_seconds <= 3600:
+            raise ValueError("mapping_mount_idle_seconds must be between 0 and 3600")
         resolved = self.root.expanduser().resolve()
         if not resolved.is_dir():
             raise ValueError(f"workspace root is not a directory: {resolved}")
@@ -525,6 +534,9 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             mount_helper=self.workspace_images if self.workspace_images.enabled else None,
             rpc_timeout_seconds=config.mapping_rpc_timeout_seconds,
             provider_idle_timeout_seconds=config.mapping_provider_idle_timeout_seconds,
+            fuse_enabled=config.mapping_fuse_enabled,
+            max_active_mounts=config.max_active_mapping_mounts,
+            mount_idle_seconds=config.mapping_mount_idle_seconds,
         )
         self.mappings.workspace_available = lambda workspace: any(record.valid and record.path_prefix == workspace for record in self.tokens.list())
         self.sandboxes = SandboxRegistry(
@@ -544,6 +556,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             cgroups=self.cgroups,
             network_proxy_root=config.network_proxy_dir,
             idle_seconds=config.api_worker_idle_seconds,
+            mappings=self.mappings,
         )
         self.tasks = TaskRegistry(config, self.cgroups)
         self.uploads = UploadRegistry(
@@ -1699,6 +1712,7 @@ class WorkspaceRequestHandler(
             cwd_value=cwd_value,
             timeout_seconds=timeout,
             interactive=interactive,
+            mount_mappings=body.get("mount_mappings", []),
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
@@ -2013,7 +2027,8 @@ class WorkspaceRequestHandler(
             self.server.mappings.check_path(Path(os.path.abspath(candidate)), write=write, protect_root=write)
         except OSError as exc:
             raise ApiError(403 if exc.errno in {errno.EROFS, errno.EBUSY} else 503, "mapping_unavailable", "mapping is protected, read-only, or offline") from None
-        resolved = candidate.resolve(strict=False)
+        candidate = Path(os.path.abspath(candidate))
+        resolved = candidate if self.server.mappings.at_path(candidate) else candidate.resolve(strict=False)
         self._assert_inside_root(resolved)
         if write:
             self._assert_path_writable(resolved)
@@ -2457,6 +2472,9 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
     name = args.name if args.name is not None else payload.get("workspace_name", "OpenKapsel")
     config = ServerConfig(
         mappings_enabled=payload.get("mappings_enabled", False),
+        mapping_fuse_enabled=payload.get("mapping_fuse_enabled", True),
+        max_active_mapping_mounts=payload.get("max_active_mapping_mounts", 16),
+        mapping_mount_idle_seconds=payload.get("mapping_mount_idle_seconds", 30),
         root=root,
         token=bootstrap_token,
         name=name,

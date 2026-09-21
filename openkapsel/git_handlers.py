@@ -30,6 +30,9 @@ class GitHandlersMixin:
             candidate = self.token_scope_root / candidate
         self._assert_inside_root(candidate)
         row = self.server.mappings.at_path(candidate)
+        if row is None:
+            candidate = self._resolve_path(value)
+            row = self.server.mappings.at_path(candidate)
         if row:
             relative = candidate.relative_to(self.server.mappings.mount_path(row))
             if ".openkapsel" in relative.parts:
@@ -59,7 +62,9 @@ class GitHandlersMixin:
                 raise ApiError(502, "invalid_mapping_response", "invalid Git result")
             result.update(location="client", mapping_id=row["id"])
         else:
-            root = self._resolve_path(value)
+            root = candidate
+            if any(root in self.server.mappings.mount_path(r).parents for r in self.server.mappings.store.list()):
+                raise ApiError(409, "git_mapping_boundary", "Git snapshots cannot span virtual mapping roots; inspect a repository within one backend or use explicit server execution")
             result = inspect_git(self._safe_path_access(), root, operation, options, timeout)
             result["location"] = "server"
         self._send_json(200, result)
