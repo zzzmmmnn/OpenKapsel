@@ -1938,7 +1938,13 @@ class DiscoveryMixin:
                 "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
                 "scope": "openkapsel",
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
-                "rest_access": "OAuth grants cover this connection's MCP endpoint and returned raw transfer URLs only. Other REST URLs require separate read/control credentials.",
+                "rest_access": "OAuth grants use the MCP endpoint directly; get_workspace_credentials can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
+                "workspace_credentials": {
+                    "export_tool": "get_workspace_credentials",
+                    "renew_tool": "renew_workspace_credentials",
+                    "renewal_window_seconds": 2 * 24 * 60 * 60,
+                    "rotation": "read URL token and control token rotate atomically; old REST credentials become invalid; MCP connection credentials are unchanged",
+                },
             }
             if cid:
                 payload["authentication"]["consent"] = consent_metadata()
@@ -1947,8 +1953,8 @@ class DiscoveryMixin:
                 payload["authentication"].update(
                     mode="static_mcp", authorization="Authorization: Bearer <MCP_CONNECTION_SECRET>",
                     expires_at=conn["expires_at"],
-                    renewal="An administrator can extend this connection's expiration; do not call credentials/renew.",
-                    rest_access="This credential covers only its MCP endpoint and returned raw transfer URLs.",
+                    renewal="An administrator can extend this Static MCP connection's own expiration; workspace REST credential renewal is separate.",
+                    rest_access="This MCP credential can export or renew the linked configuration's portable REST workspace URL and control token through MCP tools.",
                 )
             payload.get("endpoints", {}).pop("credentials_renew", None)
             if "mcp" in payload.get("endpoints", {}):

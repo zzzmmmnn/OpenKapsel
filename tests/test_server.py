@@ -3030,6 +3030,7 @@ class WorkspaceServerTests(unittest.TestCase):
             if tool["annotations"]["readOnlyHint"] or tool_name in {
                 "add_context",
                 "update_plan",
+                "renew_workspace_credentials",
                 "rpc",
             }:
                 continue

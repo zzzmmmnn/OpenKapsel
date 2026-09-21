@@ -47,7 +47,7 @@ service where configured limits apply.
 - Conditional self-renewal works only when less than two days remain.
 - Browser preview uses an independent rotatable credential on a dedicated origin.
 - Invalid capability URLs return `404` to reduce enumeration.
-- OAuth grants are independent of read/control renewal. Deleting a connection revokes its credentials; disabling/deleting the linked token configuration or changing its directory blocks access. Full Shell remains trusted even when invoked through OAuth.
+- OAuth grants and Static MCP credentials are independent of read/control renewal. An authenticated MCP connection may explicitly export the linked configuration's REST workspace URL/control token or rotate that REST pair inside the normal renewal window; this is an intentional delegation capability, not an administration login. Deleting a connection revokes its MCP credential; disabling/deleting the linked token configuration or changing its directory blocks access. Full Shell remains trusted even when invoked through OAuth.
 - OAuth client names are unverified registration metadata. Control-token holders must inspect the displayed workspace, permissions and return address before approving a connection. The authorization server does not fetch client-supplied metadata URLs in this version.
 - Discovery never returns the control token unless the request already supplies that matching credential where required.
 

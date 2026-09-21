@@ -486,6 +486,22 @@ class TokenStore:
                 raise
             return record
 
+    def renew_credentials_for_app_if_due(
+        self,
+        app_id: str,
+        workspace: str,
+        *,
+        now: datetime | None = None,
+    ) -> TokenRecord:
+        """Renew the current credentials for one stable app/workspace binding."""
+        with self._lock:
+            current = self.get_by_app_id(app_id)
+            if current is None or not current.valid or current.path_prefix != workspace:
+                raise ValueError("linked workspace configuration is unavailable or changed")
+            # Keep lookup and rotation under the same re-entrant lock so two MCP
+            # connections cannot race through the renewal window using stale keys.
+            return self.renew_credentials_if_due(current.token, now=now)
+
     def update(self, token: str, **changes: Any) -> TokenRecord:
         with self._lock:
             current = self.get(token)

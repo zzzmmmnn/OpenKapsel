@@ -43,7 +43,7 @@ The console is at `<url_base_path>/admin`. Its twelve-hour session cookie is `Ht
 
 MCP clients are managed on separate **Static MCP** and **OAuth connections** pages, grouped by project directory. Both support editing comments. [Static MCP connections](static-mcp-connections.md) provide copyable client JSON containing an independent Bearer secret and editable expiration (30/91/182/365/730 days; default 365). Project token cards expose REST and preview credentials.
 
-The single-page console has responsive views for tokens, workspace images, static MCP connections, OAuth connections, and administrator password changes. Token cards are collapsed by default. Expanding one reveals credentials, renewal and rotation controls, paths, sandbox settings, and advanced permissions. [OAuth connections](oauth-connections.md) provide stable, independently revocable remote MCP access without sharing read/control credentials.
+The single-page console has responsive views for tokens, workspace images, static MCP connections, OAuth connections, and administrator password changes. Token cards are collapsed by default. Expanding one reveals credentials, renewal and rotation controls, paths, sandbox settings, and advanced permissions. [OAuth connections](oauth-connections.md) provide stable, independently revocable remote MCP access. Once authenticated, OAuth and Static MCP connections may explicitly export or renew the linked configuration's REST workspace URL/control token for cross-platform handoff; ordinary MCP responses continue to redact those secrets.
 
 Each token controls:
 

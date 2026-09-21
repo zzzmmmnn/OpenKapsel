@@ -32,7 +32,9 @@ def consent_metadata():
             "attempts_per_address": CONSENT_ADDRESS_ATTEMPTS,
             "attempts_per_request": CONSENT_REQUEST_ATTEMPTS,
             "credential_delivery": "same-origin consent form POST only; never client redirects or token endpoint",
-            "oauth_lifetime": "independent of normal control-token renewal"}
+            "oauth_lifetime": "independent of normal control-token renewal",
+            "rest_credentials_exportable": True,
+            "rest_credentials_tools": ["get_workspace_credentials", "renew_workspace_credentials"]}
 
 
 def consent_cookie(headers, name: str) -> str | None:
@@ -135,7 +137,7 @@ def consent_page(request=None, record=None, *, action="", csrf="", error=None) -
 <dl><dt>Connection</dt><dd>{esc(conn['comment'])}</dd><dt>Workspace</dt><dd>{esc(conn['workspace'])}</dd><dt>Configuration</dt><dd>{esc(record.name)}</dd><dt>Client</dt><dd>{esc(client['client_name'])} <small>(self-reported, not verified)</small></dd><dt>Client ID</dt><dd>{esc(request['client_id'])}</dd><dt>Return address</dt><dd>{esc(request['params']['redirect_uri'])}</dd></dl>
 <h2>Permissions granted to this client</h2>
 <dl><dt>Files</dt><dd>Read: {allowed(record.can_read)}; Write: {allowed(record.can_write)}</dd><dt>Shell</dt><dd>{esc(record.shell_mode)}</dd><dt>Schedules</dt><dd>{allowed(record.can_schedule)}</dd><dt>Preview</dt><dd>{allowed(record.can_preview)}</dd><dt>Network</dt><dd>{esc(record.network_mode)}</dd><dt>Extra paths</dt><dd>{esc(extras)}</dd></dl>
-{shell_notice}<p class="notice">Authorize only a client you intended to connect. It receives this configuration's current permissions, including enabled Shell operations; later permission changes also apply. OAuth access continues independently of normal control-token renewal. Revoke the OAuth connection as well if a token was compromised.</p>
+{shell_notice}<p class="notice">Authorize only a client you intended to connect. It receives this configuration's current permissions, including enabled Shell operations, and may export or rotate this configuration's portable REST workspace URL and control token through MCP tools. Later permission changes also apply. OAuth access continues independently of normal control-token renewal. Revoke the OAuth connection as well if a token was compromised.</p>
 <form method="post" action="{esc(action, quote=True)}" autocomplete="off">
 <input type="hidden" name="request" value="{esc(request['id'], quote=True)}">
 <input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">

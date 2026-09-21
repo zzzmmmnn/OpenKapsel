@@ -26,6 +26,7 @@ from .mcp import (
     validate_arguments,
 )
 from .uploads import UploadError
+from .tokens import CredentialRenewalNotDue
 
 
 LOGGER = logging.getLogger("openkapsel")
@@ -104,6 +105,13 @@ class McpHandlersMixin:
             self._send_mcp_json(
                 HTTPStatus.OK,
                 {"jsonrpc": "2.0", "id": request_id, "result": result},
+                redact_linked_secrets=not (
+                    method == "tools/call"
+                    and params.get("name") in {
+                        "get_workspace_credentials",
+                        "renew_workspace_credentials",
+                    }
+                ),
             )
         except McpError as exc:
             self._send_mcp_error(request_id, exc.code, exc.message, exc.data)
@@ -153,9 +161,10 @@ class McpHandlersMixin:
                 "run_shell defaults to target=auto: a mapped cwd runs on that client, otherwise on the server. Set target=server or client explicitly when needed. Client execution follows its own sandbox and platform policy. The returned task_id works with get_task, read_task_output, send_task_input, interrupt_task, and kill_task. Client stdout and stderr are combined in stdout, and client stdin is limited to 16 KiB per call. "
                 "When schedule tools are available, use create_schedule for persistent once, interval, or strict six-field cron Shell work; use run_schedule_now for explicit immediate execution. "
                 "Use interrupt_task for normal termination and kill_task only for immediate forced termination. "
-                "When connected through OAuth, use MCP tools rather than ordinary REST URLs. "
-                "Only returned connection-scoped raw transfer URLs accept the same OAuth bearer; "
-                "your MCP client handles credential refresh through OAuth."
+                "When connected through OAuth or Static MCP, use MCP tools by default. "
+                "Use get_workspace_credentials only when portable REST access is needed on another platform; "
+                "renew_workspace_credentials rotates the linked REST URL/control token only inside the normal renewal window and invalidates the previous REST pair. "
+                "The MCP connection credential has its own lifetime and remains separate."
             ),
         }
 
@@ -195,6 +204,8 @@ class McpHandlersMixin:
             "add_memory",
             "update_memory",
             "archive_memory",
+            "get_workspace_credentials",
+            "renew_workspace_credentials",
         }
         track_operation = name not in context_tools and name != "rpc" and (
             not tool["annotations"]["readOnlyHint"]
@@ -251,7 +262,71 @@ class McpHandlersMixin:
             "isError": False,
         }
 
+    def _mcp_workspace_credential_binding(self):
+        oauth_cid = getattr(self, "oauth_connection_id", None)
+        static_cid = getattr(self, "static_mcp_connection_id", None)
+        if oauth_cid:
+            connection = self.server.oauth.get(oauth_cid)
+        elif static_cid:
+            connection = self.server.static_mcp.get(static_cid)
+        else:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "mcp_connection_required",
+                "workspace credentials can be exported only from an authenticated OAuth or Static MCP connection",
+            )
+        record = self.server.tokens.get_by_app_id(connection["app_id"])
+        if record is None or not record.valid or record.path_prefix != connection["workspace"]:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "workspace_configuration_unavailable",
+                "linked workspace configuration is unavailable or changed",
+            )
+        return connection, record
+
+    def _mcp_workspace_credentials(self, record, *, rotated: bool) -> dict[str, Any]:
+        return {
+            "workspace_url": (
+                f"{self._public_base_url().rstrip('/')}/w/"
+                f"{quote(record.token, safe='')}/"
+            ),
+            "control_token": record.control_token,
+            "credentials_expires_at": record.credentials_expires_at,
+            "credentials_valid": record.credentials_valid,
+            "rotated": rotated,
+        }
+
     def _execute_mcp_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == "get_workspace_credentials":
+            _, record = self._mcp_workspace_credential_binding()
+            return self._mcp_workspace_credentials(record, rotated=False)
+        if name == "renew_workspace_credentials":
+            connection, _ = self._mcp_workspace_credential_binding()
+            try:
+                record = self.server.tokens.renew_credentials_for_app_if_due(
+                    connection["app_id"], connection["workspace"]
+                )
+            except CredentialRenewalNotDue as exc:
+                raise ApiError(
+                    HTTPStatus.CONFLICT,
+                    "credentials_renewal_not_due",
+                    str(exc),
+                    details={
+                        "credentials_expires_at": exc.expires_at,
+                        "remaining_seconds": exc.remaining_seconds,
+                        "renewal_window_seconds": 2 * 24 * 60 * 60,
+                    },
+                ) from None
+            except ValueError as exc:
+                raise ApiError(
+                    HTTPStatus.CONFLICT,
+                    "credentials_cannot_be_renewed",
+                    str(exc),
+                ) from None
+            # Keep this request internally coherent after rotating the TokenStore.
+            self.token_record = record
+            self.token_scope_root = self.server.tokens.scope_root(record)
+            return self._mcp_workspace_credentials(record, rotated=True)
         if name == "workspace_info":
             return self._mcp_workspace_info(str(arguments.get("section", "main")))
         if name == "query_context":
@@ -832,9 +907,18 @@ class McpHandlersMixin:
             error["data"] = data
         self._send_mcp_json(status, {"jsonrpc": "2.0", "id": request_id, "error": error})
 
-    def _send_mcp_json(self, status: int, payload: dict[str, Any]) -> None:
+    def _send_mcp_json(
+        self,
+        status: int,
+        payload: dict[str, Any],
+        *,
+        redact_linked_secrets: bool = True,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        if getattr(self, "oauth_connection_id", None) or getattr(self, "static_mcp_connection_id", None):
+        if redact_linked_secrets and (
+            getattr(self, "oauth_connection_id", None)
+            or getattr(self, "static_mcp_connection_id", None)
+        ):
             for secret in (self.token_record.token, self.token_record.control_token):
                 data = data.replace(secret.encode("utf-8"), b"<redacted>")
         self.send_response(status)

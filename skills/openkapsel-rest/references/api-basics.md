@@ -10,7 +10,7 @@ Normalize `workspace_url` by removing its trailing slash. Workspace endpoints ar
 - A preview token is independent. Never substitute it for either workspace credential.
 - `GET <workspace_url>/` never echoes the control token.
 
-Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, public share URL, or workspace application's own route.
+Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, public share URL, or workspace application's own route. When operating through an authenticated OAuth or Static MCP connection, use `get_workspace_credentials` to obtain the current portable REST workspace URL/control token and `renew_workspace_credentials` to rotate that pair inside the normal renewal window; ordinary MCP Discovery does not expose the secret values.
 
 Control tokens do not sign in to administration. Interactive browser consent on the configured OpenKapsel service origin is a separate user-driven workflow; these REST helpers do not submit credentials to browser forms or follow client callback redirects. Never place a control token in a URL or request log.
 
