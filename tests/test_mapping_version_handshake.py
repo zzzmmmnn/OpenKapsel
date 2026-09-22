@@ -172,6 +172,18 @@ class ReloadDecisionTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(0, state.path.stat().st_mode & 0o077)
 
+    def test_reload_state_persists_when_fchmod_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "client.json"
+            config.write_text("{}")
+            with patch("openkapsel.client_runtime.client_reload.os.fchmod", None, create=True):
+                state = ClientReloadState(config)
+                self.assertEqual(0, state.next_required_delay())
+                state.mark_ready("W" * 44)
+                restored = ClientReloadState(config)
+            self.assertEqual("W" * 44, restored.last_server_fingerprint)
+            self.assertEqual(0, restored.required_reload_attempts)
+
     def test_exec_bootstrap_forces_configured_source_ahead_of_cwd(self):
         source = LocalSource(Path("/trusted/OpenKapsel"), __version__, "L" * 44)
         config = Path("/config/client.json")

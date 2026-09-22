@@ -53,17 +53,21 @@ class ClientReloadState:
         payload = dict(self.data, version=STATE_VERSION)
         fd, tmp = tempfile.mkstemp(prefix=self.path.name + ".", dir=str(self.path.parent))
         try:
-            os.fchmod(fd, 0o600)
+            fchmod = getattr(os, "fchmod", None)
+            if callable(fchmod):
+                fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, self.path)
-            try:
-                os.chmod(self.path, 0o600)
-            except OSError:
-                pass
+            chmod = getattr(os, "chmod", None)
+            if callable(chmod):
+                try:
+                    chmod(self.path, 0o600)
+                except (OSError, NotImplementedError):
+                    pass
         finally:
             try:
                 os.unlink(tmp)
