@@ -83,9 +83,15 @@ Local validation on September 21, 2026:
 - All three working trees passed `git diff --check`; bundled skill copies match
   the primary source. New plugin sources pass Python 3.10 grammar parsing; this
   is not a Python 3.10 runtime validation.
-- No GitHub Actions run, package release, deployment or service restart has been
-  performed for these uncommitted changes. Linux and Windows execution of the
-  new data-family tests remains for the configured CI matrix.
+- No GitHub Actions run, package release, deployment or service restart had been
+  performed for these uncommitted changes at the time of this September 21
+  record. Linux and Windows execution of the new data-family tests was still
+  pending in the configured CI matrix at that point.
+
+Current validation update (September 22, 2026): the native macOS and native
+Windows client test suites have both been exercised locally without known
+failures. The September 21 bullets above are retained as a historical record of
+the validation state when the data RPC work was first completed.
 
 The dense CSV benchmark ran in fresh native macOS Python processes:
 

@@ -191,8 +191,11 @@ selection, API-worker lifetime, and unavailable-mount failure before process
 launch. Existing mapping, file, Shell, API-worker, upload and safety tests remain
 part of the regression suite.
 
-Real native FUSE mounting, host-helper namespace propagation, and Windows-native
-provider behavior still require deployment or platform CI checks. Passing mocked
-mount-lifecycle tests or running RPC tests on Linux without `/dev/fuse` does not
-establish those native-path results. No service restart or deployment is part of
-this source-tree refactor.
+Native client validation was extended on September 22, 2026: both the native
+macOS and native Windows client test suites were exercised locally without known
+failures, including the Windows filesystem provider and native task/process paths.
+
+Real native Linux FUSE mounting and host-helper namespace propagation still
+require deployment checks. Passing mocked mount-lifecycle tests or running RPC
+tests on Linux without `/dev/fuse` does not establish those native Linux mount
+results. No service restart or deployment is part of this source-tree refactor.
