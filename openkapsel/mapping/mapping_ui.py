@@ -7,6 +7,10 @@ def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
     esc = html.escape
     action = esc(admin_path + "/mappings", quote=True)
     hidden = f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
+    workspace_records = {}
+    for record in records:
+        if record.valid and record.path_prefix not in workspace_records:
+            workspace_records[record.path_prefix] = record
     cards = []
     for row in rows:
         fields = hidden + f'<input type="hidden" name="id" value="{esc(row["id"], quote=True)}">'
@@ -15,13 +19,17 @@ def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
             for key, label in (("enabled", "Enabled"), ("writable", "Writable (files + RPC writes)"), ("allow_exec", "Client execution")))
         online = row["online"] and row["enabled"]
         status = "Online" if online else "Offline" if row["enabled"] else "Disabled"
+        workspace_options = "".join(
+            f'<option value="{esc(path, quote=True)}" {"selected" if path == row["workspace"] else ""}>{esc(record.name)} — {esc(path)}</option>'
+            for path, record in workspace_records.items()
+        )
         cards.append(f'''<details class="card token-card"><summary class="token-summary">
 <div class="token-summary-title"><span>{esc(row["name"])}</span><span class="badge{'' if online else ' off'}">{status}</span></div>
 <div class="token-summary-meta"><strong>Workspace</strong><span>{esc(row["workspace"])}</span></div>
 <div class="token-summary-meta expires"><strong>Access</strong><span>{'Writable' if row['writable'] else 'Read only'}</span></div>
 <div class="token-summary-meta permissions"><strong>Comment</strong><span>{esc(row['comment']) or '—'}</span></div>
 <span class="summary-toggle" aria-hidden="true"></span></summary><div class="token-details">
-<form method="post" action="{action}">{fields}<div class="grid"><div><label>Directory name</label><input name="name" value="{esc(row['name'], quote=True)}" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"></div><div><label>Comment</label><input name="comment" maxlength="200" value="{esc(row['comment'], quote=True)}"></div>
+<form method="post" action="{action}">{fields}<div class="grid"><div><label>Workspace</label><select name="workspace" required>{workspace_options}</select></div><div><label>Directory name</label><input name="name" value="{esc(row['name'], quote=True)}" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"></div><div><label>Comment</label><input name="comment" maxlength="200" value="{esc(row['comment'], quote=True)}"></div>
 <div class="span2 checks">{checks}</div><div class="span4 actions"><button name="action" value="update">Save changes</button>
 <button class="secondary" name="action" value="rotate" onclick="return confirm('Replace the provider credential and disconnect the client?')">Rotate credential</button>
 <button class="danger" name="action" value="delete" onclick="return confirm('Detach this mapping? Client files are not deleted.')">Delete mapping</button></div></div></form></div></details>''')

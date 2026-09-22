@@ -41,6 +41,20 @@ class MappingHTTPTests(unittest.TestCase):
         row = self.server.mappings.store.list()[0]
         self.assertEqual(config["url"], "wss://example.test/kapsel/mapping-connect/" + row["id"])
         self.server.mappings.store.authenticate(row["id"], config["token"])
+        second = self.server.tokens.create(
+            name="Second", path_prefix="second", shell_mode="none", expires_at=None,
+            can_read=True, can_write=True,
+        )
+        edit = {
+            "action": "update", "id": row["id"], "workspace": second.path_prefix,
+            "name": "moved", "writable": "on", "enabled": "on", "csrf": session.csrf,
+        }
+        status, _, raw = self.form(path, edit, auth)
+        self.assertEqual(200, status, raw)
+        moved = self.server.mappings.store.authenticate(row["id"], config["token"])
+        self.assertEqual(second.path_prefix, moved["workspace"])
+        self.assertEqual("moved", moved["name"])
+        self.assertIn('name="workspace"', raw.decode())
         self.assertTrue(config["sandbox"])
         self.assertFalse(config["allow_exec"])
         self.assertEqual(60, config["transport_timeout_seconds"])

@@ -186,6 +186,39 @@ class MappingTests(unittest.TestCase):
         self.assertTrue((workspace / "project" / "after").is_dir())
         self.assertFalse((workspace / "project" / "failed").exists())
 
+    def test_relocate_preserves_identity_credential_and_rolls_back(self):
+        workspace = self.root / "workspaces"
+        (workspace / "one").mkdir(parents=True)
+        (workspace / "two").mkdir()
+        manager = MappingManager(workspace, self.root / "state")
+        row, key = manager.store.create("one", "laptop", writable=True)
+        old_path = workspace / "one" / "laptop"
+        old_path.mkdir()
+        with patch.object(manager, "unmount"):
+            changed = manager.relocate(row["id"], "two", "laptop")
+        self.assertEqual(row["id"], changed["id"])
+        self.assertEqual("two", changed["workspace"])
+        self.assertEqual("laptop", changed["name"])
+        self.assertEqual("two", manager.store.authenticate(row["id"], key)["workspace"])
+        self.assertFalse(old_path.exists())
+        self.assertTrue((workspace / "two" / "laptop").is_dir())
+
+        occupied = workspace / "one" / "occupied"
+        occupied.mkdir()
+        with self.assertRaises(FileExistsError):
+            manager.relocate(row["id"], "one", "occupied")
+        with self.assertRaises(ValueError):
+            manager.relocate(row["id"], "missing", "laptop")
+
+        with patch.object(manager, "unmount"), patch.object(manager.store, "update", side_effect=OSError("state update failed")):
+            with self.assertRaises(OSError):
+                manager.relocate(row["id"], "one", "rollback")
+        current = manager.store.authenticate(row["id"], key)
+        self.assertEqual("two", current["workspace"])
+        self.assertEqual("laptop", current["name"])
+        self.assertTrue((workspace / "two" / "laptop").is_dir())
+        self.assertFalse((workspace / "one" / "rollback").exists())
+
     def test_task_deadline_covers_descendants_after_leader_exit(self):
         tasks = ClientTasks(self.files, enabled=True, sandbox=False, max_tasks=1)
         try:

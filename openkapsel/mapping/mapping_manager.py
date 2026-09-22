@@ -555,22 +555,26 @@ class MappingManager:
         if session:
             session.close()
 
-    def rename(self, mid, name):
-        """Rename an idle virtual root without mounting or changing identity."""
+    def relocate(self, mid, workspace, name):
+        """Move an idle virtual root between workspaces without changing identity."""
         self.store.validate_name(name)
         with self.lock:
             row = self.store.get(mid)
-            if name == row["name"]:
+            if workspace == row["workspace"] and name == row["name"]:
                 return row
             self.require_idle(mid)
-            if any(r["name"] == name for r in self.store.list(row["workspace"])):
+            target_workspace = self.root / workspace
+            if (target_workspace.is_symlink() or not target_workspace.is_dir()
+                    or target_workspace.resolve().parent != self.root):
+                raise ValueError("mapping workspace must be an existing direct child workspace")
+            if any(r["id"] != mid and r["name"] == name for r in self.store.list(workspace)):
                 raise ValueError("mapping name is already registered")
             old_path = self.mount_path(row)
-            new_path = old_path.with_name(name)
+            new_path = target_workspace / name
             new_path.mkdir(mode=0)
             try:
                 self.unmount(row)
-                updated, _ = self.store.update(mid, name=name)
+                updated, _ = self.store.update(mid, workspace=workspace, name=name)
             except BaseException:
                 new_path.rmdir()
                 raise
@@ -579,6 +583,11 @@ class MappingManager:
             except FileNotFoundError:
                 pass
             return updated
+
+    def rename(self, mid, name):
+        """Rename an idle virtual root without mounting or changing identity."""
+        row = self.store.get(mid)
+        return self.relocate(mid, row["workspace"], name)
 
     def unmount(self, row, *, force=False):
         """Release only the native view. Provider sessions and RPC stay alive."""
