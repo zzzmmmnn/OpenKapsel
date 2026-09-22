@@ -145,13 +145,17 @@ class ControlConsentHTTPTests(unittest.TestCase):
         self.assertEqual(403, status)
         self.assertEqual(303, self.submit(second)[0])
 
-    def test_foreign_null_and_malformed_origin_are_rejected(self):
+    def test_foreign_and_malformed_origin_are_rejected_but_null_uses_csrf_proof(self):
         pending = self.pending()
-        for origin in ("https://evil.test", "null", "https://example.test/path", "https://example.test#fragment"):
+        for origin in ("https://evil.test", "https://example.test/path", "https://example.test#fragment"):
             self.assertEqual(403, self.submit(pending, headers={"Origin": origin})[0])
         self.assertEqual(403, self.submit(pending, headers={"Sec-Fetch-Site": "cross-site"})[0])
         self.assert_pending(pending)
-        self.assertEqual(303, self.submit(pending)[0])
+        # Embedded OAuth browser views may legitimately serialize an opaque
+        # origin as `null`; a valid browser cookie + request-bound CSRF proof is
+        # still required and is sufficient to proceed.
+        self.assertEqual(403, self.submit(pending, values={"csrf": "wrong"}, headers={"Origin": "null"})[0])
+        self.assertEqual(303, self.submit(pending, headers={"Origin": "null"})[0])
 
     def test_permissions_changed_after_display_require_fresh_confirmation(self):
         pending = self.pending()

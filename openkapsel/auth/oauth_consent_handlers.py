@@ -38,10 +38,19 @@ class OAuthConsentMixin:
             return parsed.scheme, parsed.hostname.lower(), parsed.port or (443 if parsed.scheme == "https" else 80)
         try:
             origins = self.headers.get_all("Origin") or []
-            if len(origins) > 1 or (origins and (origins[0] == "null" or origin(origins[0]) != origin(expected.geturl())
-                                              or urlsplit(origins[0]).path or urlsplit(origins[0]).query or urlsplit(origins[0]).fragment)):
+            if len(origins) > 1:
                 raise ValueError()
-            if not origins:
+            # Sandboxed OAuth user agents and embedded browser views may send
+            # `Origin: null` for a legitimate form POST. Treat that as
+            # unavailable origin information, not as proof of a foreign origin;
+            # the consent cookie + request-bound HMAC proof below remains the
+            # authoritative browser-CSRF check.
+            usable_origin = origins[0] if origins and origins[0] != "null" else None
+            if usable_origin and (origin(usable_origin) != origin(expected.geturl())
+                                  or urlsplit(usable_origin).path or urlsplit(usable_origin).query
+                                  or urlsplit(usable_origin).fragment):
+                raise ValueError()
+            if not usable_origin:
                 refs = self.headers.get_all("Referer") or []
                 if len(refs) > 1 or (refs and origin(refs[0]) != origin(expected.geturl())):
                     raise ValueError()
