@@ -72,7 +72,8 @@ class GitWriteRpcTests(unittest.TestCase):
                 "args": {"paths": ["source.txt"]},
             },
         })
-        self.assertTrue(started["running"])
+        self.assertEqual("rpc", started["kind"])
+        self.assertTrue(started["write"])
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             result = self.tasks.dispatch("task_get", {"task_id": "git-unsafe-task", "offset": 0})
