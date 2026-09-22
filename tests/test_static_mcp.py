@@ -26,6 +26,8 @@ class StaticMcpTests(unittest.TestCase):
 
     def test_independent_credentials_transfer_expiry_and_revocation(self):
         conn = self.connection()
+        self.assertTrue(conn["secret"].startswith("ksm-"))
+        self.assertEqual(43, len(conn["secret"]))
         self.assertAlmostEqual(time.time() + 365 * 86400, conn["expires_at"], delta=5)
         self.server.tokens.renew_credentials(self.record.token)
         current = self.server.tokens.get_by_app_id(self.record.app_id)
@@ -81,6 +83,14 @@ class StaticMcpTests(unittest.TestCase):
         self.assertEqual(200, self.rpc(conn["secret"], "tools/list")[0])
         self.server.static_mcp.delete(conn["id"])
         self.assertEqual(404, self.rpc(conn["secret"], "tools/list")[0])
+
+
+    def test_legacy_unprefixed_static_secret_remains_accepted(self):
+        conn = self.connection()
+        legacy = "L" * 43
+        with self.server.static_mcp._db() as db:
+            db.execute("UPDATE connections SET secret=? WHERE id=?", (legacy, conn["id"]))
+        self.assertEqual(200, self.rpc(legacy, "tools/list")[0])
 
     def test_scope_rest_separation_and_persistence(self):
         conn = self.connection()

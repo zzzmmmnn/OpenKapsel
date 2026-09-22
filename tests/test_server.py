@@ -5462,7 +5462,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 shell_mode="none",
             )
         self.assertEqual("PreviewToken0001", unique.preview_token)
-        self.assertEqual("control-token-safe-generated", unique.control_token)
+        self.assertEqual("ks-control-token-safe-generated", unique.control_token)
         self.assertEqual(3, generator.call_count)
         self.assertEqual(unique, reloaded.authenticate_preview("PreviewToken0001"))
         self.assertEqual(unique, reloaded.authenticate_control(unique.control_token))
@@ -5482,11 +5482,11 @@ class WorkspaceServerTests(unittest.TestCase):
         old_control_token = rotated.control_token
         with patch(
             "openkapsel.random_ids.secrets.token_urlsafe",
-            side_effect=[rotated.preview_token, "new-full-token-safe-generated"],
+            side_effect=[old_control_token.removeprefix("ks-"), "new-full-token-safe-generated"],
         ) as generator:
             main_rotated = reloaded.rotate_control_token(rotated.token)
         self.assertEqual(2, generator.call_count)
-        self.assertEqual("new-full-token-safe-generated", main_rotated.control_token)
+        self.assertEqual("ks-new-full-token-safe-generated", main_rotated.control_token)
         self.assertEqual(rotated.token, main_rotated.token)
         self.assertEqual(rotated.preview_token, main_rotated.preview_token)
         self.assertIsNone(reloaded.authenticate_control(old_control_token))

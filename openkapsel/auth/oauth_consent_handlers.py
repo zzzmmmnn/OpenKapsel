@@ -109,7 +109,7 @@ class OAuthConsentMixin:
                 query = {"error": "access_denied"}
             else:
                 supplied = form.get("control_token", "").strip()
-                if not supplied or len(supplied) > 1024 or not supplied.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in supplied):
+                if not supplied or len(supplied) > 1024 or not supplied.isascii() or any(ord(c) < 32 or ord(c) > 126 for c in supplied):
                     raise OAuthError("access_denied", "A current control token for this exact configuration is required", 403)
                 # Token lock precedes the OAuth transaction. Rotation or permission
                 # changes cannot slip between this check and code publication.

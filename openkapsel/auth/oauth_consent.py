@@ -142,6 +142,6 @@ def consent_page(request=None, record=None, *, action="", csrf="", error=None) -
 <input type="hidden" name="request" value="{esc(request['id'], quote=True)}">
 <input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">
 <label for="control-token">Control token</label><input id="control-token" type="password" name="control_token" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1024" required>
-<p><small>The token is verified only by OpenKapsel. It is not sent to the client, saved in this form, or used to sign in to administration.</small></p>
+<p><small>Paste either the control token itself or the full copied header, for example <code>Authorization: Bearer ks-...</code>. The token is verified only by OpenKapsel. It is not sent to the client, saved in this form, or used to sign in to administration.</small></p>
 <div class="actions"><button name="decision" value="approve">Verify and authorize</button><button name="decision" value="deny" class="secondary" formnovalidate>Cancel</button></div></form>'''
     return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize MCP connection - OpenKapsel</title><style>{STYLE}</style></head><body><main><section class="card"><h1>Authorize MCP connection</h1>{body}</section></main></body></html>'

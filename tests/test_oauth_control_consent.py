@@ -65,6 +65,9 @@ class ControlConsentHTTPTests(unittest.TestCase):
         self.assertNotIn(b"localStorage", page)
         self.assertNotIn(b"/admin/login", page)
         self.assertIn(b'type="password" name="control_token"', page)
+        self.assertIn(b'Authorization: Bearer ks-', page)
+        self.assertTrue(self.record.control_token.startswith("ks-"))
+        self.assertEqual(43, len(self.record.control_token))
         self.assertIn("__Host-openkapsel_oauth=", headers["Set-Cookie"])
         for attr in ("HttpOnly", "Secure", "SameSite=Lax", "Max-Age=600", "Path=/"):
             self.assertIn(attr, headers["Set-Cookie"])
@@ -99,6 +102,31 @@ class ControlConsentHTTPTests(unittest.TestCase):
             self.assertNotIn(token.encode(), raw)
             self.assert_pending(pending)
         self.assertEqual(303, self.submit(pending)[0])
+
+    def _assert_wrapped_control_token_accepted(self, supplied):
+        pending = self.pending()
+        status, _, raw = self.submit(pending, values={"control_token": supplied})
+        self.assertEqual(303, status, raw)
+
+    def test_control_token_accepts_copied_authorization_header(self):
+        self._assert_wrapped_control_token_accepted("Authorization: Bearer " + self.record.control_token)
+
+    def test_control_token_accepts_bearer_prefix(self):
+        self._assert_wrapped_control_token_accepted("Bearer " + self.record.control_token)
+
+    def test_control_token_accepts_arbitrary_wrapper_text(self):
+        self._assert_wrapped_control_token_accepted("copied credential: [" + self.record.control_token + "]")
+
+    def test_wrapped_control_token_remains_configuration_bound_and_unambiguous(self):
+        same = self.server.tokens.create(name="Other config", path_prefix="project", shell_mode="none", expires_at=None, can_read=True, can_write=False)
+        pending = self.pending()
+        status, _, raw = self.submit(pending, values={"control_token": "Authorization: Bearer " + same.control_token})
+        self.assertEqual(403, status, raw)
+        self.assert_pending(pending)
+        combined = "Authorization: Bearer " + self.record.control_token + " copied-with " + same.control_token
+        status, _, raw = self.submit(pending, values={"control_token": combined})
+        self.assertEqual(403, status, raw)
+        self.assert_pending(pending)
 
     def test_malformed_and_missing_control_tokens_are_safe_failures(self):
         pending = self.pending()

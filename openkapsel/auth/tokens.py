@@ -26,6 +26,8 @@ SANDBOX_BACKENDS = {"auto", "bubblewrap", "podman"}
 CONTAINER_IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}\Z")
 PREVIEW_TOKEN_BYTES = 12
 PREVIEW_TOKEN_LENGTH = 16
+CONTROL_TOKEN_PREFIX = "ks-"
+CONTROL_TOKEN_RANDOM_BYTES = 30  # 40 chars; prefix keeps total length at 43.
 DEFAULT_SANDBOX_MAX_PROCESSES = 64
 DEFAULT_SANDBOX_MEMORY_MB = 256
 DEFAULT_SANDBOX_CPU_PERCENT = 100
@@ -211,7 +213,7 @@ class TokenStore:
             ):
                 raise ValueError("bootstrap token conflicts with an existing credential")
             preview_token = self._new_preview_token_locked(bootstrap_token)
-            control_token = self._new_token_locked(bootstrap_token, preview_token)
+            control_token = self._new_control_token_locked(bootstrap_token, preview_token)
             app_id = self._new_app_id_locked()
             record = self._validate(
                 TokenRecord(
@@ -261,13 +263,24 @@ class TokenStore:
 
     @contextmanager
     def control_authorization(self, supplied: str):
-        """Pin a verified configuration until a short authorization decision ends.
+        """Pin one control credential contained in bounded pasted text.
 
-        Callers must not acquire this guard while holding an OAuth store lock.
-        This prevents credential rotation/permission changes racing approval.
+        OAuth consent accepts copied forms such as ``Authorization: Bearer ...``
+        rather than requiring users to strip presentation prefixes manually.
+        The input must contain exactly one known control token; ambiguous pasted
+        text is rejected. Callers must not acquire this guard while holding an
+        OAuth store lock. The lock prevents credential rotation/permission
+        changes racing approval.
         """
         with self._lock:
-            yield self.authenticate_control(supplied)
+            found = None
+            for token, record in self._control_records.items():
+                if token in supplied:
+                    if found is not None and found is not record:
+                        found = None
+                        break
+                    found = record
+            yield found if found is not None and found.credentials_valid else None
 
     def get(self, token: str) -> TokenRecord:
         with self._lock:
@@ -318,7 +331,7 @@ class TokenStore:
             normalized_prefix, created_workspace = self._prepare_child_workspace(path_prefix)
             token = self._new_token_locked()
             preview_token = self._new_preview_token_locked(token)
-            control_token = self._new_token_locked(token, preview_token)
+            control_token = self._new_control_token_locked(token, preview_token)
             app_id = self._new_app_id_locked()
             try:
                 record = self._validate(
@@ -382,7 +395,7 @@ class TokenStore:
         """Replace only the high-privilege Bearer credential."""
         with self._lock:
             current = self.get(token)
-            control_token = self._new_token_locked()
+            control_token = self._new_control_token_locked()
             record = self._validate(replace(current, control_token=control_token))
             self._records[token] = record
             self._preview_records[record.preview_token] = record
@@ -410,7 +423,7 @@ class TokenStore:
         with self._lock:
             current = self.get(token)
             read_token = self._new_token_locked()
-            control_token = self._new_token_locked(read_token, current.preview_token)
+            control_token = self._new_control_token_locked(read_token, current.preview_token)
             record = self._validate(
                 replace(
                     current,
@@ -458,7 +471,7 @@ class TokenStore:
                 raise ValueError("expired credentials must be renewed by an administrator")
 
             read_token = self._new_token_locked()
-            control_token = self._new_token_locked(read_token, current.preview_token)
+            control_token = self._new_control_token_locked(read_token, current.preview_token)
             expires_at = (
                 requested_at + timedelta(days=DEFAULT_CREDENTIAL_TTL_DAYS)
             ).isoformat()
@@ -758,7 +771,7 @@ class TokenStore:
                 migrated = True
             if not record.control_token:
                 while True:
-                    control_token = token_urlsafe_alnum(32)
+                    control_token = CONTROL_TOKEN_PREFIX + token_urlsafe_alnum(CONTROL_TOKEN_RANDOM_BYTES)
                     if (
                         control_token not in {record.token, record.preview_token}
                         and control_token not in loaded
@@ -818,6 +831,17 @@ class TokenStore:
     def _new_token_locked(self, *excluded: str) -> str:
         while True:
             token = token_urlsafe_alnum(32)
+            if (
+                token not in excluded
+                and token not in self._records
+                and token not in self._preview_records
+                and token not in self._control_records
+            ):
+                return token
+
+    def _new_control_token_locked(self, *excluded: str) -> str:
+        while True:
+            token = CONTROL_TOKEN_PREFIX + token_urlsafe_alnum(CONTROL_TOKEN_RANDOM_BYTES)
             if (
                 token not in excluded
                 and token not in self._records

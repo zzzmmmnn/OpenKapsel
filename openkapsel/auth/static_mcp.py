@@ -11,6 +11,8 @@ from openkapsel.errors import ApiError
 
 
 EXPIRY_DAYS = (30, 91, 182, 365, 730)
+STATIC_MCP_SECRET_PREFIX = "ksm-"
+STATIC_MCP_SECRET_RANDOM_BYTES = 29  # 39 chars; prefix keeps total length at 43.
 
 
 class StaticMcpStore(OAuthStore):
@@ -50,7 +52,7 @@ class StaticMcpStore(OAuthStore):
         cid = token_urlsafe_alnum(24)
         with self._db() as db:
             db.execute("INSERT INTO connections(id,app_id,workspace,comment,created_at,secret,expires_at) VALUES(?,?,?,?,?,?,?)",
-                       (cid, app_id, workspace, comment, time.time(), token_urlsafe_alnum(32), expiry))
+                       (cid, app_id, workspace, comment, time.time(), STATIC_MCP_SECRET_PREFIX + token_urlsafe_alnum(STATIC_MCP_SECRET_RANDOM_BYTES), expiry))
             return self._connection(db, cid)
 
     def update(self, cid, comment, days=None, *, app_id=None, workspace=None):
