@@ -170,19 +170,34 @@ PY
         && command -v rootlesskit >/dev/null 2>&1 \
         && command -v systemd-run >/dev/null 2>&1 \
         && id "$SERVICE_USER" >/dev/null 2>&1; then
-        # This is a functional Bubblewrap/RootlessKit smoke test. Keep its
-        # transient unit properties to the systemd 239 baseline used by EL8;
-        # the real service's supported hardening settings remain in its unit.
-        systemd-run --quiet --wait --collect --pipe \
-            --unit="${SERVICE_NAME}-sandbox-verify-$$" \
-            --property="User=$SERVICE_USER" \
-            --property="Group=$SERVICE_GROUP" \
-            -- \
-            "$INSTALL_DIR/venv/bin/python" -m openkapsel.execution.sandbox_verify \
-            --workspace-root "$WORKSPACE_ROOT" \
-            --worker-root "$DATA_DIR/api-workers" \
-            --bubblewrap "$BUBBLEWRAP_PATH" \
-            --rootlesskit /usr/bin/rootlesskit || failed=1
+        # This is a functional Bubblewrap/RootlessKit smoke test. EL8's
+        # systemd 239 can transiently time out StartTransientUnit immediately
+        # after an upgrade's daemon-reload/enable sequence even though the same
+        # probe succeeds moments later. Retry the whole transient probe with a
+        # fresh unit name; never weaken or skip the isolation verification.
+        local sandbox_verified=0 attempt unit
+        for attempt in 1 2 3; do
+            unit="${SERVICE_NAME}-sandbox-verify-$$-${attempt}"
+            if systemd-run --quiet --wait --collect --pipe \
+                --unit="$unit" \
+                --property="User=$SERVICE_USER" \
+                --property="Group=$SERVICE_GROUP" \
+                -- \
+                "$INSTALL_DIR/venv/bin/python" -m openkapsel.execution.sandbox_verify \
+                --workspace-root "$WORKSPACE_ROOT" \
+                --worker-root "$DATA_DIR/api-workers" \
+                --bubblewrap "$BUBBLEWRAP_PATH" \
+                --rootlesskit /usr/bin/rootlesskit; then
+                sandbox_verified=1
+                break
+            fi
+            if ((attempt < 3)); then
+                printf 'sandbox verification transient unit failed; retrying (%d/3)\n' "$attempt" >&2
+                systemctl reset-failed "$unit" 2>/dev/null || true
+                sleep 1
+            fi
+        done
+        ((sandbox_verified)) || failed=1
     fi
     if ((failed)); then
         return 1
