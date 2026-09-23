@@ -192,6 +192,15 @@ class ClientRpcRegistry:
             result[family] = capability
         return result
 
+    def close(self) -> None:
+        for registered in self._plugins.values():
+            close = getattr(registered.plugin, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
     def accepts(self, wire_operation: str) -> bool:
         return self._registered_for(wire_operation) is not None
 
@@ -270,8 +279,10 @@ def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:
     registry.register(archive_plugin, source="openkapsel.rpc_plugins.archive:plugin")
     from .structured import plugin as structured_plugin
     from .tabular import plugin as tabular_plugin
+    from .ssh import SshRpcPlugin
     registry.register(structured_plugin, source="openkapsel.rpc_plugins.structured:plugin")
     registry.register(tabular_plugin, source="openkapsel.rpc_plugins.tabular:plugin")
+    registry.register(SshRpcPlugin(config), source="openkapsel.rpc_plugins.ssh:SshRpcPlugin")
 
     specs = config.get("rpc_plugins", [])
     if specs is None:

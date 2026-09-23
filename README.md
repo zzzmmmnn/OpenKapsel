@@ -198,3 +198,5 @@ source changes after the 24-hour refresh interval. See
 ## Parsed configuration and large tables
 
 Optional `structured` and `tabular` client RPC families support JSON/YAML/TOML read/write and read-only CSV/Excel access. Large CSVs use bounded streaming pages and asynchronous segment scans without FUSE or whole-file loading. See [data RPC setup and validation](docs/data-rpc.md).
+
+Optional `ssh` RPC uses client-local Paramiko profiles for reusable SSH/SFTP connections. The first operation may name a profile and returns an opaque `connection_id`; later commands and transfers reuse that transport until explicitly closed, lost, or idle for 60 seconds by default. SSH credentials never enter RPC arguments or results. See [SSH RPC](docs/ssh-rpc.md).

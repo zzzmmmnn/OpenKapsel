@@ -192,7 +192,10 @@ class ClientFiles:
         return value
 
     def close(self):
-        with self.lock:
-            for fd in self.handles.values():
-                os.close(fd)
-            self.handles.clear()
+        try:
+            self.rpc_registry.close()
+        finally:
+            with self.lock:
+                for fd in self.handles.values():
+                    os.close(fd)
+                self.handles.clear()

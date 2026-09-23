@@ -70,6 +70,7 @@ CLIENT_FILES = (
     "openkapsel/rpc_plugins/tabular/__init__.py",
     "openkapsel/rpc_plugins/tabular/csv_stream.py",
     "openkapsel/rpc_plugins/tabular/excel.py",
+    "openkapsel/rpc_plugins/ssh/__init__.py",
 )
 
 

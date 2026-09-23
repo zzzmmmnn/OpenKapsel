@@ -46,6 +46,8 @@ enabled but the local `git` executable is missing. Additional trusted client
 plugins can be registered explicitly with `rpc_plugins: ["module:object"]`;
 merely installing a package does not load it.
 
+The built-in SSH family version 1 is different from ordinary read-only data plugins: every SSH operation advertises `write=true` because using a client-local SSH credential is privileged external access. When Paramiko is installed and `ssh.profiles` is configured, it exposes synchronous `profiles`, `status`, `close`, `stat`, `listdir`, and bounded `read`, plus task operations `exec`, `upload`, and `download`. The first operation may pass a profile name and returns a process-scoped `connection_id`; later operations reuse it. An expired, lost, or explicitly closed ID fails distinctly and is never silently reconnected. See [ssh-rpc.md](ssh-rpc.md).
+
 Each plugin self-describes the family and every operation. In `GET /mappings`,
 `capabilities.rpc.<family>.description` explains the family and
 `operation_specs.<operation>` contains `description`, a JSON
