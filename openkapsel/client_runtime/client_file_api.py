@@ -136,8 +136,19 @@ class ClientFileAPI(FileHandlersMixin):
         path = self.files.path(value)
         if any(self._is_internal_transfer_name(part) for part in path.relative_to(self.files.root).parts):
             raise ApiError(403, "reserved_path", "temporary transfer paths are not available")
-        if write and path == self.files.root:
-            raise ApiError(403, "root_protected", "mapping root is protected")
+        if write:
+            if path == self.files.root:
+                raise ApiError(403, "root_protected", "mapping root is protected")
+            try:
+                self.files.ensure_mutable_path(path)
+            except OSError as exc:
+                if exc.errno == errno.EACCES:
+                    raise ApiError(
+                        403,
+                        "client_config_protected",
+                        "active client configuration is protected",
+                    ) from None
+                raise
         return path
 
     def _safe_path_access(self):

@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import __version__
 
+from openkapsel.client_runtime.client_config import ClientConfigError, ClientConfigLock
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.rpc_plugins import load_client_rpc_registry
@@ -65,9 +66,11 @@ def proxy_options(url):
 
 class ClientRuntime:
     """Own tasks across transport sessions, bound to one immutable configuration."""
-    def __init__(self, config):
+    def __init__(self, config, *, protected_paths=()):
         self.config = json.loads(json.dumps(config))
-        self.files, self.tasks = _create_resources(self.config)
+        self.files, self.tasks = _create_resources(
+            self.config, protected_paths=protected_paths
+        )
         self.client_fingerprint = running_fingerprint("client")
         self.pending_reload = False
 
@@ -82,7 +85,7 @@ class ClientRuntime:
             self.files.close()
 
 
-def _create_resources(config):
+def _create_resources(config, *, protected_paths=()):
     url = config["url"]
     parsed = urlsplit(url)
     if parsed.scheme not in {"wss", "ws"} or parsed.username or parsed.password or parsed.fragment or parsed.query:
@@ -127,6 +130,7 @@ def _create_resources(config):
         writable=config.get("writable", False),
         rpc_capabilities=rpc_capabilities,
         rpc_registry=rpc_registry,
+        protected_paths=protected_paths,
     )
     limits = config.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {"max_tasks", "max_seconds", "memory_mb", "processes", "cpus"}:
@@ -327,55 +331,69 @@ def main():
     options = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     options.config = options.config.expanduser().resolve()
-    config = json.loads(options.config.read_text())
-    if os.name != "nt" and options.config.stat().st_mode & 0o077:
-        parser.error("client configuration contains credentials: chmod 600 it first")
-    reload_state = ClientReloadState(options.config)
-    # Every process start loads code afresh, whether caused by our exec, a
-    # service restart, or an operator. Use that as the 24-hour refresh origin.
-    os.environ.pop("OPENKAPSEL_CLIENT_RELOADED", None)
-    reload_state.mark_process_reload()
-    runtime = ClientRuntime(config)
     try:
-        while True:
-            try:
-                run_once(config, runtime=runtime, reload_state=reload_state)
-            except ClientReloadRequired as exc:
-                delay = reload_state.next_required_delay() if exc.required else 0
-                LOG.info(
-                    "Reloading client source %s%s",
-                    exc.source.root,
-                    f" after {delay}s" if delay else "",
-                )
+        config_lock = ClientConfigLock.acquire(options.config)
+    except (ClientConfigError, OSError) as exc:
+        parser.error(str(exc))
+    config = config_lock.config
+    try:
+        reload_state = ClientReloadState(options.config)
+        # Every process start loads code afresh, whether caused by our exec, a
+        # service restart, or an operator. Use that as the 24-hour refresh origin.
+        os.environ.pop("OPENKAPSEL_CLIENT_RELOADED", None)
+        reload_state.mark_process_reload()
+        runtime = ClientRuntime(config, protected_paths=(options.config,))
+        try:
+            while True:
+                try:
+                    run_once(config, runtime=runtime, reload_state=reload_state)
+                except ClientReloadRequired as exc:
+                    delay = reload_state.next_required_delay() if exc.required else 0
+                    LOG.info(
+                        "Reloading client source %s%s",
+                        exc.source.root,
+                        f" after {delay}s" if delay else "",
+                    )
+                    if options.once:
+                        raise SystemExit(1) from None
+                    if delay:
+                        time.sleep(delay)
+                    runtime.close()
+                    config_fd = config_lock.exec_descriptor()
+                    try:
+                        exec_local_source(
+                            exc.source,
+                            options.config,
+                            config_sha256=config_lock.sha256,
+                            config_fd=config_fd,
+                        )
+                    finally:
+                        config_lock.restore_noninheritable()
+                except ClientVersionRequired as exc:
+                    delay = reload_state.next_required_delay()
+                    LOG.warning(
+                        "Client %s is below required %s; rechecking in %ss",
+                        __version__, exc.minimum_version, delay,
+                    )
+                    if options.once:
+                        raise SystemExit(1) from None
+                    if delay:
+                        time.sleep(delay)
+                    continue
+                except Exception as exc:
+                    # Transport exceptions can contain URL/proxy credentials.
+                    LOG.warning("Provider connection ended (%s)", type(exc).__name__)
+                    if options.once:
+                        raise SystemExit(1) from None
                 if options.once:
-                    raise SystemExit(1) from None
-                if delay:
-                    time.sleep(delay)
-                runtime.close()
-                exec_local_source(exc.source, options.config)
-            except ClientVersionRequired as exc:
-                delay = reload_state.next_required_delay()
-                LOG.warning(
-                    "Client %s is below required %s; rechecking in %ss",
-                    __version__, exc.minimum_version, delay,
-                )
-                if options.once:
-                    raise SystemExit(1) from None
-                if delay:
-                    time.sleep(delay)
-                continue
-            except Exception as exc:
-                # Transport exceptions can contain URL/proxy credentials.
-                LOG.warning("Provider connection ended (%s)", type(exc).__name__)
-                if options.once:
-                    raise SystemExit(1) from None
-            if options.once:
-                return
-            time.sleep(5)
-    except KeyboardInterrupt:
-        return
+                    return
+                time.sleep(5)
+        except KeyboardInterrupt:
+            return
+        finally:
+            runtime.close()
     finally:
-        runtime.close()
+        config_lock.close()
 
 
 if __name__ == "__main__":

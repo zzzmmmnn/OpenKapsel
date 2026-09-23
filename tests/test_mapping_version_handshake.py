@@ -187,15 +187,17 @@ class ReloadDecisionTests(unittest.TestCase):
     def test_exec_bootstrap_forces_configured_source_ahead_of_cwd(self):
         source = LocalSource(Path("/trusted/OpenKapsel"), __version__, "L" * 44)
         config = Path("/config/client.json")
+        digest = "a" * 64
         with patch("os.execve", side_effect=RuntimeError("exec intercepted")) as execute:
             with self.assertRaises(RuntimeError):
-                exec_local_source(source, config)
+                exec_local_source(source, config, config_sha256=digest)
         executable, argv, env = execute.call_args.args
         self.assertEqual(os.sys.executable, executable)
         self.assertEqual("-c", argv[1])
         self.assertIn("sys.path.insert(0,'/trusted/OpenKapsel')", argv[2])
         self.assertEqual(["--config", "/config/client.json"], argv[-2:])
         self.assertTrue(env["PYTHONPATH"].startswith("/trusted/OpenKapsel"))
+        self.assertEqual(digest, env["OPENKAPSEL_CLIENT_CONFIG_SHA256"])
 
 
 class ServerFirstHandshakeTests(unittest.TestCase):

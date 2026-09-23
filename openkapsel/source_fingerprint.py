@@ -50,6 +50,7 @@ SERVER_FILES = (
 
 CLIENT_FILES = (
     "openkapsel/client.py",
+    "openkapsel/client_runtime/client_config.py",
     "openkapsel/client_runtime/client_reload.py",
     "openkapsel/client_runtime/client_file_api.py",
     "openkapsel/client_runtime/client_files.py",

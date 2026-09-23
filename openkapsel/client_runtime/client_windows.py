@@ -138,6 +138,7 @@ class WindowsClientFiles(ClientFiles):
         if op in {"unlink", "rmdir"}:
             if path == self.root:
                 raise OSError(errno.EBUSY, "export root is protected")
+            self.ensure_mutable_path(path)
             with self.paths.guard(path):
                 (os.unlink if op == "unlink" else os.rmdir)(path)
             return None
@@ -168,9 +169,11 @@ class WindowsClientFiles(ClientFiles):
                     result["entries"] = {name: self.details((path / name).stat(follow_symlinks=False)) for name in selected}
                 return result
             if op == "utimens":
+                self.ensure_mutable_path(path)
                 os.utime(path, times=args.get("times"))
             # POSIX permission bits have no equivalent ACL semantics here.
             elif op == "chmod":
+                self.ensure_mutable_path(path)
                 raise OSError(errno.ENOTSUP, "POSIX chmod is not supported on Windows exports")
         return None
 
@@ -186,6 +189,7 @@ class WindowsClientFiles(ClientFiles):
                 source = self.path(args["path"])
                 if source == self.root:
                     raise OSError(errno.EBUSY, "export root is protected")
+                self.ensure_mutable_path(source)
                 rid = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + secrets.token_hex(4)
                 entry = store / rid
                 entry.mkdir()
@@ -206,7 +210,9 @@ class WindowsClientFiles(ClientFiles):
             if op == "recycle_restore":
                 rid = args["recycle_id"]
                 metadata = load(rid)
-                self.paths.rename(store / rid / "content", self.path(metadata["original_path"]), overwrite=False, create_parents=False)
+                destination = self.path(metadata["original_path"])
+                self.ensure_mutable_path(destination)
+                self.paths.rename(store / rid / "content", destination, overwrite=False, create_parents=False)
                 return dict(metadata, restored=True)
             if op == "recycle_purge":
                 rid = args["recycle_id"]

@@ -226,10 +226,17 @@ class ClientTasks:
         if self.sandbox:
             container = "openkapsel-client-" + tid.lower()
             mode = "rw" if self.files.writable else "ro"
+            protected_mounts = []
+            for protected in sorted(self.files.protected_paths, key=str):
+                relative = protected.relative_to(self.files.root).as_posix()
+                protected_mounts.extend([
+                    "--volume", f"{protected}:/workspace/{relative}:ro",
+                ])
             argv = ["podman", "run", "--rm", "--name", container, "--cap-drop=ALL", "--security-opt=no-new-privileges",
                     "--pids-limit", str(self.processes), "--memory", f"{self.memory_mb}m", "--cpus", str(self.cpus),
                     "--network", "slirp4netns" if self.network else "none", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
-                    "--volume", f"{self.files.root}:/workspace:{mode}", "--workdir", "/workspace/" + cwd.relative_to(self.files.root).as_posix(),
+                    "--volume", f"{self.files.root}:/workspace:{mode}", *protected_mounts,
+                    "--workdir", "/workspace/" + cwd.relative_to(self.files.root).as_posix(),
                     "--tmpfs", "/workspace/.openkapsel:rw,nosuid,nodev,noexec,size=1m",
                     "--interactive", self.image, *argv]
         executable = None

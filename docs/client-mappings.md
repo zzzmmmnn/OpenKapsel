@@ -34,7 +34,7 @@ python3 -m venv .venv-client
 
 On Windows use `python` and `.venv-client\Scripts\python.exe`. A full package installation can instead use the `client` extra and the `openkapsel-client` command.
 
-Keep the configuration outside the exported directory and source control. On POSIX systems use mode `0600`:
+Keep the configuration outside the exported directory and source control. On POSIX systems use mode `0600`. The client opens the selected configuration once and holds an exclusive process-lifetime lock. A second client cannot start with the same locked file. If an automatic source reload re-execs the client, the original configuration SHA-256 is carried across the exec and verified before the new process parses the file; a changed or replaced configuration fails closed instead of being loaded. When the configuration nevertheless resides under the exported root, OpenKapsel file mutations are denied for that file and its ancestor directories, and sandboxed client Shell tasks bind that file read-only. POSIX file locks are advisory against arbitrary same-user host processes, so the digest check is the security boundary for automatic re-exec and the recommended deployment remains to keep the configuration outside the exported root. A fresh operator/service restart after the old client has exited intentionally reads the current file again.
 
 ```json
 {

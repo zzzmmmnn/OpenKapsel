@@ -8,6 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from openkapsel.client_runtime.client_config import REEXEC_CONFIG_FD_ENV, REEXEC_CONFIG_SHA256_ENV
 from openkapsel.source_fingerprint import project_root, source_fingerprint, source_version, version_at_least
 
 STATE_VERSION = 1
@@ -130,13 +131,27 @@ def local_source_can_satisfy(source: LocalSource | None, minimum_version: str) -
     return bool(source is not None and version_at_least(source.version, minimum_version))
 
 
-def exec_local_source(source: LocalSource, config_path: Path):
+def exec_local_source(
+    source: LocalSource,
+    config_path: Path,
+    *,
+    config_sha256: str | None = None,
+    config_fd: int | None = None,
+):
     import sys
     env = os.environ.copy()
     source_path = str(source.root)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = source_path + (os.pathsep + existing if existing else "")
     env["OPENKAPSEL_CLIENT_RELOADED"] = "1"
+    if config_sha256 is not None:
+        env[REEXEC_CONFIG_SHA256_ENV] = config_sha256
+    else:
+        env.pop(REEXEC_CONFIG_SHA256_ENV, None)
+    if config_fd is not None and os.name != "nt":
+        env[REEXEC_CONFIG_FD_ENV] = str(config_fd)
+    else:
+        env.pop(REEXEC_CONFIG_FD_ENV, None)
     # python -m can place an old checkout's working directory ahead of
     # PYTHONPATH. Bootstrap with an explicit sys.path insertion before importing
     # any OpenKapsel module from the configured trusted source root.

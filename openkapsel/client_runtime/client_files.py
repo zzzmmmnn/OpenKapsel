@@ -14,10 +14,27 @@ from openkapsel.mapping.mapping_transport import CHUNK_SIZE, READ_OPERATIONS
 
 
 class ClientFiles:
-    def __init__(self, root, *, writable=False, rpc_capabilities=None, rpc_registry=None):
+    def __init__(
+        self,
+        root,
+        *,
+        writable=False,
+        rpc_capabilities=None,
+        rpc_registry=None,
+        protected_paths=(),
+    ):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("export root must be a directory")
+        protected = set()
+        for raw in protected_paths:
+            candidate = Path(raw).expanduser().resolve(strict=False)
+            try:
+                candidate.relative_to(self.root)
+            except ValueError:
+                continue
+            protected.add(candidate)
+        self.protected_paths = frozenset(protected)
         self.writable = writable
         if rpc_registry is None:
             from openkapsel.rpc_plugins import load_client_rpc_registry
@@ -36,6 +53,12 @@ class ClientFiles:
         if value.startswith("/") or any(p in {"..", ".openkapsel"} for p in parts):
             raise OSError(errno.EACCES, "path is outside exported files")
         return self.root.joinpath(*parts)
+
+    def ensure_mutable_path(self, path):
+        path = Path(path)
+        for protected in self.protected_paths:
+            if path == protected or path in protected.parents:
+                raise OSError(errno.EACCES, "active client configuration is protected")
 
     @staticmethod
     def details(st):
@@ -94,7 +117,9 @@ class ClientFiles:
             try:
                 recycle = RecycleBin(self.root)
                 if op == "recycle":
-                    return recycle.recycle(self.path(args["path"]))
+                    source = self.path(args["path"])
+                    self.ensure_mutable_path(source)
+                    return recycle.recycle(source)
                 if op == "recycle_restore":
                     return recycle.restore(args["recycle_id"])
                 if op == "recycle_purge":
@@ -139,6 +164,8 @@ class ClientFiles:
                 raise OSError(errno.EINVAL, "invalid open mode")
             if (mode != "r" or op == "create") and not self.writable:
                 raise OSError(errno.EROFS, "client export is read-only")
+            if mode != "r" or op == "create" or args.get("truncate"):
+                self.ensure_mutable_path(path)
             flags = {"r": os.O_RDONLY, "w": os.O_WRONLY, "rw": os.O_RDWR}[mode]
             if op == "create":
                 flags |= os.O_CREAT | os.O_EXCL
@@ -157,19 +184,25 @@ class ClientFiles:
         if path == self.root:
             raise OSError(errno.EBUSY, "export root is protected")
         if op == "mkdir":
+            self.ensure_mutable_path(path)
             return self.paths.mkdir(path, parents=False, exist_ok=False)
         if op == "rename":
+            destination = self.path(args["destination"])
+            self.ensure_mutable_path(path)
+            self.ensure_mutable_path(destination)
             if not args.get("overwrite", True) and os.name != "nt":
                 from openkapsel.files.rename_exclusive import rename_exclusive
-                with self.paths.parent(path) as src, self.paths.parent(self.path(args["destination"])) as dst:
+                with self.paths.parent(path) as src, self.paths.parent(destination) as dst:
                     rename_exclusive(src.name, dst.name, src.fd, dst.fd)
                 return False
-            return self.paths.rename(path, self.path(args["destination"]), overwrite=bool(args.get("overwrite", True)), create_parents=False)
+            return self.paths.rename(path, destination, overwrite=bool(args.get("overwrite", True)), create_parents=False)
         if op in {"unlink", "rmdir"}:
+            self.ensure_mutable_path(path)
             with self.paths.parent(path) as parent:
                 parent.unlink(directory=op == "rmdir")
             return None
         if op in {"truncate", "chmod", "utimens"}:
+            self.ensure_mutable_path(path)
             flags = os.O_WRONLY if op == "truncate" else os.O_RDONLY
             fd = self.paths.open(path, flags | getattr(os, "O_NONBLOCK", 0))
             try:
