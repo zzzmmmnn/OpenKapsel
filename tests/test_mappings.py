@@ -264,13 +264,26 @@ class MappingTests(unittest.TestCase):
                     with self.assertRaises(WorkspaceImageError):
                         helper.dispatch(dict(request, **{field: value}))
                     run.assert_not_called()
-            # A stopped worker must never trigger root umount against a path
-            # which the unprivileged owner could have swapped concurrently.
-            with patch.object(helper, "mounted", return_value=True), patch.object(helper, "run") as run:
-                with self.assertRaises(WorkspaceImageError):
+            # If a crashed worker leaves an orphan FUSE mount, detach it as
+            # the mapping owner rather than issuing a privileged root umount.
+            with patch.object(helper, "mounted", side_effect=[True, True, False]), \
+                    patch.object(helper, "_fusermount", return_value="/usr/bin/fusermount3"), \
+                    patch.object(helper, "run") as run:
+                self.assertFalse(helper.dispatch(dict(request, action="mapping_unmount"))["mounted"])
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_args_list[0].args[0], ["systemctl", "stop", "openkapsel-mapping-" + "a" * 24 + ".service"])
+                fallback = run.call_args_list[1].args[0]
+                self.assertEqual(fallback[:4], ["systemd-run", "--quiet", "--wait", "--collect"])
+                self.assertEqual(fallback[fallback.index("--uid") + 1], str(os.getuid()))
+                self.assertEqual(fallback[fallback.index("--gid") + 1], str(os.getgid()))
+                self.assertIn("--property=PrivateMounts=no", fallback)
+                self.assertEqual(fallback[-3:], ["/usr/bin/fusermount3", "-uz", str(parent / "laptop")])
+                self.assertNotIn("umount", fallback)
+            with patch.object(helper, "mounted", side_effect=[True, True, True]), \
+                    patch.object(helper, "_fusermount", return_value="/usr/bin/fusermount3"), \
+                    patch.object(helper, "run"):
+                with self.assertRaisesRegex(WorkspaceImageError, "owner unmount could not detach"):
                     helper.dispatch(dict(request, action="mapping_unmount"))
-                self.assertEqual(run.call_count, 1)
-                self.assertEqual(run.call_args.args[0][0], "systemctl")
         finally:
             sock.close()
 

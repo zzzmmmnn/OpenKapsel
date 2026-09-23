@@ -191,11 +191,15 @@ class ClientFiles:
             raise OSError(errno.EINVAL, "invalid nonnegative integer")
         return value
 
+    def close_handles(self):
+        """Close transport-scoped file handles without closing process-scoped RPC plugins."""
+        with self.lock:
+            for fd in self.handles.values():
+                os.close(fd)
+            self.handles.clear()
+
     def close(self):
         try:
             self.rpc_registry.close()
         finally:
-            with self.lock:
-                for fd in self.handles.values():
-                    os.close(fd)
-                self.handles.clear()
+            self.close_handles()

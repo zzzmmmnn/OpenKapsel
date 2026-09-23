@@ -120,6 +120,19 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertTrue(task["done"].wait(5))
         self.assertNotIn("completed-0", self.runtime.tasks.tasks)
 
+    def test_transport_disconnect_closes_handles_but_keeps_rpc_registry(self):
+        from pathlib import Path
+        (Path(self.directory.name) / "handle.txt").write_text("data")
+        registry = self.runtime.files.rpc_registry
+        with patch.object(registry, "close", wraps=registry.close) as close:
+            response = self.connection("open", {"path": "handle.txt", "mode": "r"})
+            self.assertIn("result", response)
+            self.assertFalse(self.runtime.files.handles)
+            close.assert_not_called()
+            self.runtime.close()
+            close.assert_called_once_with()
+        self.runtime = ClientRuntime(self.config)
+
     def test_offline_deadline_and_connection_failure_do_not_reset_runtime(self):
         response = self.connection("task_start", {"task_id": "offline-deadline", "timeout_seconds": .2,
             "argv": [sys.executable, "-u", "-c", "import time; time.sleep(60)"]})

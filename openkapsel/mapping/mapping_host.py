@@ -57,7 +57,19 @@ class HostMappingMounts:
             if request["action"] == "mapping_unmount":
                 self.run(["systemctl", "stop", unit], check=False)
                 if self.mounted(path, mid):
-                    raise WorkspaceImageError("mapping worker stopped but mount remains attached; unmount as its owner")
+                    # A crashed FUSE worker can leave a kernel mount after its
+                    # transient unit has disappeared. Never use a privileged
+                    # root umount here: ask systemd to run fusermount as the
+                    # mapping owner, so FUSE's own ownership check remains the
+                    # final authority even if the path is changed concurrently.
+                    self.run([
+                        "systemd-run", "--quiet", "--wait", "--collect",
+                        "--uid", str(self.uid), "--gid", str(self.gid),
+                        "--property=PrivateMounts=no",
+                        self._fusermount(), "-uz", str(path),
+                    ], check=False)
+                if self.mounted(path, mid):
+                    raise WorkspaceImageError("mapping worker stopped but owner unmount could not detach mount")
                 return {"mounted": False}
             if mounted:
                 return {"mounted": True}
@@ -87,6 +99,14 @@ class HostMappingMounts:
                 time.sleep(.05)
             self.run(["systemctl", "stop", unit], check=False)
             raise WorkspaceImageError("host FUSE worker failed to mount; inspect its systemd unit")
+
+    @staticmethod
+    def _fusermount():
+        for candidate in ("/usr/bin/fusermount3", "/bin/fusermount3",
+                          "/usr/bin/fusermount", "/bin/fusermount"):
+            if Path(candidate).is_file():
+                return candidate
+        raise WorkspaceImageError("fusermount is not installed")
 
     @staticmethod
     def run(argv, check=True):

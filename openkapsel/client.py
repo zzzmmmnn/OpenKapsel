@@ -313,8 +313,9 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
     finally:
         stopped.set()
         if owned:
-            tasks.close()
-        files.close()
+            runtime.close()
+        else:
+            files.close_handles()
         if sock:
             sock.close()
 
