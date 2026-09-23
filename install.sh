@@ -170,15 +170,17 @@ PY
         && command -v rootlesskit >/dev/null 2>&1 \
         && command -v systemd-run >/dev/null 2>&1 \
         && id "$SERVICE_USER" >/dev/null 2>&1; then
-        # This is a functional Bubblewrap/RootlessKit smoke test. EL8's
-        # systemd 239 can transiently time out StartTransientUnit immediately
-        # after an upgrade's daemon-reload/enable sequence even though the same
-        # probe succeeds moments later. Retry the whole transient probe with a
-        # fresh unit name; never weaken or skip the isolation verification.
+        # This is a functional Bubblewrap/RootlessKit smoke test. `--wait`
+        # propagates the transient service's exit status, so `--pipe` is not
+        # needed here. In systemd 239 (EL8), `systemd-run --pipe` can hang or
+        # time out StartTransientUnit when the installer itself has stdout or
+        # stderr redirected to a regular log file, which is common in automated
+        # upgrades. Keep probe output in journald and retain bounded retries for
+        # genuinely transient manager failures.
         local sandbox_verified=0 attempt unit
         for attempt in 1 2 3; do
             unit="${SERVICE_NAME}-sandbox-verify-$$-${attempt}"
-            if systemd-run --quiet --wait --collect --pipe \
+            if systemd-run --quiet --wait --collect \
                 --unit="$unit" \
                 --property="User=$SERVICE_USER" \
                 --property="Group=$SERVICE_GROUP" \
