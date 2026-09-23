@@ -92,6 +92,40 @@ def _text(value: Any, *, label: str, maximum: int, allow_empty: bool = False) ->
     return value
 
 
+def _profile_host_port(value: dict[str, Any], *, name: str) -> tuple[str, int]:
+    host = _text(value.get("host"), label=f"ssh.profiles.{name}.host", maximum=1024)
+    explicit_port = "port" in value
+    port_value = value.get("port")
+
+    if host.startswith("["):
+        end = host.find("]")
+        if end <= 1:
+            raise ValueError(f"ssh.profiles.{name}.host has invalid bracketed IPv6 syntax")
+        bare = host[1:end]
+        suffix = host[end + 1:]
+        if suffix:
+            if not suffix.startswith(":") or len(suffix) == 1:
+                raise ValueError(f"ssh.profiles.{name}.host has invalid bracketed IPv6 syntax")
+            if explicit_port:
+                raise ValueError(f"ssh.profiles.{name} must not set port when host already includes one")
+            try:
+                port_value = int(suffix[1:])
+            except ValueError:
+                raise ValueError(f"ssh.profiles.{name}.host has an invalid port") from None
+        host = bare
+    elif host.count(":") == 1:
+        candidate, suffix = host.rsplit(":", 1)
+        if candidate and suffix.isdigit():
+            if explicit_port:
+                raise ValueError(f"ssh.profiles.{name} must not set port when host already includes one")
+            host = candidate
+            port_value = int(suffix)
+
+    port = _bounded_number(port_value, name=f"profiles.{name}.port",
+                           default=22, minimum=1, maximum=65535)
+    return host, port
+
+
 def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[str, Any]]:
     raw = config.get("ssh", {})
     if raw is None:
@@ -144,10 +178,8 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
         extra = set(value) - permitted
         if extra:
             raise ValueError(f"unsupported settings in SSH profile {name}: " + ", ".join(sorted(extra)))
-        host = _text(value.get("host"), label=f"ssh.profiles.{name}.host", maximum=1024)
+        host, port = _profile_host_port(value, name=name)
         username = _text(value.get("username"), label=f"ssh.profiles.{name}.username", maximum=256)
-        port = _bounded_number(value.get("port"), name=f"profiles.{name}.port",
-                               default=22, minimum=1, maximum=65535)
         password = value.get("password")
         if password is not None:
             password = _text(password, label=f"ssh.profiles.{name}.password",

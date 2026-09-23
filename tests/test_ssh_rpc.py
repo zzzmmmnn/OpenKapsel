@@ -18,7 +18,7 @@ from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.rpc_plugins import load_client_rpc_registry
 from openkapsel.rpc_plugins.registry import ClientRpcRegistry
-from openkapsel.rpc_plugins.ssh import SshRpcPlugin
+from openkapsel.rpc_plugins.ssh import SshRpcPlugin, _parse_config
 
 
 class Task:
@@ -347,6 +347,32 @@ class SshRpcTests(unittest.TestCase):
         self.assertEqual("unsupported", state)
         self.assertEqual("dependency_missing", reason)
         self.assertNotIn("secret", repr(details))
+
+    def test_profile_host_port_compact_syntax(self):
+        base = {
+            "username": "user",
+            "password": "secret",
+            "host_key_policy": "accept-new",
+        }
+        profiles, _ = _parse_config({"ssh": {"profiles": {
+            "ipv4": {**base, "host": "192.0.2.1:12222"},
+            "dns": {**base, "host": "host.example:2200"},
+            "ipv6": {**base, "host": "[2001:db8::1]:2022"},
+            "bare_ipv6": {**base, "host": "2001:db8::2"},
+        }}})
+        self.assertEqual(("192.0.2.1", 12222), (profiles["ipv4"].host, profiles["ipv4"].port))
+        self.assertEqual(("host.example", 2200), (profiles["dns"].host, profiles["dns"].port))
+        self.assertEqual(("2001:db8::1", 2022), (profiles["ipv6"].host, profiles["ipv6"].port))
+        self.assertEqual(("2001:db8::2", 22), (profiles["bare_ipv6"].host, profiles["bare_ipv6"].port))
+
+    def test_profile_rejects_duplicate_host_and_port(self):
+        with self.assertRaisesRegex(ValueError, "must not set port"):
+            _parse_config({"ssh": {"profiles": {"box": {
+                "host": "host.example:12222",
+                "port": 22,
+                "username": "user",
+                "password": "secret",
+            }}}})
 
     def test_profiles_never_return_credentials(self):
         body = self.call("profiles", {})
