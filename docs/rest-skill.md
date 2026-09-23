@@ -31,7 +31,7 @@ python3 /path/to/openkapsel-rest/scripts/openkapsel_config.py \
 
 It creates a mode-`0600` `.openkapsel.env` without echoing credentials. Repeating identical initialization is idempotent; replacing a different configuration requires `--force`.
 
-Helpers locate the nearest `.openkapsel.env` from the current directory. Explicit arguments and the original process environment variables remain supported, so one Skill installation can operate any number of OpenKapsel deployments. Separate local project directories naturally select separate Workspace records.
+Helpers locate the nearest `.openkapsel.env` from the current directory by default. `openkapsel_config.py init --env-file <path>` or `OPENKAPSEL_ENV_FILE=<path>` lets a host AI/client use its own credential-storage location, and the same selection is honored by the other helpers. Explicit arguments and the original process environment variables remain supported, so one Skill installation can operate any number of OpenKapsel deployments. Separate local project directories naturally select separate Workspace records when no explicit credential file is selected.
 
 ## Credential renewal
 

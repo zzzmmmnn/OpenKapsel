@@ -181,6 +181,76 @@ class SkillCredentialConfigTests(unittest.TestCase):
             )
             self.assertEqual("replaced", replaced[1])
 
+    def test_init_supports_explicit_and_environment_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            explicit = root / "credentials" / "project.env"
+            explicit.parent.mkdir()
+            output = io.StringIO()
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                status = openkapsel_config.main([
+                    "init",
+                    "https://workspace.example/kapsel/w/read-explicit",
+                    "control-explicit",
+                    "--env-file",
+                    str(explicit),
+                ])
+            self.assertEqual(0, status, errors.getvalue())
+            self.assertEqual(str(explicit.resolve()), json.loads(output.getvalue())["path"])
+            values = openkapsel_config.read_env_file(explicit)
+            self.assertEqual("control-explicit", values[openkapsel_config.CONTROL_TOKEN_KEY])
+
+            selected = root / "host-ai.env"
+            output = io.StringIO()
+            errors = io.StringIO()
+            with patch.dict(os.environ, {"OPENKAPSEL_ENV_FILE": str(selected)}), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                status = openkapsel_config.main([
+                    "init",
+                    "https://workspace.example/kapsel/w/read-environment",
+                    "control-environment",
+                ])
+            self.assertEqual(0, status, errors.getvalue())
+            self.assertEqual(str(selected.resolve()), json.loads(output.getvalue())["path"])
+            self.assertEqual(
+                "control-environment",
+                openkapsel_config.read_env_file(selected)[openkapsel_config.CONTROL_TOKEN_KEY],
+            )
+
+            override = root / "override.env"
+            with patch.dict(os.environ, {"OPENKAPSEL_ENV_FILE": str(selected)}), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                status = openkapsel_config.main([
+                    "init",
+                    "https://workspace.example/kapsel/w/read-override",
+                    "control-override",
+                    "--env-file",
+                    str(override),
+                ])
+            self.assertEqual(0, status)
+            self.assertEqual(
+                "control-override",
+                openkapsel_config.read_env_file(override)[openkapsel_config.CONTROL_TOKEN_KEY],
+            )
+            self.assertEqual(
+                "control-environment",
+                openkapsel_config.read_env_file(selected)[openkapsel_config.CONTROL_TOKEN_KEY],
+            )
+
+            missing_parent = root / "missing" / "credentials.env"
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                status = openkapsel_config.main([
+                    "init",
+                    "https://workspace.example/kapsel/w/read-missing",
+                    "control-missing",
+                    "--env-file",
+                    str(missing_parent),
+                ])
+            self.assertEqual(1, status)
+            self.assertIn("parent directory does not exist", errors.getvalue())
+
     def test_init_rejects_non_workspace_urls_and_whitespace_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

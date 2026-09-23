@@ -197,13 +197,22 @@ def initialize_env_file(
     control_token: str,
     *,
     directory: Path | None = None,
+    env_file: str | Path | None = None,
     force: bool = False,
 ) -> tuple[Path, str]:
     base_url = _normalize_workspace_url(workspace_url)
     control = control_token.strip()
     if not control or any(char.isspace() for char in control):
         raise ValueError("control token must be non-empty and contain no whitespace")
-    target = (directory or Path.cwd()).resolve() / ENV_FILENAME
+    if directory is not None and env_file is not None:
+        raise ValueError("directory and env_file are mutually exclusive")
+    target = (
+        Path(env_file).expanduser().resolve()
+        if env_file is not None
+        else (directory or Path.cwd()).resolve() / ENV_FILENAME
+    )
+    if not target.parent.is_dir():
+        raise ValueError(f"credential file parent directory does not exist: {target.parent}")
     if target.is_symlink():
         raise ValueError(f"credential file must not be a symlink: {target}")
     desired = {
@@ -236,6 +245,10 @@ def parser() -> argparse.ArgumentParser:
     initialize.add_argument("workspace_url")
     initialize.add_argument("control_token")
     initialize.add_argument(
+        "--env-file",
+        help="write credentials to this file instead of .openkapsel.env in the current directory; defaults to OPENKAPSEL_ENV_FILE when set",
+    )
+    initialize.add_argument(
         "--force",
         action="store_true",
         help="replace an existing configuration with different credentials",
@@ -251,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         path, action = initialize_env_file(
             args.workspace_url,
             args.control_token,
+            env_file=args.env_file or os.environ.get("OPENKAPSEL_ENV_FILE"),
             force=args.force,
         )
         print(json.dumps({"action": action, "path": str(path), "mode": "0600"}))
