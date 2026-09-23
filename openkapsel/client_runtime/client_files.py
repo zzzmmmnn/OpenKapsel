@@ -52,7 +52,18 @@ class ClientFiles:
         parts = PurePosixPath(value).parts
         if value.startswith("/") or any(p in {"..", ".openkapsel"} for p in parts):
             raise OSError(errno.EACCES, "path is outside exported files")
-        return self.root.joinpath(*parts)
+        path = self.root.joinpath(*parts)
+        self.ensure_accessible_path(path)
+        return path
+
+    def is_protected_path(self, path):
+        return Path(path) in self.protected_paths
+
+    def ensure_accessible_path(self, path):
+        if self.is_protected_path(path):
+            # Secret-bearing client configuration is not part of the exported
+            # namespace. Use ENOENT so remote callers cannot probe its metadata.
+            raise OSError(errno.ENOENT, "path does not exist")
 
     def ensure_mutable_path(self, path):
         path = Path(path)
@@ -144,7 +155,11 @@ class ClientFiles:
                 names = []
                 with os.scandir(fd) as entries:
                     for item in entries:
-                        if item.name != ".openkapsel" and (item.is_file(follow_symlinks=False) or item.is_dir(follow_symlinks=False)):
+                        if (
+                            item.name != ".openkapsel"
+                            and not self.is_protected_path(path / item.name)
+                            and (item.is_file(follow_symlinks=False) or item.is_dir(follow_symlinks=False))
+                        ):
                             names.append(item.name)
                         if len(names) > 100000:
                             raise OSError(errno.E2BIG, "directory exceeds provider listing limit")

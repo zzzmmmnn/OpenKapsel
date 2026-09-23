@@ -29,17 +29,70 @@ class ClientConfigChangedError(ClientConfigError):
     """The configuration changed across an automatic client re-exec."""
 
 
+def _open_windows_exclusive(path: Path) -> int:
+    """Open a Windows config with share mode 0.
+
+    Unlike CRT byte-range locking, CreateFileW with no sharing is enforced by
+    the kernel: while this handle is open, other processes cannot open the
+    active config for read, write, or delete/rename access.
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle_value = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        str(path),
+        generic_read,
+        0,  # deny FILE_SHARE_READ / WRITE / DELETE
+        None,
+        open_existing,
+        file_attribute_normal | file_flag_open_reparse_point,
+        None,
+    )
+    handle_value = handle if isinstance(handle, int) else handle.value
+    if handle_value == invalid_handle_value:
+        error = ctypes.get_last_error()
+        if error in {32, 33}:  # sharing/lock violation
+            raise ClientConfigLockedError(
+                "client configuration is already locked or open by another process"
+            )
+        raise ctypes.WinError(error)
+
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle_value),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except Exception:
+        close_handle(handle)
+        raise
+
+
 def _lock(fd: int) -> None:
     if os.name == "nt":
-        import msvcrt
-
-        try:
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        except OSError as exc:
-            raise ClientConfigLockedError("client configuration is already locked") from exc
-        finally:
-            os.lseek(fd, 0, os.SEEK_SET)
+        # Windows exclusivity is established atomically by CreateFileW above.
         return
 
     import fcntl
@@ -52,13 +105,7 @@ def _lock(fd: int) -> None:
 
 def _unlock(fd: int) -> None:
     if os.name == "nt":
-        import msvcrt
-
-        try:
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        finally:
-            os.lseek(fd, 0, os.SEEK_SET)
+        # Closing the CreateFileW handle releases the mandatory sharing denial.
         return
 
     import fcntl
@@ -122,15 +169,24 @@ class ClientConfigLock:
                         "client configuration path was replaced while the client was running"
                     )
             else:
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0)
-                fd = os.open(path, flags)
-                _lock(fd)
+                if os.name == "nt":
+                    fd = _open_windows_exclusive(path)
+                else:
+                    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+                    flags |= getattr(os, "O_NOFOLLOW", 0)
+                    fd = os.open(path, flags)
+                    _lock(fd)
                 locked_here = True
 
             details = os.fstat(fd)
-            if not stat.S_ISREG(details.st_mode):
-                raise ClientConfigError("client configuration must be a regular file")
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or (
+                    os.name == "nt"
+                    and getattr(details, "st_file_attributes", 0) & 0x400
+                )
+            ):
+                raise ClientConfigError("client configuration must be a regular non-reparse file")
             if os.name != "nt" and details.st_mode & 0o077:
                 raise ClientConfigError(
                     "client configuration contains credentials: chmod 600 it first"

@@ -317,14 +317,22 @@ def _directory_entries(files, path: Path):
         with guard(path, include_final=True):
             with os.scandir(path) as items:
                 return sorted(
-                    ((item.name, item.stat(follow_symlinks=False)) for item in items),
+                    (
+                        (item.name, item.stat(follow_symlinks=False))
+                        for item in items
+                        if not files.is_protected_path(path / item.name)
+                    ),
                     key=lambda item: item[0],
                 )
     fd = files.paths.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         with os.scandir(fd) as items:
             return sorted(
-                ((item.name, item.stat(follow_symlinks=False)) for item in items),
+                (
+                    (item.name, item.stat(follow_symlinks=False))
+                    for item in items
+                    if not files.is_protected_path(path / item.name)
+                ),
                 key=lambda item: item[0],
             )
     finally:

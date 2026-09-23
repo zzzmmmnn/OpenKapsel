@@ -97,6 +97,7 @@ def _create_resources(config, *, protected_paths=()):
     for key in ("writable", "allow_exec", "sandbox", "network"):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")
+    ssh_config = config.get("ssh")
     transport_timeout = config.get("transport_timeout_seconds", 60)
     if (
         isinstance(transport_timeout, bool)
@@ -112,6 +113,16 @@ def _create_resources(config, *, protected_paths=()):
         source_root = Path(config["source_root"]).expanduser()
         if not source_root.is_absolute():
             raise ValueError("source_root must be an absolute path")
+    export_root = Path(config["root"]).expanduser().resolve(strict=True)
+    for protected in protected_paths:
+        protected_path = Path(protected).expanduser().resolve(strict=False)
+        try:
+            protected_path.relative_to(export_root)
+        except ValueError:
+            continue
+        raise ValueError(
+            "active client configuration must be outside the exported mapping root"
+        )
     rpc_registry = load_client_rpc_registry(config)
     rpc_capabilities = rpc_registry.capability_map(config)
     extensions = []
@@ -139,7 +150,16 @@ def _create_resources(config, *, protected_paths=()):
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
                         network=config.get("network", False), **limits)
     if tasks.enabled and not tasks.sandbox:
-        LOG.warning("Sandbox explicitly disabled: remote tasks have this OS account's host permissions")
+        if isinstance(ssh_config, dict) and ssh_config.get("profiles"):
+            LOG.warning(
+                "Sandbox explicitly disabled while SSH profiles are configured: "
+                "remote tasks have this OS account's host permissions and may read "
+                "client configuration or referenced SSH credentials"
+            )
+        else:
+            LOG.warning(
+                "Sandbox explicitly disabled: remote tasks have this OS account's host permissions"
+            )
     return files, tasks
 
 

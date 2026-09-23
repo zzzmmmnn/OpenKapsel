@@ -157,7 +157,11 @@ class WindowsClientFiles(ClientFiles):
                 with os.scandir(path) as items:
                     for item in items:
                         details = item.stat(follow_symlinks=False)
-                        if item.name != ".openkapsel" and not getattr(details, "st_file_attributes", 0) & 0x400:
+                        if (
+                            item.name != ".openkapsel"
+                            and not self.is_protected_path(path / item.name)
+                            and not getattr(details, "st_file_attributes", 0) & 0x400
+                        ):
                             names.append(item.name)
                         if len(names) > 100000:
                             raise OSError(errno.E2BIG, "directory exceeds listing limit")

@@ -199,8 +199,15 @@ class ClientFileAPI(FileHandlersMixin):
             finally:
                 os.close(descriptor)
         # Match the FUSE export's policy: neither symlinks nor special files.
-        return [(name, st) for name, st in entries if not getattr(st, "st_file_attributes", 0) & 0x400
-                and (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode))]
+        # Secret-bearing protected files are omitted entirely from traversal,
+        # including list/tree/search/manifest recursion.
+        return [
+            (name, st)
+            for name, st in entries
+            if not self.files.is_protected_path(path / name)
+            and not getattr(st, "st_file_attributes", 0) & 0x400
+            and (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode))
+        ]
 
     @staticmethod
     def _scan(path):

@@ -121,6 +121,13 @@ class ClientTasks:
             raise ValueError("native unsandboxed execution requires explicit writable=true")
         if enabled and sandbox and (backend != "podman" or not shutil.which("podman")):
             raise ValueError("enabled sandbox requires Podman; install it or explicitly set sandbox=false")
+        self.secret_mask_path = None
+        if enabled and sandbox and files.protected_paths:
+            descriptor, mask_path = tempfile.mkstemp(prefix="openkapsel-secret-mask-")
+            os.close(descriptor)
+            if os.name != "nt":
+                os.chmod(mask_path, 0o600)
+            self.secret_mask_path = Path(mask_path)
         self.lock = threading.RLock()
         self.tasks = {}
         self.closed = False
@@ -230,7 +237,7 @@ class ClientTasks:
             for protected in sorted(self.files.protected_paths, key=str):
                 relative = protected.relative_to(self.files.root).as_posix()
                 protected_mounts.extend([
-                    "--volume", f"{protected}:/workspace/{relative}:ro",
+                    "--volume", f"{self.secret_mask_path}:/workspace/{relative}:ro",
                 ])
             argv = ["podman", "run", "--rm", "--name", container, "--cap-drop=ALL", "--security-opt=no-new-privileges",
                     "--pids-limit", str(self.processes), "--memory", f"{self.memory_mb}m", "--cpus", str(self.cpus),
@@ -495,3 +502,9 @@ class ClientTasks:
             for task in self.tasks.values():
                 if task["finished_at"] is None:
                     self._signal(task, force=True)
+            if self.secret_mask_path is not None:
+                try:
+                    self.secret_mask_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.secret_mask_path = None
