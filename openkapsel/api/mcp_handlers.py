@@ -577,14 +577,11 @@ class McpHandlersMixin:
         body_tools = {
             "read_files": self._handle_fs_read_many,
             "file_manifest": self._handle_fs_manifest,
-            "write_file": self._handle_fs_write,
-            "replace_text": self._handle_fs_replace,
             "mutate_files": self._handle_fs_mutate,
             "read_large_file": self._handle_fs_read_large,
             "replace_large_file_range": self._handle_fs_replace_large,
             "create_directory": self._handle_fs_mkdir,
             "move_path": self._handle_fs_move,
-            "delete_path": self._handle_fs_delete,
             "restore_recycle": self._handle_recycle_restore,
             "run_shell": self._handle_shell_exec,
             "create_schedule": self._handle_schedule_create,
@@ -613,6 +610,42 @@ class McpHandlersMixin:
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)
+            elif name in {"write_file", "replace_text", "delete_path"}:
+                context = {
+                    key: arguments[key]
+                    for key in ("plan_id", "taskname", "message")
+                    if key in arguments
+                }
+                if name == "write_file":
+                    expected_etag = arguments.get("expected_etag")
+                    item = {
+                        "op": "file.replace" if expected_etag is not None else "file.create",
+                        "path": arguments["path"],
+                        "content": arguments["content"],
+                        "encoding": arguments.get("encoding", "utf-8"),
+                    }
+                    if expected_etag is not None:
+                        item["expected_etag"] = expected_etag
+                elif name == "replace_text":
+                    item = {
+                        "op": "text.replace",
+                        "path": arguments["path"],
+                        "encoding": arguments.get("encoding", "utf-8"),
+                        "expected_etag": arguments["expected_etag"],
+                        "replacements": [{
+                            "old": arguments["old"],
+                            "new": arguments["new"],
+                            "expected_count": arguments.get("expected_matches", 1),
+                        }],
+                    }
+                else:
+                    item = {
+                        "op": "path.delete",
+                        "path": arguments["path"],
+                        "expected_etag": arguments["expected_etag"],
+                    }
+                self._mcp_tool_arguments = {**context, "items": [item]}
+                self._handle_fs_mutate()
             elif name in body_tools:
                 self._mcp_tool_arguments = arguments
                 body_tools[name]()

@@ -187,23 +187,45 @@ class RpcOnlyHTTPTests(unittest.TestCase):
 
     def test_mixed_replace_and_delete_preserve_preflight(self):
         (self.export / "a").write_text("old remote")
+        (self.export / "c").write_text("delete remote")
         (self.scope / "b").write_text("old local")
-        items = [{"path": "laptop/a", "replacements": [{"old": "old", "new": "new"}]},
-                 {"path": "b", "replacements": [{"old": "missing", "new": "new"}]}]
-        status, result = self.api("/fs/replace/batch", {"items": items})
+
+        status, a = self.api("/fs/stat?path=laptop/a&fields=etag")
+        self.assertEqual(200, status, a)
+        status, c = self.api("/fs/stat?path=laptop/c&fields=etag")
+        self.assertEqual(200, status, c)
+        status, b = self.api("/fs/stat?path=b&fields=etag")
+        self.assertEqual(200, status, b)
+
+        status, result = self.api("/fs/mutate", {"items": [
+            {"op": "text.replace", "path": "laptop/a", "expected_etag": a["etag"],
+             "replacements": [{"old": "old", "new": "new"}]},
+            {"op": "text.replace", "path": "b", "expected_etag": b["etag"],
+             "replacements": [{"old": "old", "new": "new"}]},
+        ]})
+        self.assertEqual(409, status, result)
+        self.assertEqual("transaction_domain_mismatch", result["error"]["code"])
+        self.assertEqual("old remote", (self.export / "a").read_text())
+        self.assertEqual("old local", (self.scope / "b").read_text())
+
+        status, result = self.api("/fs/mutate", {"items": [
+            {"op": "text.replace", "path": "laptop/a", "expected_etag": a["etag"],
+             "replacements": [{"old": "missing", "new": "new"}]},
+            {"op": "path.delete", "path": "laptop/c", "expected_etag": c["etag"]},
+        ]})
         self.assertEqual(409, status, result)
         self.assertEqual("old remote", (self.export / "a").read_text())
-        items[1]["replacements"][0]["old"] = "old"
-        status, result = self.api("/fs/replace/batch", {"items": items})
+        self.assertTrue((self.export / "c").exists())
+
+        status, result = self.api("/fs/mutate", {"items": [
+            {"op": "text.replace", "path": "laptop/a", "expected_etag": a["etag"],
+             "replacements": [{"old": "old", "new": "new"}]},
+            {"op": "path.delete", "path": "laptop/c", "expected_etag": c["etag"]},
+        ]})
         self.assertEqual(200, status, result)
         self.assertEqual("new remote", (self.export / "a").read_text())
-        self.assertEqual("new local", (self.scope / "b").read_text())
-        status, result = self.api("/fs/delete/batch", {"paths": ["laptop/a", "missing"]})
-        self.assertEqual(409, status, result)
-        self.assertTrue((self.export / "a").exists())
-        status, result = self.api("/fs/delete/batch", {"paths": ["laptop/a", "b"]})
-        self.assertEqual(200, status, result)
-        self.assertFalse((self.export / "a").exists())
+        self.assertFalse((self.export / "c").exists())
+        self.assertTrue(result["items"][1]["recycled"])
 
     def test_share_snapshot_and_import_without_native_descriptors(self):
         (self.export / "folder").mkdir()
@@ -310,8 +332,8 @@ class NativeExecutionTests(unittest.TestCase):
         status, result = self.api("/fs/mkdir", {"path": "alias/new"})
         self.assertIn(status, (200, 201), result)
         self.assertTrue((self.export / "new").is_dir())
-        status, result = self.api("/fs/write", {"path": "alias/new/a", "content": "rpc"})
-        self.assertEqual(201, status, result)
+        status, result = self.api("/fs/mutate", {"items": [{"op": "file.create", "path": "alias/new/a", "content": "rpc"}]})
+        self.assertEqual(200, status, result)
         self.assertEqual("rpc", (self.export / "new/a").read_text())
         status, result = self.api("/git/status?path=.")
         self.assertEqual(409, status, result)

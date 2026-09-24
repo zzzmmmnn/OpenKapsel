@@ -191,13 +191,15 @@ class WindowsClientFiles(ClientFiles):
         with self.paths.guard(store, include_final=True):
             if op == "recycle":
                 source = self.path(args["path"])
-                if source == self.root:
+                original = self.path(args.get("original_path", args["path"]))
+                if original == self.root:
                     raise OSError(errno.EBUSY, "export root is protected")
                 self.ensure_mutable_path(source)
+                self.ensure_mutable_path(original)
                 rid = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + secrets.token_hex(4)
                 entry = store / rid
                 entry.mkdir()
-                metadata = {"recycle_id": rid, "original_path": source.relative_to(self.root).as_posix(),
+                metadata = {"recycle_id": rid, "original_path": original.relative_to(self.root).as_posix(),
                             "deleted_at": datetime.now(timezone.utc).isoformat()}
                 fd = self.paths.open(entry / "metadata.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(fd, "w") as handle:

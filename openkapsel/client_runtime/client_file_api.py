@@ -222,6 +222,18 @@ class ClientFileAPI(FileHandlersMixin):
     def _recycle_path(self, path):
         return self.files._dispatch("recycle", {"path": path.relative_to(self.files.root).as_posix()})
 
+    def _transaction_recycle(self, source, original):
+        return self.files._dispatch(
+            "recycle",
+            {
+                "path": source.relative_to(self.files.root).as_posix(),
+                "original_path": original.relative_to(self.files.root).as_posix(),
+            },
+        )
+
+    def _transaction_restore_recycle(self, recycle_id):
+        return self.files._dispatch("recycle_restore", {"recycle_id": recycle_id})
+
     def _atomic_write(self, path, content, *, expected_etag=None, create_parents=False, encoding="utf-8"):
         from openkapsel.files.text_encoding import encode_text, text_encoding
         data = encode_text(content, text_encoding(encoding))

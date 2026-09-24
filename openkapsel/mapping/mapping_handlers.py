@@ -53,14 +53,14 @@ class MappingHandlersMixin:
             if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) for item in items):
                 return False
             targets.extend((item, "path", item["path"], False) for item in items)
-        elif operation in {"fs_manifest", "fs_replace_batch"}:
+        elif operation == "fs_manifest":
             items = body.get("items")
             if not isinstance(items, list) or not items or len(items) > self.server.config.max_batch_file_operations:
                 return False
             if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) for item in items):
                 return False
             targets.extend((item, "path", item["path"], False) for item in items)
-        elif operation in {"fs_delete_batch", "fs_read_many"}:
+        elif operation == "fs_read_many":
             paths = body.get("paths")
             if not isinstance(paths, list) or not paths or len(paths) > self.server.config.max_batch_file_operations:
                 return False
@@ -105,7 +105,7 @@ class MappingHandlersMixin:
         min_version = 2 if (operation == "fs_read_many" or
                             operation == "fs_manifest" and body.get("recursive") is True or
                             operation == "fs_search" and ("include" in query or "exclude" in query)) else 1
-        if operation in {"fs_read", "fs_read_many", "fs_write", "fs_replace", "fs_replace_batch"}:
+        if operation in {"fs_read", "fs_read_many"}:
             min_version = 3  # Explicit codecs and literal newline preservation.
         if operation in {"fs_read_large", "fs_replace_large", "fs_mutate"}:
             min_version = 4
@@ -113,16 +113,14 @@ class MappingHandlersMixin:
             return False
         status, payload = self._call_mapping_file_api(
             selected, operation, query=query, body=body, min_version=min_version)
-        if operation in {"fs_manifest", "fs_replace_batch", "fs_mutate", "fs_delete_batch", "fs_read_many"} and not original.get("recursive"):
-            originals = original.get("paths") if operation in {"fs_delete_batch", "fs_read_many"} else [item["path"] for item in original["items"]]
+        if operation in {"fs_manifest", "fs_mutate", "fs_read_many"} and not original.get("recursive"):
+            originals = original.get("paths") if operation == "fs_read_many" else [item["path"] for item in original["items"]]
             for item in payload.get("items", []):
                 index = item.get("index")
                 if isinstance(index, int) and 0 <= index < len(originals):
                     item["path"] = originals[index]
-                if operation == "fs_delete_batch" and item.get("recycled"):
+                if operation == "fs_mutate" and item.get("recycled"):
                     item["root"] = selected["name"]
-        elif operation == "fs_delete":
-            payload["root"] = selected["name"]
         self._send_json(status, payload)
         return True
 

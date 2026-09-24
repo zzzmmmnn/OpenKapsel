@@ -219,6 +219,19 @@ class WorkspaceServerTests(unittest.TestCase):
     def endpoint(self, suffix: str = "") -> str:
         return f"/kapsel/w/test-token{suffix}"
 
+    def file_etag(self, path: str, *, token: str = "test-token") -> str:
+        query = urlencode({"path": path, "fields": "etag"})
+        status, payload = self.request("GET", f"/kapsel/w/{token}/fs/stat?{query}")
+        self.assertEqual(200, status, payload)
+        return payload["etag"]
+
+    def mutate(self, items, *, token: str = "test-token", **context):
+        return self.request(
+            "POST",
+            f"/kapsel/w/{token}/fs/mutate",
+            {"items": items, **context},
+        )
+
     def preview_endpoint(self, suffix: str = "", token: str = "test-token") -> str:
         preview_token = self.server.tokens.get(token).preview_token
         return f"/{preview_token}{suffix}"
@@ -428,8 +441,6 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("POST", payload["endpoints"]["shell_exec"]["method"])
         self.assertEqual("POST", payload["endpoints"]["fs_mkdir"]["method"])
         self.assertEqual("POST", payload["endpoints"]["fs_manifest"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_delete"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_delete_batch"]["method"])
         self.assertEqual("POST", payload["endpoints"]["fs_move"]["method"])
         self.assertEqual("GET", payload["endpoints"]["recycle_list"]["method"])
         self.assertEqual("POST", payload["endpoints"]["recycle_restore"]["method"])
@@ -463,7 +474,8 @@ class WorkspaceServerTests(unittest.TestCase):
             "Bearer control token + shell",
             payload["endpoints"]["task_kill"]["required_capability"],
         )
-        self.assertFalse(payload["endpoints"]["fs_delete"]["available"])
+        for removed in ("fs_write", "fs_replace", "fs_replace_batch", "fs_delete", "fs_delete_batch"):
+            self.assertNotIn(removed, payload["endpoints"])
         self.assertTrue(
             payload["capabilities"]["web_preview"]["sandboxed_document_origin"]
         )
@@ -708,15 +720,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "fs_tree",
                 "fs_content",
                 "fs_content_put",
-                "fs_write",
-                "fs_replace",
-                "fs_replace_batch",
                 "fs_mutate",
                 "fs_read_large",
                 "fs_replace_large",
                 "fs_mkdir",
-                "fs_delete",
-                "fs_delete_batch",
                 "fs_move",
                 "recycle_list",
                 "recycle_restore",
@@ -913,8 +920,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("redacted", discovery["endpoints"]["context_query"]["details"])
         self.assertFalse(discovery["endpoints"]["context_plan_tree"]["available"])
         self.assertIn("redacted", discovery["endpoints"]["context_plan_tree"]["details"])
-        self.assertNotIn("json", discovery["endpoints"]["fs_write"])
-        self.assertIn("redacted", discovery["endpoints"]["fs_write"]["details"])
+        self.assertNotIn("json", discovery["endpoints"]["fs_mutate"])
+        self.assertIn("redacted", discovery["endpoints"]["fs_mutate"]["details"])
         self.assertEqual("Authorization", headers["Vary"])
 
         status, raw, _ = self.raw_request(
@@ -925,8 +932,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         file_discovery = json.loads(raw)
         self.assertTrue(file_discovery["endpoints"]["fs_read"]["available"])
-        self.assertFalse(file_discovery["endpoints"]["fs_write"]["available"])
-        self.assertIn("redacted", file_discovery["endpoints"]["fs_write"]["details"])
+        self.assertFalse(file_discovery["endpoints"]["fs_mutate"]["available"])
+        self.assertIn("redacted", file_discovery["endpoints"]["fs_mutate"]["details"])
 
         status, raw, _ = self.raw_request(
             "GET",
@@ -946,10 +953,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(401, status)
         self.assertEqual("control_token_required", json.loads(raw)["error"]["code"])
 
-        body = json.dumps({"path": "project/no-auth.txt", "content": "blocked"}).encode()
+        body = json.dumps({"items": [{"op": "file.create", "path": "project/no-auth.txt", "content": "blocked"}]}).encode()
         status, raw, headers = self.raw_request(
             "POST",
-            self.endpoint("/fs/write"),
+            self.endpoint("/fs/mutate"),
             body,
             {"Content-Type": "application/json"},
             authorize=False,
@@ -1005,7 +1012,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(privileged["authentication"]["control_authorized"])
         self.assertTrue(privileged["capabilities"]["files"]["write"])
         self.assertNotIn("mcp", privileged["endpoints"])
-        self.assertIn("json", privileged["endpoints"]["fs_write"])
+        self.assertIn("json", privileged["endpoints"]["fs_mutate"])
         self.assertNotIn(record.control_token, json.dumps(privileged))
 
     def test_workspace_credentials_self_renew_only_inside_two_day_window(self) -> None:
@@ -1385,10 +1392,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(content, (scope / "blob.bin").read_bytes())
 
         status, recycled = self.request(
-            "POST", endpoint("/fs/delete"), {"path": "blob.bin"}
+            "POST", endpoint("/fs/mutate"), {"items": [{
+                "op": "path.delete", "path": "blob.bin", "expected_etag": etag,
+            }]}
         )
         self.assertEqual(200, status, recycled)
-        self.assertEqual("blob.bin", recycled["original_path"])
+        self.assertTrue(recycled["items"][0]["recycled"])
         status, raw, _ = self.raw_request(
             "PUT",
             endpoint(f"/fs/content?{query}"),
@@ -1721,11 +1730,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         manifest_body = {
             "items": [
-                {
-                    "path": "same.txt",
-                    "size": len(same_content),
-                    "sha256": hashlib.sha256(same_content).hexdigest(),
-                },
+                {"path": "same.txt", "size": len(same_content), "sha256": hashlib.sha256(same_content).hexdigest()},
                 {"path": "conflict.txt", "size": 1},
                 {"path": "missing.txt", "size": 0},
                 {"path": "exists.txt"},
@@ -1734,11 +1739,8 @@ class WorkspaceServerTests(unittest.TestCase):
             "include_sha256": True,
         }
         status, raw, _headers = self.raw_request(
-            "POST",
-            endpoint("/fs/manifest"),
-            json.dumps(manifest_body).encode("utf-8"),
-            {"Content-Type": "application/json"},
-            authorize=False,
+            "POST", endpoint("/fs/manifest"), json.dumps(manifest_body).encode("utf-8"),
+            {"Content-Type": "application/json"}, authorize=False,
         )
         self.assertEqual(200, status)
         manifest = json.loads(raw)
@@ -1747,59 +1749,51 @@ class WorkspaceServerTests(unittest.TestCase):
             [item["status"] for item in manifest["items"]],
         )
         self.assertEqual(1, manifest["counts"]["same"])
-        self.assertEqual(
-            hashlib.sha256(same_content).hexdigest(),
-            manifest["items"][0]["sha256"],
-        )
+        self.assertEqual(hashlib.sha256(same_content).hexdigest(), manifest["items"][0]["sha256"])
 
         (scope / "delete-a.txt").write_text("a", encoding="utf-8")
         (scope / "delete-b").mkdir()
         (scope / "delete-b" / "nested.txt").write_text("b", encoding="utf-8")
+        a_etag = self.file_etag("delete-a.txt", token=record.token)
+        b_etag = self.file_etag("delete-b", token=record.token)
+        nested_etag = self.file_etag("delete-b/nested.txt", token=record.token)
+
         status, rejected_raw, _headers = self.raw_request(
-            "POST",
-            endpoint("/fs/delete/batch"),
-            json.dumps({"paths": ["delete-a.txt"]}).encode("utf-8"),
-            {"Content-Type": "application/json"},
-            authorize=False,
+            "POST", endpoint("/fs/mutate"),
+            json.dumps({"items": [{"op": "path.delete", "path": "delete-a.txt", "expected_etag": a_etag}]}).encode("utf-8"),
+            {"Content-Type": "application/json"}, authorize=False,
         )
         self.assertEqual(401, status)
         self.assertEqual("control_token_required", json.loads(rejected_raw)["error"]["code"])
 
-        status, rejected = self.request(
-            "POST",
-            endpoint("/fs/delete/batch"),
-            {"paths": ["delete-a.txt", "missing.txt"]},
-        )
-        self.assertEqual(409, status)
-        self.assertEqual("batch_precondition_failed", rejected["error"]["code"])
+        status, rejected = self.mutate([
+            {"op": "path.delete", "path": "delete-a.txt", "expected_etag": a_etag},
+            {"op": "path.delete", "path": "missing.txt", "expected_etag": '"missing"'},
+        ], token=record.token)
+        self.assertEqual(404, status)
+        self.assertEqual("path_not_found", rejected["error"]["code"])
         self.assertTrue((scope / "delete-a.txt").exists())
 
-        status, rejected = self.request(
-            "POST",
-            endpoint("/fs/delete/batch"),
-            {"paths": ["delete-b", "delete-b/nested.txt"]},
-        )
+        status, rejected = self.mutate([
+            {"op": "path.delete", "path": "delete-b", "expected_etag": b_etag},
+            {"op": "path.delete", "path": "delete-b/nested.txt", "expected_etag": nested_etag},
+        ], token=record.token)
         self.assertEqual(400, status)
         self.assertEqual("overlapping_paths", rejected["error"]["code"])
         self.assertTrue((scope / "delete-b" / "nested.txt").exists())
 
-        status, deleted = self.request(
-            "POST",
-            endpoint("/fs/delete/batch"),
-            {"paths": ["delete-a.txt", "delete-b"]},
-        )
+        status, deleted = self.mutate([
+            {"op": "path.delete", "path": "delete-a.txt", "expected_etag": a_etag},
+            {"op": "path.delete", "path": "delete-b", "expected_etag": b_etag},
+        ], token=record.token)
         self.assertEqual(200, status)
-        self.assertTrue(deleted["complete"])
-        self.assertEqual(2, deleted["deleted"])
-        self.assertEqual(0, deleted["failed"])
+        self.assertTrue(deleted["committed"])
+        self.assertEqual(2, deleted["changed"])
+        self.assertTrue(all(item["recycled"] for item in deleted["items"]))
         self.assertFalse((scope / "delete-a.txt").exists())
         self.assertFalse((scope / "delete-b").exists())
         entries, _total = self.server.recycle_for(scope).list_items(0, 100)
-        self.assertTrue(
-            {"delete-a.txt", "delete-b"}.issubset(
-                {entry["original_path"] for entry in entries}
-            )
-        )
+        self.assertTrue({"delete-a.txt", "delete-b"}.issubset({entry["original_path"] for entry in entries}))
 
     def test_selective_metadata_search_and_directory_tree(self) -> None:
         project = self.root / "project"
@@ -2361,13 +2355,21 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(called["result"]["isError"])
         self.assertEqual("hello.txt", called["result"]["structuredContent"]["entries"][0]["name"])
 
+        status, made_dir, _ = self.mcp_request(
+            token,
+            39,
+            "tools/call",
+            {"name": "create_directory", "arguments": {"path": "generated"}},
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(made_dir["result"]["isError"])
         status, written, _ = self.mcp_request(
             token,
             4,
             "tools/call",
             {
                 "name": "write_file",
-                "arguments": {"path": "generated/data.txt", "content": "created by MCP", "create_parents": True},
+                "arguments": {"path": "generated/data.txt", "content": "created by MCP"},
             },
         )
         self.assertEqual(200, status)
@@ -2410,14 +2412,22 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(mutated["result"]["structuredContent"]["committed"])
         self.assertEqual("updated by MCP", (scope / "generated" / "data.txt").read_text())
 
+        _, generated_dir_stat, _ = self.mcp_request(
+            token,
+            206,
+            "tools/call",
+            {"name": "stat_file", "arguments": {"path": "generated", "fields": "etag"}},
+        )
+        generated_dir_etag = generated_dir_stat["result"]["structuredContent"]["etag"]
         status, deleted, _ = self.mcp_request(
             token,
             5,
             "tools/call",
-            {"name": "delete_path", "arguments": {"path": "generated"}},
+            {"name": "delete_path", "arguments": {"path": "generated", "expected_etag": generated_dir_etag}},
         )
         self.assertEqual(200, status)
-        recycle_id = deleted["result"]["structuredContent"]["recycle_id"]
+        self.assertFalse(deleted["result"]["isError"])
+        recycle_id = deleted["result"]["structuredContent"]["items"][0]["recycle_id"]
         self.assertFalse((scope / "generated").exists())
 
         status, recycle_listing, _ = self.mcp_request(
@@ -2713,7 +2723,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertTrue(read_discovery["endpoints"]["fs_read"]["available"])
-        self.assertFalse(read_discovery["endpoints"]["fs_write"]["available"])
+        self.assertFalse(read_discovery["endpoints"]["fs_mutate"]["available"])
         self.assertFalse(read_discovery["endpoints"]["task_kill"]["available"])
 
     def test_mcp_conditional_writes_preview_and_raw_large_file_transfer(self) -> None:
@@ -2830,15 +2840,14 @@ class WorkspaceServerTests(unittest.TestCase):
 
         missing_plan_body = json.dumps(
             {
-                "path": "missing-plan.txt",
-                "content": "blocked",
+                "items": [{"op": "file.create", "path": "missing-plan.txt", "content": "blocked"}],
                 "taskname": "context-integration",
                 "message": "Attempt a write without a plan",
             }
         ).encode("utf-8")
         status, raw, _ = self.raw_request(
             "POST",
-            endpoint("/fs/write"),
+            endpoint("/fs/mutate"),
             missing_plan_body,
             {
                 "Content-Type": "application/json",
@@ -2854,10 +2863,9 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, invalid_plan = self.request(
             "POST",
-            endpoint("/fs/write"),
+            endpoint("/fs/mutate"),
             {
-                "path": "invalid-plan.txt",
-                "content": "blocked",
+                "items": [{"op": "file.create", "path": "invalid-plan.txt", "content": "blocked"}],
                 "plan_id": 999999,
                 "taskname": "context-integration",
                 "message": "Attempt a write with an unknown plan",
@@ -2869,14 +2877,13 @@ class WorkspaceServerTests(unittest.TestCase):
 
         missing_taskname_body = json.dumps(
             {
-                "path": "missing-taskname.txt",
-                "content": "blocked",
+                "items": [{"op": "file.create", "path": "missing-taskname.txt", "content": "blocked"}],
                 "message": "Attempt a write without a task group",
             }
         ).encode("utf-8")
         status, raw, _ = self.raw_request(
             "POST",
-            endpoint("/fs/write"),
+            endpoint("/fs/mutate"),
             missing_taskname_body,
             {
                 "Content-Type": "application/json",
@@ -2891,11 +2898,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse((scope / "missing-taskname.txt").exists())
 
         missing_body = json.dumps(
-            {"path": "missing-message.txt", "content": "blocked"}
+            {"items": [{"op": "file.create", "path": "missing-message.txt", "content": "blocked"}]}
         ).encode("utf-8")
         status, raw, _ = self.raw_request(
             "POST",
-            endpoint("/fs/write"),
+            endpoint("/fs/mutate"),
             missing_body,
             {
                 "Content-Type": "application/json",
@@ -2911,15 +2918,14 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, written = self.request(
             "POST",
-            endpoint("/fs/write"),
+            endpoint("/fs/mutate"),
             {
-                "path": "tracked.txt",
-                "content": "tracked content",
+                "items": [{"op": "file.create", "path": "tracked.txt", "content": "tracked content"}],
                 "taskname": "context-integration",
                 "message": "Create the tracked context fixture",
             },
         )
-        self.assertEqual(201, status)
+        self.assertEqual(200, status)
         operation_id = written["context_id"]
         self.assertTrue(
             (scope / ".openkapsel" / "context" / "context.sqlite3").is_file()
@@ -2966,9 +2972,9 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, failed = self.request(
             "POST",
-            endpoint("/fs/delete"),
+            endpoint("/fs/mutate"),
             {
-                "path": "does-not-exist",
+                "items": [{"op": "path.delete", "path": "does-not-exist", "expected_etag": '"missing"'}],
                 "taskname": "context-integration",
                 "message": "Remove an obsolete fixture",
             },
@@ -3068,7 +3074,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(1, exact["total"])
         self.assertEqual("operation", exact["entries"][0]["type"])
         self.assertEqual("succeeded", exact["entries"][0]["status"])
-        self.assertEqual("fs.write", exact["entries"][0]["operation"])
+        self.assertEqual("fs.mutate", exact["entries"][0]["operation"])
         self.assertEqual("context-integration", exact["entries"][0]["taskname"])
         self.assertEqual(sub_plan["id"], exact["entries"][0]["plan_id"])
         actor_id = record.actor_id
@@ -3179,7 +3185,7 @@ class WorkspaceServerTests(unittest.TestCase):
             "GET",
             endpoint(f"/context?id={mcp_context_id}"),
         )
-        self.assertIn("HTTP 201", mcp_context["entries"][0]["result_summary"])
+        self.assertIn("HTTP 200", mcp_context["entries"][0]["result_summary"])
         status, mcp_path_query, _ = self.mcp_request(
             record.token,
             806,
@@ -3320,7 +3326,7 @@ class WorkspaceServerTests(unittest.TestCase):
             },
         )
         self.assertFalse(written["result"]["isError"])
-        updated_etag = written["result"]["structuredContent"]["etag"]
+        updated_etag = written["result"]["structuredContent"]["items"][0]["etag"]
         self.assertNotEqual(etag, updated_etag)
         self.assertEqual("updated", target.read_text(encoding="utf-8"))
 
@@ -3505,30 +3511,31 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(11, payload["next_offset"])
 
     def test_write_create_and_safe_replace(self) -> None:
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/write"),
-            {"path": "new/answer.py", "content": "answer = 41\n", "create_parents": True},
+        status, made = self.request(
+            "POST", self.endpoint("/fs/mkdir"), {"path": "new", "exist_ok": True},
         )
-        self.assertEqual(201, status)
-        self.assertTrue(payload["created"])
+        self.assertIn(status, (200, 201), made)
+        status, payload = self.mutate([
+            {"op": "file.create", "path": "new/answer.py", "content": "answer = 41\n"},
+        ])
+        self.assertEqual(200, status)
+        self.assertTrue(payload["committed"])
         self.assertEqual("answer = 41\n", (self.root / "new" / "answer.py").read_text())
 
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/replace"),
-            {"path": "new/answer.py", "old": "41", "new": "42"},
-        )
+        etag = payload["items"][0]["etag"]
+        status, payload = self.mutate([
+            {"op": "text.replace", "path": "new/answer.py", "expected_etag": etag,
+             "replacements": [{"old": "41", "new": "42", "expected_count": 1}]},
+        ])
         self.assertEqual(200, status)
-        self.assertEqual(1, payload["replacements"])
+        self.assertEqual(1, payload["items"][0]["replacements"])
         self.assertEqual("answer = 42\n", (self.root / "new" / "answer.py").read_text())
 
         (self.root / "duplicate.txt").write_text("x x", encoding="utf-8")
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/replace"),
-            {"path": "duplicate.txt", "old": "x", "new": "y"},
-        )
+        status, payload = self.mutate([
+            {"op": "text.replace", "path": "duplicate.txt", "expected_etag": self.file_etag("duplicate.txt"),
+             "replacements": [{"old": "x", "new": "y", "expected_count": 1}]},
+        ])
         self.assertEqual(409, status)
         self.assertEqual("match_count_mismatch", payload["error"]["code"])
         self.assertEqual("x x", (self.root / "duplicate.txt").read_text())
@@ -3541,74 +3548,44 @@ class WorkspaceServerTests(unittest.TestCase):
         second.write_text("left right\n", encoding="utf-8")
         overlap.write_text("abcdef\n", encoding="utf-8")
 
-        status, rejected = self.request(
-            "POST",
-            self.endpoint("/fs/replace/batch"),
-            {
-                "items": [
-                    {
-                        "path": "project/batch-first.txt",
-                        "replacements": [
-                            {"old": "alpha", "new": "changed", "expected_matches": 2}
-                        ],
-                    },
-                    {
-                        "path": "project/batch-second.txt",
-                        "replacements": [{"old": "missing", "new": "value"}],
-                    },
-                ]
-            },
-        )
+        first_etag = self.file_etag("project/batch-first.txt")
+        second_etag = self.file_etag("project/batch-second.txt")
+        overlap_etag = self.file_etag("project/batch-overlap.txt")
+        status, rejected = self.mutate([
+            {"op": "text.replace", "path": "project/batch-first.txt", "expected_etag": first_etag,
+             "replacements": [{"old": "alpha", "new": "changed", "expected_count": 2}]},
+            {"op": "text.replace", "path": "project/batch-second.txt", "expected_etag": second_etag,
+             "replacements": [{"old": "missing", "new": "value", "expected_count": 1}]},
+        ])
         self.assertEqual(409, status)
         self.assertEqual("match_count_mismatch", rejected["error"]["code"])
         self.assertEqual("alpha beta alpha\n", first.read_text(encoding="utf-8"))
         self.assertEqual("left right\n", second.read_text(encoding="utf-8"))
 
-        status, rejected = self.request(
-            "POST",
-            self.endpoint("/fs/replace/batch"),
-            {
-                "items": [
-                    {
-                        "path": "project/batch-overlap.txt",
-                        "replacements": [
-                            {"old": "abc", "new": "one"},
-                            {"old": "bc", "new": "two"},
-                        ],
-                    }
-                ]
-            },
-        )
+        status, rejected = self.mutate([
+            {"op": "text.replace", "path": "project/batch-overlap.txt", "expected_etag": overlap_etag,
+             "replacements": [{"old": "abc", "new": "one"}, {"old": "bc", "new": "two"}]},
+        ])
         self.assertEqual(400, status)
         self.assertEqual("overlapping_replacements", rejected["error"]["code"])
         self.assertEqual("abcdef\n", overlap.read_text(encoding="utf-8"))
 
-        status, updated = self.request(
-            "POST",
-            self.endpoint("/fs/replace/batch"),
-            {
-                "items": [
-                    {
-                        "path": "project/batch-first.txt",
-                        "replacements": [
-                            {"old": "alpha", "new": "beta", "expected_matches": 2},
-                            {"old": "beta", "new": "gamma"},
-                        ],
-                    },
-                    {
-                        "path": "project/batch-second.txt",
-                        "replacements": [
-                            {"old": "left", "new": "up"},
-                            {"old": "right", "new": "down"},
-                        ],
-                    },
-                ]
-            },
-        )
+        status, updated = self.mutate([
+            {"op": "text.replace", "path": "project/batch-first.txt", "expected_etag": first_etag,
+             "replacements": [
+                 {"old": "alpha", "new": "beta", "expected_count": 2},
+                 {"old": "beta", "new": "gamma", "expected_count": 1},
+             ]},
+            {"op": "text.replace", "path": "project/batch-second.txt", "expected_etag": second_etag,
+             "replacements": [
+                 {"old": "left", "new": "up", "expected_count": 1},
+                 {"old": "right", "new": "down", "expected_count": 1},
+             ]},
+        ])
         self.assertEqual(200, status)
-        self.assertTrue(updated["complete"])
-        self.assertEqual(2, updated["updated"])
-        self.assertEqual(5, updated["replacements"])
+        self.assertTrue(updated["committed"])
+        self.assertEqual(2, updated["changed"])
+        self.assertEqual(5, sum(item.get("replacements", 0) for item in updated["items"]))
         self.assertEqual("beta gamma beta\n", first.read_text(encoding="utf-8"))
         self.assertEqual("up down\n", second.read_text(encoding="utf-8"))
 
@@ -3641,13 +3618,11 @@ class WorkspaceServerTests(unittest.TestCase):
             race.unlink()
             (self.root / "race-original").rename(race)
             with patch.object(WorkspaceRequestHandler, "_resolve_path", swapped_resolve):
-                status, payload = self.request(
-                    "POST",
-                    self.endpoint("/fs/write"),
-                    {"path": "race/new.txt", "content": "must stay inside"},
-                )
-                self.assertEqual(409, status)
-                self.assertEqual("path_changed", payload["error"]["code"])
+                status, payload = self.mutate([
+                    {"op": "file.create", "path": "race/new.txt", "content": "must stay inside"},
+                ])
+                self.assertEqual(403, status)
+                self.assertEqual("path_outside_root", payload["error"]["code"])
             self.assertFalse((outside / "new.txt").exists())
         finally:
             if race.is_symlink():
@@ -3783,22 +3758,21 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue((scope / "assets" / "renamed.txt").is_file())
 
-        status, payload = self.request(
-            "POST",
-            endpoint("/fs/delete"),
-            {"path": "assets"},
-        )
+        status, payload = self.mutate([
+            {"op": "path.delete", "path": "assets", "expected_etag": self.file_etag("assets", token=record.token)},
+        ], token=record.token)
         self.assertEqual(200, status)
-        self.assertTrue(payload["recycled"])
-        recycle_id = payload["recycle_id"]
+        deleted = payload["items"][0]
+        self.assertTrue(deleted["recycled"])
+        recycle_id = deleted["recycle_id"]
         self.assertRegex(recycle_id, r"^\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{8}$")
         self.assertFalse((scope / "assets").exists())
-        self.assertTrue((scope / payload["stored_path"]).is_dir())
 
         status, listing = self.request("GET", endpoint("/recycle/list"))
         self.assertEqual(200, status)
         self.assertEqual(1, listing["total"])
         self.assertEqual("assets", listing["entries"][0]["original_path"])
+        self.assertTrue((scope / listing["entries"][0]["stored_path"]).is_dir())
 
         (scope / "assets").mkdir()
         status, conflict = self.request(
@@ -3838,16 +3812,18 @@ class WorkspaceServerTests(unittest.TestCase):
         recycle_root.rmdir()
         victim = scope / "recreate-recycle.txt"
         victim.write_text("recoverable", encoding="utf-8")
-        status, recreated = self.request(
-            "POST", endpoint("/fs/delete"), {"path": victim.name}
-        )
+        status, recreated = self.mutate([
+            {"op": "path.delete", "path": victim.name,
+             "expected_etag": self.file_etag(victim.name, token=record.token)},
+        ], token=record.token)
         self.assertEqual(200, status)
-        self.assertTrue(recreated["recycled"])
+        recreated_item = recreated["items"][0]
+        self.assertTrue(recreated_item["recycled"])
         self.assertTrue(recycle_root.is_dir())
         status, restored = self.request(
             "POST",
             endpoint("/recycle/restore"),
-            {"recycle_id": recreated["recycle_id"]},
+            {"recycle_id": recreated_item["recycle_id"]},
         )
         self.assertEqual(200, status)
         self.assertTrue(restored["restored"])
@@ -3858,9 +3834,10 @@ class WorkspaceServerTests(unittest.TestCase):
         recycle_root.symlink_to(outside_recycle, target_is_directory=True)
         protected = scope / "must-not-move.txt"
         protected.write_text("keep", encoding="utf-8")
-        status, rejected = self.request(
-            "POST", endpoint("/fs/delete"), {"path": protected.name}
-        )
+        status, rejected = self.mutate([
+            {"op": "path.delete", "path": protected.name,
+             "expected_etag": self.file_etag(protected.name, token=record.token)},
+        ], token=record.token)
         self.assertEqual(409, status)
         self.assertEqual("recycle_unavailable", rejected["error"]["code"])
         self.assertTrue(protected.is_file())
@@ -3894,11 +3871,9 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("source", (self.root / "source.txt").read_text())
         self.assertEqual("target", (self.root / "target.txt").read_text())
 
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/delete"),
-            {"path": ".", "recursive": True},
-        )
+        status, payload = self.mutate([
+            {"op": "path.delete", "path": ".", "expected_etag": '"root"'},
+        ])
         self.assertEqual(403, status)
         self.assertEqual("root_protected", payload["error"]["code"])
 
@@ -3988,11 +3963,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("old", payload["content"])
 
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/write"),
-            {"path": str(page), "content": "published"},
-        )
+        page_etag = payload["etag"]
+        status, payload = self.mutate([
+            {"op": "file.replace", "path": str(page), "content": "published", "expected_etag": page_etag},
+        ])
         self.assertEqual(200, status)
         self.assertEqual("published", page.read_text(encoding="utf-8"))
 
@@ -4000,20 +3974,17 @@ class WorkspaceServerTests(unittest.TestCase):
         status, payload = self.request("GET", self.endpoint(f"/fs/read?{log_query}"))
         self.assertEqual(200, status)
         self.assertEqual("log", payload["content"])
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/write"),
-            {"path": str(log_file), "content": "blocked"},
-        )
+        log_etag = payload["etag"]
+        status, payload = self.mutate([
+            {"op": "file.replace", "path": str(log_file), "content": "blocked", "expected_etag": log_etag},
+        ])
         self.assertEqual(403, status)
         self.assertEqual("read_only_path", payload["error"]["code"])
         self.assertEqual("log", log_file.read_text(encoding="utf-8"))
 
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/delete"),
-            {"path": str(page)},
-        )
+        status, payload = self.mutate([
+            {"op": "path.delete", "path": str(page), "expected_etag": self.file_etag(str(page))},
+        ])
         self.assertEqual(403, status)
         self.assertEqual("outside_delete_not_supported", payload["error"]["code"])
         self.assertTrue(page.exists())
@@ -4158,13 +4129,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("left - right", source["content"])
 
-        status, payload = self.request(
-            "POST",
-            self.endpoint("/fs/replace"),
-            {"path": "demo/calculator.py", "old": "left - right", "new": "left + right"},
-        )
+        status, payload = self.mutate([
+            {"op": "text.replace", "path": "demo/calculator.py", "expected_etag": source["etag"],
+             "replacements": [{"old": "left - right", "new": "left + right  # fixed", "expected_count": 1}]},
+        ])
         self.assertEqual(200, status)
-        self.assertEqual(1, payload["replacements"])
+        self.assertEqual(1, payload["items"][0]["replacements"])
 
         status, payload = self.request(
             "POST",
@@ -4534,8 +4504,8 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            f"/kapsel/w/{record.token}/fs/write",
-            {"path": "blocked.txt", "content": "no"},
+            f"/kapsel/w/{record.token}/fs/mutate",
+            {"items": [{"op": "file.create", "path": "blocked.txt", "content": "no"}]},
         )
         self.assertEqual(403, status)
         self.assertEqual("permission_denied", payload["error"]["code"])

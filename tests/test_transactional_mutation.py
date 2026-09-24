@@ -293,20 +293,6 @@ class TransactionalMutationTests(unittest.TestCase):
         for operation, body, query in (
             ("fs_read", None, {"path": ["large.bin"], "limit": ["16"]}),
             (
-                "fs_replace",
-                {"path": "large.bin", "old": "0", "new": "1"},
-                None,
-            ),
-            (
-                "fs_write",
-                {
-                    "path": "large.bin",
-                    "content": "small replacement",
-                    "expected_etag": self.etag("large.bin"),
-                },
-                None,
-            ),
-            (
                 "fs_mutate",
                 {
                     "items": [
@@ -325,6 +311,81 @@ class TransactionalMutationTests(unittest.TestCase):
                 result = self.call(operation, body, query)
                 self.assertEqual(413, result["status"], result)
                 self.assertEqual("large_file_api_required", result["error"]["code"])
+
+    def test_delete_is_transactional_recoverable_and_allows_large_paths(self):
+        (self.root / "victim.txt").write_text("remove me", encoding="utf-8")
+        (self.root / "folder").mkdir()
+        (self.root / "folder/child.txt").write_text("child", encoding="utf-8")
+        self.make_large("large-delete.bin")
+        result = self.call("fs_mutate", {"items": [
+            {"op": "path.delete", "path": "victim.txt", "expected_etag": self.etag("victim.txt")},
+            {"op": "path.delete", "path": "folder", "expected_etag": self.etag("folder")},
+            {"op": "path.delete", "path": "large-delete.bin", "expected_etag": self.etag("large-delete.bin")},
+        ]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(3, result["body"]["changed"])
+        for item in result["body"]["items"]:
+            self.assertTrue(item["deleted"])
+            self.assertTrue(item["recycled"])
+            self.assertIsInstance(item["recycle_id"], str)
+        self.assertFalse((self.root / "victim.txt").exists())
+        self.assertFalse((self.root / "folder").exists())
+        self.assertFalse((self.root / "large-delete.bin").exists())
+
+        for item in result["body"]["items"]:
+            restored = self.files.dispatch("recycle_restore", {"recycle_id": item["recycle_id"]})
+            self.assertTrue(restored["restored"])
+        self.assertEqual("remove me", (self.root / "victim.txt").read_text(encoding="utf-8"))
+        self.assertEqual("child", (self.root / "folder/child.txt").read_text(encoding="utf-8"))
+        self.assertGreater((self.root / "large-delete.bin").stat().st_size, STANDARD_FILE_MAX_BYTES)
+
+    def test_delete_recycle_failure_rolls_back_prior_recycled_paths(self):
+        from openkapsel.files.recycle import RecycleBin
+
+        (self.root / "a.txt").write_text("A", encoding="utf-8")
+        (self.root / "b.txt").write_text("B", encoding="utf-8")
+        body = {"items": [
+            {"op": "path.delete", "path": "a.txt", "expected_etag": self.etag("a.txt")},
+            {"op": "path.delete", "path": "b.txt", "expected_etag": self.etag("b.txt")},
+        ]}
+        original = RecycleBin.recycle
+        calls = 0
+
+        def flaky(recycle, path, *, original_path=None):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError(errno.EIO, "injected recycle failure")
+            return original(recycle, path, original_path=original_path)
+
+        with patch.object(RecycleBin, "recycle", autospec=True, side_effect=flaky):
+            result = self.call("fs_mutate", body)
+
+        self.assertGreaterEqual(result["status"], 400, result)
+        self.assertEqual("A", (self.root / "a.txt").read_text(encoding="utf-8"))
+        self.assertEqual("B", (self.root / "b.txt").read_text(encoding="utf-8"))
+        self.assertFalse(list(self.root.glob(".*.openkapsel-transfer-txn-*")))
+        listing = self.files.dispatch("recycle_list", {"offset": 0, "limit": 100})
+        self.assertEqual(0, listing["total"], listing)
+
+    def test_delete_stale_etag_and_overlapping_paths_change_nothing(self):
+        (self.root / "folder").mkdir()
+        (self.root / "folder/child.txt").write_text("old", encoding="utf-8")
+        stale = self.etag("folder/child.txt")
+        (self.root / "folder/child.txt").write_text("new", encoding="utf-8")
+        result = self.call("fs_mutate", {"items": [{
+            "op": "path.delete", "path": "folder/child.txt", "expected_etag": stale,
+        }]})
+        self.assertIn(result["status"], {409, 412}, result)
+        self.assertTrue((self.root / "folder/child.txt").exists())
+
+        result = self.call("fs_mutate", {"items": [
+            {"op": "path.delete", "path": "folder", "expected_etag": self.etag("folder")},
+            {"op": "text.replace", "path": "folder/child.txt", "expected_etag": self.etag("folder/child.txt"),
+             "replacements": [{"old": "new", "new": "changed"}]},
+        ]})
+        self.assertEqual(400, result["status"], result)
+        self.assertEqual("new", (self.root / "folder/child.txt").read_text(encoding="utf-8"))
 
     def test_large_file_range_read_and_equal_length_replace(self):
         path = self.make_large()

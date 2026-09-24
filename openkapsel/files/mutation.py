@@ -217,9 +217,11 @@ class MutationPlan:
     backup: Path | None = None
     replacements: int = 0
     changed: bool = True
+    deleted: bool = False
     published: bool = False
     published_etag: str | None = None
     backed_up: bool = False
+    recycle_id: str | None = None
 
 
 def _stage_bytes(handler, plan: MutationPlan, transaction_id: str) -> None:
@@ -265,23 +267,21 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
     operation = item.get("op")
     if not isinstance(requested_path, str) or not requested_path:
         raise ApiError(400, "invalid_request", f"items[{index}].path must be a non-empty string")
-    if operation not in {"text.replace", "structured.patch", "file.create", "file.replace"}:
+    if operation not in {"text.replace", "structured.patch", "file.create", "file.replace", "path.delete"}:
         raise ApiError(
             400,
             "invalid_request",
-            f"items[{index}].op must be text.replace, structured.patch, file.create or file.replace",
+            f"items[{index}].op must be text.replace, structured.patch, file.create, file.replace or path.delete",
         )
     path = handler._resolve_path(requested_path, write=True)
-    try:
-        path.relative_to(handler.token_scope_root)
-    except ValueError:
-        raise ApiError(
-            409,
-            "transaction_domain_mismatch",
-            "transactional mutation v1 is restricted to one workspace or one mapped client export",
-        ) from None
 
     if operation == "file.create":
+        if item.get("create_parents") not in {None, False}:
+            raise ApiError(
+                400,
+                "invalid_request",
+                "transactional file.create does not create parent directories; create them explicitly first",
+            )
         if not _missing(handler, path):
             raise ApiError(409, "path_exists", f"items[{index}] create target already exists")
         content = item.get("content")
@@ -294,6 +294,37 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
         return MutationPlan(index, requested_path, path, operation, None, None, data, 0o600)
 
     expected_etag = _required_exact_etag(item, f"items[{index}]")
+    if operation == "path.delete":
+        try:
+            path.relative_to(handler.token_scope_root)
+        except ValueError:
+            raise ApiError(
+                403,
+                "outside_delete_not_supported",
+                "recoverable delete is only available inside the token workspace",
+            ) from None
+        if path == handler.token_scope_root:
+            raise ApiError(403, "root_protected", "the workspace root cannot be deleted")
+        storage_providers = getattr(handler.server, "storage_providers", None)
+        if storage_providers is not None and storage_providers.is_mapping_root(path):
+            raise ApiError(403, "storage_mapping_root_protected", "a Storage Provider mapping root cannot be deleted")
+        details = handler._file_stat(path)
+        if not (stat.S_ISREG(details.st_mode) or stat.S_ISDIR(details.st_mode)):
+            raise ApiError(400, "unsupported_path_type", "transactional delete supports regular files and directories")
+        before_etag = handler._path_etag(path, details)
+        handler._check_expected_etag(expected_etag, before_etag)
+        return MutationPlan(
+            index,
+            requested_path,
+            path,
+            operation,
+            expected_etag,
+            before_etag,
+            b"",
+            details.st_mode & 0o777,
+            deleted=True,
+        )
+
     raw, details = _read_regular_bytes(handler, path, expected_etag)
     before_etag = handler._path_etag(path, details)
     mode = details.st_mode & 0o777
@@ -375,6 +406,12 @@ def _rollback(handler, plans: list[MutationPlan]) -> None:
     paths = handler._safe_path_access()
     for plan in reversed(plans):
         try:
+            if plan.deleted and plan.recycle_id is not None:
+                handler._transaction_restore_recycle(plan.recycle_id)
+                plan.recycle_id = None
+                plan.published = False
+                plan.backed_up = False
+                continue
             if plan.published and plan.stage is not None:
                 current = handler._file_stat(plan.path)
                 current_etag = handler._path_etag(plan.path, current)
@@ -386,6 +423,7 @@ def _rollback(handler, plans: list[MutationPlan]) -> None:
             if plan.backed_up and plan.backup is not None:
                 paths.rename(plan.backup, plan.path, overwrite=False, create_parents=False)
                 plan.backed_up = False
+                plan.published = False
         except Exception:
             failures.append(plan.requested_path)
     if failures:
@@ -395,6 +433,27 @@ def _rollback(handler, plans: list[MutationPlan]) -> None:
             "transaction rollback refused to overwrite a concurrently changed path or could not restore an original; recovery artifacts were preserved",
             {"paths": sorted(set(failures))},
         )
+
+
+def _transaction_domain(handler, path: Path) -> Path:
+    """Return the authorized root defining one local transaction domain."""
+    paths = handler._safe_path_access()
+    anchor = getattr(paths, "anchor", None)
+    if callable(anchor):
+        root, _parts = anchor(path)
+        return Path(root)
+    root = getattr(paths, "root", None)
+    if root is not None:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise ApiError(
+                409,
+                "transaction_domain_mismatch",
+                "transaction path is outside the active filesystem domain",
+            ) from None
+        return Path(root)
+    return Path(handler.token_scope_root)
 
 
 def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
@@ -409,14 +468,38 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
 
     plans: list[MutationPlan] = []
     seen: set[Path] = set()
+    transaction_domain: Path | None = None
     total_staged = 0
     transaction_id = secrets.token_hex(12)
     preserve_artifacts = False
     try:
         for index, item in enumerate(items):
             plan = _plan_item(handler, item, index)
+            item_domain = _transaction_domain(handler, plan.path)
+            if transaction_domain is None:
+                transaction_domain = item_domain
+            elif item_domain != transaction_domain:
+                raise ApiError(
+                    409,
+                    "transaction_domain_mismatch",
+                    "one mutation request cannot span multiple authorized filesystem roots",
+                    {
+                        "first_root": str(transaction_domain),
+                        "conflicting_root": str(item_domain),
+                    },
+                )
             if plan.path in seen:
                 raise ApiError(400, "duplicate_path", f"items[{index}] resolves to a duplicate path")
+            for previous in plans:
+                if (plan.deleted or previous.deleted) and (
+                    plan.path in previous.path.parents or previous.path in plan.path.parents
+                ):
+                    raise ApiError(
+                        400,
+                        "overlapping_paths",
+                        "transactional delete paths may not contain another mutation path",
+                        {"first": previous.requested_path, "second": plan.requested_path},
+                    )
             seen.add(plan.path)
             total_staged += len(plan.data)
             if total_staged > MUTATION_MAX_STAGED_BYTES:
@@ -439,7 +522,8 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                         "path": plan.requested_path,
                         "op": plan.operation,
                         "changed": plan.changed,
-                        "bytes_after": len(plan.data),
+                        "bytes_after": 0 if plan.deleted else len(plan.data),
+                        **({"deleted": True} if plan.deleted else {}),
                         **({"replacements": plan.replacements} if plan.replacements else {}),
                     }
                     for plan in plans
@@ -448,7 +532,11 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
             }
 
         for plan in plans:
-            if plan.changed or plan.expected_etag is None:
+            if plan.deleted:
+                plan.backup = plan.path.with_name(
+                    f".{plan.path.name}.openkapsel-transfer-txn-{transaction_id}-{plan.index}"
+                )
+            elif plan.changed or plan.expected_etag is None:
                 _stage_bytes(handler, plan, transaction_id)
 
         _revalidate(handler, plans)
@@ -470,12 +558,26 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                             "source changed during commit; transaction was rolled back",
                             {"index": plan.index, "path": plan.requested_path},
                         )
+                if plan.deleted:
+                    plan.published = True
+                    continue
                 assert plan.stage is not None
                 staged = handler._file_stat(plan.stage)
                 staged_etag = handler._path_etag(plan.stage, staged)
                 paths.rename(plan.stage, plan.path, overwrite=False, create_parents=False)
                 plan.published = True
                 plan.published_etag = staged_etag
+
+            for plan in plans:
+                if not plan.deleted:
+                    continue
+                assert plan.backup is not None
+                recycled = handler._transaction_recycle(plan.backup, plan.path)
+                recycle_id = recycled.get("recycle_id")
+                if not isinstance(recycle_id, str) or not recycle_id:
+                    raise ApiError(500, "invalid_recycle_result", "transactional delete did not return a recycle id")
+                plan.recycle_id = recycle_id
+                plan.backed_up = False
         except Exception:
             try:
                 _rollback(handler, plans)
@@ -486,6 +588,19 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
 
         results = []
         for plan in plans:
+            if plan.deleted:
+                results.append(
+                    {
+                        "index": plan.index,
+                        "path": plan.requested_path,
+                        "op": plan.operation,
+                        "changed": True,
+                        "deleted": True,
+                        "recycled": True,
+                        "recycle_id": plan.recycle_id,
+                    }
+                )
+                continue
             final = handler._file_stat(plan.path)
             results.append(
                 {

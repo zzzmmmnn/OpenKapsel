@@ -251,15 +251,30 @@ class UploadClient:
         return payload
 
     def recycle_existing(self, path: str) -> bool:
-        payload = self._context_payload({"path": path})
+        stat_result = self.request(
+            "GET",
+            "fs/stat",
+            query=(("path", path), ("fields", "type,etag")),
+        )
+        if stat_result.status == 404 and _error_code(stat_result) == "path_not_found":
+            return False
+        require_success(stat_result)
+        stat_payload = decode_json_result(stat_result)
+        if not isinstance(stat_payload, dict) or not isinstance(stat_payload.get("etag"), str):
+            raise RuntimeError("file stat response does not contain an exact ETag")
+        payload = self._context_payload({
+            "items": [{
+                "op": "path.delete",
+                "path": path,
+                "expected_etag": stat_payload["etag"],
+            }]
+        })
         result = self.request(
             "POST",
-            "fs/delete",
+            "fs/mutate",
             headers={"Content-Type": "application/json"},
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         )
-        if result.status == 404 and _error_code(result) in {"path_not_found", "not_found"}:
-            return False
         require_success(result)
         return True
 

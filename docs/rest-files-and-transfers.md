@@ -21,9 +21,9 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `POST` | `/fs/manifest` | Batch synchronization preflight or recursive metadata manifest |
 | `POST` | `/fs/read_many` | Read multiple small text files in one request |
 | `GET/HEAD/PUT` | `/fs/content` | Stream or atomically upload raw bytes |
-| `POST` | `/fs/write`, `/fs/replace`, `/fs/replace/batch` | Write or perform exact text replacements with explicit encoding |
-| `POST` | `/fs/mkdir`, `/fs/move`, `/fs/delete` | Create, move, rename, or recycle paths |
-| `POST` | `/fs/delete/batch` | Preflight and recycle multiple paths |
+| `POST` | `/fs/mutate` | Transactionally create, replace, exact-edit, structured-edit, or recycle one or more paths |
+| `POST` | `/fs/large/read`, `/fs/large/replace` | Bounded large-file inspection and equal-length guarded replacement |
+| `POST` | `/fs/mkdir`, `/fs/move` | Create directories or move/rename paths |
 | `GET/POST` | `/recycle/list`, `/recycle/restore` | List and restore recycled paths |
 | `POST` | `/uploads` | Start a resumable upload |
 | `GET/HEAD/PATCH` | `/uploads/<id>` | Inspect or append upload bytes |
@@ -53,9 +53,9 @@ PLAN_ID=$(curl -fsS -X POST "$BASE/context" \
   -d '{"type":"plan","taskname":"release","content":"Prepare the release."}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
-curl -fsS -X POST "$BASE/fs/write" \
+curl -fsS -X POST "$BASE/fs/mutate" \
   -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "{\"path\":\"release.txt\",\"content\":\"ready\",\"plan_id\":$PLAN_ID,\"taskname\":\"release\",\"message\":\"Write release marker\"}"
+  -d "{\"items\":[{\"op\":\"file.create\",\"path\":\"release.txt\",\"content\":\"ready\"}],\"plan_id\":$PLAN_ID,\"taskname\":\"release\",\"message\":\"Write release marker\"}"
 ```
 
 JSON mutations carry `plan_id`, `taskname`, and `message` in the body. Raw-byte upload, upload commit or cancel, stdin, interrupt, and kill requests use:
@@ -103,27 +103,35 @@ reduce batch size, character budgets, or traversal depth.
 
 `fs/manifest` classifies bounded path sets as `missing`, `same`, `conflict`, or `exists`, calculating hashes only when requested.
 
-## Conditional and batch edits
+## Transactional mutations
 
-`fs/write` and `fs/replace` accept conditional ETags. `expected_etag: "*"` requires an existing path. A mismatch returns `412 etag_mismatch` without modifying the target.
+`POST /fs/mutate` is the ordinary file mutation protocol. One request may contain up to the configured batch limit of items and supports:
 
-`fs/replace/batch` performs replace-only edits across existing text files. It supports multiple exact replacement rules in one file. Rules match the original text, source ranges must not overlap, and every file is preflighted before publication. Match, permission, size, ETag, encoding, and overlap errors therefore make no requested change. A race after preflight may return per-file `207 Multi-Status` results.
+- `file.create`: create-only text content; the destination must not exist.
+- `file.replace`: replace an existing standard-size text file; exact `expected_etag` is required.
+- `text.replace`: apply one or more exact replacement rules to the original text; exact `expected_etag` and exact match counts are required.
+- `structured.patch`: apply guarded JSON/YAML/TOML `test`, `add`, `replace`, and `remove` operations; exact `expected_etag` is required.
+- `path.delete`: recoverably recycle an existing file or directory; exact `expected_etag` is required. Content size is irrelevant, so large files may be recycled this way.
+
+All items are preflighted before publication. A request may operate only inside one filesystem domain: one workspace, one mapped client export, or one administrator-granted filesystem root. It never splits a transaction across backends. Ordinary commit failures roll back already-published items; if rollback would overwrite content changed concurrently by another writer, OpenKapsel fails closed and preserves recovery artifacts.
+
+`path.delete` is workspace-local because recycle metadata and restoration belong to that workspace. It rejects the workspace root, Storage Provider mapping roots, duplicate paths, and parent/child overlap with another item. Successful deletes return a `recycle_id` and can be restored through `/recycle/restore`.
+
+This is request-level transactionality, not a durable database transaction: v1 does not provide a write-ahead log or guarantee crash recovery across a process or operating-system crash.
 
 ### Text encoding and line endings
 
-Text APIs default to UTF-8 independently of the host locale. `encoding` is a query parameter for `fs/read`, a body field for `fs/read_many`, `fs/write`, and `fs/replace`, and a field on each `fs/replace/batch` item. Supported codecs: `utf-8`, `utf-8-sig`, `utf-16-le`, `utf-16-be`, `ascii`, `iso8859-1` (alias `latin-1`), `cp1252`, `gbk`, `gb18030`, `big5`, and `shift_jis`. MCP text tools expose the same parameter. Search remains UTF-8-only; binary download/upload preserves arbitrary bytes.
+Text APIs default to UTF-8 independently of the host locale. `encoding` is a query parameter for `fs/read`, a body field for `fs/read_many`, and an item field for content operations in `fs/mutate`. Supported codecs: `utf-8`, `utf-8-sig`, `utf-16-le`, `utf-16-be`, `ascii`, `iso8859-1` (alias `latin-1`), `cp1252`, `gbk`, `gb18030`, `big5`, and `shift_jis`. MCP text tools expose the same parameter. Search remains UTF-8-only; binary download/upload preserves arbitrary bytes.
 
 There is no encoding detection, locale fallback, or lossy replacement. Invalid input bytes return 415; unsupported codecs or unrepresentable output return 400 without replacing the target. Batch encoding failures are detected before any file is published. Specify the existing encoding for edits. For BOM handling, `utf-8-sig` consumes/emits the UTF-8 BOM; ordinary `utf-8` preserves it as U+FEFF. UTF-16 requires explicit endian and preserves any BOM as U+FEFF; include that character to create a new BOM-bearing UTF-16 file.
 
-Reads preserve LF (`\n`), CRLF (`\r\n`), CR (`\r`), and mixed endings. Character offsets count both characters of CRLF. Writes encode the supplied text literally, even on Windows; use `\r\n` explicitly to create CRLF files. Replacements match exact line endings and preserve all untouched text; replacement text controls its own endings. `byte_offset` remains UTF-8-only; use character offsets for other codecs. Client-local text RPC requires file API v3 (client 1.59.0+); older clients use the existing filesystem path instead.
-
-`fs/delete/batch` rejects duplicate and parent/child-overlapping paths and preflights every item before recycling. Its maximum item count is `max_batch_file_operations`.
+Reads preserve LF (`\n`), CRLF (`\r\n`), CR (`\r`), and mixed endings. Character offsets count both characters of CRLF. Writes encode the supplied text literally, even on Windows; use `\r\n` explicitly to create CRLF files. Replacements match exact line endings and preserve all untouched text; replacement text controls its own endings. `byte_offset` remains UTF-8-only; use character offsets for other codecs. Client-local text reads require file API v3 (client 1.59.0+). Transactional mutation requires file API v4; RPC-first servers fail closed rather than degrading `fs/mutate` into older write calls.
 
 ## Recycle and overwrite policy
 
 File API deletion moves paths into workspace-local private recycle storage under `.openkapsel`. If that storage was removed, OpenKapsel recreates it safely before moving the path. Restore operations return an item to its prior location.
 
-Uploads only create new files. Direct, resumable, and MCP uploads all reject an existing destination. To replace a binary file, first call `fs/delete` so the previous version enters private recycle storage, then upload the replacement.
+Uploads only create new files. Direct, resumable, and MCP uploads all reject an existing destination. To replace a binary file, first obtain its exact ETag with `/fs/stat`, then call `/fs/mutate` with a `path.delete` item so the previous version enters private recycle storage, and finally upload the replacement.
 
 Full Shell deletion is direct and is not recoverable through the recycle API.
 

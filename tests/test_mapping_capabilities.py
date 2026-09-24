@@ -73,12 +73,14 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                         response = files.dispatch("api_fs_read", {"query": {"path": ["sample.txt"]}})
                         self.assertEqual(200, response["status"])
                         self.assertEqual("sample", response["body"]["content"])
-                        arguments = {"body": {"path": "new.txt", "content": "new"}}
+                        arguments = {"body": {"items": [{
+                            "op": "file.create", "path": "new.txt", "content": "new",
+                        }]}}
                         if writable:
-                            self.assertEqual(201, files.dispatch("api_fs_write", arguments)["status"])
+                            self.assertEqual(200, files.dispatch("api_fs_mutate", arguments)["status"])
                         else:
                             with self.assertRaises(OSError):
-                                files.dispatch("api_fs_write", arguments)
+                                files.dispatch("api_fs_mutate", arguments)
                             self.assertFalse((Path(directory) / "new.txt").exists())
                     finally:
                         files.close()

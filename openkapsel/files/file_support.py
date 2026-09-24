@@ -170,23 +170,44 @@ class FileOperationSupportMixin(MappingQueryMixin):
             from types import SimpleNamespace
             from openkapsel.client_runtime.client_file_api import FILE_API_LIMITS
             from openkapsel.mapping.mapping_transport import encode
-            capability = manager.rpc_capability(row["id"], "file", operation="fs_write", min_version=3, max_version=4)
+            if create_parents:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "parent_creation_not_transactional",
+                    "mapped transactional writes do not create parent directories implicitly",
+                )
+            if expected_etag == "*":
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_request",
+                    "mapped transactional replacement requires the exact current ETag; wildcard is not supported",
+                )
+            capability = manager.rpc_capability(row["id"], "file", operation="fs_mutate", min_version=4, max_version=4)
             if not capability.available:
                 self._raise_mapping_rpc_unavailable(capability)
-            arguments = {"body": {"path": path.relative_to(manager.mount_path(row)).as_posix(),
-                         "content": content, "encoding": encoding, "expected_etag": expected_etag,
-                         "create_parents": create_parents},
-                         "limits": {n: getattr(self.server.config, n) for n in FILE_API_LIMITS}}
+            item = {
+                "op": "file.create" if expected_etag is None else "file.replace",
+                "path": path.relative_to(manager.mount_path(row)).as_posix(),
+                "content": content,
+                "encoding": encoding,
+            }
+            if expected_etag is not None:
+                item["expected_etag"] = expected_etag
+            arguments = {
+                "body": {"items": [item]},
+                "limits": {n: getattr(self.server.config, n) for n in FILE_API_LIMITS},
+            }
             try:
-                encode({"id": "0" * 24, "op": "api_fs_write", "args": arguments})
+                encode({"id": "0" * 24, "op": "api_fs_mutate", "args": arguments})
             except OSError as exc:
                 self._raise_file_io_error(exc)
-            result = self._mapping_rpc(row, "api_fs_write", arguments)
+            result = self._mapping_rpc(row, "api_fs_mutate", arguments)
             if "error" in result:
                 error = result["error"]
                 raise ApiError(result["status"], error["code"], error["message"], error.get("details"))
             payload = result["body"]
-            return payload["created"], SimpleNamespace(_mapping_etag=payload["etag"])
+            mutation = payload["items"][0]
+            return expected_etag is None, SimpleNamespace(_mapping_etag=mutation["etag"])
         try:
             parent = self._safe_parent(path, create_parents=create_parents)
         except ApiError as exc:

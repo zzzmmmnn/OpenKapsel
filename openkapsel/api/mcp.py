@@ -644,16 +644,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "write_file",
         "Write text file",
-        "Create or atomically overwrite text in the requested encoding (default UTF-8), without newline translation. Set expected_etag for conditional writes.",
+        "Create a new text file, or replace an existing one when exact expected_etag is supplied. This convenience tool uses the transactional mutation engine; create parent directories explicitly first.",
         _object_schema(
             {
                 "path": PATH,
                 "content": {"type": "string"},
                 "encoding": TEXT_ENCODING,
-                "create_parents": {"type": "boolean", "default": False},
                 "expected_etag": {
                     "type": ["string", "null"],
-                    "description": "Optional current ETag, or * to require that the file exists.",
+                    "description": "Omit/null for create-only. Supply the exact current ETag to replace an existing file.",
                     "default": None,
                 },
             },
@@ -661,12 +660,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         ),
         read_only=False,
         destructive=True,
-        idempotent=True,
+        idempotent=False,
     ),
     _tool(
         "replace_text",
         "Replace exact text",
-        "Replace exact text in the requested encoding (default UTF-8), preserving untouched newlines. By default old must occur once. Set expected_etag for conditional edits.",
+        "Transactionally replace every exact occurrence when its count matches expected_matches. Requires the exact current ETag returned by a prior read/search/stat.",
         _object_schema(
             {
                 "path": PATH,
@@ -674,22 +673,18 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "encoding": TEXT_ENCODING,
                 "new": {"type": "string"},
                 "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
-                "replace_all": {"type": "boolean", "default": False},
-                "expected_etag": {
-                    "type": ["string", "null"],
-                    "description": "Optional current ETag, or * to require that the file exists.",
-                    "default": None,
-                },
+                "expected_etag": {"type": "string", "minLength": 1},
             },
-            ("path", "old", "new"),
+            ("path", "old", "new", "expected_etag"),
         ),
         read_only=False,
         destructive=True,
+        idempotent=False,
     ),
     _tool(
         "mutate_files",
         "Transactional file mutation",
-        "Apply one transaction across files in a single filesystem domain. Existing files require exact ETags. Supports exact text replacement, JSON/YAML/TOML structured patch, create-only files, and whole-file replacement. All preconditions are checked before publication and ordinary errors roll back the whole request. Files above 32 MiB are rejected.",
+        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
         _object_schema(
             {
                 "items": {
@@ -763,10 +758,17 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "delete_path",
         "Recycle path",
-        "Recoverably delete a file or directory by moving it into this child workspace's private .recycle directory.",
-        _object_schema({"path": PATH}, ("path",)),
+        "Transactionally recycle a file or directory. Requires the exact current ETag returned by stat_file or another file read.",
+        _object_schema(
+            {
+                "path": PATH,
+                "expected_etag": {"type": "string", "minLength": 1},
+            },
+            ("path", "expected_etag"),
+        ),
         read_only=False,
         destructive=True,
+        idempotent=False,
     ),
     _tool(
         "list_recycle",

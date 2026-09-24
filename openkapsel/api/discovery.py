@@ -1256,61 +1256,7 @@ class DiscoveryMixin:
                         "OpenKapsel-Taskname": "<required task grouping name>",
                         "OpenKapsel-Message": "<required brief operation summary>",
                     },
-                    "notes": "atomically creates a new file only; if the destination exists, recycle it with fs_delete before uploading so the previous version is retained; use resumable uploads above the direct-upload limit",
-                },
-                "fs_write": {
-                    "method": "POST",
-                    "url": f"{base}/fs/write",
-                    "json": {
-                        "path": "<path>",
-                        "content": "<Unicode text with literal newlines>",
-                        "encoding": "utf-8",
-                        "create_parents": False,
-                        "expected_etag": "<optional current ETag>",
-                        "plan_id": "<required owning plan id>",
-                        "taskname": "<required task grouping name>",
-                        "message": "<required brief operation summary>",
-                    },
-                    "notes": "encoding uses the same codec choices as fs_read; default UTF-8. Strict encoding; input newlines are written literally, without platform translation. expected_etag provides If-Match-style optimistic concurrency",
-                },
-                "fs_replace": {
-                    "method": "POST",
-                    "url": f"{base}/fs/replace",
-                    "json": {
-                        "path": "<path>",
-                        "old": "<exact text including CRLF if present>",
-                        "encoding": "utf-8",
-                        "new": "<replacement>",
-                        "expected_etag": "<optional current ETag>",
-                        "plan_id": "<required owning plan id>",
-                        "taskname": "<required task grouping name>",
-                        "message": "<required brief operation summary>",
-                    },
-                    "notes": "encoding uses the same codec choices as fs_read, default UTF-8; exact matching including newlines, no newline conversion. old must occur exactly once; set expected_matches or replace_all explicitly; expected_etag provides If-Match-style optimistic concurrency",
-                },
-                "fs_replace_batch": {
-                    "method": "POST",
-                    "url": f"{base}/fs/replace/batch",
-                    "json": {
-                        "items": [
-                            {
-                                "path": "<existing text file>",
-                                "encoding": "utf-8",
-                                "expected_etag": "<optional current ETag>",
-                                "replacements": [
-                                    {
-                                        "old": "<exact original text>",
-                                        "new": "<replacement text>",
-                                        "expected_matches": 1,
-                                    }
-                                ],
-                            }
-                        ],
-                        "plan_id": "<required owning plan id>",
-                        "taskname": "<required task grouping name>",
-                        "message": "<required brief operation summary>",
-                    },
-                    "notes": "legacy replace-only multi-file edit; use fs_mutate for request-transactional multi-file changes. Files above the standard 32 MiB limit are rejected.",
+                    "notes": "atomically creates a new file only; if the destination exists, use fs_mutate path.delete first so the previous version is retained in recycle storage; use resumable uploads above the direct-upload limit",
                 },
                 "fs_mutate": {
                     "method": "POST",
@@ -1319,7 +1265,7 @@ class DiscoveryMixin:
                         "items": [
                             {
                                 "path": "<file>",
-                                "op": "text.replace | structured.patch | file.create | file.replace",
+                                "op": "text.replace | structured.patch | file.create | file.replace | path.delete",
                                 "expected_etag": "<exact prior ETag for existing files>",
                                 "replacements": [{"old": "<exact>", "new": "<exact>", "expected_count": 1}],
                                 "operations": [{"op": "replace", "path": "/json/pointer", "value": "<value>"}],
@@ -1335,7 +1281,7 @@ class DiscoveryMixin:
                         f"{STANDARD_FILE_MAX_BYTES} bytes. Existing targets require exact ETags; "
                         "all items are preflighted and staged before publication. Supports exact "
                         "text replacement, JSON/YAML/TOML structured patch, create-only files and "
-                        "whole-file replacement. Ordinary request failures roll back all published "
+                        "whole-file replacement and recoverable file/directory deletion. Content operations are limited to standard files; path.delete may recycle larger files and directories. Ordinary request failures roll back all published "
                         "items; v1 does not claim durable crash recovery across process/OS failure."
                     ),
                 },
@@ -1373,23 +1319,6 @@ class DiscoveryMixin:
                     "method": "POST",
                     "url": f"{base}/fs/mkdir",
                     "json": {"path": "<path>", "parents": False, "exist_ok": False, "plan_id": "<required owning plan id>", "taskname": "<required task grouping name>", "message": "<required brief operation summary>"},
-                },
-                "fs_delete": {
-                    "method": "POST",
-                    "url": f"{base}/fs/delete",
-                    "json": {"path": "<path>", "plan_id": "<required owning plan id>", "taskname": "<required task grouping name>", "message": "<required brief operation summary>"},
-                    "notes": "moves the path into this child workspace's private recycle storage; the token root cannot be deleted",
-                },
-                "fs_delete_batch": {
-                    "method": "POST",
-                    "url": f"{base}/fs/delete/batch",
-                    "json": {
-                        "paths": ["<path>", "<path>"],
-                        "plan_id": "<required owning plan id>",
-                        "taskname": "<required task grouping name>",
-                        "message": "<required brief operation summary>",
-                    },
-                    "notes": "preflights every unique non-overlapping path before moving each item into private recycle storage; ordinary precondition errors delete nothing; a post-preflight race can return 207 with per-item results",
                 },
                 "fs_move": {
                     "method": "POST",
@@ -1709,11 +1638,11 @@ class DiscoveryMixin:
                 "Request sha256 explicitly from stat_file/fs_stat only when content verification is needed.",
                 "Use fs_stat before transferring files, then stream binary or large downloads through fs_content with HTTP Range.",
                 "Use direct fs_content PUT for small binary files, or create an upload session for large files and send raw bytes in chunks.",
-                "Uploads never overwrite. To replace a file, first use delete_path/fs_delete so its previous version is retained in private recycle storage, then upload the new file.",
+                "Uploads never overwrite. To replace a file, first use mutate_files/fs_mutate with path.delete so its previous version is retained in private recycle storage, then upload the new file.",
                 "Create directories with create_directory/fs_mkdir, and move or rename paths with move_path/fs_move.",
-                "For ordinary files up to 32 MiB, prefer mutate_files/fs_mutate when one logical change touches multiple files or structured configuration; existing files require exact ETags and all items are preflighted before publication. Keep replace_text/fs_replace for one simple focused edit.",
+                "For ordinary files up to 32 MiB, use mutate_files/fs_mutate for content changes; existing paths require exact ETags and all items are preflighted before publication. MCP write_file, replace_text, and delete_path are convenience wrappers over the same transaction engine.",
                 "Files above 32 MiB are large files: inspect them only through read_large_file/fs_read_large with explicit offset+length, and mutate them only through replace_large_file_range/fs_replace_large using exact ETag + range SHA-256 and equal-length bytes.",
-                "Use delete_path/fs_delete for recoverable deletion, list_recycle/recycle_list to inspect deleted items, and restore_recycle/recycle_restore to recover them.",
+                "Use mutate_files/fs_mutate path.delete (or MCP delete_path) for recoverable transactional deletion, list_recycle/recycle_list to inspect deleted items, and restore_recycle/recycle_restore to recover them.",
                 "For cross-workspace transfer, create_share/share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with import_share/share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
                 "Run tests or builds with run_shell/shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
                 "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id; use run-now instead of creating sub-three-minute schedules.",
@@ -1874,21 +1803,10 @@ class DiscoveryMixin:
             "fs_tree": ("files.read", read_enabled),
             "fs_content": ("files.read", read_enabled),
             "fs_content_put": ("Bearer control token + files.write", write_enabled),
-            "fs_write": ("Bearer control token + files.write", write_enabled),
-            "fs_replace": ("Bearer control token + files.write", write_enabled),
-            "fs_replace_batch": ("Bearer control token + files.write", write_enabled),
             "fs_mutate": ("Bearer control token + files.write", write_enabled),
             "fs_read_large": ("files.read", read_enabled),
             "fs_replace_large": ("Bearer control token + files.write", write_enabled),
             "fs_mkdir": ("Bearer control token + files.write", write_enabled),
-            "fs_delete": (
-                "Bearer control token + files.write + recycle",
-                write_enabled and recycle_enabled,
-            ),
-            "fs_delete_batch": (
-                "Bearer control token + files.write + recycle",
-                write_enabled and recycle_enabled,
-            ),
             "fs_move": ("Bearer control token + files.write", write_enabled),
             "recycle_list": ("files.read + recycle", read_enabled and recycle_enabled),
             "recycle_restore": (
@@ -1944,6 +1862,8 @@ class DiscoveryMixin:
                 "environment_replace",
                 "environment_clear",
                 "fs_content_put",
+                "fs_mutate",
+                "fs_replace_large",
                 "context_query",
                 "context_plan_tree",
                 "context_add",
@@ -1954,12 +1874,7 @@ class DiscoveryMixin:
                 "memory_add",
                 "memory_item",
                 "memory_revisions",
-                "fs_write",
-                "fs_replace",
-                "fs_replace_batch",
                 "fs_mkdir",
-                "fs_delete",
-                "fs_delete_batch",
                 "fs_move",
                 "recycle_restore",
                 "upload_create",

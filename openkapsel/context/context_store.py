@@ -242,6 +242,21 @@ class ContextStore:
                     paths.add(cls._normalize_path(item))
                 except ValueError:
                     continue
+        # Transactional mutation carries workspace targets in items[].path.
+        # Do not recurse arbitrarily: structured patch operations also contain
+        # JSON Pointer "path" fields which are not filesystem paths.
+        items = value.get("items")
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                candidate = item.get("path")
+                if not isinstance(candidate, str) or not candidate.strip():
+                    continue
+                try:
+                    paths.add(cls._normalize_path(candidate))
+                except ValueError:
+                    continue
         return paths
 
     @classmethod

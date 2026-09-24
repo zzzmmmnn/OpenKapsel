@@ -44,7 +44,7 @@ and mixed-root access need current client `file_stream` metadata; see
 
 Search skips binary, non-UTF-8, oversized, private, and symlinked content. Depth `0` means only the named root; consult Discovery for the maximum.
 
-Text read/write/replace defaults to UTF-8 regardless of OS locale. Pass `encoding` in the read query, write/replace/read_many body, or each replace_batch item for other codecs: utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No automatic detection or lossy conversion: decode errors are 415, unrepresentable output is 400 and leaves files unchanged. UTF-16 uses explicit endian; its BOM remains U+FEFF. utf-8-sig consumes/emits the BOM. LF/CRLF/CR are preserved literally; exact replacement must include the original line endings, and new text controls its own endings. Character offsets count both CRLF characters. byte_offset is UTF-8-only; use binary APIs for byte-exact arbitrary formats. Client-local text RPC needs client 1.59.0+ (file API v3).
+Text reads and transactional content mutations default to UTF-8 regardless of OS locale. Pass `encoding` in the read/read_many request or on each relevant `fs/mutate` item for other codecs: utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No automatic detection or lossy conversion: decode errors are 415, unrepresentable output is 400 and leaves files unchanged. UTF-16 uses explicit endian; its BOM remains U+FEFF. utf-8-sig consumes/emits the BOM. LF/CRLF/CR are preserved literally; exact replacement must include the original line endings, and new text controls its own endings. Character offsets count both CRLF characters. byte_offset is UTF-8-only; use binary APIs for byte-exact arbitrary formats. Client-local text reads need file API v3; transactional mutation needs file API v4.
 
 ## Text and path mutations
 
@@ -52,44 +52,20 @@ These require the matching Bearer token, write permission, and JSON Context fiel
 
 | Method | Path | JSON-specific fields |
 |---|---|---|
-| `POST` | `/fs/write` | `path`, `content`, optional `create_parents`, optional `expected_etag` |
-| `POST` | `/fs/replace` | `path`, `old`, `new`, optional `expected_matches` or `replace_all`, optional `expected_etag` |
-| `POST` | `/fs/replace/batch` | legacy replace-only `items`; each file has one or more exact `replacements` and optional `expected_etag` |
-| `POST` | `/fs/mutate` | transactional `items` using `text.replace`, `structured.patch`, `file.create`, or `file.replace`; existing files require exact `expected_etag` |
+| `POST` | `/fs/mutate` | transactional `items` using `file.create`, `file.replace`, `text.replace`, `structured.patch`, or recoverable `path.delete`; every existing path requires exact `expected_etag` |
 | `POST` | `/fs/large/read` | large files only (>32 MiB): required byte `offset` and bounded `length`; returns Base64, ETag and range SHA-256 |
 | `POST` | `/fs/large/replace` | large files only: exact ETag + range SHA-256 + equal-length Base64 replacement; file size cannot change |
 | `POST` | `/fs/mkdir` | `path`, optional `parents`, optional `exist_ok` |
 | `POST` | `/fs/move` | `source`, `destination`, optional `overwrite=false`, optional `create_parents=false` |
-| `POST` | `/fs/delete` | `path`; moves it into the workspace-local recycle bin |
-| `POST` | `/fs/delete/batch` | `paths`; preflights and recycles multiple independent paths |
 | `POST` | `/recycle/restore` | `recycle_id`; restores only when the original destination is absent |
 
-`fs/replace` requires `old` to occur exactly once by default. Use `expected_matches` or `replace_all` only when intentional. Use an ETag from `fs/stat`, `fs/read`, or search results to prevent lost updates. `expected_etag: "*"` requires the destination to exist.
+`fs/mutate` is the single ordinary mutation protocol. Every existing target must carry the exact ETag observed by the preceding stat/read/search; wildcard ETags are rejected. `file.create` is create-only. `text.replace` evaluates all exact replacement rules against the original text and requires the declared occurrence count. `structured.patch` supports guarded JSON/YAML/TOML edits. `path.delete` recycles files or directories and can include large files because it does not inspect their content.
 
-For one logical AI edit touching several files, prefer `fs/mutate`. Every existing target must carry the exact ETag observed by the preceding read/search; wildcard ETags are rejected. All items are parsed, exact-match checked, encoded and staged before the first destination is published. The v1 transaction is restricted to one filesystem backend/mapped client and supports `text.replace`, JSON/YAML/TOML `structured.patch`, create-only `file.create`, and conditional `file.replace`. An ordinary commit error rolls back already-published items. If an external writer changes a just-published path during rollback, OpenKapsel refuses to overwrite that newer content and preserves hidden recovery artifacts instead. This first version is request-transactional; it does not claim crash-journal recovery across a process or OS crash.
+For one logical AI edit, put all affected paths in one request. All items are parsed and preflighted before publication, and content after-images are staged before the first destination is published. One request is restricted to one filesystem domain/mapped client. An ordinary commit error rolls back already-published items. If an external writer changes a just-published path during rollback, OpenKapsel refuses to overwrite that newer content and preserves hidden recovery artifacts instead. This first version is request-transactional; it does not claim crash-journal recovery across a process or OS crash.
+
+`path.delete` rejects duplicate/overlapping targets and parent-child overlap with other mutation items. It is recoverable only inside the token workspace; use the returned `recycle_id` with `/recycle/restore`. The workspace root and Storage Provider mapping roots are protected.
 
 Ordinary content inspection and mutation are capped at **32 MiB per file**. Search also skips larger content, and whole-file SHA-256 metadata operations reject it. Files above 32 MiB must use `fs/large/read`: provide an explicit byte `offset` and `length` (maximum 256 KiB). The response binds the range to an exact file ETag and `range_sha256`. To change that range, call `fs/large/replace` with those two preconditions and exactly `length` replacement bytes in Base64. The server rechecks both before writing and rejects any request that would change total file size. Raw download/upload endpoints remain transfer mechanisms for opaque files; do not use them as a substitute for AI content inspection/mutation.
-
-`fs/replace/batch` accepts this shape:
-
-```json
-{
-  "items": [
-    {
-      "path": "src/example.py",
-      "expected_etag": "<optional ETag>",
-      "replacements": [
-        {"old": "exact original text", "new": "replacement", "expected_matches": 1}
-      ]
-    }
-  ],
-  "plan_id": 42,
-  "taskname": "refactor",
-  "message": "Update related call sites"
-}
-```
-
-Every rule is located against that file's original text, and every matched occurrence is replaced. Rules may therefore modify several independent places in one file without earlier replacements changing later match targets. Source ranges must not overlap. The server validates every file, match count, range, permission, size, and optional ETag before publishing the first file; it also uses each observed ETag internally when publishing. Ordinary validation failures modify nothing. A post-preflight race can return `207 Multi-Status` with per-file results. The configured batch limit bounds file items, replacement rules, and total matched replacements.
 
 Deletion is recoverable and recreates private recycle storage safely if a full Shell command removed it. The workspace root cannot be deleted. Full Shell deletion does not use the recycle mechanism.
 
@@ -105,7 +81,7 @@ Batch deletion rejects duplicate paths and parent/child overlaps. It validates e
 - optional `X-Content-SHA256`
 - all three `OpenKapsel-*` Context headers
 
-It is atomic and create-only. It never overwrites. If the destination exists, call `fs/delete` first so the prior version enters private recycle storage, then upload the new file. Use this route only up to `limits.max_direct_upload_bytes`.
+It is atomic and create-only. It never overwrites. If the destination exists, stat it for an exact ETag, then use `fs/mutate` with `path.delete` so the prior version enters private recycle storage before uploading the new file. Use this route only up to `limits.max_direct_upload_bytes`.
 
 ## Resumable upload
 
@@ -124,7 +100,7 @@ python3 scripts/openkapsel_upload.py ./artifact.zip releases/artifact.zip \
   --plan-id 42 --taskname release --message 'Upload the release artifact'
 ```
 
-The server never overwrites through an upload request. Passing `--overwrite` explicitly makes the helper call `fs/delete` first, preserving the old destination in private recycle storage, and then starts a create-only upload. Without that flag an existing destination is reported as a failure.
+The server never overwrites through an upload request. Passing `--overwrite` explicitly makes the helper stat the existing destination, recycle it through transactional `fs/mutate path.delete`, and then start a create-only upload. Without that flag an existing destination is reported as a failure.
 
 ## Multiple files and directory trees
 

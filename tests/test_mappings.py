@@ -363,7 +363,9 @@ class MappingTransportTests(unittest.TestCase):
                     self.assertIn("Initial fixture", result["output"])
                 if not writable:
                     with self.assertRaises(OSError):
-                        sessions[0].call("api_fs_write", {"body": {"path": "no-write", "content": "no"}})
+                        sessions[0].call("api_fs_mutate", {"body": {"items": [
+                            {"op": "file.create", "path": "no-write", "content": "no"},
+                        ]}})
                     self.assertFalse((Path(directory) / "no-write").exists())
             finally:
                 for session in sessions:

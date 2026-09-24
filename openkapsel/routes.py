@@ -180,22 +180,6 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="fs_content_put",
     ),
     _exact(
-        "fs_write", ("POST",), "/fs/write", "_handle_fs_write",
-        control_required=True, request_body=True, context_mode="deferred",
-        context_operations=(("POST", "fs.write"),), discovery_key="fs_write",
-    ),
-    _exact(
-        "fs_replace", ("POST",), "/fs/replace", "_handle_fs_replace",
-        control_required=True, request_body=True, context_mode="deferred",
-        context_operations=(("POST", "fs.replace"),), discovery_key="fs_replace",
-    ),
-    _exact(
-        "fs_replace_batch", ("POST",), "/fs/replace/batch", "_handle_fs_replace_batch",
-        control_required=True, request_body=True, context_mode="deferred",
-        context_operations=(("POST", "fs.replace.batch"),),
-        discovery_key="fs_replace_batch",
-    ),
-    _exact(
         "fs_mutate", ("POST",), "/fs/mutate", "_handle_fs_mutate",
         control_required=True, request_body=True, context_mode="deferred",
         context_operations=(("POST", "fs.mutate"),), discovery_key="fs_mutate",
@@ -213,17 +197,6 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         "fs_mkdir", ("POST",), "/fs/mkdir", "_handle_fs_mkdir",
         control_required=True, request_body=True, context_mode="deferred",
         context_operations=(("POST", "fs.mkdir"),), discovery_key="fs_mkdir",
-    ),
-    _exact(
-        "fs_delete", ("POST",), "/fs/delete", "_handle_fs_delete",
-        control_required=True, request_body=True, context_mode="deferred",
-        context_operations=(("POST", "fs.delete"),), discovery_key="fs_delete",
-    ),
-    _exact(
-        "fs_delete_batch", ("POST",), "/fs/delete/batch", "_handle_fs_delete_batch",
-        control_required=True, request_body=True, context_mode="deferred",
-        context_operations=(("POST", "fs.delete.batch"),),
-        discovery_key="fs_delete_batch",
     ),
     _exact(
         "fs_move", ("POST",), "/fs/move", "_handle_fs_move",

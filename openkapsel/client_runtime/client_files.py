@@ -130,7 +130,11 @@ class ClientFiles:
                 if op == "recycle":
                     source = self.path(args["path"])
                     self.ensure_mutable_path(source)
-                    return recycle.recycle(source)
+                    original = source
+                    if "original_path" in args:
+                        original = self.path(args["original_path"])
+                        self.ensure_mutable_path(original)
+                    return recycle.recycle(source, original_path=original)
                 if op == "recycle_restore":
                     return recycle.restore(args["recycle_id"])
                 if op == "recycle_purge":

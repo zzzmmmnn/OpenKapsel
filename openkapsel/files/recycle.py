@@ -65,9 +65,9 @@ class RecycleBin:
                 f"{self.root} must be a real directory, not a file or symlink: {exc}",
             ) from None
 
-    def recycle(self, path: Path) -> dict[str, Any]:
+    def recycle(self, path: Path, *, original_path: Path | None = None) -> dict[str, Any]:
         with self._lock:
-            original_relative = self._relative_to_workspace(path)
+            original_relative = self._relative_to_workspace(original_path or path)
             if not original_relative.parts:
                 raise RecycleError(
                     HTTPStatus.FORBIDDEN,

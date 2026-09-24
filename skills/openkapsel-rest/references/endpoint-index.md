@@ -23,15 +23,10 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `GET` | `<workspace_url>/fs/search` |
 | `GET` | `<workspace_url>/fs/tree` |
 | `GET|HEAD|PUT` | `<workspace_url>/fs/content` |
-| `POST` | `<workspace_url>/fs/write` |
-| `POST` | `<workspace_url>/fs/replace` |
-| `POST` | `<workspace_url>/fs/replace/batch` |
 | `POST` | `<workspace_url>/fs/mutate` |
 | `POST` | `<workspace_url>/fs/large/read` |
 | `POST` | `<workspace_url>/fs/large/replace` |
 | `POST` | `<workspace_url>/fs/mkdir` |
-| `POST` | `<workspace_url>/fs/delete` |
-| `POST` | `<workspace_url>/fs/delete/batch` |
 | `POST` | `<workspace_url>/fs/move` |
 | `GET` | `<workspace_url>/recycle/list` |
 | `POST` | `<workspace_url>/recycle/restore` |
