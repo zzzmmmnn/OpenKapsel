@@ -55,6 +55,16 @@ Useful options:
 
 An existing `/opt/openkapsel` is retained as one UTC-stamped `.previous.*` rollback directory. `/var/lib/openkapsel` is never replaced.
 
+Before replacing an existing installation, `install.sh` automatically runs `scripts/openkapsel-safe-shutdown`. The safe shutdown first stops the main API so no new storage I/O can start, then waits up to five minutes for every writable rclone VFS queue to report zero queued and in-progress uploads. It unmounts recorded workspace Storage Provider bind mounts, stops only `openkapsel-storage-*.service` provider units, verifies their FUSE mountpoints are detached, and stops `openkapsel-images.service` last. If a writable provider cannot prove that its queue is drained, has errored cached files, or a mount cannot be detached normally, the upgrade aborts instead of forcing the mount away. Provider processes remain available to finish already queued uploads until their turn to stop.
+
+The same operation can be run manually before host maintenance:
+
+```bash
+sudo /opt/openkapsel/scripts/openkapsel-safe-shutdown
+```
+
+`--force-recovery` skips write-drain guarantees and permits lazy unmounts. It is intended only for recovering stale mounts after a crash after the operator has separately established that no writes need preserving; the installer never enables it automatically. If a normal safe shutdown times out, leave the provider units running so their queues can drain and rerun the installer rather than using recovery mode merely to shorten an upgrade.
+
 After changing configuration:
 
 ```bash

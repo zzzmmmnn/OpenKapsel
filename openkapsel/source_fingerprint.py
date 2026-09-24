@@ -51,6 +51,7 @@ SERVER_FILES = (
     "openkapsel/storage/storage_manager.py",
     "openkapsel/storage/storage_oauth.py",
     "openkapsel/storage/storage_store.py",
+    "openkapsel/storage/storage_shutdown.py",
     "openkapsel/storage/storage_ui.py",
     "openkapsel/auth/admin_handlers.py",
     "openkapsel/auth/admin_ui.py",

@@ -128,6 +128,7 @@ verify_installation() {
     [[ -f $INSTALL_DIR/openkapsel/server.py ]] || { printf 'missing installed code\n' >&2; failed=1; }
     [[ -f $INSTALL_DIR/skills/openkapsel-rest/SKILL.md ]] || { printf 'missing installed OpenKapsel REST skill\n' >&2; failed=1; }
     [[ -f $INSTALL_DIR/docs/installation.md ]] || { printf 'missing installed documentation\n' >&2; failed=1; }
+    [[ -x $INSTALL_DIR/scripts/openkapsel-safe-shutdown ]] || { printf 'missing safe upgrade shutdown script\n' >&2; failed=1; }
     [[ -x $INSTALL_DIR/venv/bin/python ]] || { printf 'missing installed Python environment\n' >&2; failed=1; }
     [[ -f $CONFIG_FILE ]] || { printf 'missing config: %s\n' "$CONFIG_FILE" >&2; failed=1; }
     [[ -f $DATA_DIR/caddy-routes.caddyfile ]] || { printf 'missing generated Caddy routes\n' >&2; failed=1; }
@@ -244,6 +245,7 @@ SOURCE_DIR=$(canonical_dir "$SOURCE_DIR")
 [[ -f $SOURCE_DIR/openkapsel/server.py ]] || die "source does not contain openkapsel/server.py: $SOURCE_DIR"
 [[ -f $SOURCE_DIR/systemd/openkapsel.service ]] || die "source is missing systemd/openkapsel.service"
 [[ -f $SOURCE_DIR/systemd/openkapsel-images.service ]] || die "source is missing systemd/openkapsel-images.service"
+[[ -f $SOURCE_DIR/scripts/openkapsel-safe-shutdown ]] || die "source is missing scripts/openkapsel-safe-shutdown"
 
 if [[ -n $MIGRATE_FROM ]]; then
     MIGRATE_FROM=$(canonical_dir "$MIGRATE_FROM")
@@ -296,8 +298,12 @@ allocate_subids() {
 allocate_subids /etc/subuid --add-subuids
 allocate_subids /etc/subgid --add-subgids
 
-systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-systemctl stop "${SERVICE_NAME}-images" 2>/dev/null || true
+# Stop the existing service through the storage-aware upgrade path before
+# replacing code or the virtual environment. This drains writable rclone VFS
+# queues, unbinds workspace mappings, stops provider FUSE units, then stops the
+# privileged helper. It is safe on a fresh install where no provider DB/units
+# exist.
+bash "$SOURCE_DIR/scripts/openkapsel-safe-shutdown" --timeout-seconds 300
 
 STAGING_DIR=$(mktemp -d /opt/.openkapsel-install.XXXXXX)
 cleanup() {
@@ -306,7 +312,7 @@ cleanup() {
 trap cleanup EXIT
 install -d -m 0755 "$STAGING_DIR/systemd"
 cp -a -- "$SOURCE_DIR/openkapsel" "$SOURCE_DIR/openkapsel_runtime" "$SOURCE_DIR/tests" \
-    "$SOURCE_DIR/skills" "$SOURCE_DIR/docs" "$STAGING_DIR/"
+    "$SOURCE_DIR/skills" "$SOURCE_DIR/docs" "$SOURCE_DIR/scripts" "$STAGING_DIR/"
 cp -a -- "$SOURCE_DIR/README.md" "$SOURCE_DIR/config.example.json" \
     "$SOURCE_DIR/pyproject.toml" "$SOURCE_DIR/set_password.py" "$SOURCE_DIR/install.sh" \
     "$STAGING_DIR/"
@@ -317,7 +323,8 @@ find "$STAGING_DIR" -type f \( -name '._*' -o -name '.DS_Store' \) -delete
 chown -R root:root "$STAGING_DIR"
 find "$STAGING_DIR" -type d -exec chmod 0755 {} +
 find "$STAGING_DIR" -type f -exec chmod 0644 {} +
-chmod 0755 "$STAGING_DIR/install.sh" "$STAGING_DIR/set_password.py"
+chmod 0755 "$STAGING_DIR/install.sh" "$STAGING_DIR/set_password.py" \
+    "$STAGING_DIR/scripts/openkapsel-safe-shutdown"
 find "$STAGING_DIR/skills" -type f -path '*/scripts/*.py' -exec chmod 0755 {} +
 
 if [[ -d $INSTALL_DIR ]]; then

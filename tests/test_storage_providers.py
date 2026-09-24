@@ -521,6 +521,23 @@ class InstallerStorageProviderTests(unittest.TestCase):
         self.assertIn('-path "$STORAGE_ROOT"', install)
         self.assertIn('-path "$STORAGE_HOME"', install)
         self.assertIn('chown "$STORAGE_USER:$STORAGE_GROUP" "$STORAGE_ROOT" "$STORAGE_HOME"', install)
+        self.assertIn('bash "$SOURCE_DIR/scripts/openkapsel-safe-shutdown" --timeout-seconds 300', install)
+        self.assertIn('"$SOURCE_DIR/scripts" "$STAGING_DIR/"', install)
+        stop_at = install.index('bash "$SOURCE_DIR/scripts/openkapsel-safe-shutdown" --timeout-seconds 300')
+        replace_at = install.index('mv -- "$STAGING_DIR" "$INSTALL_DIR"')
+        self.assertLess(stop_at, replace_at)
+
+    def test_safe_shutdown_script_is_fail_closed_by_default(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts" / "openkapsel-safe-shutdown").read_text()
+        implementation = (root / "openkapsel" / "storage" / "storage_shutdown.py").read_text()
+        self.assertIn("/usr/bin/python3", script)
+        self.assertIn("uploadsQueued", implementation)
+        self.assertIn("uploadsInProgress", implementation)
+        self.assertIn("erroredFiles", implementation)
+        self.assertIn("--force-recovery", implementation)
+        self.assertIn('["umount", str(target)]', implementation)
+        self.assertIn('["umount", "-l", str(target)]', implementation)
 
     def test_systemd_helper_gets_storage_private_paths_and_user(self):
         unit = (Path(__file__).resolve().parents[1] / "systemd" / "openkapsel-images.service").read_text()
