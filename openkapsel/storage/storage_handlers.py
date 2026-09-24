@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import json
 import sqlite3
 from urllib.parse import parse_qs
 
@@ -45,6 +47,20 @@ class StorageHandlersMixin:
                 "domain": one(form, "domain"),
             }
         raise ValueError("unsupported storage provider kind")
+
+    def _send_storage_oauth_handoff(self, authorization_url: str) -> None:
+        escaped_url = html.escape(authorization_url, quote=True)
+        script_url = json.dumps(authorization_url, ensure_ascii=True).replace("<", "\\u003c")
+        self._send_html(
+            200,
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"referrer\" content=\"no-referrer\">"
+            "<title>Connecting storage provider</title></head><body>"
+            "<p>Redirecting to the storage provider for authorization…</p>"
+            f"<p><a href=\"{escaped_url}\">Continue to authorization</a></p>"
+            f"<script>location.replace({script_url})</script>"
+            "</body></html>",
+        )
 
     @staticmethod
     def _storage_cache_bytes(value: str) -> int:
@@ -109,7 +125,7 @@ class StorageHandlersMixin:
                         provider_id=provider_id or None,
                         create_values=create_values,
                     )
-                    self._redirect(authorization_url)
+                    self._send_storage_oauth_handoff(authorization_url)
                     return
                 if action == "create":
                     kind = self._form_one(form, "kind")

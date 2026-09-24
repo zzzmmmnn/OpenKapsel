@@ -32,7 +32,7 @@ def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> 
 <div><label>{client_label}</label><input name="client_id" autocomplete="off"></div>
 <div><label>{secret_label}</label><input name="client_secret" type="password" autocomplete="new-password"></div>
 <div class="span4 notice"><strong>OAuth redirect URI</strong><br><code>{callback}</code><br><span class="muted">Register this exact URI in your {label} OAuth application.</span></div>
-<div class="span4 actions"><button name="action" value="oauth_start">Connect {label}</button></div>
+<div class="span4 actions"><button type="submit" name="action" value="oauth_start" formnovalidate>Connect {label}</button></div>
 <div class="span4"><details><summary>Advanced: paste rclone OAuth token JSON</summary>
 <label>rclone OAuth token JSON</label><textarea name="oauth_token" rows="5" autocomplete="off" placeholder='{{"access_token":"…","token_type":"Bearer","refresh_token":"…","expiry":"…"}}'></textarea>
 <p class="muted">{manual_note}</p></details></div>

@@ -1,5 +1,7 @@
 import errno
+import html
 import json
+import re
 import os
 import sqlite3
 import tempfile
@@ -533,8 +535,13 @@ class StorageProviderHTTPTests(unittest.TestCase):
             "csrf": session.csrf,
         }
         status, headers, raw = self.form(path, payload, auth)
-        self.assertEqual(303, status, raw)
-        authorization = urlsplit(headers["Location"])
+        self.assertEqual(200, status, raw)
+        self.assertNotIn("Location", headers)
+        handoff = raw.decode()
+        self.assertIn("location.replace(", handoff)
+        match = re.search(r'<a href="([^"]+)">Continue to authorization</a>', handoff)
+        self.assertIsNotNone(match)
+        authorization = urlsplit(html.unescape(match.group(1)))
         self.assertEqual("accounts.google.com", authorization.hostname)
         params = parse_qs(authorization.query)
         state = params["state"][0]
