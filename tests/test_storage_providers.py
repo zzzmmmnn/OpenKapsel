@@ -14,6 +14,7 @@ from openkapsel.storage.storage_host import HostStorageProviders
 from openkapsel.storage.storage_manager import StorageProviderDeleteWarning, StorageProviderManager
 from openkapsel.storage.storage_oauth import StorageOAuthError, StorageOAuthFlows
 from openkapsel.storage.storage_store import DEFAULT_CACHE_MAX_BYTES, StorageProviderStore
+from openkapsel.workspace.workspace_images import WorkspaceImageError
 
 
 class Result:
@@ -411,6 +412,59 @@ class HostStorageProviderTests(unittest.TestCase):
 
 
 class StorageProviderManagerTests(unittest.TestCase):
+    def test_startup_reconcile_retries_helper_socket_and_transient_mount_failure(self):
+        class FlakyStartupHelper(FakeHelper):
+            def __init__(self):
+                super().__init__()
+                self.probe_failures = 0
+                self.mount_failures = 0
+                self.probe_attempts = 0
+                self.mount_attempts = 0
+
+            def _request(self, action, **values):
+                if action == "storage_probe":
+                    self.probe_attempts += 1
+                    if self.probe_failures:
+                        self.probe_failures -= 1
+                        raise WorkspaceImageError("helper socket is not ready")
+                if action == "storage_mount":
+                    self.mount_attempts += 1
+                    if self.mount_failures:
+                        self.mount_failures -= 1
+                        raise WorkspaceImageError("transient provider mount failure")
+                return super()._request(action, **values)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "workspace"
+            root.mkdir()
+            (root / "demo").mkdir()
+            helper = FlakyStartupHelper()
+            manager = StorageProviderManager(root, Path(directory) / "state", helper)
+            manager.workspace_available = lambda workspace: workspace == "demo"
+            try:
+                provider = manager.create(
+                    "dropbox", "dropbox",
+                    settings={"token": '{"access_token":"x"}'},
+                    cache_max_bytes=DEFAULT_CACHE_MAX_BYTES,
+                )
+                manager.add_mapping(provider["id"], "demo", "cloud")
+                helper.probe_attempts = 0
+                helper.mount_attempts = 0
+                helper.probe_failures = 2
+                helper.mount_failures = 1
+                helper.calls.clear()
+
+                with patch.object(manager._closing, "wait", return_value=False) as wait:
+                    manager._startup_reconcile()
+
+                self.assertEqual(3, helper.probe_attempts)
+                self.assertEqual(2, helper.mount_attempts)
+                self.assertIn(provider["id"], helper.mounted)
+                self.assertIn(("demo", "cloud"), helper.binds)
+                self.assertGreaterEqual(wait.call_count, 3)
+            finally:
+                manager.close()
+
     def test_provider_and_workspace_mapping_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "workspace"

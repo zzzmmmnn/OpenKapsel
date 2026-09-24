@@ -59,13 +59,47 @@ class StorageProviderManager:
         return {"available": True, "reason": ""}
 
     def _startup_reconcile(self) -> None:
-        for provider in self.store.list():
+        # openkapsel-images.service is Type=simple, so systemd may start the
+        # main service before the helper has created its UNIX socket.  A main
+        # process crash can therefore coincide with a helper restart and make
+        # a one-shot reconcile lose the startup race.  Wait briefly for the
+        # helper RPC endpoint, then retry transient helper failures per
+        # provider.  Existing live rclone/FUSE mounts are reused by the host
+        # helper, so this does not interrupt queued uploads after a main crash.
+        helper_delays = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+        for delay in (*helper_delays, None):
             if self._closing.is_set():
                 return
             try:
-                self.reconcile(provider["id"])
-            except (OSError, ValueError, KeyError, sqlite3.Error, WorkspaceImageError):
-                LOG.exception("Could not reconcile storage provider %s", provider["id"])
+                self._request("storage_probe")
+                break
+            except WorkspaceImageError:
+                if delay is None:
+                    LOG.exception("Storage Provider helper did not become ready during startup")
+                    return
+                if self._closing.wait(delay):
+                    return
+
+        retry_delays = (0.25, 0.5, 1.0)
+        for provider in self.store.list():
+            if self._closing.is_set():
+                return
+            for attempt, delay in enumerate((*retry_delays, None), start=1):
+                try:
+                    self.reconcile(provider["id"])
+                    break
+                except WorkspaceImageError:
+                    if delay is None:
+                        LOG.exception(
+                            "Could not reconcile storage provider %s after %d attempts",
+                            provider["id"], attempt,
+                        )
+                        break
+                    if self._closing.wait(delay):
+                        return
+                except (OSError, ValueError, KeyError, sqlite3.Error):
+                    LOG.exception("Could not reconcile storage provider %s", provider["id"])
+                    break
 
     def configure(self, provider_id: str, settings: dict[str, Any]) -> None:
         provider = self.store.get(provider_id)
