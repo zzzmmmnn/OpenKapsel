@@ -91,9 +91,11 @@ class HostStorageProviders:
         root = self.storage_root / provider_id
         return root, root / "mount", root / "cache", root / "rclone.conf"
 
+    def _rc_runtime_name(self, provider_id: str) -> str:
+        return f"openkapsel-storage-{self._provider_id(provider_id)}"
+
     def _rc_socket(self, provider_id: str) -> Path:
-        root, _mount, _cache, _config = self._paths(provider_id)
-        return root / "rc.sock"
+        return Path("/run") / self._rc_runtime_name(provider_id) / "rc.sock"
 
     def _unit(self, provider_id: str) -> str:
         return f"openkapsel-storage-{self._provider_id(provider_id)}.service"
@@ -272,6 +274,8 @@ class HostStorageProviders:
             self.systemd_run, "--quiet", "--collect", f"--unit={unit[:-8]}",
             "--uid", str(self.storage_uid), "--gid", str(self.storage_gid),
             "--property=PrivateMounts=no", "--property=Restart=on-failure", "--property=RestartSec=5s",
+            f"--property=RuntimeDirectory={self._rc_runtime_name(provider_id)}",
+            "--property=RuntimeDirectoryMode=0700",
             "--property=KillMode=mixed", f"--setenv=HOME={self.storage_home}",
             self.rclone, "mount", remote, str(mount), "--config", str(config), "--cache-dir", str(cache),
             "--rc", "--rc-addr", f"unix://{rc_socket}",
@@ -294,7 +298,7 @@ class HostStorageProviders:
                 break
             time.sleep(0.1)
         status = self.run([self.systemctl, "status", unit, "--no-pager", "-l"], check=False, capture_output=True, text=True, timeout=10)
-        raise WorkspaceImageError("rclone storage mount did not become ready: " + (status.stdout or status.stderr)[-800:])
+        raise WorkspaceImageError("rclone storage mount did not become ready: " + (status.stdout or status.stderr)[-4000:])
 
     def unmount(self, provider_id: str) -> dict[str, Any]:
         provider_id = self._provider_id(provider_id)

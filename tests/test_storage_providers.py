@@ -293,7 +293,15 @@ class HostStorageProviderTests(unittest.TestCase):
             self.assertIn("--cache-dir", launch)
             self.assertIn("--rc", launch)
             self.assertIn("--rc-addr", launch)
-            self.assertTrue(any(arg.startswith("unix://") and arg.endswith("/rc.sock") for arg in launch))
+            self.assertIn(
+                f"--property=RuntimeDirectory=openkapsel-storage-{provider_id}",
+                launch,
+            )
+            self.assertIn("--property=RuntimeDirectoryMode=0700", launch)
+            self.assertIn(
+                f"unix:///run/openkapsel-storage-{provider_id}/rc.sock",
+                launch,
+            )
             self.assertIn("--read-only", launch)
             self.assertNotIn("sync", launch)
             self.assertNotIn("copy", launch)
