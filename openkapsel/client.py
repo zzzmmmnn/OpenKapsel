@@ -330,7 +330,12 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
                 response = {"id": request["id"], "result": result}
                 encode(response)
             except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
-                response = {"id": request["id"], "error": {"errno": getattr(exc, "errno", None) or errno.EINVAL}}
+                error = {"errno": getattr(exc, "errno", None) or errno.EINVAL}
+                if isinstance(exc, OSError) and isinstance(exc.strerror, str):
+                    message = " ".join(exc.strerror.split())
+                    if message:
+                        error["message"] = message[:200]
+                response = {"id": request["id"], "error": error}
             sock.send(encode(response).decode())
     except websocket.WebSocketConnectionClosedException:
         LOG.info("Mapping provider disconnected")

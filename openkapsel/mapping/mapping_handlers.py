@@ -281,12 +281,18 @@ class MappingHandlersMixin:
                     errno.ECONNABORTED,
                 }
                 details = dict(exc.details) if isinstance(exc.details, dict) else {}
+                may_have_started = details.get("errno") in ambiguous_errnos
                 details.update({
                     "candidate_task_id": f"client.{mid}.{raw_task_id}",
                     "task_start_confirmed": False,
-                    "task_may_have_started": details.get("errno") in ambiguous_errnos,
-                    "recovery": "Reconnect and query/list the candidate task before retrying a write task start.",
+                    "task_may_have_started": may_have_started,
                 })
+                if "recovery" not in details:
+                    details["recovery"] = (
+                        "Reconnect and query/list the candidate task before retrying a write task start."
+                        if may_have_started
+                        else "Resolve the reported client condition, then retry; this task start was not dispatched."
+                    )
                 raise ApiError(exc.status, exc.code, exc.message, details, exc.headers) from None
             task = client_summary(mid, started)
             task.update(
@@ -385,7 +391,27 @@ class MappingHandlersMixin:
             status = {errno.EROFS: 403, errno.EACCES: 403, errno.EINVAL: 400, errno.ENOENT: 404,
                       errno.E2BIG: 413, errno.EPIPE: 409, errno.ENOTDIR: 400,
                       errno.EEXIST: 409, errno.EBUSY: 409, errno.ESTALE: 409}.get(exc.errno, 503)
-            raise ApiError(status, "mapping_operation_failed", "client operation failed", {"errno": exc.errno}) from None
+            client_message = exc.strerror if isinstance(exc.strerror, str) else ""
+            details = {"errno": exc.errno}
+            if client_message:
+                details["client_message"] = client_message[:200]
+            if exc.errno == errno.EBUSY and client_message == "client task or retained-result limit reached":
+                details["recovery"] = (
+                    "List completed client tasks and read each task output through its final offset "
+                    "so retained results are collected, then retry."
+                )
+                raise ApiError(
+                    409,
+                    "client_task_capacity_reached",
+                    "client task capacity is full because running tasks or uncollected completed results are retained",
+                    details,
+                ) from None
+            raise ApiError(
+                status,
+                "mapping_operation_failed",
+                client_message or "client operation failed",
+                details,
+            ) from None
 
     def _handle_mapping_tasks(self, mid, query):
         row = self._mapping_for_caller(mid)

@@ -164,6 +164,84 @@ class RpcTaskHTTPTests(unittest.TestCase):
                 archive.read("source/hello.txt").decode("utf-8"),
             )
 
+    def test_task_capacity_error_explains_uncollected_result_recovery(self):
+        plan_id = self.create_plan()
+        original_call = self.session.call
+
+        def busy_call(operation, args):
+            if operation == "task_start":
+                raise OSError(errno.EBUSY, "client task or retained-result limit reached")
+            return original_call(operation, args)
+
+        self.session.call = busy_call
+        status, _, raw = self.request(
+            "POST",
+            self.base + f"/mappings/{self.row['id']}/rpc/archive/create",
+            json.dumps({
+                "args": {
+                    "destination": "busy.zip",
+                    "sources": ["source"],
+                    "format": "zip",
+                },
+                "plan_id": plan_id,
+                "taskname": "rpc-task",
+                "message": "Start archive task at client capacity",
+            }),
+            self.control(),
+        )
+        self.assertEqual(409, status, raw)
+        error = json.loads(raw)["error"]
+        self.assertEqual("client_task_capacity_reached", error["code"])
+        self.assertIn("uncollected completed results", error["message"])
+        details = error["details"]
+        self.assertEqual(errno.EBUSY, details["errno"])
+        self.assertEqual(
+            "client task or retained-result limit reached",
+            details["client_message"],
+        )
+        self.assertFalse(details["task_start_confirmed"])
+        self.assertFalse(details["task_may_have_started"])
+        self.assertIn("read each task output", details["recovery"])
+        self.assertTrue(
+            details["candidate_task_id"].startswith("client." + self.row["id"] + ".")
+        )
+        self.assertFalse((self.export / "busy.zip").exists())
+
+    def test_generic_ebusy_keeps_specific_client_message(self):
+        plan_id = self.create_plan()
+        original_call = self.session.call
+
+        def busy_call(operation, args):
+            if operation == "task_start":
+                raise OSError(errno.EBUSY, "mapping request limit reached")
+            return original_call(operation, args)
+
+        self.session.call = busy_call
+        status, _, raw = self.request(
+            "POST",
+            self.base + f"/mappings/{self.row['id']}/rpc/archive/create",
+            json.dumps({
+                "args": {
+                    "destination": "busy-generic.zip",
+                    "sources": ["source"],
+                    "format": "zip",
+                },
+                "plan_id": plan_id,
+                "taskname": "rpc-task",
+                "message": "Start archive task while mapping is busy",
+            }),
+            self.control(),
+        )
+        self.assertEqual(409, status, raw)
+        error = json.loads(raw)["error"]
+        self.assertEqual("mapping_operation_failed", error["code"])
+        self.assertEqual("mapping request limit reached", error["message"])
+        details = error["details"]
+        self.assertEqual(errno.EBUSY, details["errno"])
+        self.assertEqual("mapping request limit reached", details["client_message"])
+        self.assertFalse(details["task_may_have_started"])
+        self.assertIn("not dispatched", details["recovery"])
+
     def test_ambiguous_task_start_returns_candidate_id_for_reconnect_recovery(self):
         plan_id = self.create_plan()
         original_call = self.session.call

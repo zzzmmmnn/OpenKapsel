@@ -120,7 +120,11 @@ class ProviderSession:
                 self.close()
                 raise OSError(errno.ETIMEDOUT, "mapping request timed out; result may be unknown") from None
             if "error" in result:
-                raise OSError(int(result["error"].get("errno", errno.EIO)), "client operation failed")
+                error = result["error"]
+                message = error.get("message")
+                if not isinstance(message, str) or not message or len(message) > 200:
+                    message = "client operation failed"
+                raise OSError(int(error.get("errno", errno.EIO)), message)
             return result.get("result")
         finally:
             with self.lock:
