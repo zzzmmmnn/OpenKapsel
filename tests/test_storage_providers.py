@@ -289,7 +289,7 @@ class HostStorageProviderTests(unittest.TestCase):
             self.assertIn("provider:share", launch)
             self.assertIn("--vfs-cache-mode=writes", launch)
             self.assertIn("--vfs-cache-max-size", launch)
-            self.assertIn(str(4 * 1024**3), launch)
+            self.assertIn(f"{4 * 1024**3}B", launch)
             self.assertIn("--cache-dir", launch)
             self.assertIn("--rc", launch)
             self.assertIn("--rc-addr", launch)
@@ -307,6 +307,27 @@ class HostStorageProviderTests(unittest.TestCase):
             self.assertNotIn("copy", launch)
             self.assertNotIn("--vfs-cache-mode=full", launch)
             self.assertEqual(mount, Path(launch[launch.index("provider:share") + 1]))
+
+    def test_mount_reuses_active_read_only_fuse_without_rechowning_mountpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, runner = self.make_host(directory)
+            provider_id = "h" * 24
+            _root, _mount, _cache, config = host._ensure_provider_dirs(provider_id)
+            config.write_text("[provider]\ntype = dropbox\ntoken = {}\n")
+            runner.active = True
+            with (
+                patch("openkapsel.storage.storage_host.os.path.ismount", return_value=True),
+                patch.object(
+                    host,
+                    "_ensure_provider_dirs",
+                    side_effect=AssertionError("must not touch an active FUSE mountpoint"),
+                ),
+            ):
+                self.assertEqual(
+                    {"mounted": True},
+                    host.mount(provider_id, "", False, 1024**3),
+                )
+            self.assertFalse(any("/usr/bin/rclone" in argv and "mount" in argv for argv, _kwargs in runner.calls))
 
     def test_pending_uses_private_rc_vfs_stats(self):
         with tempfile.TemporaryDirectory() as directory:

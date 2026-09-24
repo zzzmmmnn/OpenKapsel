@@ -251,9 +251,7 @@ class HostStorageProviders:
             raise WorkspaceImageError("invalid VFS cache size") from None
         if not 256 * 1024 * 1024 <= cache_max_bytes <= 1024 * 1024 * 1024 * 1024:
             raise WorkspaceImageError("VFS cache size is outside the supported range")
-        root, mount, cache, config = self._ensure_provider_dirs(provider_id)
-        if not config.is_file() or config.is_symlink():
-            raise WorkspaceImageError("storage provider credentials are not configured")
+        root, mount, cache, config = self._paths(provider_id)
         unit = self._unit(provider_id)
         if os.path.ismount(mount):
             state = self.run(
@@ -263,6 +261,9 @@ class HostStorageProviders:
             if state.returncode == 0 and state.stdout.strip() == "active":
                 return {"mounted": True}
             self.unmount(provider_id)
+        root, mount, cache, config = self._ensure_provider_dirs(provider_id)
+        if not config.is_file() or config.is_symlink():
+            raise WorkspaceImageError("storage provider credentials are not configured")
         if next(mount.iterdir(), None) is not None:
             raise WorkspaceImageError("storage provider mountpoint must be empty")
         self.run([self.systemctl, "stop", unit], check=False, capture_output=True, text=True, timeout=20)
@@ -279,7 +280,7 @@ class HostStorageProviders:
             "--property=KillMode=mixed", f"--setenv=HOME={self.storage_home}",
             self.rclone, "mount", remote, str(mount), "--config", str(config), "--cache-dir", str(cache),
             "--rc", "--rc-addr", f"unix://{rc_socket}",
-            "--vfs-cache-mode=writes", "--vfs-cache-max-size", str(cache_max_bytes),
+            "--vfs-cache-mode=writes", "--vfs-cache-max-size", f"{cache_max_bytes}B",
             "--vfs-cache-max-age=24h", "--dir-cache-time=5m", "--poll-interval=1m", "--buffer-size=16M",
             "--allow-other", "--default-permissions", "--umask=0077",
             "--uid", str(self.service_uid), "--gid", str(self.service_gid),
