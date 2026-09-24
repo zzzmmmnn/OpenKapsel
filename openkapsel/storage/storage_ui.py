@@ -26,8 +26,10 @@ def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> 
         secret_label = "OAuth client secret" if kind == "google_drive" else "App client secret"
         if kind == "dropbox":
             manual_note = (
-                "For Dropbox, client fields may be left blank only when the pasted token was "
-                "created with rclone's shared app."
+                "For a custom Dropbox app, enable the rclone-required file scopes in the "
+                "Dropbox App Console Permissions tab before authorizing; files.metadata.read "
+                "is required even for directory listing. Client fields may be left blank only "
+                "when the pasted token was created with rclone's shared app."
             )
         elif kind == "pcloud":
             manual_note = (
@@ -82,6 +84,7 @@ def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> 
 <div><label>Secret access key</label><input name="secret_access_key" type="password" autocomplete="new-password" required></div>
 <div class="span4 checks"><label><input type="checkbox" name="force_path_style" checked>Force path-style URLs (recommended for generic S3-compatible services)</label></div>
 <div class="span4"><details><summary>Advanced compatibility</summary><label><input type="checkbox" name="v2_auth">Use legacy S3 v2 signatures</label><p class="muted">Enable only for old S3-compatible servers that do not support v4 signatures.</p></details></div>
+<div class="span4"><p class="muted">Backblaze B2: create a separate Application Key for the S3-compatible API; use its keyID as Access key ID and applicationKey as Secret access key. Set Region from the endpoint (for example <code>us-west-004</code>), put the bucket name in Remote path, and leave legacy S3 v2 disabled.</p></div>
 </div></div>'''
     if kind == "sftp":
         return f'''

@@ -40,6 +40,8 @@ class FakeRunner:
                 "uploadsInProgress": 0,
             }
         }
+        self.rc_refresh = {"result": {"": "OK"}}
+        self.rc_refresh_returncode = 0
 
     def __call__(self, argv, **kwargs):
         self.calls.append((list(argv), dict(kwargs)))
@@ -48,6 +50,11 @@ class FakeRunner:
         if len(argv) >= 2 and argv[1] == "version":
             return Result(stdout=self.version + "\n")
         if len(argv) >= 2 and argv[1] == "rc":
+            if "vfs/refresh" in argv:
+                return Result(
+                    returncode=self.rc_refresh_returncode,
+                    stdout=json.dumps(self.rc_refresh),
+                )
             return Result(stdout=json.dumps(self.rc_stats))
         if "is-active" in argv:
             return Result(returncode=0 if self.active else 3, stdout="active\n" if self.active else "inactive\n")
@@ -648,7 +655,10 @@ class HostStorageProviderTests(unittest.TestCase):
             provider_id = "b" * 24
             _root, mount, _cache, config = host._ensure_provider_dirs(provider_id)
             config.write_text("[provider]\ntype = smb\nhost = server\n")
-            with patch("openkapsel.storage.storage_host.os.path.ismount", side_effect=[False, True]):
+            with (
+                patch("openkapsel.storage.storage_host.os.path.ismount", side_effect=[False, True]),
+                patch("pathlib.Path.is_socket", return_value=True),
+            ):
                 self.assertTrue(host.mount(provider_id, "share", False, 4 * 1024**3)["mounted"])
             launch = next(argv for argv, _kwargs in runner.calls if "/usr/bin/rclone" in argv and "mount" in argv)
             self.assertEqual("mount", launch[launch.index("/usr/bin/rclone") + 1])
@@ -658,6 +668,7 @@ class HostStorageProviderTests(unittest.TestCase):
             self.assertIn(f"{4 * 1024**3}B", launch)
             self.assertIn("--cache-dir", launch)
             self.assertIn("--rc", launch)
+            self.assertIn("--rc-no-auth", launch)
             self.assertIn("--rc-addr", launch)
             self.assertIn(
                 f"--property=RuntimeDirectory=openkapsel-storage-{provider_id}",
@@ -673,6 +684,47 @@ class HostStorageProviderTests(unittest.TestCase):
             self.assertNotIn("copy", launch)
             self.assertNotIn("--vfs-cache-mode=full", launch)
             self.assertEqual(mount, Path(launch[launch.index("provider:share") + 1]))
+            refresh = next(
+                argv
+                for argv, _kwargs in runner.calls
+                if len(argv) > 1 and argv[1] == "rc" and "vfs/refresh" in argv
+            )
+            self.assertIn("--unix-socket", refresh)
+            self.assertIn("recursive=false", refresh)
+
+    def test_new_mount_fails_closed_when_backend_refresh_reports_auth_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, runner = self.make_host(directory)
+            provider_id = "v" * 24
+            _root, _mount, _cache, config = host._ensure_provider_dirs(provider_id)
+            config.write_text("[provider]\ntype = dropbox\ntoken = {}\n")
+            runner.rc_refresh = {
+                "result": {
+                    "": (
+                        "couldn't list files: Dropbox app is missing "
+                        "files.metadata.read"
+                    )
+                }
+            }
+            with (
+                patch(
+                    "openkapsel.storage.storage_host.os.path.ismount",
+                    side_effect=[False, True, False, False],
+                ),
+                patch("pathlib.Path.is_socket", return_value=True),
+            ):
+                with self.assertRaisesRegex(
+                    WorkspaceImageError,
+                    "files.metadata.read",
+                ):
+                    host.mount(provider_id, "", False, 1024**3)
+            self.assertTrue(
+                any(
+                    "stop" in argv
+                    and f"openkapsel-storage-{provider_id}.service" in argv
+                    for argv, _kwargs in runner.calls
+                )
+            )
 
     def test_mount_reuses_active_read_only_fuse_without_rechowning_mountpoint(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -728,9 +780,12 @@ class HostStorageProviderTests(unittest.TestCase):
             provider_id = "e" * 24
             _root, _mount, _cache, config = host._ensure_provider_dirs(provider_id)
             config.write_text("[provider]\ntype = smb\nhost = server\n")
-            with patch(
-                "openkapsel.storage.storage_host.os.path.ismount",
-                side_effect=[True, True, False, True],
+            with (
+                patch(
+                    "openkapsel.storage.storage_host.os.path.ismount",
+                    side_effect=[True, True, False, True],
+                ),
+                patch("pathlib.Path.is_socket", return_value=True),
             ):
                 self.assertTrue(host.mount(provider_id, "share", True, 2 * 1024**3)["mounted"])
             owner_unmount = [

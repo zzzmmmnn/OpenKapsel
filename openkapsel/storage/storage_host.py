@@ -403,6 +403,61 @@ class HostStorageProviders:
         self._write_private(config_path, output.getvalue())
         return {"configured": True}
 
+    @staticmethod
+    def _rc_backend_error(result: subprocess.CompletedProcess[str]) -> str:
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        if stdout:
+            try:
+                payload = json.loads(stdout)
+            except (TypeError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                error = payload.get("error")
+                if isinstance(error, str) and error.strip():
+                    return error.strip()[:1200]
+                refreshed = payload.get("result")
+                if isinstance(refreshed, dict):
+                    for value in refreshed.values():
+                        if isinstance(value, str) and value != "OK":
+                            return value.strip()[:1200]
+        if result.returncode != 0:
+            detail = (stderr or stdout).strip()
+            if detail:
+                return detail[-1200:]
+            return "rclone backend probe failed"
+        return ""
+
+    def _validate_mounted_backend(self, provider_id: str) -> None:
+        socket_path = self._rc_socket(provider_id)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if socket_path.is_socket() and not socket_path.is_symlink():
+                break
+            time.sleep(0.05)
+        else:
+            raise WorkspaceImageError("rclone storage status socket did not become ready")
+
+        result = self.run(
+            [
+                self.rclone,
+                "rc",
+                "--unix-socket",
+                str(socket_path),
+                "vfs/refresh",
+                "recursive=false",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        error = self._rc_backend_error(result)
+        if error:
+            raise WorkspaceImageError(
+                "storage provider backend validation failed: " + error
+            )
+
     def mount(self, provider_id: str, remote_path: Any, writable: Any, cache_max_bytes: Any) -> dict[str, Any]:
         provider_id = self._provider_id(provider_id)
         remote_path = self._line(remote_path, "remote path", maximum=2048, allow_empty=True)
@@ -442,7 +497,7 @@ class HostStorageProviders:
             "--property=RuntimeDirectoryMode=0700",
             "--property=KillMode=mixed", f"--setenv=HOME={self.storage_home}",
             self.rclone, "mount", remote, str(mount), "--config", str(config), "--cache-dir", str(cache),
-            "--rc", "--rc-addr", f"unix://{rc_socket}",
+            "--rc", "--rc-no-auth", "--rc-addr", f"unix://{rc_socket}",
             "--vfs-cache-mode=writes", "--vfs-cache-max-size", f"{cache_max_bytes}B",
             "--vfs-cache-max-age=24h", "--dir-cache-time=5m", "--poll-interval=1m", "--buffer-size=16M",
             "--allow-other", "--default-permissions", "--umask=0077",
@@ -456,6 +511,14 @@ class HostStorageProviders:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if os.path.ismount(mount):
+                try:
+                    self._validate_mounted_backend(provider_id)
+                except WorkspaceImageError:
+                    try:
+                        self.unmount(provider_id)
+                    except WorkspaceImageError:
+                        pass
+                    raise
                 return {"mounted": True}
             state = self.run([self.systemctl, "is-active", unit], check=False, capture_output=True, text=True, timeout=5)
             if state.returncode not in (0, 3) and state.stdout.strip() not in {"activating", "active"}:

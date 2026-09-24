@@ -120,6 +120,14 @@ exact **OAuth redirect URI** shown by Administration, enter its app key and app
 secret, then click **Connect Dropbox**. OpenKapsel requests offline token access
 so rclone receives a refresh token for unattended mounts.
 
+Before authorizing a custom Dropbox app, open its **Permissions** tab and enable
+the file scopes required by rclone. Directory listing requires
+`files.metadata.read`; rclone's normal read/write setup also uses
+`files.metadata.write`, `files.content.read`, `files.content.write`, and
+sharing permissions. Changing the app permissions does not retroactively expand
+an already-issued token, so re-authorize or replace credentials after changing
+the scopes.
+
 Manual token JSON remains available under **Advanced**. A token generated with
 rclone's shared Dropbox application may still be pasted with blank client
 fields; browser OAuth through OpenKapsel requires your own Dropbox app key and
@@ -211,6 +219,17 @@ compatibility with generic S3 implementations. It can be disabled for services
 that require virtual-host-style bucket addressing. **Use legacy S3 v2
 signatures** is an Advanced compatibility option and should be enabled only for
 old S3-compatible servers that do not support v4 signing.
+
+For **Backblaze B2**, use a separately created B2 Application Key: its
+`keyID` is the S3 **Access key ID** and its `applicationKey` is the
+**Secret access key**. Backblaze's master application key is not accepted by the
+S3-compatible API. Set **Region** to the region embedded in the endpoint (for
+example `us-west-004` for
+`s3.us-west-004.backblazeb2.com`), put the bucket name in **Remote path**, and
+leave legacy S3 v2 signatures disabled because B2's S3-compatible API uses v4
+signing. A bucket-restricted key that must list the account's bucket root also
+needs Backblaze's **Allow List All Bucket Names** capability; using the bucket
+name directly in Remote path avoids an unnecessary account-root listing.
 
 This generic provider is intended for S3-compatible services such as private
 MinIO/Ceph deployments and public object-storage services that expose the S3
