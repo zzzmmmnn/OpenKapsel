@@ -13,19 +13,30 @@ _KIND_LABELS = {
 }
 
 
-def _credentials_fields(kind: str, *, prefix: str) -> str:
+def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> str:
     esc = html.escape
-    common_oauth = f'''
+    if kind in {"google_drive", "dropbox"}:
+        label = _KIND_LABELS[kind]
+        callback = esc(oauth_callback)
+        client_label = "OAuth client ID" if kind == "google_drive" else "App client ID"
+        secret_label = "OAuth client secret" if kind == "google_drive" else "App client secret"
+        manual_note = (
+            "For Dropbox, client fields may be left blank only when the pasted token was created "
+            "with rclone's shared app."
+            if kind == "dropbox"
+            else "The token must match the client ID and secret above."
+        )
+        return f'''
 <div data-storage-kind="{kind}" class="span4 storage-credentials">
 <div class="grid">
-<div><label>OAuth client ID</label><input name="client_id" autocomplete="off"></div>
-<div><label>OAuth client secret</label><input name="client_secret" type="password" autocomplete="new-password"></div>
-<div class="span4"><label>rclone OAuth token JSON</label><textarea name="oauth_token" rows="5" autocomplete="off" placeholder='{{"access_token":"…","token_type":"Bearer","refresh_token":"…","expiry":"…"}}'></textarea></div>
+<div><label>{client_label}</label><input name="client_id" autocomplete="off"></div>
+<div><label>{secret_label}</label><input name="client_secret" type="password" autocomplete="new-password"></div>
+<div class="span4 notice"><strong>OAuth redirect URI</strong><br><code>{callback}</code><br><span class="muted">Register this exact URI in your {label} OAuth application.</span></div>
+<div class="span4 actions"><button name="action" value="oauth_start">Connect {label}</button></div>
+<div class="span4"><details><summary>Advanced: paste rclone OAuth token JSON</summary>
+<label>rclone OAuth token JSON</label><textarea name="oauth_token" rows="5" autocomplete="off" placeholder='{{"access_token":"…","token_type":"Bearer","refresh_token":"…","expiry":"…"}}'></textarea>
+<p class="muted">{manual_note}</p></details></div>
 </div></div>'''
-    if kind == "google_drive":
-        return common_oauth
-    if kind == "dropbox":
-        return common_oauth.replace("OAuth client ID", "App client ID (optional)").replace("OAuth client secret", "App client secret (optional)")
     if kind == "sftp":
         return f'''
 <div data-storage-kind="sftp" class="span4 storage-credentials"><div class="grid">
@@ -51,6 +62,7 @@ def render_storage_providers(
     records,
     csrf,
     admin_path,
+    public_base_url,
     message="",
     capability=None,
     delete_warning=None,
@@ -58,6 +70,7 @@ def render_storage_providers(
     esc = html.escape
     capability = capability or {"available": False, "reason": "storage provider support unavailable"}
     action = esc(admin_path + "/storage-providers", quote=True)
+    oauth_callback = public_base_url.rstrip("/") + "/admin/storage-providers/oauth/callback"
     hidden = f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
     workspaces = []
     seen = set()
@@ -84,7 +97,9 @@ def render_storage_providers(
                 f'''<div class="notice"><strong>{esc(mapping["workspace"])}/{esc(mapping["name"])}</strong> · {'Mounted' if mapped else 'Not mounted'}
 <form method="post" action="{action}" style="display:inline">{hidden}<input type="hidden" name="mapping_id" value="{esc(mapping["id"], quote=True)}"><button class="danger" name="action" value="delete_mapping" onclick="return confirm('Remove this workspace mapping? Remote data is not deleted.')">Remove mapping</button></form></div>'''
             )
-        credentials = _credentials_fields(provider["kind"], prefix=provider["id"])
+        credentials = _credentials_fields(
+            provider["kind"], prefix=provider["id"], oauth_callback=oauth_callback
+        )
         delete_warning_html = ""
         if delete_warning and delete_warning.get("provider_id") == provider["id"]:
             queued = int(delete_warning.get("uploads_queued") or 0)
@@ -125,10 +140,17 @@ def render_storage_providers(
     if not capability.get("available"):
         notice += f'<div class="error">Storage Providers unavailable: {esc(str(capability.get("reason") or "unknown reason"))}</div>'
     if message:
-        cls = "error" if message.startswith(("Storage provider operation failed:", "Storage provider deletion paused:")) else "success"
+        cls = "error" if message.startswith((
+            "Storage provider operation failed:",
+            "Storage provider deletion paused:",
+            "Storage provider OAuth failed:",
+        )) else "success"
         notice += f'<div class="{cls}">{esc(message)}</div>'
     kind_options = "".join(f'<option value="{kind}">{esc(label)}</option>' for kind, label in _KIND_LABELS.items())
-    all_credentials = "".join(_credentials_fields(kind, prefix="create") for kind in _KIND_LABELS)
+    all_credentials = "".join(
+        _credentials_fields(kind, prefix="create", oauth_callback=oauth_callback)
+        for kind in _KIND_LABELS
+    )
     return f'''<section id="panel-storage" class="admin-panel" data-admin-panel="storage" hidden>
 <div class="panel-heading"><h2>Storage Providers</h2><div class="muted">Server-managed rclone mounts. Remote data is read on demand; the VFS cache does not pre-download the whole drive.</div></div>{notice}
 <h2>Existing providers ({len(providers)})</h2>{''.join(cards) or '<section class="card"><p class="muted">No storage providers configured.</p></section>'}
@@ -140,6 +162,6 @@ def render_storage_providers(
 <div class="span4"><label>Comment</label><input name="comment" maxlength="200"></div>
 <div class="span4 checks"><label><input type="checkbox" name="writable">Writable remote</label></div>
 {all_credentials}<div class="span4 actions"><button name="action" value="create"{'' if capability.get("available") else ' disabled'}>Create and mount</button></div></div></form>
-<p class="muted">Google Drive requires your own OAuth client ID/secret and an rclone token JSON. SFTP requires pinned <code>known_hosts</code>. Credentials live outside the workspace under a dedicated service account and are never exposed through Files or MCP.</p></section>
+<p class="muted">Google Drive and Dropbox can be connected in the browser after registering the displayed redirect URI with your OAuth application. Manual rclone token JSON remains available under Advanced. SFTP requires pinned <code>known_hosts</code>. Credentials live outside the workspace under a dedicated service account and are never exposed through Files or MCP.</p></section>
 <script>function storageKind(form,kind){{form.querySelectorAll('[data-storage-kind]').forEach(el=>{{const on=el.dataset.storageKind===kind;el.hidden=!on;el.querySelectorAll('input,textarea,select').forEach(x=>x.disabled=!on)}})}}document.querySelectorAll('form[data-storage-create]').forEach(f=>storageKind(f,f.elements.kind.value));</script>
 </section>'''

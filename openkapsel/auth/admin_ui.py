@@ -391,6 +391,7 @@ def render_dashboard(
             records,
             csrf,
             admin_path,
+            public_base_url,
             storage_message,
             storage_capability,
             storage_delete_warning,

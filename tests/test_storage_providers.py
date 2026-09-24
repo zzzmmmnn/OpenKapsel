@@ -6,9 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from openkapsel.storage.storage_host import HostStorageProviders
 from openkapsel.storage.storage_manager import StorageProviderDeleteWarning, StorageProviderManager
+from openkapsel.storage.storage_oauth import StorageOAuthError, StorageOAuthFlows
 from openkapsel.storage.storage_store import DEFAULT_CACHE_MAX_BYTES, StorageProviderStore
 
 
@@ -99,6 +101,84 @@ class FakeHelper:
             self.mounted.discard(provider_id)
             return {"deleted": True}
         raise AssertionError(action)
+
+
+class StorageOAuthFlowTests(unittest.TestCase):
+    def test_authorization_urls_and_state_are_provider_specific(self):
+        flows = StorageOAuthFlows()
+        redirect = "https://example.test/kapsel/admin/storage-providers/oauth/callback"
+        google, google_url = flows.begin(
+            session_id="admin-session",
+            kind="google_drive",
+            client_id="google-id",
+            client_secret="google-secret",
+            redirect_uri=redirect,
+            create_values={"name": "drive"},
+        )
+        parsed = urlsplit(google_url)
+        params = parse_qs(parsed.query)
+        self.assertEqual("accounts.google.com", parsed.hostname)
+        self.assertEqual(["offline"], params["access_type"])
+        self.assertEqual(["consent"], params["prompt"])
+        self.assertEqual([redirect], params["redirect_uri"])
+        self.assertEqual([google.state], params["state"])
+
+        dropbox, dropbox_url = flows.begin(
+            session_id="admin-session",
+            kind="dropbox",
+            client_id="dropbox-id",
+            client_secret="dropbox-secret",
+            redirect_uri=redirect,
+            create_values={"name": "dropbox"},
+        )
+        parsed = urlsplit(dropbox_url)
+        params = parse_qs(parsed.query)
+        self.assertEqual("www.dropbox.com", parsed.hostname)
+        self.assertEqual(["offline"], params["token_access_type"])
+        self.assertEqual([dropbox.state], params["state"])
+
+        with self.assertRaises(StorageOAuthError):
+            flows.consume(google.state, "other-session")
+        self.assertEqual(google, flows.consume(google.state, "admin-session"))
+        with self.assertRaises(StorageOAuthError):
+            flows.consume(google.state, "admin-session")
+
+    def test_exchange_normalizes_provider_response_for_rclone(self):
+        flows = StorageOAuthFlows()
+        flow, _ = flows.begin(
+            session_id="admin-session",
+            kind="dropbox",
+            client_id="dropbox-id",
+            client_secret="dropbox-secret",
+            redirect_uri="https://example.test/kapsel/admin/storage-providers/oauth/callback",
+            provider_id="provider-id",
+        )
+
+        class Response:
+            content = b'{"access_token":"ACCESS"}'
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "access_token": "ACCESS",
+                    "token_type": "bearer",
+                    "refresh_token": "REFRESH",
+                    "expires_in": "14400",
+                }
+
+        with patch("openkapsel.storage.storage_oauth.httpx.post", return_value=Response()) as request:
+            token = json.loads(flows.exchange(flow, "authorization-code"))
+        self.assertEqual("ACCESS", token["access_token"])
+        self.assertEqual("REFRESH", token["refresh_token"])
+        self.assertEqual("bearer", token["token_type"])
+        self.assertTrue(token["expiry"].endswith("Z"))
+        values = request.call_args.kwargs["data"]
+        self.assertEqual("dropbox-secret", values["client_secret"])
+        self.assertEqual(flow.redirect_uri, values["redirect_uri"])
 
 
 class StorageProviderStoreTests(unittest.TestCase):
@@ -428,6 +508,67 @@ class StorageProviderHTTPTests(unittest.TestCase):
     def tearDown(self):
         from tests import test_oauth
         test_oauth.OAuthHTTPTests.tearDown(self)
+
+    def test_admin_browser_oauth_creates_provider_and_consumes_state(self):
+        status, headers, _ = self.form(
+            "/kapsel/admin/login",
+            {"username": "admin", "password": "test-password-123"},
+        )
+        self.assertEqual(303, status)
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        auth = {"Cookie": cookie}
+        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
+        path = "/kapsel/admin/storage-providers"
+        payload = {
+            "action": "oauth_start",
+            "name": "drive",
+            "kind": "google_drive",
+            "remote_path": "Projects",
+            "cache_gib": "1",
+            "writable": "on",
+            "client_id": "google-client-id",
+            "client_secret": "google-client-secret",
+            "csrf": session.csrf,
+        }
+        status, headers, raw = self.form(path, payload, auth)
+        self.assertEqual(303, status, raw)
+        authorization = urlsplit(headers["Location"])
+        self.assertEqual("accounts.google.com", authorization.hostname)
+        params = parse_qs(authorization.query)
+        state = params["state"][0]
+        redirect_uri = params["redirect_uri"][0]
+        self.assertEqual(
+            "https://example.test/kapsel/admin/storage-providers/oauth/callback",
+            redirect_uri,
+        )
+
+        token = (
+            '{"access_token":"ACCESS","token_type":"Bearer",'
+            '"refresh_token":"REFRESH","expiry":"2030-01-01T00:00:00Z"}'
+        )
+        callback = urlsplit(redirect_uri).path + "?state=" + state + "&code=oauth-code"
+        with patch.object(self.server.storage_oauth, "exchange", return_value=token):
+            status, _, raw = self.request("GET", callback, headers=auth)
+        self.assertEqual(200, status, raw)
+        page = raw.decode()
+        self.assertIn("Storage provider connected with OAuth and mounted.", page)
+        self.assertNotIn("google-client-secret", page)
+        self.assertNotIn("REFRESH", page)
+        providers = self.server.storage_providers.store.list()
+        self.assertEqual(1, len(providers))
+        self.assertEqual("drive", providers[0]["name"])
+        self.assertNotIn("token", providers[0])
+        configure = next(
+            values for action, values in self.server.storage_providers.helper.calls
+            if action == "storage_configure"
+        )
+        self.assertEqual("google-client-id", configure["settings"]["client_id"])
+        self.assertEqual("google-client-secret", configure["settings"]["client_secret"])
+        self.assertEqual(token, configure["settings"]["token"])
+
+        status, _, raw = self.request("GET", callback, headers=auth)
+        self.assertEqual(200, status, raw)
+        self.assertIn("missing, expired, or already used", raw.decode())
 
     def test_admin_storage_provider_credentials_are_write_only(self):
         status, headers, _ = self.form(

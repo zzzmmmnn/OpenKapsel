@@ -33,6 +33,7 @@ from openkapsel.files.uploads import UploadRegistry
 from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.mapping.mapping_transfers import FileTransferManager
 from openkapsel.storage.storage_manager import StorageProviderManager
+from openkapsel.storage.storage_oauth import StorageOAuthFlows
 from openkapsel.workspace.workspace_images import WorkspaceImageClient
 
 from .admin_sessions import AdminLoginLimiter, AdminSessions
@@ -66,6 +67,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.storage_providers = StorageProviderManager(
             config.root, config.upload_state_dir.parent, self.workspace_images
         )
+        self.storage_oauth = StorageOAuthFlows()
         self.workspace_admin_lock = threading.RLock()
         self.admin_sessions = AdminSessions()
         self.admin_login_limiter = AdminLoginLimiter()

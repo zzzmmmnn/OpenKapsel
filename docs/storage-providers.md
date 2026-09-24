@@ -84,31 +84,39 @@ is disabled when the privileged helper cannot find both rclone and fusermount.
 
 ## Google Drive
 
-Google Drive uses an rclone `drive` remote. OpenKapsel requires your own OAuth
-client ID and client secret plus an rclone token JSON. Generate the token on a
-trusted computer with a browser:
+Google Drive uses an rclone `drive` remote. Create a Google OAuth **Web
+application**, add the exact **OAuth redirect URI** shown by OpenKapsel
+Administration, then enter its client ID and client secret and click **Connect
+Google Drive**. The browser is redirected to Google and then back to OpenKapsel;
+the returned access and refresh tokens are written directly into the provider's
+private rclone configuration.
+
+The authorization request uses offline access so rclone can refresh credentials
+without another browser login. Pending browser authorization state and the
+client secret are kept only in server memory for up to 10 minutes and are bound
+to the administrator session.
+
+For recovery or headless setup, **Advanced: paste rclone OAuth token JSON** keeps
+the original manual flow available:
 
 ```bash
 rclone authorize drive <client-id> <client-secret>
 ```
-
-Copy the JSON object printed by rclone into the **rclone OAuth token JSON** field.
-The secret is stored only in the provider's private configuration.
 
 The optional **Remote path** selects a subdirectory. Leave it empty to expose the
 remote root.
 
 ## Dropbox
 
-Dropbox uses an rclone `dropbox` remote. Generate a token on a trusted computer:
+Dropbox uses an rclone `dropbox` remote. Create a Dropbox application, add the
+exact **OAuth redirect URI** shown by Administration, enter its app key and app
+secret, then click **Connect Dropbox**. OpenKapsel requests offline token access
+so rclone receives a refresh token for unattended mounts.
 
-```bash
-rclone authorize dropbox
-```
-
-If you use your own Dropbox app credentials, authorize with those credentials
-and enter the matching client ID/secret in Administration. Otherwise leave the
-client fields empty and paste the token JSON.
+Manual token JSON remains available under **Advanced**. A token generated with
+rclone's shared Dropbox application may still be pasted with blank client
+fields; browser OAuth through OpenKapsel requires your own Dropbox app key and
+secret.
 
 ## SFTP
 

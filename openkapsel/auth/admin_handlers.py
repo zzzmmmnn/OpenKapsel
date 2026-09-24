@@ -37,6 +37,9 @@ class AdminHandlersMixin:
         if path == "/admin/storage-providers":
             self._handle_admin_storage_providers(method)
             return
+        if path == "/admin/storage-providers/oauth/callback":
+            self._handle_admin_storage_oauth_callback(method, raw_query)
+            return
         if path == "/admin/static-mcp" or path == "/admin/oauth" or path.startswith("/admin/oauth/"):
             self._handle_admin_oauth(method, path, raw_query)
             return

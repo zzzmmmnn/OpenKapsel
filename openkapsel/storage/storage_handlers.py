@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+from urllib.parse import parse_qs
 
 from openkapsel.errors import ApiError
 from openkapsel.storage.storage_manager import StorageProviderDeleteWarning
+from openkapsel.storage.storage_oauth import StorageOAuthError
 from openkapsel.storage.storage_store import DEFAULT_CACHE_MAX_BYTES
 from openkapsel.workspace.workspace_images import WorkspaceImageError
 
@@ -67,6 +69,48 @@ class StorageHandlersMixin:
                 raise ApiError(403, "csrf", "CSRF validation failed")
             action = self._form_one(form, "action")
             try:
+                if action == "oauth_start":
+                    provider_id = self._form_one(form, "id")
+                    if provider_id:
+                        provider = manager.store.get(provider_id)
+                        kind = provider["kind"]
+                        create_values = None
+                    else:
+                        kind = manager.store.validate_kind(self._form_one(form, "kind"))
+                        if kind not in {"google_drive", "dropbox"}:
+                            raise ValueError("browser OAuth is supported only for Google Drive and Dropbox")
+                        create_values = {
+                            "name": manager.store.validate_name(
+                                self._form_one(form, "name"), label="provider name"
+                            ),
+                            "remote_path": manager.store.validate_remote_path(
+                                self._form_one(form, "remote_path")
+                            ),
+                            "comment": manager.store.validate_comment(
+                                self._form_one(form, "comment")
+                            ),
+                            "writable": self._form_one(form, "writable") == "on",
+                            "cache_max_bytes": manager.store.validate_cache_max_bytes(
+                                self._storage_cache_bytes(self._form_one(form, "cache_gib"))
+                            ),
+                        }
+                    if kind not in {"google_drive", "dropbox"}:
+                        raise ValueError("browser OAuth is supported only for Google Drive and Dropbox")
+                    redirect_uri = (
+                        self._public_base_url().rstrip("/")
+                        + "/admin/storage-providers/oauth/callback"
+                    )
+                    _flow, authorization_url = self.server.storage_oauth.begin(
+                        session_id=session.id,
+                        kind=kind,
+                        client_id=self._form_one(form, "client_id"),
+                        client_secret=self._form_one(form, "client_secret"),
+                        redirect_uri=redirect_uri,
+                        provider_id=provider_id or None,
+                        create_values=create_values,
+                    )
+                    self._redirect(authorization_url)
+                    return
                 if action == "create":
                     kind = self._form_one(form, "kind")
                     manager.create(
@@ -133,4 +177,60 @@ class StorageHandlersMixin:
             active_panel="storage",
             storage_message=message,
             storage_delete_warning=delete_warning,
+        )
+
+    def _handle_admin_storage_oauth_callback(self, method: str, raw_query: str) -> None:
+        if method != "GET":
+            raise ApiError(405, "method_not_allowed", "use GET")
+        session = self._require_admin_session()
+        if session is None:
+            return
+        query = parse_qs(raw_query, keep_blank_values=True)
+        state = (query.get("state") or [""])[0]
+        try:
+            flow = self.server.storage_oauth.consume(state, session.id)
+            provider_error = (query.get("error") or [""])[0]
+            if provider_error:
+                detail = (query.get("error_description") or [provider_error])[0]
+                detail = detail[:500]
+                raise StorageOAuthError("OAuth authorization was not completed: " + detail)
+            code = (query.get("code") or [""])[0]
+            token = self.server.storage_oauth.exchange(flow, code)
+            credentials = {
+                "client_id": flow.client_id,
+                "client_secret": flow.client_secret,
+                "token": token,
+            }
+            manager = self.server.storage_providers
+            if flow.provider_id:
+                provider = manager.store.get(flow.provider_id)
+                if provider["kind"] != flow.kind:
+                    raise StorageOAuthError("storage provider type changed during OAuth authorization")
+                manager.update(flow.provider_id, credentials=credentials)
+                message = "Storage provider OAuth credentials connected."
+            else:
+                values = flow.create_values or {}
+                manager.create(
+                    values["name"],
+                    flow.kind,
+                    settings=credentials,
+                    remote_path=values["remote_path"],
+                    comment=values["comment"],
+                    writable=values["writable"],
+                    cache_max_bytes=values["cache_max_bytes"],
+                )
+                message = "Storage provider connected with OAuth and mounted."
+        except (
+            StorageOAuthError,
+            ValueError,
+            OSError,
+            KeyError,
+            sqlite3.Error,
+            WorkspaceImageError,
+        ) as exc:
+            message = "Storage provider OAuth failed: " + str(exc)
+        self._send_admin_dashboard(
+            session,
+            active_panel="storage",
+            storage_message=message,
         )
