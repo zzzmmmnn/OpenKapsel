@@ -109,6 +109,17 @@ def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> 
 </div></div>'''
 
 
+def _create_credentials_fields(kind: str, *, oauth_callback: str) -> str:
+    fields = _credentials_fields(kind, prefix="create", oauth_callback=oauth_callback)
+    if kind == "google_drive":
+        return fields
+    marker = f'data-storage-kind="{kind}"'
+    fields = fields.replace(marker, marker + " hidden", 1)
+    for tag in ("input", "textarea", "select", "button"):
+        fields = fields.replace(f"<{tag} ", f"<{tag} disabled ")
+    return fields
+
+
 def render_storage_providers(
     providers,
     records,
@@ -200,7 +211,7 @@ def render_storage_providers(
         notice += f'<div class="{cls}">{esc(message)}</div>'
     kind_options = "".join(f'<option value="{kind}">{esc(label)}</option>' for kind, label in _KIND_LABELS.items())
     all_credentials = "".join(
-        _credentials_fields(kind, prefix="create", oauth_callback=oauth_callback)
+        _create_credentials_fields(kind, oauth_callback=oauth_callback)
         for kind in _KIND_LABELS
     )
     return f'''<section id="panel-storage" class="admin-panel" data-admin-panel="storage" hidden>
@@ -243,7 +254,7 @@ async function storageDetectSftpKey(button){{
     confirm.checked=false;
     details.open=true;
     const lines=(payload.keys||[]).map(k=>k.type+'  '+k.fingerprint_sha256);
-    result.textContent='Detected for '+payload.host+':'+payload.port+'\n'+lines.join('\n')+'\nVerify these fingerprints independently before checking the trust confirmation.';
+    result.textContent='Detected for '+payload.host+':'+payload.port+'\\n'+lines.join('\\n')+'\\nVerify these fingerprints independently before checking the trust confirmation.';
   }} catch(error) {{
     known.value='';
     confirm.checked=false;

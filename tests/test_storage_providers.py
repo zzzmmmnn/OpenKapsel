@@ -17,6 +17,7 @@ from openkapsel.storage.storage_manager import StorageProviderDeleteWarning, Sto
 from openkapsel.storage.storage_oauth import StorageOAuthError, StorageOAuthFlows
 from openkapsel.storage.storage_sftp import detect_sftp_host_keys
 from openkapsel.storage.storage_store import DEFAULT_CACHE_MAX_BYTES, StorageProviderStore
+from openkapsel.storage.storage_ui import render_storage_providers
 from openkapsel.workspace.workspace_images import WorkspaceImageError
 
 
@@ -964,6 +965,48 @@ class InstallerStorageProviderTests(unittest.TestCase):
         self.assertIn("--storage-user openkapsel-storage", unit)
         self.assertIn("--storage-home /var/lib/openkapsel-storage/home", unit)
         self.assertIn("PrivateMounts=false", unit)
+
+
+class StorageProviderUIRenderTests(unittest.TestCase):
+    def test_create_form_only_shows_default_provider_before_javascript_runs(self):
+        page = render_storage_providers(
+            [],
+            [],
+            "csrf",
+            "/kapsel/admin",
+            "https://example.test/kapsel",
+            capability={"available": True, "reason": ""},
+        )
+        self.assertIn(
+            '<div data-storage-kind="google_drive" class="span4 storage-credentials">',
+            page,
+        )
+        for kind in ("dropbox", "pcloud", "onedrive", "webdav", "s3", "sftp", "smb"):
+            with self.subTest(kind=kind):
+                self.assertIn(
+                    f'<div data-storage-kind="{kind}" hidden class="span4 storage-credentials">',
+                    page,
+                )
+        self.assertIn('<input disabled name="s3_endpoint"', page)
+        self.assertIn('<input disabled name="host"', page)
+        self.assertIn('<button disabled type="button" class="secondary"', page)
+        self.assertIn("el.hidden=!on", page)
+        self.assertIn("x.disabled=!on", page)
+
+    def test_rendered_sftp_script_keeps_newlines_escaped(self):
+        page = render_storage_providers(
+            [],
+            [],
+            "csrf",
+            "/kapsel/admin",
+            "https://example.test/kapsel",
+            capability={"available": True, "reason": ""},
+        )
+        self.assertIn(
+            "payload.port+'\\n'+lines.join('\\n')+'\\nVerify these fingerprints",
+            page,
+        )
+        self.assertNotIn("payload.port+'\n'+lines.join('\n')", page)
 
 
 class StorageProviderHTTPTests(unittest.TestCase):
