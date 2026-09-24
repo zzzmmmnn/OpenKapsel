@@ -10,8 +10,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
-import httpx
-
 from openkapsel.random_ids import token_urlsafe_alnum
 
 
@@ -142,6 +140,10 @@ class StorageOAuthFlows:
             "grant_type": "authorization_code",
             "redirect_uri": flow.redirect_uri,
         }
+        try:
+            import httpx
+        except ImportError as exc:
+            raise StorageOAuthError("OAuth token exchange requires the httpx runtime dependency") from exc
         try:
             response = httpx.post(
                 token_url,

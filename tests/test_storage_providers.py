@@ -172,7 +172,7 @@ class StorageOAuthFlowTests(unittest.TestCase):
                     "expires_in": "14400",
                 }
 
-        with patch("openkapsel.storage.storage_oauth.httpx.post", return_value=Response()) as request:
+        with patch("httpx.post", return_value=Response()) as request:
             token = json.loads(flows.exchange(flow, "authorization-code"))
         self.assertEqual("ACCESS", token["access_token"])
         self.assertEqual("REFRESH", token["refresh_token"])

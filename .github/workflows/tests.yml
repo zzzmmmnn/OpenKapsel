@@ -69,3 +69,34 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
+
+  linux-distro:
+    name: Linux distro / ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - almalinux:8.10
+          - almalinux:9.8
+    container:
+      image: ${{ matrix.image }}
+
+    steps:
+      - name: Install AlmaLinux Python and Git
+        run: dnf install -y git python3.12 python3.12-pip
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install project
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install --editable '.[client,data-rpc]'
+
+      - name: Compile Python sources
+        run: python3.12 -m compileall -q openkapsel openkapsel_runtime
+
+      - name: Run tests
+        run: python3.12 -m unittest discover -s tests -v

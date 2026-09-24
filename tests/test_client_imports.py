@@ -13,6 +13,31 @@ class ClientImportTests(unittest.TestCase):
         self.assertIs(ServerConfig, server.ServerConfig)
         self.assertIs(create_server, server.create_server)
 
+    @unittest.skipIf(os.name == "nt", "server API is not supported on Windows")
+    def test_public_server_exports_do_not_import_httpx(self):
+        code = '''
+import builtins
+import sys
+
+original_import = builtins.__import__
+def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "httpx" or name.startswith("httpx."):
+        raise ModuleNotFoundError("httpx intentionally unavailable during import")
+    return original_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = blocked_import
+from openkapsel import ServerConfig, create_server, server
+assert ServerConfig is server.ServerConfig
+assert create_server is server.create_server
+assert "httpx" not in sys.modules
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
     def test_client_imports_without_unix_socket_server(self):
         code = '''
 import socketserver
