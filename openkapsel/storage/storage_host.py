@@ -477,6 +477,14 @@ class HostStorageProviders:
                 check=False, capture_output=True, text=True, timeout=5,
             )
             if state.returncode == 0 and state.stdout.strip() == "active":
+                try:
+                    self._validate_mounted_backend(provider_id)
+                except WorkspaceImageError:
+                    try:
+                        self.unmount(provider_id)
+                    except WorkspaceImageError:
+                        pass
+                    raise
                 return {"mounted": True}
             self.unmount(provider_id)
         root, mount, cache, config = self._ensure_provider_dirs(provider_id)

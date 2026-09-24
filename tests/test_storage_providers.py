@@ -735,6 +735,7 @@ class HostStorageProviderTests(unittest.TestCase):
             runner.active = True
             with (
                 patch("openkapsel.storage.storage_host.os.path.ismount", return_value=True),
+                patch.object(host, "_validate_mounted_backend") as validate,
                 patch.object(
                     host,
                     "_ensure_provider_dirs",
@@ -745,7 +746,37 @@ class HostStorageProviderTests(unittest.TestCase):
                     {"mounted": True},
                     host.mount(provider_id, "", False, 1024**3),
                 )
+            validate.assert_called_once_with(provider_id)
             self.assertFalse(any("/usr/bin/rclone" in argv and "mount" in argv for argv, _kwargs in runner.calls))
+
+    def test_reconcile_fails_closed_when_active_backend_becomes_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, runner = self.make_host(directory)
+            provider_id = "j" * 24
+            _root, _mount, _cache, config = host._ensure_provider_dirs(provider_id)
+            config.write_text("[provider]\ntype = dropbox\ntoken = {}\n")
+            runner.active = True
+            with (
+                patch("openkapsel.storage.storage_host.os.path.ismount", return_value=True),
+                patch.object(
+                    host,
+                    "_validate_mounted_backend",
+                    side_effect=WorkspaceImageError(
+                        "storage provider backend validation failed: missing_scope/"
+                    ),
+                ) as validate,
+                patch.object(host, "unmount", return_value={"mounted": False}) as unmount,
+            ):
+                with self.assertRaisesRegex(WorkspaceImageError, "missing_scope"):
+                    host.mount(provider_id, "", False, 1024**3)
+            validate.assert_called_once_with(provider_id)
+            unmount.assert_called_once_with(provider_id)
+            self.assertFalse(
+                any(
+                    "/usr/bin/rclone" in argv and "mount" in argv
+                    for argv, _kwargs in runner.calls
+                )
+            )
 
     def test_pending_uses_private_rc_vfs_stats(self):
         with tempfile.TemporaryDirectory() as directory:
