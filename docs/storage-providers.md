@@ -164,13 +164,33 @@ same rclone mount and the same bounded provider cache.
 ## Lifecycle
 
 Enabled providers are reconciled when the server starts. The rclone process runs
-as `openkapsel-storage` in its own transient systemd service with restart-on-
-failure. Each process exposes rclone's control API only through a Unix socket
-inside that provider's private 0700 directory; OpenKapsel uses it for VFS upload
-status, not as a network-facing API. Disabling a provider removes its workspace
-bind mounts and stops the rclone mount; re-enabling it mounts the remote and
-restores configured workspace bindings.
+as `openkapsel-storage` in its own transient `openkapsel-storage-<provider-id>.service`
+unit with restart-on-failure. Each process exposes rclone's control API only
+through `/run/openkapsel-storage-<provider-id>/rc.sock`; the systemd
+`RuntimeDirectory` lifecycle removes the socket when the unit stops, avoiding a
+stale provider-local socket across restarts. The socket is local-only and is used
+for VFS upload status, not as a network-facing API.
 
-If a provider cannot connect, its workspace mapping is not silently replaced by
-an empty local directory. Administration reports the provider as unavailable and
-**Reconcile mount** can retry after credentials or connectivity are repaired.
+A crash of the main `openkapsel.service` does not tear down a healthy provider
+mount. On restart, OpenKapsel reuses a live rclone/FUSE unit and an existing
+workspace bind when they still match the provider database. If the privileged
+helper is restarting at the same time, startup waits briefly for its Unix socket
+and retries transient reconcile failures. A stale FUSE mount or stale bind is
+detached and rebuilt instead of being treated as a healthy provider. This keeps
+queued rclone uploads alive across a main-process crash while still repairing
+orphaned resources.
+
+Normal upgrades take a different path: `install.sh` runs
+`scripts/openkapsel-safe-shutdown` before replacing code. It stops the main API
+first, waits for writable VFS queues to drain, unmounts recorded workspace binds,
+stops provider units, verifies FUSE detachment, and stops the privileged helper
+last. If write safety cannot be established, the upgrade aborts rather than
+forcing an unmount. See [installation.md](installation.md) for the manual command
+and the explicit `--force-recovery` exception.
+
+Disabling a provider removes its workspace bind mounts and stops the rclone
+mount; re-enabling it mounts the remote and restores configured workspace
+bindings. If a provider cannot connect, its workspace mapping is not silently
+replaced by an empty local directory. Administration reports the provider as
+unavailable and **Reconcile mount** can retry after credentials or connectivity
+are repaired.

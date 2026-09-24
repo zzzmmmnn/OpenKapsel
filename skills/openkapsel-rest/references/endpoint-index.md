@@ -117,7 +117,7 @@ There is intentionally no MCP route in this skill.
 - `GET /mappings`: mapped roots, `online`, `mounted`, `mount_references`,
   `native_mounts_enabled`, execution/RPC and `file_stream` capabilities. Online
   and unmounted is normal; file endpoints never start native mounts.
-- `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. No server/FUSE fallback.
+- `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. If a start returns `409 client_task_capacity_reached`, collect completed client task results by reading output through each final offset before retrying; listing alone does not release retained results. No server/FUSE fallback.
 - `GET /archive/list`: browse ZIP/tar archive contents without extracting.
 - `GET /archive/read`: read a bounded archive member preview without extracting.
 - `POST /fs/copy`: start an asynchronous copy.

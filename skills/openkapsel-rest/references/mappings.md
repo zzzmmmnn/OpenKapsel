@@ -175,7 +175,12 @@ tasks, and query the original ID instead of automatically replaying an uncertain
 start. Offline control requests fail rather than queue. Uncollected results
 remain in memory until client exit; reading a completed task through the end of
 retained output marks it collected (then one hour / four collected records).
-Total records are bounded by max_tasks + 4; full registries reject new starts.
-Task deadlines and the 2 MB output cap still apply offline. Normal client
-shutdown kills active tasks; process restarts do not restore records. Provider
-mapping credentials are managed separately and are not REST control tokens.
+Total records are bounded by max_tasks + 4; full registries reject new starts
+with `409 client_task_capacity_reached`. Its details include the client-side
+capacity message and recovery instructions. List completed client tasks and read
+each task output through its final offset so retained results become collected,
+then retry. Listing alone does not collect results. Do not treat this EBUSY as an
+SSH connection failure or blindly replay a write task. Task deadlines and the
+2 MB output cap still apply offline. Normal client shutdown kills active tasks;
+process restarts do not restore records. Provider mapping credentials are
+managed separately and are not REST control tokens.
