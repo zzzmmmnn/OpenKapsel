@@ -23,7 +23,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Expose focused Discovery documents, a portable REST Skill, and a stateless Streamable HTTP MCP endpoint.
 - Connect remote MCP clients through individually revocable OAuth connections with stable URLs and control-token owner-approved access.
 - Manage token lifetimes, permissions, workspace images, sandbox limits, preview credentials, and administrator credentials from a browser console.
-- Mount Google Drive, Dropbox, SFTP, and SMB as server-managed Storage Providers, then bind them into selected workspace directories without pre-downloading the remote dataset.
+- Mount Google Drive, Dropbox, pCloud, Microsoft OneDrive, WebDAV, S3-compatible storage, SFTP, and SMB as server-managed Storage Providers, then bind them into selected workspace directories without pre-downloading the remote dataset.
 
 ## Credential model
 
@@ -161,7 +161,7 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 - [Installation and reverse proxy](docs/installation.md): production layout, migration, path grants, Caddy, timeouts, and verification.
 - [Authentication and administration](docs/authentication-and-administration.md): credentials, Discovery, token settings, renewal, and workspace images.
 - [Static MCP connections](docs/static-mcp-connections.md): fixed Bearer credentials, client JSON, independent expiry, and revocation.
-- [Storage Providers](docs/storage-providers.md): Google Drive, Dropbox, SFTP and SMB mounts, lazy VFS cache, credential isolation, and workspace bindings.
+- [Storage Providers](docs/storage-providers.md): Google Drive, Dropbox, pCloud, Microsoft OneDrive, WebDAV, S3-compatible storage, SFTP and SMB mounts, lazy VFS cache, credential isolation, and workspace bindings.
 - [OAuth connections](docs/oauth-connections.md): remote MCP onboarding, consent, client registration, refresh, and revocation.
 - [Sandboxing and networking](docs/sandboxing-and-networking.md): Bubblewrap, Podman, cgroups, path isolation, and domain-restricted egress.
 - [REST files, transfers, and sharing](docs/rest-files-and-transfers.md): endpoints, mutation context, ETags, recycle, large files, and temporary shares.

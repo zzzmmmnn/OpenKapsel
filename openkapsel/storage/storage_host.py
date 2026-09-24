@@ -18,7 +18,16 @@ from openkapsel.workspace.workspace_images import WorkspaceImageError
 
 _PROVIDER_ID_RE = re.compile(r"[A-Za-z0-9_-]{24}")
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-_KINDS = {"google_drive", "dropbox", "sftp", "smb"}
+_KINDS = {
+    "google_drive",
+    "dropbox",
+    "pcloud",
+    "onedrive",
+    "webdav",
+    "s3",
+    "sftp",
+    "smb",
+}
 _MIN_RCLONE_VERSION = (1, 60, 0)
 _RCLONE_VERSION_RE = re.compile(r"^rclone v(\d+)\.(\d+)\.(\d+)")
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -85,6 +94,14 @@ class HostStorageProviders:
         if not 1 <= port <= 65535:
             raise WorkspaceImageError("port must be between 1 and 65535")
         return port
+
+    @staticmethod
+    def _bool(value: Any, label: str, *, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if not isinstance(value, bool):
+            raise WorkspaceImageError(f"{label} must be boolean")
+        return value
 
     def _paths(self, provider_id: str) -> tuple[Path, Path, Path, Path]:
         provider_id = self._provider_id(provider_id)
@@ -193,6 +210,152 @@ class HostStorageProviders:
                 section["client_id"] = client_id
                 section["client_secret"] = client_secret
             section["token"] = self._oauth_token(settings.get("token"), "Dropbox token")
+        elif kind == "pcloud":
+            section["type"] = "pcloud"
+            client_id = self._line(
+                settings.get("client_id", ""),
+                "pCloud client id",
+                maximum=4096,
+                allow_empty=True,
+            )
+            client_secret = self._line(
+                settings.get("client_secret", ""),
+                "pCloud client secret",
+                maximum=4096,
+                allow_empty=True,
+            )
+            if bool(client_id) != bool(client_secret):
+                raise WorkspaceImageError(
+                    "pCloud client id and client secret must be supplied together"
+                )
+            if client_id:
+                section["client_id"] = client_id
+                section["client_secret"] = client_secret
+            hostname = self._line(
+                settings.get("hostname", "api.pcloud.com"),
+                "pCloud API hostname",
+                maximum=256,
+            )
+            if hostname not in {"api.pcloud.com", "eapi.pcloud.com"}:
+                raise WorkspaceImageError("pCloud API hostname must be api.pcloud.com or eapi.pcloud.com")
+            section["hostname"] = hostname
+            section["token"] = self._oauth_token(settings.get("token"), "pCloud token")
+        elif kind == "onedrive":
+            section["type"] = "onedrive"
+            client_id = self._line(
+                settings.get("client_id", ""),
+                "OneDrive client id",
+                maximum=4096,
+                allow_empty=True,
+            )
+            client_secret = self._line(
+                settings.get("client_secret", ""),
+                "OneDrive client secret",
+                maximum=4096,
+                allow_empty=True,
+            )
+            if bool(client_id) != bool(client_secret):
+                raise WorkspaceImageError(
+                    "OneDrive client id and client secret must be supplied together"
+                )
+            if client_id:
+                section["client_id"] = client_id
+                section["client_secret"] = client_secret
+            region = self._line(
+                settings.get("region", "global"),
+                "OneDrive cloud region",
+                maximum=16,
+            )
+            if region not in {"global", "us", "de", "cn"}:
+                raise WorkspaceImageError("unsupported OneDrive cloud region")
+            drive_type = self._line(
+                settings.get("drive_type"), "OneDrive drive type", maximum=64
+            )
+            if drive_type not in {"personal", "business", "documentLibrary"}:
+                raise WorkspaceImageError("unsupported OneDrive drive type")
+            section["region"] = region
+            section["access_scopes"] = "Files.ReadWrite offline_access"
+            section["drive_id"] = self._line(
+                settings.get("drive_id"), "OneDrive drive id", maximum=4096
+            )
+            section["drive_type"] = drive_type
+            section["token"] = self._oauth_token(settings.get("token"), "OneDrive token")
+        elif kind == "webdav":
+            section["type"] = "webdav"
+            section["url"] = self._line(
+                settings.get("url"), "WebDAV URL", maximum=4096
+            )
+            vendor = self._line(
+                settings.get("vendor", "other"),
+                "WebDAV vendor",
+                maximum=64,
+            )
+            if vendor not in {
+                "other",
+                "nextcloud",
+                "owncloud",
+                "infinitescale",
+                "fastmail",
+                "rclone",
+                "sharepoint",
+                "sharepoint-ntlm",
+            }:
+                raise WorkspaceImageError("unsupported WebDAV vendor")
+            section["vendor"] = vendor
+            user = self._line(
+                settings.get("user", ""),
+                "WebDAV user",
+                maximum=1024,
+                allow_empty=True,
+            )
+            password = settings.get("password", "")
+            if not isinstance(password, str) or len(password) > 65536:
+                raise WorkspaceImageError("invalid WebDAV password")
+            if bool(user) != bool(password):
+                raise WorkspaceImageError("WebDAV user and password must be supplied together")
+            if user:
+                section["user"] = user
+                section["pass"] = self._obscure(password)
+        elif kind == "s3":
+            section["type"] = "s3"
+            section["provider"] = "Other"
+            section["env_auth"] = "false"
+            access_key = self._line(
+                settings.get("access_key_id"),
+                "S3 access key id",
+                maximum=4096,
+            )
+            secret_key = self._line(
+                settings.get("secret_access_key"),
+                "S3 secret access key",
+                maximum=65536,
+            )
+            section["access_key_id"] = access_key
+            section["secret_access_key"] = secret_key
+            region = self._line(
+                settings.get("region", ""),
+                "S3 region",
+                maximum=256,
+                allow_empty=True,
+            )
+            if region:
+                section["region"] = region
+            section["endpoint"] = self._line(
+                settings.get("endpoint"),
+                "S3 endpoint",
+                maximum=4096,
+            )
+            section["force_path_style"] = (
+                "true"
+                if self._bool(
+                    settings.get("force_path_style"),
+                    "S3 force path style",
+                    default=True,
+                )
+                else "false"
+            )
+            if self._bool(settings.get("v2_auth"), "S3 v2 auth", default=False):
+                section["v2_auth"] = "true"
         elif kind == "sftp":
             section["type"] = "sftp"
             section["host"] = self._line(settings.get("host"), "SFTP host", maximum=1024)

@@ -8,6 +8,10 @@ import html
 _KIND_LABELS = {
     "google_drive": "Google Drive",
     "dropbox": "Dropbox",
+    "pcloud": "pCloud",
+    "onedrive": "Microsoft OneDrive",
+    "webdav": "WebDAV",
+    "s3": "S3 Compatible",
     "sftp": "SFTP",
     "smb": "SMB",
 }
@@ -15,27 +19,69 @@ _KIND_LABELS = {
 
 def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> str:
     esc = html.escape
-    if kind in {"google_drive", "dropbox"}:
+    if kind in {"google_drive", "dropbox", "pcloud", "onedrive"}:
         label = _KIND_LABELS[kind]
         callback = esc(oauth_callback)
         client_label = "OAuth client ID" if kind == "google_drive" else "App client ID"
         secret_label = "OAuth client secret" if kind == "google_drive" else "App client secret"
-        manual_note = (
-            "For Dropbox, client fields may be left blank only when the pasted token was created "
-            "with rclone's shared app."
-            if kind == "dropbox"
-            else "The token must match the client ID and secret above."
-        )
+        if kind == "dropbox":
+            manual_note = (
+                "For Dropbox, client fields may be left blank only when the pasted token was "
+                "created with rclone's shared app."
+            )
+        elif kind == "pcloud":
+            manual_note = (
+                "For a manually pasted token, select the matching pCloud data region. "
+                "Browser OAuth detects the US/EU API hostname automatically."
+            )
+        elif kind == "onedrive":
+            manual_note = (
+                "Manual OneDrive tokens also require the drive ID and drive type. "
+                "Browser OAuth discovers the signed-in user's default drive automatically."
+            )
+        else:
+            manual_note = "The token must match the client ID and secret above."
+        provider_fields = ""
+        if kind == "pcloud":
+            provider_fields = '''
+<div><label>pCloud data region</label><select name="pcloud_hostname"><option value="api.pcloud.com">US — api.pcloud.com</option><option value="eapi.pcloud.com">EU — eapi.pcloud.com</option></select></div>'''
+        elif kind == "onedrive":
+            provider_fields = '''
+<div><label>Microsoft cloud</label><select name="onedrive_region"><option value="global">Global</option><option value="us">US Government</option><option value="cn">China</option><option value="de">Germany (legacy)</option></select></div>
+<div class="span4"><details><summary>Advanced: manual OneDrive drive selection</summary><div class="grid">
+<div><label>Drive ID</label><input name="drive_id" autocomplete="off"></div>
+<div><label>Drive type</label><select name="drive_type"><option value="">Select…</option><option value="personal">personal</option><option value="business">business</option><option value="documentLibrary">documentLibrary</option></select></div>
+</div></details></div>'''
         return f'''
 <div data-storage-kind="{kind}" class="span4 storage-credentials">
 <div class="grid">
 <div><label>{client_label}</label><input name="client_id" autocomplete="off"></div>
 <div><label>{secret_label}</label><input name="client_secret" type="password" autocomplete="new-password"></div>
+{provider_fields}
 <div class="span4 notice"><strong>OAuth redirect URI</strong><br><code>{callback}</code><br><span class="muted">Register this exact URI in your {label} OAuth application.</span></div>
 <div class="span4 actions"><button type="submit" name="action" value="oauth_start" formnovalidate>Connect {label}</button></div>
 <div class="span4"><details><summary>Advanced: paste rclone OAuth token JSON</summary>
 <label>rclone OAuth token JSON</label><textarea name="oauth_token" rows="5" autocomplete="off" placeholder='{{"access_token":"…","token_type":"Bearer","refresh_token":"…","expiry":"…"}}'></textarea>
 <p class="muted">{manual_note}</p></details></div>
+</div></div>'''
+    if kind == "webdav":
+        return f'''
+<div data-storage-kind="webdav" class="span4 storage-credentials"><div class="grid">
+<div class="span4"><label>WebDAV URL</label><input name="webdav_url" type="url" required placeholder="https://cloud.example.com/remote.php/dav/files/user/"></div>
+<div><label>Vendor</label><select name="webdav_vendor"><option value="other">Other / standard WebDAV</option><option value="nextcloud">Nextcloud</option><option value="owncloud">ownCloud</option><option value="infinitescale">ownCloud Infinite Scale</option><option value="fastmail">Fastmail Files</option><option value="rclone">rclone serve webdav</option><option value="sharepoint">SharePoint Online</option><option value="sharepoint-ntlm">SharePoint NTLM</option></select></div>
+<div><label>User</label><input name="user" autocomplete="off"></div>
+<div><label>Password / app password</label><input name="password" type="password" autocomplete="new-password"></div>
+<div class="span4"><p class="muted">Leave user and password both empty only for an intentionally unauthenticated WebDAV endpoint.</p></div>
+</div></div>'''
+    if kind == "s3":
+        return f'''
+<div data-storage-kind="s3" class="span4 storage-credentials"><div class="grid">
+<div class="span4"><label>S3 API endpoint</label><input name="s3_endpoint" required placeholder="https://s3.example.com"></div>
+<div><label>Region</label><input name="s3_region" autocomplete="off" placeholder="Optional, e.g. us-east-1"></div>
+<div><label>Access key ID</label><input name="access_key_id" autocomplete="off" required></div>
+<div><label>Secret access key</label><input name="secret_access_key" type="password" autocomplete="new-password" required></div>
+<div class="span4 checks"><label><input type="checkbox" name="force_path_style" checked>Force path-style URLs (recommended for generic S3-compatible services)</label></div>
+<div class="span4"><details><summary>Advanced compatibility</summary><label><input type="checkbox" name="v2_auth">Use legacy S3 v2 signatures</label><p class="muted">Enable only for old S3-compatible servers that do not support v4 signatures.</p></details></div>
 </div></div>'''
     if kind == "sftp":
         return f'''
@@ -168,7 +214,7 @@ def render_storage_providers(
 <div class="span4"><label>Comment</label><input name="comment" maxlength="200"></div>
 <div class="span4 checks"><label><input type="checkbox" name="writable">Writable remote</label></div>
 {all_credentials}<div class="span4 actions"><button name="action" value="create"{'' if capability.get("available") else ' disabled'}>Create and mount</button></div></div></form>
-<p class="muted">Google Drive and Dropbox can be connected in the browser after registering the displayed redirect URI with your OAuth application. Manual rclone token JSON remains available under Advanced. For SFTP, OpenKapsel can detect the public SSH host key, but detection is not identity proof: verify the displayed SHA256 fingerprint independently before confirming and saving it. Manual <code>known_hosts</code> entry remains available under Advanced. Credentials live outside the workspace under a dedicated service account and are never exposed through Files or MCP.</p></section>
+<p class="muted">Google Drive, Dropbox, pCloud, and Microsoft OneDrive can be connected in the browser after registering the displayed redirect URI with your OAuth application. Manual rclone token JSON remains available under Advanced. WebDAV and S3-compatible endpoints use server-side credentials stored in the private provider configuration. For SFTP, OpenKapsel can detect the public SSH host key, but detection is not identity proof: verify the displayed SHA256 fingerprint independently before confirming and saving it. Manual <code>known_hosts</code> entry remains available under Advanced. Credentials live outside the workspace under a dedicated service account and are never exposed through Files or MCP.</p></section>
 <script>
 function storageKind(form,kind){{form.querySelectorAll('[data-storage-kind]').forEach(el=>{{const on=el.dataset.storageKind===kind;el.hidden=!on;el.querySelectorAll('input,textarea,select,button').forEach(x=>x.disabled=!on)}})}}
 async function storageDetectSftpKey(button){{

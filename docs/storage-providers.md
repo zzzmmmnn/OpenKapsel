@@ -2,10 +2,14 @@
 
 OpenKapsel can expose remote storage inside a workspace without synchronizing the
 whole remote into the server first. Storage Providers are server-managed rclone
-mounts. Version 1 supports:
+mounts. The built-in provider types are:
 
 - Google Drive
 - Dropbox
+- pCloud
+- Microsoft OneDrive
+- WebDAV
+- S3 Compatible
 - SFTP
 - SMB
 
@@ -120,6 +124,98 @@ Manual token JSON remains available under **Advanced**. A token generated with
 rclone's shared Dropbox application may still be pasted with blank client
 fields; browser OAuth through OpenKapsel requires your own Dropbox app key and
 secret.
+
+## pCloud
+
+pCloud uses rclone's `pcloud` backend. Create a pCloud application, register
+the exact **OAuth redirect URI** displayed in Administration, enter the app
+client ID and secret, then click **Connect pCloud**.
+
+pCloud accounts can live in the US or EU data region. During browser OAuth,
+pCloud returns the API hostname with the authorization callback; OpenKapsel
+validates it and pins the provider to either `api.pcloud.com` (US) or
+`eapi.pcloud.com` (EU). This avoids a valid EU token being used against the
+US API endpoint.
+
+pCloud access tokens are non-expiring, so their rclone token JSON does not need
+a refresh token. Manual rclone token JSON remains available under **Advanced**.
+For a manual token, choose the matching pCloud data region. Client ID and secret
+may both be left blank when the token was created with rclone's shared pCloud
+application; custom credentials must always be supplied as a pair.
+
+The optional **Remote path** selects a directory below the pCloud root.
+
+## Microsoft OneDrive
+
+Microsoft OneDrive uses rclone's `onedrive` backend. Register a Microsoft
+Entra application with the exact **OAuth redirect URI** shown by OpenKapsel and
+create a client secret. The browser flow requests delegated
+`Files.ReadWrite offline_access` permissions.
+
+This first implementation connects the signed-in user's **default OneDrive**.
+After the OAuth token exchange, OpenKapsel calls Microsoft Graph `/me/drive`
+and records the returned drive ID and drive type for rclone automatically. It
+does not browse or choose arbitrary SharePoint sites. The same narrow
+`Files.ReadWrite offline_access` scope is written to rclone's
+`access_scopes` setting so later refreshes do not expand the consent scope.
+
+Administration supports Microsoft's global cloud, US Government, China, and
+the legacy Germany region. The application registration must exist in the
+matching Microsoft cloud.
+
+Manual rclone token JSON remains available under **Advanced**. Manual setup also
+requires the target drive ID and drive type (`personal`, `business`, or
+`documentLibrary`). Client ID and secret may both be left blank for a token
+created with rclone's shared Microsoft application; custom credentials must be
+supplied as a pair.
+
+The optional **Remote path** selects a directory below the selected drive.
+
+## WebDAV
+
+WebDAV uses rclone's `webdav` backend. Supply the full WebDAV endpoint URL and
+choose the closest vendor preset. OpenKapsel currently exposes:
+
+- standard/other WebDAV
+- Nextcloud
+- ownCloud
+- ownCloud Infinite Scale
+- Fastmail Files
+- SharePoint Online
+- SharePoint with NTLM authentication
+- `rclone serve webdav`
+
+For authenticated endpoints, user and password/app-password must be supplied
+together. The password is passed to `rclone obscure` over stdin before the
+private rclone configuration is written. Both fields may be left empty only
+for an endpoint that intentionally permits anonymous WebDAV access.
+
+The optional **Remote path** is relative to the configured WebDAV endpoint.
+
+## S3 Compatible
+
+S3 Compatible uses rclone's generic `s3` backend with `provider = Other`.
+Supply the S3 API endpoint, access key ID, secret access key, and an optional
+region. Provider credentials remain in the provider's private 0600 rclone
+configuration and are not returned through OpenKapsel APIs.
+
+For S3, **Remote path** normally begins with the bucket name:
+
+```text
+bucket-name
+bucket-name/prefix
+```
+
+**Force path-style URLs** is enabled by default because it has the broadest
+compatibility with generic S3 implementations. It can be disabled for services
+that require virtual-host-style bucket addressing. **Use legacy S3 v2
+signatures** is an Advanced compatibility option and should be enabled only for
+old S3-compatible servers that do not support v4 signing.
+
+This generic provider is intended for S3-compatible services such as private
+MinIO/Ceph deployments and public object-storage services that expose the S3
+API. Provider-specific tuning can be added later without changing workspace
+mapping semantics.
 
 ## SFTP
 

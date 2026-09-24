@@ -29,6 +29,38 @@ class StorageHandlersMixin:
                 "client_secret": one(form, "client_secret"),
                 "token": one(form, "oauth_token"),
             }
+        if kind == "pcloud":
+            return {
+                "client_id": one(form, "client_id"),
+                "client_secret": one(form, "client_secret"),
+                "token": one(form, "oauth_token"),
+                "hostname": one(form, "pcloud_hostname") or "api.pcloud.com",
+            }
+        if kind == "onedrive":
+            return {
+                "client_id": one(form, "client_id"),
+                "client_secret": one(form, "client_secret"),
+                "token": one(form, "oauth_token"),
+                "region": one(form, "onedrive_region") or "global",
+                "drive_id": one(form, "drive_id"),
+                "drive_type": one(form, "drive_type"),
+            }
+        if kind == "webdav":
+            return {
+                "url": one(form, "webdav_url"),
+                "vendor": one(form, "webdav_vendor") or "other",
+                "user": one(form, "user"),
+                "password": one(form, "password"),
+            }
+        if kind == "s3":
+            return {
+                "endpoint": one(form, "s3_endpoint"),
+                "region": one(form, "s3_region"),
+                "access_key_id": one(form, "access_key_id"),
+                "secret_access_key": one(form, "secret_access_key"),
+                "force_path_style": one(form, "force_path_style") == "on",
+                "v2_auth": one(form, "v2_auth") == "on",
+            }
         if kind == "sftp":
             if one(form, "host_key_confirmed") != "on":
                 raise ValueError(
@@ -113,8 +145,10 @@ class StorageHandlersMixin:
                         create_values = None
                     else:
                         kind = manager.store.validate_kind(self._form_one(form, "kind"))
-                        if kind not in {"google_drive", "dropbox"}:
-                            raise ValueError("browser OAuth is supported only for Google Drive and Dropbox")
+                        if kind not in {"google_drive", "dropbox", "pcloud", "onedrive"}:
+                            raise ValueError(
+                                "browser OAuth is supported only for Google Drive, Dropbox, pCloud, and OneDrive"
+                            )
                         create_values = {
                             "name": manager.store.validate_provider_name(
                                 self._form_one(form, "name")
@@ -130,8 +164,10 @@ class StorageHandlersMixin:
                                 self._storage_cache_bytes(self._form_one(form, "cache_gib"))
                             ),
                         }
-                    if kind not in {"google_drive", "dropbox"}:
-                        raise ValueError("browser OAuth is supported only for Google Drive and Dropbox")
+                    if kind not in {"google_drive", "dropbox", "pcloud", "onedrive"}:
+                        raise ValueError(
+                            "browser OAuth is supported only for Google Drive, Dropbox, pCloud, and OneDrive"
+                        )
                     redirect_uri = (
                         self._public_base_url().rstrip("/")
                         + "/admin/storage-providers/oauth/callback"
@@ -144,6 +180,9 @@ class StorageHandlersMixin:
                         redirect_uri=redirect_uri,
                         provider_id=provider_id or None,
                         create_values=create_values,
+                        options={
+                            "region": self._form_one(form, "onedrive_region") or "global"
+                        },
                     )
                     self._send_storage_oauth_handoff(authorization_url)
                     return
@@ -231,12 +270,16 @@ class StorageHandlersMixin:
                 detail = detail[:500]
                 raise StorageOAuthError("OAuth authorization was not completed: " + detail)
             code = (query.get("code") or [""])[0]
-            token = self.server.storage_oauth.exchange(flow, code)
-            credentials = {
-                "client_id": flow.client_id,
-                "client_secret": flow.client_secret,
-                "token": token,
+            callback_values = {
+                key: (query.get(key) or [""])[0]
+                for key in ("hostname", "locationid")
+                if (query.get(key) or [""])[0]
             }
+            credentials = self.server.storage_oauth.exchange_credentials(
+                flow,
+                code,
+                callback_values,
+            )
             manager = self.server.storage_providers
             if flow.provider_id:
                 provider = manager.store.get(flow.provider_id)

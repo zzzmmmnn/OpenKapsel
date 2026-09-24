@@ -13,7 +13,16 @@ from pathlib import Path
 from openkapsel.random_ids import token_urlsafe_alnum
 
 
-PROVIDER_KINDS = ("google_drive", "dropbox", "sftp", "smb")
+PROVIDER_KINDS = (
+    "google_drive",
+    "dropbox",
+    "pcloud",
+    "onedrive",
+    "webdav",
+    "s3",
+    "sftp",
+    "smb",
+)
 DEFAULT_CACHE_MAX_BYTES = 1 * 1024 * 1024 * 1024
 MIN_CACHE_MAX_BYTES = 256 * 1024 * 1024
 MAX_CACHE_MAX_BYTES = 1024 * 1024 * 1024 * 1024
@@ -79,7 +88,10 @@ class StorageProviderStore:
     @staticmethod
     def validate_kind(kind: str) -> str:
         if kind not in PROVIDER_KINDS:
-            raise ValueError("storage provider kind must be google_drive, dropbox, sftp, or smb")
+            raise ValueError(
+                "storage provider kind must be google_drive, dropbox, pcloud, onedrive, "
+                "webdav, s3, sftp, or smb"
+            )
         return kind
 
     @staticmethod

@@ -143,6 +143,37 @@ class StorageOAuthFlowTests(unittest.TestCase):
         self.assertEqual(["offline"], params["token_access_type"])
         self.assertEqual([dropbox.state], params["state"])
 
+        pcloud, pcloud_url = flows.begin(
+            session_id="admin-session",
+            kind="pcloud",
+            client_id="pcloud-id",
+            client_secret="pcloud-secret",
+            redirect_uri=redirect,
+            create_values={"name": "pcloud"},
+        )
+        parsed = urlsplit(pcloud_url)
+        params = parse_qs(parsed.query)
+        self.assertEqual("my.pcloud.com", parsed.hostname)
+        self.assertEqual([redirect], params["redirect_uri"])
+        self.assertEqual([pcloud.state], params["state"])
+
+        onedrive, onedrive_url = flows.begin(
+            session_id="admin-session",
+            kind="onedrive",
+            client_id="onedrive-id",
+            client_secret="onedrive-secret",
+            redirect_uri=redirect,
+            create_values={"name": "onedrive"},
+            options={"region": "global"},
+        )
+        parsed = urlsplit(onedrive_url)
+        params = parse_qs(parsed.query)
+        self.assertEqual("login.microsoftonline.com", parsed.hostname)
+        self.assertEqual("/common/oauth2/v2.0/authorize", parsed.path)
+        self.assertIn("Files.ReadWrite", params["scope"][0])
+        self.assertIn("offline_access", params["scope"][0])
+        self.assertEqual([onedrive.state], params["state"])
+
         with self.assertRaises(StorageOAuthError):
             flows.consume(google.state, "other-session")
         self.assertEqual(google, flows.consume(google.state, "admin-session"))
@@ -186,6 +217,115 @@ class StorageOAuthFlowTests(unittest.TestCase):
         self.assertEqual("dropbox-secret", values["client_secret"])
         self.assertEqual(flow.redirect_uri, values["redirect_uri"])
 
+    def test_pcloud_exchange_uses_callback_hostname_and_nonexpiring_token(self):
+        flows = StorageOAuthFlows()
+        flow, _ = flows.begin(
+            session_id="admin-session",
+            kind="pcloud",
+            client_id="pcloud-id",
+            client_secret="pcloud-secret",
+            redirect_uri="https://example.test/kapsel/admin/storage-providers/oauth/callback",
+            provider_id="provider-id",
+        )
+
+        class Response:
+            content = b'{"access_token":"PCLOUD"}'
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "access_token": "PCLOUD",
+                    "token_type": "bearer",
+                }
+
+        with patch("httpx.post", return_value=Response()) as request:
+            credentials = flows.exchange_credentials(
+                flow,
+                "authorization-code",
+                {"hostname": "eapi.pcloud.com", "locationid": "2"},
+            )
+        self.assertEqual("eapi.pcloud.com", credentials["hostname"])
+        token = json.loads(credentials["token"])
+        self.assertEqual("PCLOUD", token["access_token"])
+        self.assertEqual("0001-01-01T00:00:00Z", token["expiry"])
+        self.assertNotIn("refresh_token", token)
+        self.assertEqual("https://eapi.pcloud.com/oauth2_token", request.call_args.args[0])
+        self.assertEqual("pcloud-secret", request.call_args.kwargs["data"]["client_secret"])
+        with self.assertRaises(StorageOAuthError):
+            flows._pcloud_hostname("evil.example")
+        with self.assertRaisesRegex(StorageOAuthError, "invalid API hostname"):
+            flows.exchange_credentials(flow, "authorization-code", {})
+
+    def test_onedrive_exchange_discovers_default_drive(self):
+        flows = StorageOAuthFlows()
+        flow, _ = flows.begin(
+            session_id="admin-session",
+            kind="onedrive",
+            client_id="onedrive-id",
+            client_secret="onedrive-secret",
+            redirect_uri="https://example.test/kapsel/admin/storage-providers/oauth/callback",
+            provider_id="provider-id",
+            options={"region": "global"},
+        )
+
+        class TokenResponse:
+            content = b'{"access_token":"ONEDRIVE"}'
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "access_token": "ONEDRIVE",
+                    "token_type": "Bearer",
+                    "refresh_token": "REFRESH",
+                    "expires_in": 3600,
+                }
+
+        class DriveResponse:
+            content = b'{"id":"drive-id","driveType":"business"}'
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "id": "drive-id",
+                    "driveType": "business",
+                    "name": "OneDrive",
+                }
+
+        with (
+            patch("httpx.post", return_value=TokenResponse()) as token_request,
+            patch("httpx.get", return_value=DriveResponse()) as drive_request,
+        ):
+            credentials = flows.exchange_credentials(flow, "authorization-code")
+        self.assertEqual("global", credentials["region"])
+        self.assertEqual("drive-id", credentials["drive_id"])
+        self.assertEqual("business", credentials["drive_type"])
+        token = json.loads(credentials["token"])
+        self.assertEqual("REFRESH", token["refresh_token"])
+        self.assertEqual(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            token_request.call_args.args[0],
+        )
+        self.assertEqual(
+            "https://graph.microsoft.com/v1.0/me/drive",
+            drive_request.call_args.args[0],
+        )
+        self.assertEqual(
+            "Bearer ONEDRIVE",
+            drive_request.call_args.kwargs["headers"]["Authorization"],
+        )
+
 
 class StorageProviderStoreTests(unittest.TestCase):
     def test_store_keeps_only_public_metadata(self):
@@ -205,6 +345,17 @@ class StorageProviderStoreTests(unittest.TestCase):
                 store.add_mapping(provider["id"], "workspace", "Google Drive")
             with self.assertRaises(sqlite3.IntegrityError):
                 store.add_mapping(provider["id"], "workspace", "drive")
+
+    def test_store_accepts_v2_provider_kinds_without_storing_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = StorageProviderStore(Path(directory) / "storage.sqlite3")
+            for kind in ("pcloud", "onedrive", "webdav", "s3"):
+                with self.subTest(kind=kind):
+                    provider = store.create(kind, kind)
+                    self.assertEqual(kind, provider["kind"])
+                    self.assertNotIn("credentials", provider)
+            with self.assertRaises(ValueError):
+                store.create("unsupported", "mega")
 
 
 class SFTPHostKeyDetectionTests(unittest.TestCase):
@@ -342,6 +493,153 @@ class HostStorageProviderTests(unittest.TestCase):
             obscure = next(call for call in runner.calls if call[0][1] == "obscure")
             self.assertEqual("secret\n", obscure[1]["input"])
             self.assertNotIn("secret", " ".join(obscure[0]))
+
+    def test_v2_provider_configs_are_private_and_rclone_compatible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, runner = self.make_host(directory)
+            cases = [
+                (
+                    "p" * 24,
+                    "pcloud",
+                    {
+                        "client_id": "",
+                        "client_secret": "",
+                        "token": '{"access_token":"PCLOUD"}',
+                        "hostname": "eapi.pcloud.com",
+                    },
+                    [
+                        "type = pcloud",
+                        "hostname = eapi.pcloud.com",
+                        'token = {"access_token":"PCLOUD"}',
+                    ],
+                ),
+                (
+                    "o" * 24,
+                    "onedrive",
+                    {
+                        "client_id": "",
+                        "client_secret": "",
+                        "token": '{"access_token":"ONEDRIVE"}',
+                        "region": "global",
+                        "drive_id": "drive-id",
+                        "drive_type": "business",
+                    },
+                    [
+                        "type = onedrive",
+                        "region = global",
+                        "access_scopes = Files.ReadWrite offline_access",
+                        "drive_id = drive-id",
+                        "drive_type = business",
+                        'token = {"access_token":"ONEDRIVE"}',
+                    ],
+                ),
+                (
+                    "w" * 24,
+                    "webdav",
+                    {
+                        "url": "https://cloud.example.test/remote.php/dav/files/alice/",
+                        "vendor": "nextcloud",
+                        "user": "alice",
+                        "password": "webdav-secret",
+                    },
+                    [
+                        "type = webdav",
+                        "url = https://cloud.example.test/remote.php/dav/files/alice/",
+                        "vendor = nextcloud",
+                        "user = alice",
+                        "pass = OBSCURED",
+                    ],
+                ),
+                (
+                    "s" * 24,
+                    "s3",
+                    {
+                        "endpoint": "https://s3.example.test",
+                        "region": "us-test-1",
+                        "access_key_id": "ACCESS",
+                        "secret_access_key": "SECRET",
+                        "force_path_style": True,
+                        "v2_auth": True,
+                    },
+                    [
+                        "type = s3",
+                        "provider = Other",
+                        "env_auth = false",
+                        "access_key_id = ACCESS",
+                        "secret_access_key = SECRET",
+                        "region = us-test-1",
+                        "endpoint = https://s3.example.test",
+                        "force_path_style = true",
+                        "v2_auth = true",
+                    ],
+                ),
+            ]
+            for provider_id, kind, settings, expected in cases:
+                with self.subTest(kind=kind):
+                    self.assertEqual(
+                        {"configured": True},
+                        host.configure(provider_id, kind, settings),
+                    )
+                    config_path = Path(directory) / "storage" / provider_id / "rclone.conf"
+                    config = config_path.read_text()
+                    self.assertEqual(0o600, config_path.stat().st_mode & 0o777)
+                    for line in expected:
+                        self.assertIn(line, config)
+                    self.assertNotIn("webdav-secret", config)
+            obscure = [
+                kwargs
+                for argv, kwargs in runner.calls
+                if len(argv) >= 2 and argv[1] == "obscure"
+            ]
+            self.assertTrue(
+                any(kwargs.get("input") == "webdav-secret\n" for kwargs in obscure)
+            )
+
+    def test_v2_provider_config_validation_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, _runner = self.make_host(directory)
+            with self.assertRaisesRegex(WorkspaceImageError, "pCloud API hostname"):
+                host.configure(
+                    "p" * 24,
+                    "pcloud",
+                    {
+                        "token": '{"access_token":"x"}',
+                        "hostname": "evil.example",
+                    },
+                )
+            with self.assertRaisesRegex(WorkspaceImageError, "OneDrive drive type"):
+                host.configure(
+                    "o" * 24,
+                    "onedrive",
+                    {
+                        "token": '{"access_token":"x"}',
+                        "region": "global",
+                        "drive_id": "drive",
+                        "drive_type": "unknown",
+                    },
+                )
+            with self.assertRaisesRegex(WorkspaceImageError, "WebDAV user and password"):
+                host.configure(
+                    "w" * 24,
+                    "webdav",
+                    {
+                        "url": "https://dav.example",
+                        "vendor": "other",
+                        "user": "alice",
+                        "password": "",
+                    },
+                )
+            with self.assertRaisesRegex(WorkspaceImageError, "S3 force path style"):
+                host.configure(
+                    "s" * 24,
+                    "s3",
+                    {
+                        "endpoint": "https://s3.example",
+                        "access_key_id": "a",
+                        "secret_access_key": "b",
+                        "force_path_style": "true",
+                    },
+                )
 
     def test_mount_is_lazy_vfs_with_bounded_per_provider_cache(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -724,7 +1022,15 @@ class StorageProviderHTTPTests(unittest.TestCase):
             '"refresh_token":"REFRESH","expiry":"2030-01-01T00:00:00Z"}'
         )
         callback = urlsplit(redirect_uri).path + "?state=" + state + "&code=oauth-code"
-        with patch.object(self.server.storage_oauth, "exchange", return_value=token):
+        with patch.object(
+            self.server.storage_oauth,
+            "exchange_credentials",
+            return_value={
+                "client_id": "google-client-id",
+                "client_secret": "google-client-secret",
+                "token": token,
+            },
+        ):
             status, _, raw = self.request("GET", callback, headers=auth)
         self.assertEqual(200, status, raw)
         page = raw.decode()
@@ -746,6 +1052,80 @@ class StorageProviderHTTPTests(unittest.TestCase):
         status, _, raw = self.request("GET", callback, headers=auth)
         self.assertEqual(200, status, raw)
         self.assertIn("missing, expired, or already used", raw.decode())
+
+    def test_admin_pcloud_oauth_preserves_detected_eu_hostname(self):
+        status, headers, _ = self.form(
+            "/kapsel/admin/login",
+            {"username": "admin", "password": "test-password-123"},
+        )
+        self.assertEqual(303, status)
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        auth = {"Cookie": cookie}
+        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
+        path = "/kapsel/admin/storage-providers"
+        status, _, raw = self.form(
+            path,
+            {
+                "action": "oauth_start",
+                "name": "pCloud EU",
+                "kind": "pcloud",
+                "remote_path": "Projects",
+                "cache_gib": "1",
+                "client_id": "pcloud-id",
+                "client_secret": "pcloud-secret",
+                "pcloud_hostname": "api.pcloud.com",
+                "csrf": session.csrf,
+            },
+            auth,
+        )
+        self.assertEqual(200, status, raw)
+        match = re.search(
+            r'<a href="([^"]+)">Continue to authorization</a>',
+            raw.decode(),
+        )
+        authorization = urlsplit(html.unescape(match.group(1)))
+        self.assertEqual("my.pcloud.com", authorization.hostname)
+        params = parse_qs(authorization.query)
+        state = params["state"][0]
+        redirect_uri = params["redirect_uri"][0]
+        callback = (
+            urlsplit(redirect_uri).path
+            + "?state="
+            + state
+            + "&code=oauth-code&hostname=eapi.pcloud.com&locationid=2"
+        )
+        token = (
+            '{"access_token":"PCLOUD","token_type":"bearer",'
+            '"expiry":"0001-01-01T00:00:00Z"}'
+        )
+        with patch.object(
+            self.server.storage_oauth,
+            "exchange_credentials",
+            return_value={
+                "client_id": "pcloud-id",
+                "client_secret": "pcloud-secret",
+                "hostname": "eapi.pcloud.com",
+                "token": token,
+            },
+        ) as exchange:
+            status, _, raw = self.request("GET", callback, headers=auth)
+        self.assertEqual(200, status, raw)
+        self.assertIn("Storage provider connected with OAuth and mounted.", raw.decode())
+        flow, code, callback_values = exchange.call_args.args
+        self.assertEqual("pcloud", flow.kind)
+        self.assertEqual("oauth-code", code)
+        self.assertEqual(
+            {"hostname": "eapi.pcloud.com", "locationid": "2"},
+            callback_values,
+        )
+        configure = next(
+            values
+            for action, values in self.server.storage_providers.helper.calls
+            if action == "storage_configure"
+        )
+        self.assertEqual("pcloud", configure["kind"])
+        self.assertEqual("eapi.pcloud.com", configure["settings"]["hostname"])
+        self.assertNotIn("PCLOUD", raw.decode())
 
     def test_admin_storage_provider_credentials_are_write_only(self):
         status, headers, _ = self.form(
@@ -808,6 +1188,84 @@ class StorageProviderHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, raw)
         self.assertIn("Storage provider forcibly deleted.", raw.decode())
         self.assertEqual([], self.server.storage_providers.store.list())
+
+    def test_admin_webdav_and_s3_fields_reach_private_helper_only(self):
+        status, headers, _ = self.form(
+            "/kapsel/admin/login",
+            {"username": "admin", "password": "test-password-123"},
+        )
+        self.assertEqual(303, status)
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        auth = {"Cookie": cookie}
+        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
+        path = "/kapsel/admin/storage-providers"
+
+        webdav_secret = "WEBDAV-PRIVATE"
+        status, _, raw = self.form(
+            path,
+            {
+                "action": "create",
+                "name": "Nextcloud",
+                "kind": "webdav",
+                "remote_path": "Documents",
+                "cache_gib": "1",
+                "webdav_url": "https://cloud.example.test/remote.php/dav/files/alice/",
+                "webdav_vendor": "nextcloud",
+                "user": "alice",
+                "password": webdav_secret,
+                "csrf": session.csrf,
+            },
+            auth,
+        )
+        self.assertEqual(200, status, raw)
+        self.assertIn("Storage provider created and mounted.", raw.decode())
+        self.assertNotIn(webdav_secret, raw.decode())
+
+        s3_secret = "S3-PRIVATE"
+        status, _, raw = self.form(
+            path,
+            {
+                "action": "create",
+                "name": "Object Store",
+                "kind": "s3",
+                "remote_path": "bucket/prefix",
+                "cache_gib": "1",
+                "writable": "on",
+                "s3_endpoint": "https://objects.example.test",
+                "s3_region": "us-test-1",
+                "access_key_id": "ACCESS",
+                "secret_access_key": s3_secret,
+                "force_path_style": "on",
+                "v2_auth": "on",
+                "csrf": session.csrf,
+            },
+            auth,
+        )
+        self.assertEqual(200, status, raw)
+        page = raw.decode()
+        self.assertIn("Storage provider created and mounted.", page)
+        self.assertNotIn(s3_secret, page)
+        self.assertIn("Microsoft OneDrive", page)
+        self.assertIn("S3 Compatible", page)
+        self.assertIn("WebDAV URL", page)
+
+        configure = [
+            values
+            for action, values in self.server.storage_providers.helper.calls
+            if action == "storage_configure"
+        ]
+        webdav = next(values for values in configure if values["kind"] == "webdav")
+        s3 = next(values for values in configure if values["kind"] == "s3")
+        self.assertEqual(webdav_secret, webdav["settings"]["password"])
+        self.assertEqual("nextcloud", webdav["settings"]["vendor"])
+        self.assertEqual(s3_secret, s3["settings"]["secret_access_key"])
+        self.assertTrue(s3["settings"]["force_path_style"])
+        self.assertTrue(s3["settings"]["v2_auth"])
+        providers = self.server.storage_providers.store.list()
+        self.assertEqual({"s3", "webdav"}, {item["kind"] for item in providers})
+        for provider in providers:
+            self.assertNotIn("settings", provider)
+            self.assertNotIn("credentials", provider)
 
     def test_admin_sftp_detect_requires_explicit_host_key_confirmation(self):
         status, headers, _ = self.form(
