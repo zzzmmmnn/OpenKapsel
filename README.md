@@ -23,6 +23,7 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Expose focused Discovery documents, a portable REST Skill, and a stateless Streamable HTTP MCP endpoint.
 - Connect remote MCP clients through individually revocable OAuth connections with stable URLs and control-token owner-approved access.
 - Manage token lifetimes, permissions, workspace images, sandbox limits, preview credentials, and administrator credentials from a browser console.
+- Mount Google Drive, Dropbox, SFTP, and SMB as server-managed Storage Providers, then bind them into selected workspace directories without pre-downloading the remote dataset.
 
 ## Credential model
 
@@ -42,6 +43,8 @@ The supported layout is:
 - configuration and token registry: `/var/lib/openkapsel`
 - Workspace Root: `/var/lib/openkapsel/workspace`
 - service account: the non-login `openkapsel` user
+- Storage Provider account: the separate non-login `openkapsel-storage` user
+- private Storage Provider mounts/cache: `/var/lib/openkapsel/storage-providers`
 - public HTTPS and routing: an existing reverse proxy such as Caddy
 
 Run from the project directory:
@@ -130,6 +133,7 @@ The Python package is grouped by functional domain rather than kept as one flat 
 - `openkapsel/mapping/`: provider transport, registry, RPC/native mapping, transfers, and mapping administration.
 - `openkapsel/rpc_plugins/`: extensible client RPC families.
 - `openkapsel/server_runtime/`: server configuration, listener lifecycle, dispatch, Context/task HTTP, and shared HTTP support.
+- `openkapsel/storage/`: rclone-backed Storage Providers, private credentials, lifecycle, workspace binds, and administration.
 - `openkapsel/workspace/`: workspace layout and workspace-image helpers.
 
 `server.py` and `client.py` remain stable top-level entry points; only genuinely cross-cutting primitives remain beside them.
@@ -157,6 +161,7 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 - [Installation and reverse proxy](docs/installation.md): production layout, migration, path grants, Caddy, timeouts, and verification.
 - [Authentication and administration](docs/authentication-and-administration.md): credentials, Discovery, token settings, renewal, and workspace images.
 - [Static MCP connections](docs/static-mcp-connections.md): fixed Bearer credentials, client JSON, independent expiry, and revocation.
+- [Storage Providers](docs/storage-providers.md): Google Drive, Dropbox, SFTP and SMB mounts, lazy VFS cache, credential isolation, and workspace bindings.
 - [OAuth connections](docs/oauth-connections.md): remote MCP onboarding, consent, client registration, refresh, and revocation.
 - [Sandboxing and networking](docs/sandboxing-and-networking.md): Bubblewrap, Podman, cgroups, path isolation, and domain-restricted egress.
 - [REST files, transfers, and sharing](docs/rest-files-and-transfers.md): endpoints, mutation context, ETags, recycle, large files, and temporary shares.

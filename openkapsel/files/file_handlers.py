@@ -52,16 +52,21 @@ class FileHandlersMixin(FileOperationSupportMixin):
         entries.sort(key=lambda item: (item[1] != "directory", item[0].casefold()))
         selected = entries[offset : offset + limit]
         result = []
+        storage_providers = getattr(self.server, "storage_providers", None)
         for name, kind, item_stat in selected:
-            mapping = self.server.mappings.at_path(path / name)
+            entry_path = path / name
+            mapping = self.server.mappings.at_path(entry_path)
+            storage_mapping = storage_providers.mapping_at_path(entry_path) if storage_providers is not None else None
             result.append(
                 {
                     "name": name,
-                    "path": str(path / name),
+                    "path": str(entry_path),
                     "type": kind,
                     "size": item_stat.st_size,
                     "modified_at": datetime.fromtimestamp(item_stat.st_mtime, timezone.utc).isoformat(),
-                    **({"is_mapping": True, "mapping_id": mapping["id"]} if mapping and self.server.mappings.mount_path(mapping) == path / name else {}),
+                    **({"is_mapping": True, "mapping_id": mapping["id"]} if mapping and self.server.mappings.mount_path(mapping) == entry_path else {}),
+                    **({"is_storage_provider": True, "storage_provider_id": storage_mapping["provider_id"], "storage_mapping_id": storage_mapping["id"]}
+                       if storage_mapping and storage_providers is not None and storage_providers.mapping_path(storage_mapping) == entry_path else {}),
                 }
             )
         self._send_json(
@@ -1097,6 +1102,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
             self._optional_bool(body, "recursive", False)
         if path == self.token_scope_root:
             raise ApiError(HTTPStatus.FORBIDDEN, "root_protected", "the token workspace root cannot be deleted")
+        storage_providers = getattr(self.server, "storage_providers", None)
+        if storage_providers is not None and storage_providers.is_mapping_root(path):
+            raise ApiError(HTTPStatus.FORBIDDEN, "storage_mapping_root_protected", "a Storage Provider mapping root cannot be deleted")
         try:
             path.relative_to(self.token_scope_root)
         except ValueError:
@@ -1244,6 +1252,11 @@ class FileHandlersMixin(FileOperationSupportMixin):
         create_parents = self._optional_bool(body, "create_parents", False)
         if source == self.token_scope_root or destination == self.token_scope_root:
             raise ApiError(HTTPStatus.FORBIDDEN, "root_protected", "the token root cannot be moved or replaced")
+        storage_providers = getattr(self.server, "storage_providers", None)
+        if storage_providers is not None and (
+            storage_providers.is_mapping_root(source) or storage_providers.is_mapping_root(destination)
+        ):
+            raise ApiError(HTTPStatus.FORBIDDEN, "storage_mapping_root_protected", "a Storage Provider mapping root cannot be moved or replaced")
         try:
             self.server.mappings.check_path(source, write=True, protect_root=True)
             self.server.mappings.check_path(destination, write=True, protect_root=True)

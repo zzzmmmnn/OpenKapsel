@@ -479,6 +479,8 @@ class MappingHandlersMixin:
                         raise ValueError("select an active workspace")
                     name = self._form_one(form, "name")
                     scope = self.server.tokens.scope_root(record)
+                    if self.server.storage_providers.path_reserved(record.path_prefix, name):
+                        raise ValueError("mapping name is reserved by a Storage Provider")
                     if (scope / name).exists() or (scope / name).is_symlink():
                         raise ValueError("mapping name already exists in the workspace")
                     row, secret = manager.store.create(record.path_prefix, name,
@@ -505,6 +507,8 @@ class MappingHandlersMixin:
                             workspace = self._form_one(form, "workspace") or row["workspace"]
                             if not any(record.valid and record.path_prefix == workspace for record in self.server.tokens.list()):
                                 raise ValueError("select an active workspace")
+                            if self.server.storage_providers.path_reserved(workspace, name):
+                                raise ValueError("mapping name is reserved by a Storage Provider")
                             row = manager.relocate(mid, workspace, name)
                         row, secret = manager.store.update(mid, rotate=action == "rotate", **({
                             "comment": self._form_one(form, "comment"), "writable": self._form_one(form, "writable") == "on",

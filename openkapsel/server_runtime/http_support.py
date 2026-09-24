@@ -31,11 +31,19 @@ class HttpSupportMixin:
         candidate = Path(value).expanduser() if value else root
         if not candidate.is_absolute():
             candidate = root / candidate
+        candidate = Path(os.path.abspath(candidate))
         try:
-            self.server.mappings.check_path(Path(os.path.abspath(candidate)), write=write, protect_root=write)
+            self.server.mappings.check_path(candidate, write=write, protect_root=write)
         except OSError as exc:
             raise ApiError(403 if exc.errno in {errno.EROFS, errno.EBUSY} else 503, "mapping_unavailable", "mapping is protected, read-only, or offline") from None
-        candidate = Path(os.path.abspath(candidate))
+        try:
+            self.server.storage_providers.check_path(candidate, write=write, protect_root=write)
+        except OSError as exc:
+            raise ApiError(
+                403 if exc.errno in {errno.EROFS, errno.EBUSY} else 503,
+                "storage_provider_unavailable",
+                "Storage Provider mapping is protected, read-only, or offline",
+            ) from None
         resolved = candidate if self.server.mappings.at_path(candidate) else candidate.resolve(strict=False)
         self._assert_inside_root(resolved)
         if write:

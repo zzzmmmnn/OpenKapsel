@@ -22,6 +22,7 @@ from openkapsel.files.file_handlers import FileHandlersMixin
 from openkapsel.files.git_handlers import GitHandlersMixin
 from openkapsel.files.share_handlers import ShareHandlersMixin
 from openkapsel.mapping.mapping_handlers import MappingHandlersMixin
+from openkapsel.storage.storage_handlers import StorageHandlersMixin
 
 from .context_http import ContextHttpMixin
 from .dispatch import RequestDispatchMixin
@@ -39,6 +40,7 @@ class WorkspaceRequestHandler(
     GitHandlersMixin,
     ArchiveHandlersMixin,
     MappingHandlersMixin,
+    StorageHandlersMixin,
     AdminHandlersMixin,
     OAuthHandlersMixin,
     StaticMcpHandlersMixin,

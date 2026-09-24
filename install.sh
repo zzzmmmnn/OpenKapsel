@@ -4,8 +4,13 @@ set -Eeuo pipefail
 SERVICE_NAME=openkapsel
 SERVICE_USER=openkapsel
 SERVICE_GROUP=openkapsel
+STORAGE_USER=openkapsel-storage
+STORAGE_GROUP=openkapsel-storage
 INSTALL_DIR=/opt/openkapsel
 DATA_DIR=/var/lib/openkapsel
+STORAGE_ROOT=/var/lib/openkapsel/storage-providers
+STORAGE_HOME=/var/lib/openkapsel/storage-home
+RCLONE_MIN_VERSION=1.60.0
 CONFIG_FILE=/var/lib/openkapsel/config.json
 WORKSPACE_ROOT=/var/lib/openkapsel/workspace
 TASK_HISTORY_DIR=/var/lib/openkapsel/tasks
@@ -103,6 +108,19 @@ verify_installation() {
         fi
     done
     id "$SERVICE_USER" >/dev/null 2>&1 || { printf 'missing user: %s\n' "$SERVICE_USER" >&2; failed=1; }
+    id "$STORAGE_USER" >/dev/null 2>&1 || { printf 'missing user: %s\n' "$STORAGE_USER" >&2; failed=1; }
+    if command -v rclone >/dev/null 2>&1; then
+        local rclone_version
+        rclone_version=$(rclone version 2>/dev/null | sed -n '1{s/^rclone v//; s/[^0-9.].*$//; p;}')
+        if [[ -z $rclone_version || $(printf '%s\n%s\n' "$RCLONE_MIN_VERSION" "$rclone_version" | sort -V | head -n1) != "$RCLONE_MIN_VERSION" ]]; then
+            printf 'warning: Storage Providers require rclone >= %s (found %s)\n' "$RCLONE_MIN_VERSION" "${rclone_version:-unknown}" >&2
+        fi
+    else
+        printf 'warning: Storage Providers unavailable: rclone is not installed\n' >&2
+    fi
+    if ! command -v fusermount3 >/dev/null 2>&1 && ! command -v fusermount >/dev/null 2>&1; then
+        printf 'warning: Storage Providers unavailable: fusermount3/fusermount is not installed\n' >&2
+    fi
     [[ $(id -u "$SERVICE_USER" 2>/dev/null || printf 0) -ne 0 ]] || {
         printf '%s must not be root\n' "$SERVICE_USER" >&2
         failed=1
@@ -117,6 +135,16 @@ verify_installation() {
     [[ -d $TASK_HISTORY_DIR ]] || { printf 'missing task history: %s\n' "$TASK_HISTORY_DIR" >&2; failed=1; }
     [[ -d $DATA_DIR/shares ]] || { printf 'missing share store: %s\n' "$DATA_DIR/shares" >&2; failed=1; }
     [[ -d $DATA_DIR/network-proxies ]] || { printf 'missing network proxy store: %s\n' "$DATA_DIR/network-proxies" >&2; failed=1; }
+    [[ -d $STORAGE_ROOT ]] || { printf 'missing Storage Provider store: %s\n' "$STORAGE_ROOT" >&2; failed=1; }
+    [[ -d $STORAGE_HOME ]] || { printf 'missing Storage Provider home: %s\n' "$STORAGE_HOME" >&2; failed=1; }
+    [[ $(stat -c '%U:%G:%a' "$STORAGE_ROOT" 2>/dev/null) == "$STORAGE_USER:$STORAGE_GROUP:700" ]] || {
+        printf 'Storage Provider store must be %s:%s mode 0700\n' "$STORAGE_USER" "$STORAGE_GROUP" >&2
+        failed=1
+    }
+    [[ $(stat -c '%U:%G:%a' "$STORAGE_HOME" 2>/dev/null) == "$STORAGE_USER:$STORAGE_GROUP:700" ]] || {
+        printf 'Storage Provider home must be %s:%s mode 0700\n' "$STORAGE_USER" "$STORAGE_GROUP" >&2
+        failed=1
+    }
     [[ $(stat -c '%U:%G:%a' "$DATA_DIR/shares" 2>/dev/null) == "$SERVICE_USER:$SERVICE_GROUP:700" ]] || {
         printf 'share store must be %s:%s mode 0700\n' "$SERVICE_USER" "$SERVICE_GROUP" >&2
         failed=1
@@ -237,7 +265,7 @@ if ((INSTALL_PACKAGES)); then
     apt-get update
     apt-get install -y --no-install-recommends \
         python3 python3-venv bubblewrap rootlesskit slirp4netns uidmap acl ca-certificates curl git e2fsprogs util-linux \
-        fontconfig fonts-dejavu-core fonts-noto-core fonts-noto-cjk libfuse2 fuse3
+        fontconfig fonts-dejavu-core fonts-noto-core fonts-noto-cjk libfuse2 fuse3 rclone
     if ((ENABLE_PODMAN)); then
         apt-get install -y --no-install-recommends podman crun fuse-overlayfs
     fi
@@ -248,6 +276,11 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
         --user-group "$SERVICE_USER"
 fi
 [[ $(id -u "$SERVICE_USER") -ne 0 ]] || die "$SERVICE_USER unexpectedly has uid 0"
+if ! id "$STORAGE_USER" >/dev/null 2>&1; then
+    useradd --create-home --home-dir "$STORAGE_HOME" --shell /usr/sbin/nologin \
+        --user-group "$STORAGE_USER"
+fi
+[[ $(id -u "$STORAGE_USER") -ne 0 ]] || die "$STORAGE_USER unexpectedly has uid 0"
 
 # Debian's useradd normally allocates subordinate IDs for regular users. If a
 # locally customized login.defs did not, allocate the next non-overlapping block.
@@ -304,7 +337,18 @@ install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$DATA_DIR/uploads"
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$DATA_DIR/shares"
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$DATA_DIR/network-proxies"
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$TASK_HISTORY_DIR"
+install -d -o "$STORAGE_USER" -g "$STORAGE_GROUP" -m 0700 "$STORAGE_ROOT"
+install -d -o "$STORAGE_USER" -g "$STORAGE_GROUP" -m 0700 "$STORAGE_HOME"
 install -d -o root -g root -m 0700 "$IMAGE_DIR"
+if [[ -e /etc/fuse.conf ]]; then
+    grep -Eq '^[[:space:]]*user_allow_other([[:space:]]|$)' /etc/fuse.conf || printf '%s\n' user_allow_other >>/etc/fuse.conf
+else
+    printf '%s\n' user_allow_other >/etc/fuse.conf
+    chmod 0644 /etc/fuse.conf
+fi
+if getent group fuse >/dev/null 2>&1; then
+    usermod -a -G fuse "$STORAGE_USER"
+fi
 
 OLD_CONFIG=
 if [[ -n $MIGRATE_FROM ]]; then
@@ -430,8 +474,11 @@ fi
 
 # Do not traverse mounted workspace images during upgrades; their filesystem
 # roots and contents already belong to the service user.
-find "$DATA_DIR" -xdev -exec chown -h "$SERVICE_USER:$SERVICE_GROUP" {} +
-chmod 0700 "$DATA_DIR" "$DATA_DIR/home" "$DATA_DIR/run" "$DATA_DIR/uploads" "$DATA_DIR/shares" "$DATA_DIR/network-proxies" "$TASK_HISTORY_DIR" "$WORKSPACE_ROOT"
+find "$DATA_DIR" -xdev \
+    \( -path "$STORAGE_ROOT" -o -path "$STORAGE_HOME" \) -prune -o \
+    -exec chown -h "$SERVICE_USER:$SERVICE_GROUP" {} +
+chown "$STORAGE_USER:$STORAGE_GROUP" "$STORAGE_ROOT" "$STORAGE_HOME"
+chmod 0700 "$DATA_DIR" "$DATA_DIR/home" "$DATA_DIR/run" "$DATA_DIR/uploads" "$DATA_DIR/shares" "$DATA_DIR/network-proxies" "$TASK_HISTORY_DIR" "$WORKSPACE_ROOT" "$STORAGE_ROOT" "$STORAGE_HOME"
 chmod 0600 "$CONFIG_FILE"
 [[ ! -f $DATA_DIR/tokens.json ]] || chmod 0600 "$DATA_DIR/tokens.json"
 

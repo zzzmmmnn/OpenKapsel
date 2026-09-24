@@ -34,6 +34,9 @@ class AdminHandlersMixin:
         if path == "/admin/mappings":
             self._handle_admin_mappings(method)
             return
+        if path == "/admin/storage-providers":
+            self._handle_admin_storage_providers(method)
+            return
         if path == "/admin/static-mcp" or path == "/admin/oauth" or path.startswith("/admin/oauth/"):
             self._handle_admin_oauth(method, path, raw_query)
             return
@@ -430,6 +433,8 @@ class AdminHandlersMixin:
         success: str | None = None,
         active_panel: str = "tokens",
         mapping_message: str = "",
+        storage_message: str = "",
+        storage_delete_warning: dict | None = None,
     ) -> None:
         images = []
         images_error = None
@@ -463,6 +468,10 @@ class AdminHandlersMixin:
                 mappings=self.server.mappings.list(),
                 mappings_enabled=self.server.config.mappings_enabled,
                 mapping_message=mapping_message,
+                storage_providers=self.server.storage_providers.list(),
+                storage_capability=self.server.storage_providers.probe(),
+                storage_message=storage_message,
+                storage_delete_warning=storage_delete_warning,
             ),
         )
 

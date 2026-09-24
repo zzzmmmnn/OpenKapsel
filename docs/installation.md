@@ -22,8 +22,10 @@ The installer uses the following layout:
 - `/var/lib/openkapsel/network-proxies`: ephemeral token-scoped proxy sockets
 - `/var/lib/openkapsel/home`: service-account home and rootless Podman storage
 - `/var/lib/openkapsel/run`: service-account runtime directory
+- `/var/lib/openkapsel/storage-providers`: private rclone configurations, mountpoints, and per-provider VFS caches owned by `openkapsel-storage`
+- `/var/lib/openkapsel/storage-home`: home directory for the non-login `openkapsel-storage` account
 
-The `openkapsel` service account has no interactive login. OpenKapsel does not use `/root` or a human user's home directory.
+The `openkapsel` service account has no interactive login. OpenKapsel does not use `/root` or a human user's home directory. Storage Provider credentials use a separate non-login `openkapsel-storage` account; upgrades deliberately exclude its private directories from the recursive ownership repair applied to ordinary OpenKapsel state.
 
 The installer has been tested on Ubuntu 24.04 with Bubblewrap 0.9.0. Restricted sandboxing, cgroup limits, and workspace images require Linux. Python 3.10 or later is required.
 
@@ -37,7 +39,7 @@ sudo ./install.sh
 
 The installer creates an eight-character random administrator name and a sixteen-character random password on first installation. They are printed once. Existing credentials are preserved during upgrades.
 
-The default installation provides Python, venv, Bubblewrap, RootlessKit, slirp4netns, uidmap, ACL tools, Git, curl, e2fsprogs, util-linux, CA certificates, Fontconfig, DejaVu and Noto fonts, and all declared Python dependencies. Install and enable Podman with:
+The default Debian/Ubuntu installation provides Python, venv, Bubblewrap, RootlessKit, slirp4netns, uidmap, ACL tools, Git, curl, rclone, FUSE, e2fsprogs, util-linux, CA certificates, Fontconfig, DejaVu and Noto fonts, and all declared Python dependencies. Storage Providers require rclone 1.60.0 or newer; an older or missing rclone leaves the core service usable but the Storage Provider capability unavailable. Hosts using `--no-package-install` must provide optional Storage Provider dependencies themselves when that feature is needed. Install and enable Podman with:
 
 ```bash
 sudo ./install.sh --with-podman
@@ -166,6 +168,8 @@ caddy reload --config /path/to/Caddyfile --adapter caddyfile
 
 ```bash
 systemctl is-active openkapsel openkapsel-images
+rclone version
+fusermount3 --version
 curl -I https://ws.example.com/kapsel/admin
 curl -I https://preview.example.com/
 ```

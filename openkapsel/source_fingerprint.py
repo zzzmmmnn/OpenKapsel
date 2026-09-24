@@ -45,6 +45,17 @@ SERVER_FILES = (
     "openkapsel/mapping/mapping_transfers.py",
     "openkapsel/mapping/mapping_ui.py",
     "openkapsel/mapping/mapping_uploads.py",
+    "openkapsel/storage/__init__.py",
+    "openkapsel/storage/storage_handlers.py",
+    "openkapsel/storage/storage_host.py",
+    "openkapsel/storage/storage_manager.py",
+    "openkapsel/storage/storage_store.py",
+    "openkapsel/storage/storage_ui.py",
+    "openkapsel/auth/admin_handlers.py",
+    "openkapsel/auth/admin_ui.py",
+    "openkapsel/files/file_handlers.py",
+    "openkapsel/workspace/workspace_image_helper.py",
+    "openkapsel/workspace/workspace_images.py",
     "openkapsel/execution/shell_routing.py",
 )
 
@@ -154,7 +165,16 @@ def guarded_source_files(root: str | Path, side: str) -> set[str]:
             path.relative_to(root).as_posix()
             for path in (root / "openkapsel" / "server_runtime").glob("*.py")
         )
-        result.add("openkapsel/execution/shell_routing.py")
+        result.update(
+            path.relative_to(root).as_posix()
+            for path in (root / "openkapsel" / "storage").glob("*.py")
+        )
+        result.update({
+            "openkapsel/auth/admin_handlers.py", "openkapsel/auth/admin_ui.py",
+            "openkapsel/files/file_handlers.py",
+            "openkapsel/workspace/workspace_image_helper.py", "openkapsel/workspace/workspace_images.py",
+            "openkapsel/execution/shell_routing.py",
+        })
     elif side == "client":
         result.update(
             path.relative_to(root).as_posix()

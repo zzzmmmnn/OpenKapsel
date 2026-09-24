@@ -34,9 +34,9 @@ class MappingHTTPTests(unittest.TestCase):
         config = json.loads(html.unescape(re.search(r'<pre[^>]*id="mapping-client-config"[^>]*>(.*?)</pre>', page, re.S)[1]))
         self.assertIn('class="admin-shell" data-initial-panel="mappings"', page)
         self.assertIn('data-admin-tab="mappings"', page)
-        self.assertIn("'static-mcp','mappings']", page)
+        self.assertIn("'static-mcp','mappings','storage']", page)
         self.assertIn('action="/kapsel/admin/mappings"', page)
-        for icon in ("🔑", "💾", "🔒", "🔗", "🔌", "🗂️", "🚪"):
+        for icon in ("🔑", "💾", "🔒", "🔗", "🔌", "🗂️", "☁️", "🚪"):
             self.assertIn(icon, page)
         row = self.server.mappings.store.list()[0]
         self.assertEqual(config["url"], "wss://example.test/kapsel/mapping-connect/" + row["id"])

@@ -32,6 +32,7 @@ from openkapsel.files.share_store import ShareStore
 from openkapsel.files.uploads import UploadRegistry
 from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.mapping.mapping_transfers import FileTransferManager
+from openkapsel.storage.storage_manager import StorageProviderManager
 from openkapsel.workspace.workspace_images import WorkspaceImageClient
 
 from .admin_sessions import AdminLoginLimiter, AdminSessions
@@ -62,6 +63,9 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.oauth_consent_limiter = ConsentLimiter()
         self.static_mcp = StaticMcpStore(config.upload_state_dir.parent / "static-mcp.sqlite3")
         self.workspace_images = WorkspaceImageClient(config.workspace_image_socket)
+        self.storage_providers = StorageProviderManager(
+            config.root, config.upload_state_dir.parent, self.workspace_images
+        )
         self.workspace_admin_lock = threading.RLock()
         self.admin_sessions = AdminSessions()
         self.admin_login_limiter = AdminLoginLimiter()
@@ -86,6 +90,11 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             mount_idle_seconds=config.mapping_mount_idle_seconds,
         )
         self.mappings.workspace_available = lambda workspace: any(record.valid and record.path_prefix == workspace for record in self.tokens.list())
+        self.storage_providers.workspace_available = self.mappings.workspace_available
+        self.storage_providers.client_mapping_reserved = lambda workspace, name: any(
+            row["name"] == name for row in self.mappings.store.list(workspace)
+        )
+        self.storage_providers.start()
         self.sandboxes = SandboxRegistry(
             enabled=config.sandbox_backends,
             default=config.sandbox_default_backend,
@@ -186,6 +195,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.scheduler.close()
         self.tasks.close()
         self.file_transfers.close()
+        self.storage_providers.close()
         self.mappings.close()
         super().server_close()
 
