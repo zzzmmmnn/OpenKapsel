@@ -30,6 +30,10 @@ class StorageHandlersMixin:
                 "token": one(form, "oauth_token"),
             }
         if kind == "sftp":
+            if one(form, "host_key_confirmed") != "on":
+                raise ValueError(
+                    "confirm that you verified and trust the SFTP SSH host-key fingerprint"
+                )
             return {
                 "host": one(form, "host"),
                 "port": one(form, "port"),
@@ -84,6 +88,22 @@ class StorageHandlersMixin:
             if not self._valid_csrf(session, form):
                 raise ApiError(403, "csrf", "CSRF validation failed")
             action = self._form_one(form, "action")
+            if action == "detect_sftp_host_key":
+                try:
+                    result = manager.detect_sftp_host_keys(
+                        self._form_one(form, "host"),
+                        self._form_one(form, "port"),
+                    )
+                    self._send_json(200, result)
+                except (ValueError, OSError) as exc:
+                    self._send_json(
+                        400,
+                        {
+                            "error": "sftp_host_key_detection_failed",
+                            "message": str(exc),
+                        },
+                    )
+                return
             try:
                 if action == "oauth_start":
                     provider_id = self._form_one(form, "id")

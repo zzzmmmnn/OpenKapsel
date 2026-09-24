@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from openkapsel.storage.storage_sftp import detect_sftp_host_keys
 from openkapsel.storage.storage_store import StorageProviderStore
 from openkapsel.workspace.workspace_images import WorkspaceImageClient, WorkspaceImageError
 
@@ -57,6 +58,12 @@ class StorageProviderManager:
                 reason = "missing " + ", ".join(missing)
             return {"available": False, "reason": reason}
         return {"available": True, "reason": ""}
+
+    def detect_sftp_host_keys(self, host: Any, port: Any = 22) -> dict[str, Any]:
+        # Detection intentionally runs in the non-root API process. The
+        # privileged mount helper is restricted to AF_UNIX and should not gain
+        # outbound network access merely to discover public SSH host keys.
+        return detect_sftp_host_keys(host, port)
 
     def _startup_reconcile(self) -> None:
         # openkapsel-images.service is Type=simple, so systemd may start the

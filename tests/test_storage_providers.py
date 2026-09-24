@@ -1,4 +1,6 @@
+import base64
 import errno
+import hashlib
 import html
 import json
 import re
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from openkapsel.storage.storage_host import HostStorageProviders
 from openkapsel.storage.storage_manager import StorageProviderDeleteWarning, StorageProviderManager
 from openkapsel.storage.storage_oauth import StorageOAuthError, StorageOAuthFlows
+from openkapsel.storage.storage_sftp import detect_sftp_host_keys
 from openkapsel.storage.storage_store import DEFAULT_CACHE_MAX_BYTES, StorageProviderStore
 from openkapsel.workspace.workspace_images import WorkspaceImageError
 
@@ -202,6 +205,69 @@ class StorageProviderStoreTests(unittest.TestCase):
                 store.add_mapping(provider["id"], "workspace", "Google Drive")
             with self.assertRaises(sqlite3.IntegrityError):
                 store.add_mapping(provider["id"], "workspace", "drive")
+
+
+class SFTPHostKeyDetectionTests(unittest.TestCase):
+    def test_detect_formats_nondefault_port_and_computes_sha256_fingerprints(self):
+        key_one_raw = b"openkapsel-test-ed25519-key"
+        key_two_raw = b"openkapsel-test-rsa-key"
+        key_one = base64.b64encode(key_one_raw).decode("ascii")
+        key_two = base64.b64encode(key_two_raw).decode("ascii")
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append((list(argv), dict(kwargs)))
+            return Result(
+                stdout=(
+                    f"files.example.com ssh-ed25519 {key_one}\n"
+                    f"files.example.com ssh-rsa {key_two}\n"
+                )
+            )
+
+        result = detect_sftp_host_keys(
+            "files.example.com",
+            2222,
+            runner=runner,
+            executable="/usr/bin/ssh-keyscan",
+        )
+        self.assertEqual("files.example.com", result["host"])
+        self.assertEqual(2222, result["port"])
+        self.assertEqual(2, len(result["keys"]))
+        self.assertEqual(
+            "SHA256:"
+            + base64.b64encode(hashlib.sha256(key_one_raw).digest())
+            .decode("ascii")
+            .rstrip("="),
+            result["keys"][0]["fingerprint_sha256"],
+        )
+        self.assertIn(
+            f"[files.example.com]:2222 ssh-ed25519 {key_one}",
+            result["known_hosts"],
+        )
+        argv, kwargs = calls[0]
+        self.assertEqual("/usr/bin/ssh-keyscan", argv[0])
+        self.assertEqual("-", argv[-1])
+        self.assertEqual("files.example.com\n", kwargs["input"])
+        self.assertNotIn("files.example.com", argv)
+
+    def test_detect_rejects_missing_key_and_unsafe_host_input(self):
+        def empty_runner(_argv, **_kwargs):
+            return Result(stdout="", stderr="scan failed")
+
+        with self.assertRaisesRegex(ValueError, "no SSH host key"):
+            detect_sftp_host_keys(
+                "files.example.com",
+                22,
+                runner=empty_runner,
+                executable="/usr/bin/ssh-keyscan",
+            )
+        with self.assertRaisesRegex(ValueError, "whitespace"):
+            detect_sftp_host_keys(
+                "one.example two.example",
+                22,
+                runner=empty_runner,
+                executable="/usr/bin/ssh-keyscan",
+            )
 
 
 class HostStorageProviderTests(unittest.TestCase):
@@ -571,6 +637,7 @@ class InstallerStorageProviderTests(unittest.TestCase):
         self.assertIn("STORAGE_USER=openkapsel-storage", install)
         self.assertIn("RCLONE_MIN_VERSION=1.60.0", install)
         self.assertIn("rclone", install)
+        self.assertIn("openssh-client", install)
         self.assertIn("user_allow_other", install)
         self.assertIn('-path "$STORAGE_ROOT"', install)
         self.assertIn('-path "$STORAGE_HOME"', install)
@@ -741,6 +808,94 @@ class StorageProviderHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, raw)
         self.assertIn("Storage provider forcibly deleted.", raw.decode())
         self.assertEqual([], self.server.storage_providers.store.list())
+
+    def test_admin_sftp_detect_requires_explicit_host_key_confirmation(self):
+        status, headers, _ = self.form(
+            "/kapsel/admin/login",
+            {"username": "admin", "password": "test-password-123"},
+        )
+        self.assertEqual(303, status)
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        auth = {"Cookie": cookie}
+        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
+        path = "/kapsel/admin/storage-providers"
+        detected = {
+            "host": "files.example.com",
+            "port": 2222,
+            "known_hosts": (
+                "[files.example.com]:2222 ssh-ed25519 "
+                "T3BlbkthcHNlbFRlc3RIb3N0S2V5"
+            ),
+            "keys": [
+                {
+                    "type": "ssh-ed25519",
+                    "fingerprint_sha256": "SHA256:examplefingerprint",
+                    "known_hosts": (
+                        "[files.example.com]:2222 ssh-ed25519 "
+                        "T3BlbkthcHNlbFRlc3RIb3N0S2V5"
+                    ),
+                }
+            ],
+        }
+        with patch.object(
+            self.server.storage_providers,
+            "detect_sftp_host_keys",
+            return_value=detected,
+        ) as detect:
+            status, _, raw = self.form(
+                path,
+                {
+                    "action": "detect_sftp_host_key",
+                    "host": "files.example.com",
+                    "port": "2222",
+                    "csrf": session.csrf,
+                },
+                auth,
+            )
+        self.assertEqual(200, status, raw)
+        payload = json.loads(raw)
+        self.assertEqual(detected, payload)
+        detect.assert_called_once_with("files.example.com", "2222")
+
+        create = {
+            "action": "create",
+            "name": "SFTP",
+            "kind": "sftp",
+            "remote_path": "",
+            "cache_gib": "1",
+            "host": "files.example.com",
+            "port": "2222",
+            "user": "alice",
+            "password": "secret",
+            "private_key": "",
+            "known_hosts": detected["known_hosts"],
+            "csrf": session.csrf,
+        }
+        status, _, raw = self.form(path, create, auth)
+        self.assertEqual(200, status, raw)
+        self.assertIn(
+            "confirm that you verified and trust the SFTP SSH host-key fingerprint",
+            raw.decode(),
+        )
+        self.assertEqual([], self.server.storage_providers.store.list())
+
+        create["host_key_confirmed"] = "on"
+        status, _, raw = self.form(path, create, auth)
+        self.assertEqual(200, status, raw)
+        self.assertIn("Storage provider created and mounted.", raw.decode())
+        providers = self.server.storage_providers.store.list()
+        self.assertEqual(1, len(providers))
+        configure = next(
+            values for action, values in self.server.storage_providers.helper.calls
+            if action == "storage_configure"
+        )
+        self.assertEqual(detected["known_hosts"], configure["settings"]["known_hosts"])
+
+        status, _, raw = self.request("GET", "/kapsel/admin", headers=auth)
+        self.assertEqual(200, status, raw)
+        page = raw.decode()
+        self.assertIn("Detect SSH host key", page)
+        self.assertIn("Verify the SHA256 fingerprint independently", page)
 
 
 if __name__ == "__main__":

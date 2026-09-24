@@ -45,7 +45,13 @@ def _credentials_fields(kind: str, *, prefix: str, oauth_callback: str = "") -> 
 <div><label>User</label><input name="user" autocomplete="off"></div>
 <div><label>Password (or private key)</label><input name="password" type="password" autocomplete="new-password"></div>
 <div class="span4"><label>Private key PEM (instead of password)</label><textarea name="private_key" rows="5" autocomplete="off"></textarea></div>
-<div class="span4"><label>known_hosts entry</label><textarea name="known_hosts" rows="3" autocomplete="off" placeholder="[host]:port ssh-ed25519 AAAA…"></textarea></div>
+<div class="span4 actions"><button type="button" class="secondary" onclick="storageDetectSftpKey(this)">Detect SSH host key</button></div>
+<div class="span4 notice" data-sftp-key-result hidden></div>
+<div class="span4"><details data-sftp-known-hosts><summary>Advanced: known_hosts entry</summary>
+<label>known_hosts entry</label><textarea name="known_hosts" rows="4" autocomplete="off" placeholder="[host]:port ssh-ed25519 AAAA…"></textarea>
+<p class="muted">Detection only retrieves the key presented to this OpenKapsel server. Verify the SHA256 fingerprint independently with the SFTP server administrator before trusting it. You may also paste a verified known_hosts entry manually.</p>
+</details></div>
+<div class="span4 checks"><label><input type="checkbox" name="host_key_confirmed" required> I verified the displayed/pasted SSH host-key fingerprint and trust this key.</label></div>
 </div></div>'''
     return f'''
 <div data-storage-kind="smb" class="span4 storage-credentials"><div class="grid">
@@ -162,6 +168,52 @@ def render_storage_providers(
 <div class="span4"><label>Comment</label><input name="comment" maxlength="200"></div>
 <div class="span4 checks"><label><input type="checkbox" name="writable">Writable remote</label></div>
 {all_credentials}<div class="span4 actions"><button name="action" value="create"{'' if capability.get("available") else ' disabled'}>Create and mount</button></div></div></form>
-<p class="muted">Google Drive and Dropbox can be connected in the browser after registering the displayed redirect URI with your OAuth application. Manual rclone token JSON remains available under Advanced. SFTP requires pinned <code>known_hosts</code>. Credentials live outside the workspace under a dedicated service account and are never exposed through Files or MCP.</p></section>
-<script>function storageKind(form,kind){{form.querySelectorAll('[data-storage-kind]').forEach(el=>{{const on=el.dataset.storageKind===kind;el.hidden=!on;el.querySelectorAll('input,textarea,select').forEach(x=>x.disabled=!on)}})}}document.querySelectorAll('form[data-storage-create]').forEach(f=>storageKind(f,f.elements.kind.value));</script>
+<p class="muted">Google Drive and Dropbox can be connected in the browser after registering the displayed redirect URI with your OAuth application. Manual rclone token JSON remains available under Advanced. For SFTP, OpenKapsel can detect the public SSH host key, but detection is not identity proof: verify the displayed SHA256 fingerprint independently before confirming and saving it. Manual <code>known_hosts</code> entry remains available under Advanced. Credentials live outside the workspace under a dedicated service account and are never exposed through Files or MCP.</p></section>
+<script>
+function storageKind(form,kind){{form.querySelectorAll('[data-storage-kind]').forEach(el=>{{const on=el.dataset.storageKind===kind;el.hidden=!on;el.querySelectorAll('input,textarea,select,button').forEach(x=>x.disabled=!on)}})}}
+async function storageDetectSftpKey(button){{
+  const form=button.form;
+  const block=button.closest('[data-storage-kind="sftp"]');
+  const result=block.querySelector('[data-sftp-key-result]');
+  const known=block.querySelector('textarea[name="known_hosts"]');
+  const confirm=block.querySelector('input[name="host_key_confirmed"]');
+  const details=block.querySelector('[data-sftp-known-hosts]');
+  const host=block.querySelector('input[name="host"]').value;
+  const port=block.querySelector('input[name="port"]').value||'22';
+  result.hidden=false;
+  result.className='span4 notice';
+  result.textContent='Detecting SSH host key…';
+  button.disabled=true;
+  try {{
+    const data=new FormData();
+    data.set('csrf',form.elements.csrf.value);
+    data.set('action','detect_sftp_host_key');
+    data.set('host',host);
+    data.set('port',port);
+    const response=await fetch(form.action,{{method:'POST',body:data,credentials:'same-origin',headers:{{'Accept':'application/json'}}}});
+    const payload=await response.json();
+    if(!response.ok) throw new Error(payload.message||payload.error||'Host-key detection failed');
+    known.value=payload.known_hosts||'';
+    confirm.checked=false;
+    details.open=true;
+    const lines=(payload.keys||[]).map(k=>k.type+'  '+k.fingerprint_sha256);
+    result.textContent='Detected for '+payload.host+':'+payload.port+'\n'+lines.join('\n')+'\nVerify these fingerprints independently before checking the trust confirmation.';
+  }} catch(error) {{
+    known.value='';
+    confirm.checked=false;
+    result.className='span4 error';
+    result.textContent='SSH host-key detection failed: '+error.message;
+  }} finally {{
+    button.disabled=false;
+  }}
+}}
+document.querySelectorAll('form[data-storage-create]').forEach(f=>storageKind(f,f.elements.kind.value));
+document.querySelectorAll('[data-storage-kind="sftp"]').forEach(block=>{{
+  const confirm=block.querySelector('input[name="host_key_confirmed"]');
+  ['host','port','known_hosts'].forEach(name=>{{
+    const field=block.querySelector('[name="'+name+'"]');
+    if(field) field.addEventListener('input',()=>{{confirm.checked=false}});
+  }});
+}});
+</script>
 </section>'''

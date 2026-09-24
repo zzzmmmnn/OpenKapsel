@@ -76,8 +76,11 @@ The standard Debian/Ubuntu installer installs `rclone`, creates the dedicated
 `openkapsel-storage` account, and enables FUSE `user_allow_other`. Storage
 Providers require rclone 1.60.0 or newer because SMB support was added in rclone
 1.60. On hosts where `--no-package-install` is used, install a compatible rclone
-and FUSE before creating a Storage Provider. Missing or older rclone disables the
-Storage Providers panel capability without disabling the core OpenKapsel service.
+and FUSE before creating a Storage Provider. Install OpenSSH client tools
+(`ssh-keyscan`) as well to use SFTP host-key detection; manual verified
+`known_hosts` entry remains available without it. Missing or older rclone
+disables the Storage Providers panel capability without disabling the core
+OpenKapsel service.
 
 Check capability from Administration → **Storage Providers**. Provider creation
 is disabled when the privileged helper cannot find both rclone and fusermount.
@@ -125,10 +128,34 @@ SFTP requires:
 - host and port (default 22)
 - user
 - exactly one of password or PEM private key
-- a `known_hosts` entry for the server key
+- a pinned SSH host key
+
+Administration provides **Detect SSH host key**. Detection runs from the
+non-root OpenKapsel server and performs only SSH host-key discovery; it does not
+authenticate and does not send the SFTP password or private key. The detected
+public keys are written into the `known_hosts` field and their SHA256
+fingerprints are shown to the administrator.
+
+Detection is **not** proof of server identity. Verify the displayed fingerprint
+through an independent channel (for example with the SFTP server administrator)
+before checking the trust confirmation and saving the provider. OpenKapsel will
+not save new SFTP credentials unless that confirmation is checked.
+
+For a non-default port, the saved entry uses OpenSSH's bracketed form, for
+example:
+
+```text
+[files.example.com]:2222 ssh-ed25519 AAAA...
+```
+
+**Advanced: known_hosts entry** remains available for environments where
+automatic detection is unavailable or where a verified entry is supplied
+out-of-band. OpenKapsel never enables rclone's insecure SFTP host-key behavior
+implicitly. If the remote server later presents a different key, the pinned key
+causes the mount to fail closed until an administrator verifies and explicitly
+saves the replacement key.
 
 The **Remote path** is interpreted relative to the configured SFTP remote root.
-OpenKapsel never enables rclone's insecure SFTP host-key behavior implicitly.
 
 ## SMB
 
