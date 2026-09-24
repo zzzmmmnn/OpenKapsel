@@ -44,7 +44,7 @@ The supported layout is:
 - Workspace Root: `/var/lib/openkapsel/workspace`
 - service account: the non-login `openkapsel` user
 - Storage Provider account: the separate non-login `openkapsel-storage` user
-- private Storage Provider mounts/cache: `/var/lib/openkapsel/storage-providers`
+- private Storage Provider mounts/cache: `/var/lib/openkapsel-storage/providers`
 - public HTTPS and routing: an existing reverse proxy such as Caddy
 
 Run from the project directory:

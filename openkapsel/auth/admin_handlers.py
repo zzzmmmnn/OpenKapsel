@@ -138,7 +138,7 @@ class AdminHandlersMixin:
         secure = self._request_is_https()
         cookie = (
             f"ws_admin={session.id}; Path={self._admin_path()}; "
-            "HttpOnly; SameSite=Strict; Max-Age=43200"
+            "HttpOnly; SameSite=Lax; Max-Age=43200"
         )
         if secure:
             cookie += "; Secure"
@@ -181,7 +181,7 @@ class AdminHandlersMixin:
             headers={
                 "Set-Cookie": (
                     f"ws_admin=; Path={self._admin_path()}; "
-                    "HttpOnly; SameSite=Strict; Max-Age=0"
+                    "HttpOnly; SameSite=Lax; Max-Age=0"
                 )
             },
         )

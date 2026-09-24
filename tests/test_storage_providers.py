@@ -495,9 +495,9 @@ class InstallerStorageProviderTests(unittest.TestCase):
 
     def test_systemd_helper_gets_storage_private_paths_and_user(self):
         unit = (Path(__file__).resolve().parents[1] / "systemd" / "openkapsel-images.service").read_text()
-        self.assertIn("--storage-root /var/lib/openkapsel/storage-providers", unit)
+        self.assertIn("--storage-root /var/lib/openkapsel-storage/providers", unit)
         self.assertIn("--storage-user openkapsel-storage", unit)
-        self.assertIn("--storage-home /var/lib/openkapsel/storage-home", unit)
+        self.assertIn("--storage-home /var/lib/openkapsel-storage/home", unit)
         self.assertIn("PrivateMounts=false", unit)
 
 
@@ -519,6 +519,7 @@ class StorageProviderHTTPTests(unittest.TestCase):
             {"username": "admin", "password": "test-password-123"},
         )
         self.assertEqual(303, status)
+        self.assertIn("SameSite=Lax", headers["Set-Cookie"])
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         auth = {"Cookie": cookie}
         session = self.server.admin_sessions.get(cookie.split("=", 1)[1])

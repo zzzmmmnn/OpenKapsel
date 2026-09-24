@@ -22,7 +22,7 @@ remote storage
     │
     │ rclone mount
     ▼
-/var/lib/openkapsel/storage-providers/<provider-id>/mount
+/var/lib/openkapsel-storage/providers/<provider-id>/mount
     │
     │ root-owned bind mount
     ▼
@@ -55,7 +55,7 @@ rclone to delete remote files.
 ## Security boundary
 
 Provider credentials do not live in the Workspace Root. They are written under
-`/var/lib/openkapsel/storage-providers/<provider-id>/` and owned by the separate
+`/var/lib/openkapsel-storage/providers/<provider-id>/` and owned by the separate
 non-login `openkapsel-storage` account with mode 0700/0600. The main
 `openkapsel` service account cannot read the rclone configuration directly.
 The root mount helper owns the narrow operations required to configure, mount,

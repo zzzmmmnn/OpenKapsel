@@ -22,8 +22,8 @@ The installer uses the following layout:
 - `/var/lib/openkapsel/network-proxies`: ephemeral token-scoped proxy sockets
 - `/var/lib/openkapsel/home`: service-account home and rootless Podman storage
 - `/var/lib/openkapsel/run`: service-account runtime directory
-- `/var/lib/openkapsel/storage-providers`: private rclone configurations, mountpoints, and per-provider VFS caches owned by `openkapsel-storage`
-- `/var/lib/openkapsel/storage-home`: home directory for the non-login `openkapsel-storage` account
+- `/var/lib/openkapsel-storage/providers`: private rclone configurations, mountpoints, and per-provider VFS caches owned by `openkapsel-storage`
+- `/var/lib/openkapsel-storage/home`: home directory for the non-login `openkapsel-storage` account
 
 The `openkapsel` service account has no interactive login. OpenKapsel does not use `/root` or a human user's home directory. Storage Provider credentials use a separate non-login `openkapsel-storage` account; upgrades deliberately exclude its private directories from the recursive ownership repair applied to ordinary OpenKapsel state.
 

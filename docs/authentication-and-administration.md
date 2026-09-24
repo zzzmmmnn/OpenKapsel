@@ -39,7 +39,7 @@ Runtime Discovery is authoritative for token permissions and configured limits.
 
 ## Administration console
 
-The console is at `<url_base_path>/admin`. Its twelve-hour session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` behind HTTPS. Forms use CSRF protection. Repeated failed logins are rate-limited by source address.
+The console is at `<url_base_path>/admin`. Its twelve-hour session cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` behind HTTPS. Forms use CSRF protection. Repeated failed logins are rate-limited by source address.
 
 MCP clients are managed on separate **Static MCP** and **OAuth connections** pages, grouped by project directory. Both support editing comments. [Static MCP connections](static-mcp-connections.md) provide copyable client JSON containing an independent Bearer secret and editable expiration (30/91/182/365/730 days; default 365). Project token cards expose REST and preview credentials.
 

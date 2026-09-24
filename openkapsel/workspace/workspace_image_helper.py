@@ -80,9 +80,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--socket", required=True)
     parser.add_argument("--service-user", default="openkapsel")
     parser.add_argument("--service-group", default="openkapsel")
-    parser.add_argument("--storage-root", default="/var/lib/openkapsel/storage-providers")
+    parser.add_argument("--storage-root", default="/var/lib/openkapsel-storage/providers")
     parser.add_argument("--storage-user", default="openkapsel-storage")
-    parser.add_argument("--storage-home", default="/var/lib/openkapsel/storage-home")
+    parser.add_argument("--storage-home", default="/var/lib/openkapsel-storage/home")
     return parser.parse_args()
 
 
