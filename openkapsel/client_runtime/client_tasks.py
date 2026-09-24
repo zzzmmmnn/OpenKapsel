@@ -467,6 +467,11 @@ class ClientTasks:
         return result
 
     @staticmethod
+    def _force_after_grace(task, grace_seconds=2.0):
+        if not task["done"].wait(grace_seconds):
+            ClientTasks._signal(task, force=True)
+
+    @staticmethod
     def _signal(task, *, force):
         if task["finished_at"] is not None:
             return
@@ -489,6 +494,12 @@ class ClientTasks:
                 os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
         except ProcessLookupError:
             pass
+        if not force and task["finished_at"] is None:
+            threading.Thread(
+                target=ClientTasks._force_after_grace,
+                args=(task,),
+                daemon=True,
+            ).start()
 
     def _prune(self):
         finished = sorted((t for t in self.tasks.values() if t["collected_at"] is not None), key=lambda t: t["collected_at"], reverse=True)
