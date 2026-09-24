@@ -160,7 +160,7 @@ class ClientRpcRegistry:
         result: dict[str, dict[str, Any]] = {
             "file": {
                 "state": "available",
-                "version": 3,
+                "version": 4,
                 "operations": sorted(FILE_API_OPERATIONS),
             }
         }

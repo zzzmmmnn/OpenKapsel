@@ -146,8 +146,9 @@ preview remains an RPC operation and does not start either an API worker or FUSE
 
 ## Upgrade and failure handling
 
-Upgrade both server and clients. File family version 3 is unchanged, but binary
-and mixed-root paths additionally need descriptor metadata: clients advertise
+Upgrade both server and clients. Current file family version 4 adds transactional
+mutation plus guarded large-file range operations; older version-3 text operations
+remain compatible. Binary and mixed-root paths additionally need descriptor metadata: clients advertise
 `file_stream.version=1`, `descriptor_stat=true`, and `directory_details=true`.
 The `search_prefix=true` feature supports workspace-root-relative glob filtering
 inside delegated searches. Root `fs/list` uses virtual registration metadata

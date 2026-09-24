@@ -54,14 +54,21 @@ These require the matching Bearer token, write permission, and JSON Context fiel
 |---|---|---|
 | `POST` | `/fs/write` | `path`, `content`, optional `create_parents`, optional `expected_etag` |
 | `POST` | `/fs/replace` | `path`, `old`, `new`, optional `expected_matches` or `replace_all`, optional `expected_etag` |
-| `POST` | `/fs/replace/batch` | replace-only `items`; each file has one or more exact `replacements` and optional `expected_etag` |
+| `POST` | `/fs/replace/batch` | legacy replace-only `items`; each file has one or more exact `replacements` and optional `expected_etag` |
+| `POST` | `/fs/mutate` | transactional `items` using `text.replace`, `structured.patch`, `file.create`, or `file.replace`; existing files require exact `expected_etag` |
+| `POST` | `/fs/large/read` | large files only (>32 MiB): required byte `offset` and bounded `length`; returns Base64, ETag and range SHA-256 |
+| `POST` | `/fs/large/replace` | large files only: exact ETag + range SHA-256 + equal-length Base64 replacement; file size cannot change |
 | `POST` | `/fs/mkdir` | `path`, optional `parents`, optional `exist_ok` |
 | `POST` | `/fs/move` | `source`, `destination`, optional `overwrite=false`, optional `create_parents=false` |
 | `POST` | `/fs/delete` | `path`; moves it into the workspace-local recycle bin |
 | `POST` | `/fs/delete/batch` | `paths`; preflights and recycles multiple independent paths |
 | `POST` | `/recycle/restore` | `recycle_id`; restores only when the original destination is absent |
 
-`fs/replace` requires `old` to occur exactly once by default. Use `expected_matches` or `replace_all` only when intentional. Use an ETag from `fs/stat` or `fs/content` to prevent lost updates. `expected_etag: "*"` requires the destination to exist.
+`fs/replace` requires `old` to occur exactly once by default. Use `expected_matches` or `replace_all` only when intentional. Use an ETag from `fs/stat`, `fs/read`, or search results to prevent lost updates. `expected_etag: "*"` requires the destination to exist.
+
+For one logical AI edit touching several files, prefer `fs/mutate`. Every existing target must carry the exact ETag observed by the preceding read/search; wildcard ETags are rejected. All items are parsed, exact-match checked, encoded and staged before the first destination is published. The v1 transaction is restricted to one filesystem backend/mapped client and supports `text.replace`, JSON/YAML/TOML `structured.patch`, create-only `file.create`, and conditional `file.replace`. An ordinary commit error rolls back already-published items. If an external writer changes a just-published path during rollback, OpenKapsel refuses to overwrite that newer content and preserves hidden recovery artifacts instead. This first version is request-transactional; it does not claim crash-journal recovery across a process or OS crash.
+
+Ordinary content inspection and mutation are capped at **32 MiB per file**. Search also skips larger content, and whole-file SHA-256 metadata operations reject it. Files above 32 MiB must use `fs/large/read`: provide an explicit byte `offset` and `length` (maximum 256 KiB). The response binds the range to an exact file ETag and `range_sha256`. To change that range, call `fs/large/replace` with those two preconditions and exactly `length` replacement bytes in Base64. The server rechecks both before writing and rejects any request that would change total file size. Raw download/upload endpoints remain transfer mechanisms for opaque files; do not use them as a substitute for AI content inspection/mutation.
 
 `fs/replace/batch` accepts this shape:
 

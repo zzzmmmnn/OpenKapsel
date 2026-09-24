@@ -18,6 +18,13 @@ from urllib.parse import quote
 
 from openkapsel.errors import ApiError
 from openkapsel.files.text_encoding import text_encoding, encode_text, decode_error
+from openkapsel.files.mutation import (
+    STANDARD_FILE_MAX_BYTES,
+    execute_mutation,
+    read_large_range,
+    replace_large_range,
+    require_standard_file_size,
+)
 from openkapsel.files.file_support import FileOperationSupportMixin
 from openkapsel.files.recycle import RecycleError
 from openkapsel.files.safe_paths import SafePathError
@@ -124,6 +131,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             result["content_type"] = content_type or ("application/octet-stream" if kind == "file" else None)
         if "sha256" in requested:
             if kind == "file":
+                require_standard_file_size(file_stat, operation="SHA-256 metadata hashing")
                 result["sha256"] = self._sha256_snapshot(path, file_stat)
             else:
                 result["sha256"] = None
@@ -155,6 +163,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                         details = self._file_stat(path)
                         if details.st_size != node["size"] or datetime.fromtimestamp(details.st_mtime, timezone.utc).isoformat() != node["modified_at"]:
                             raise ApiError(409, "path_changed", "file changed during manifest traversal")
+                        require_standard_file_size(details, operation="manifest SHA-256 hashing")
                         node["sha256"] = self._sha256_snapshot(path, details)
                 results.append(node)
             self._send_json(200, {"path": str(root), "recursive": True, "depth": depth,
@@ -252,6 +261,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 kind = "other"
             actual_sha256: str | None = None
             if kind == "file" and (include_sha256 or expected_sha256 is not None):
+                require_standard_file_size(file_stat, operation="manifest SHA-256 hashing")
                 actual_sha256 = self._sha256_snapshot(path, file_stat)
             has_expectation = expected_size is not None or expected_sha256 is not None
             matches = kind == "file"
@@ -348,10 +358,14 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     file_stat = self._stream_stat(handle)
                     if not stat.S_ISREG(file_stat.st_mode):
                         continue
-                    if file_stat.st_size > self.server.config.max_search_file_bytes:
+                    if file_stat.st_size > min(self.server.config.max_search_file_bytes, STANDARD_FILE_MAX_BYTES):
                         skipped_large += 1
                         continue
                     raw = handle.read()
+                    after = self._stream_stat(handle)
+                    if self._path_etag(file_path, file_stat) != self._path_etag(file_path, after):
+                        raise ApiError(409, "path_changed", "file changed during search; retry the request")
+                    file_etag = self._path_etag(file_path, file_stat)
                 if b"\x00" in raw:
                     skipped_binary += 1
                     continue
@@ -371,6 +385,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                             "column": found.start() + 1,
                             "match": found.group(0),
                             "text": line[:2000],
+                            "etag": file_etag,
+                            "size": file_stat.st_size,
                         }
                     )
                     if len(matches) >= max_results:
@@ -607,6 +623,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     details = self._stream_stat(handle)
                     if not stat.S_ISREG(details.st_mode):
                         raise ApiError(400, "not_a_file", "path is not a regular file")
+                    require_standard_file_size(details, operation="ordinary text read")
                     count = min(limit, remaining)
                     window = handle.read(count + 1)
                     after = self._stream_stat(handle)
@@ -655,8 +672,10 @@ class FileHandlersMixin(FileOperationSupportMixin):
         )
         try:
             with self._open_binary(path) as binary, io.TextIOWrapper(binary, encoding=encoding, newline="") as handle:
-                if not stat.S_ISREG(self._stream_stat(handle).st_mode):
+                details = self._stream_stat(handle)
+                if not stat.S_ISREG(details.st_mode):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+                require_standard_file_size(details, operation="ordinary text read")
                 remaining = offset
                 while remaining:
                     skipped = handle.read(min(remaining, 64 * 1024))
@@ -666,6 +685,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 # Read one extra character to determine truncation without loading
                 # the entire file into memory.
                 window = handle.read(limit + 1)
+                after = self._stream_stat(handle)
+                if self._path_etag(path, details) != self._path_etag(path, after):
+                    raise ApiError(409, "path_changed", "file changed during read")
         except UnicodeDecodeError:
             raise decode_error(encoding) from None
         content = window[:limit]
@@ -681,6 +703,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "truncated": truncated,
                 "next_offset": next_offset if truncated else None,
                 "encoding": encoding,
+                "etag": self._path_etag(path, details),
+                "size": details.st_size,
             },
         )
 
@@ -698,6 +722,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             file_stat = self._stream_stat(handle)
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+            require_standard_file_size(file_stat, operation="ordinary byte-offset text read")
             size = file_stat.st_size
             if byte_offset > size:
                 raise ApiError(
@@ -763,6 +788,39 @@ class FileHandlersMixin(FileOperationSupportMixin):
             },
         )
 
+    def _handle_fs_read_large(self) -> None:
+        self._require_permission(self.token_record.can_read, "read permission is not granted")
+        body = self._read_json()
+        if self._try_mapping_file_api("fs_read_large", body=body):
+            return
+        self._send_json(HTTPStatus.OK, read_large_range(self, body))
+
+    def _handle_fs_replace_large(self) -> None:
+        self._require_permission(self.token_record.can_write, "write permission is not granted")
+        body = self._read_json()
+        if self._try_mapping_file_api("fs_replace_large", body=body):
+            return
+        self._send_json(HTTPStatus.OK, replace_large_range(self, body))
+
+    def _handle_fs_mutate(self) -> None:
+        self._require_permission(self.token_record.can_write, "write permission is not granted")
+        body = self._read_json()
+        if self._try_mapping_file_api("fs_mutate", body=body):
+            return
+        manager = getattr(self.server, "mappings", None)
+        if manager is not None and hasattr(manager, "at_path"):
+            for item in body.get("items", []) if isinstance(body.get("items"), list) else []:
+                if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                    continue
+                candidate = self._resolve_path(item["path"], write=True)
+                if manager.at_path(candidate) is not None:
+                    raise ApiError(
+                        HTTPStatus.CONFLICT,
+                        "transaction_domain_mismatch",
+                        "one mutation request cannot mix a mapped client with another filesystem domain",
+                    )
+        self._send_json(HTTPStatus.OK, execute_mutation(self, body))
+
     def _handle_fs_write(self) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
@@ -771,6 +829,15 @@ class FileHandlersMixin(FileOperationSupportMixin):
             return
         path = self._resolve_path(self._required_string(body, "path"), write=True)
         content = self._required_string(body, "content", allow_empty=True)
+        try:
+            existing = self._file_stat(path)
+        except ApiError as exc:
+            if exc.code != "path_not_found":
+                raise
+        else:
+            if not stat.S_ISREG(existing.st_mode):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+            require_standard_file_size(existing, operation="ordinary whole-file write")
         expected_etag = self._optional_expected_etag(body)
         create_parents = body.get("create_parents", False)
         if not isinstance(create_parents, bool):
@@ -809,6 +876,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 file_stat = self._stream_stat(handle)
                 if not stat.S_ISREG(file_stat.st_mode):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+                require_standard_file_size(file_stat, operation="ordinary text replacement")
                 if file_stat.st_size > self.server.config.max_text_replace_bytes:
                     raise ApiError(
                         HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -945,6 +1013,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                             "not_a_file",
                             f"items[{item['index']}].path is not a regular file",
                         )
+                    require_standard_file_size(file_stat, operation="ordinary text replacement")
                     if file_stat.st_size > self.server.config.max_text_replace_bytes:
                         raise ApiError(
                             HTTPStatus.REQUEST_ENTITY_TOO_LARGE,

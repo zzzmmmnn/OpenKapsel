@@ -26,6 +26,9 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `POST` | `<workspace_url>/fs/write` |
 | `POST` | `<workspace_url>/fs/replace` |
 | `POST` | `<workspace_url>/fs/replace/batch` |
+| `POST` | `<workspace_url>/fs/mutate` |
+| `POST` | `<workspace_url>/fs/large/read` |
+| `POST` | `<workspace_url>/fs/large/replace` |
 | `POST` | `<workspace_url>/fs/mkdir` |
 | `POST` | `<workspace_url>/fs/delete` |
 | `POST` | `<workspace_url>/fs/delete/batch` |

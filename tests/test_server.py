@@ -316,6 +316,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 modifying_tools = {
                     "write_file",
                     "replace_text",
+                    "mutate_files",
+                    "replace_large_file_range",
                     "create_directory",
                     "move_path",
                     "delete_path",
@@ -438,6 +440,19 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(10, payload["limits"]["max_share_entries"])
         self.assertEqual(256 * 1024 * 1024, payload["limits"]["max_share_bytes"])
         self.assertEqual(1000, payload["limits"]["max_batch_file_operations"])
+        self.assertEqual(
+            {
+                "small_max_bytes": 1 * 1024 * 1024,
+                "medium_max_bytes": 32 * 1024 * 1024,
+                "large_min_bytes": 32 * 1024 * 1024 + 1,
+                "ordinary_content_max_bytes": 32 * 1024 * 1024,
+                "large_range_max_bytes": 256 * 1024,
+            },
+            payload["limits"]["file_size_tiers"],
+        )
+        self.assertEqual("POST", payload["endpoints"]["fs_mutate"]["method"])
+        self.assertEqual("POST", payload["endpoints"]["fs_read_large"]["method"])
+        self.assertEqual("POST", payload["endpoints"]["fs_replace_large"]["method"])
         self.assertTrue(payload["endpoints"]["web_preview"]["available"])
         self.assertEqual(
             "files.read + web_preview",
@@ -696,6 +711,9 @@ class WorkspaceServerTests(unittest.TestCase):
                 "fs_write",
                 "fs_replace",
                 "fs_replace_batch",
+                "fs_mutate",
+                "fs_read_large",
+                "fs_replace_large",
                 "fs_mkdir",
                 "fs_delete",
                 "fs_delete_batch",
@@ -2216,6 +2234,17 @@ class WorkspaceServerTests(unittest.TestCase):
         length_schema = binary_tool["inputSchema"]["properties"]["length"]
         self.assertEqual(self.server.config.mcp_binary_chunk_bytes, length_schema["maximum"])
         self.assertEqual(self.server.config.mcp_binary_chunk_bytes, length_schema["default"])
+        large_read_tool = next(
+            tool for tool in listed["result"]["tools"] if tool["name"] == "read_large_file"
+        )
+        self.assertEqual(
+            256 * 1024,
+            large_read_tool["inputSchema"]["properties"]["length"]["maximum"],
+        )
+        mutate_tool = next(
+            tool for tool in listed["result"]["tools"] if tool["name"] == "mutate_files"
+        )
+        self.assertTrue(mutate_tool["annotations"]["destructiveHint"])
         _, oversized_binary_read, _ = self.mcp_request(
             token,
             201,
@@ -2237,10 +2266,13 @@ class WorkspaceServerTests(unittest.TestCase):
                 "read_file",
                 "stat_file",
                 "read_binary_chunk",
+                "read_large_file",
                 "search_files",
                 "list_tree",
                 "write_file",
                 "replace_text",
+                "mutate_files",
+                "replace_large_file_range",
                 "create_directory",
                 "move_path",
                 "delete_path",
@@ -2341,6 +2373,42 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(written["result"]["isError"])
         self.assertEqual("created by MCP", (scope / "generated" / "data.txt").read_text())
+
+        _, generated_stat, _ = self.mcp_request(
+            token,
+            204,
+            "tools/call",
+            {"name": "stat_file", "arguments": {"path": "generated/data.txt", "fields": "etag,size"}},
+        )
+        generated_etag = generated_stat["result"]["structuredContent"]["etag"]
+        status, mutated, _ = self.mcp_request(
+            token,
+            205,
+            "tools/call",
+            {
+                "name": "mutate_files",
+                "arguments": {
+                    "items": [
+                        {
+                            "op": "text.replace",
+                            "path": "generated/data.txt",
+                            "expected_etag": generated_etag,
+                            "replacements": [
+                                {
+                                    "old": "created by MCP",
+                                    "new": "updated by MCP",
+                                    "expected_count": 1,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(mutated["result"]["isError"])
+        self.assertTrue(mutated["result"]["structuredContent"]["committed"])
+        self.assertEqual("updated by MCP", (scope / "generated" / "data.txt").read_text())
 
         status, deleted, _ = self.mcp_request(
             token,
@@ -2456,6 +2524,44 @@ class WorkspaceServerTests(unittest.TestCase):
         binary_payload = binary_read["result"]["structuredContent"]
         self.assertTrue(binary_payload["eof"])
         self.assertEqual(binary, base64.b64decode(binary_payload["data_base64"]))
+
+        large_path = scope / "generated" / "large.bin"
+        with large_path.open("wb") as handle:
+            handle.write(b"0123456789abcdef")
+            handle.truncate(32 * 1024 * 1024 + 1)
+        status, large_read, _ = self.mcp_request(
+            token,
+            206,
+            "tools/call",
+            {
+                "name": "read_large_file",
+                "arguments": {"path": "generated/large.bin", "offset": 4, "length": 6},
+            },
+        )
+        self.assertEqual(200, status)
+        large_range = large_read["result"]["structuredContent"]
+        self.assertEqual(b"456789", base64.b64decode(large_range["data_base64"]))
+        status, large_replaced, _ = self.mcp_request(
+            token,
+            207,
+            "tools/call",
+            {
+                "name": "replace_large_file_range",
+                "arguments": {
+                    "path": "generated/large.bin",
+                    "offset": 4,
+                    "length": 6,
+                    "data_base64": base64.b64encode(b"ABCDEF").decode("ascii"),
+                    "expected_etag": large_range["etag"],
+                    "expected_range_sha256": large_range["range_sha256"],
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(large_replaced["result"]["isError"])
+        self.assertEqual(32 * 1024 * 1024 + 1, large_path.stat().st_size)
+        with large_path.open("rb") as handle:
+            self.assertEqual(b"0123ABCDEFabcdef", handle.read(16))
 
         status, shell, _ = self.mcp_request(
             token,

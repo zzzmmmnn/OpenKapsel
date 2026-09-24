@@ -170,7 +170,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
             from types import SimpleNamespace
             from openkapsel.client_runtime.client_file_api import FILE_API_LIMITS
             from openkapsel.mapping.mapping_transport import encode
-            capability = manager.rpc_capability(row["id"], "file", operation="fs_write", min_version=3, max_version=3)
+            capability = manager.rpc_capability(row["id"], "file", operation="fs_write", min_version=3, max_version=4)
             if not capability.available:
                 self._raise_mapping_rpc_unavailable(capability)
             arguments = {"body": {"path": path.relative_to(manager.mount_path(row)).as_posix(),

@@ -9,7 +9,8 @@ SECTION_ENDPOINTS = {
     "files": {
         "mapping_list", "mapping_rpc", "archive_list", "archive_read", "fs_copy", "file_transfer", "recycle_purge",
         "fs_list", "fs_read", "fs_read_many", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
-        "fs_content_put", "fs_write", "fs_replace", "fs_replace_batch", "fs_mkdir", "fs_delete",
+        "fs_content_put", "fs_write", "fs_replace", "fs_replace_batch", "fs_mutate",
+        "fs_read_large", "fs_replace_large", "fs_mkdir", "fs_delete",
         "fs_delete_batch", "fs_move", "recycle_list", "recycle_restore", "upload_create",
         "upload_status", "upload_chunk", "upload_commit", "upload_cancel",
     },
@@ -121,7 +122,8 @@ SECTION_SUMMARIES = {
 SECTION_WORKFLOWS = {
     "files": [
         "Inspect with fs_list/list_files, fs_tree/list_tree, fs_stat/stat_file, and fs_search/search_files before editing.",
-        "Use expected_etag for conditional text writes; use fs_replace_batch for multiple exact, non-overlapping edits across one or more files.",
+        "For files up to 32 MiB prefer fs_mutate/mutate_files for multi-file exact or structured edits with all preconditions checked before publication; ordinary text/content APIs reject larger files.",
+        "For files above 32 MiB use the explicit large-file range API: reads require offset+length and writes require an exact ETag, range SHA-256, and equal-length replacement bytes.",
         "Binary uploads create new files only, so recycle an existing destination before uploading a replacement.",
         "Use fs_manifest for bounded multi-file synchronization preflight, and fs_delete_batch when explicitly recycling multiple independent paths.",
         "Use archive_list/archive_read to browse supported ZIP/tar archives without extracting them; mapped paths require the Archive RPC plugin.",

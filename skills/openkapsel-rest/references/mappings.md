@@ -12,8 +12,9 @@ directory. Runtime Discovery remains authoritative for older servers.
 
 Clients advertise a generic `capabilities.rpc` map. Optional extensions report
 `available`, `unsupported`, or `disabled`; the server derives `offline` from
-provider connectivity. Core file RPC uses version 3 and is always enabled on
-current clients. **rpc.file has been removed**; delete that key from older client
+provider connectivity. Core file RPC uses version 4 on current clients and is always enabled.
+Version 3 remains sufficient for the older codec-aware text operations; version 4 adds
+single-request transactional mutation and guarded large-file range operations. **rpc.file has been removed**; delete that key from older client
 configurations rather than setting it to true or false. Permissions and operation
 version checks still apply. File operations never fall back to FUSE, including
 unsupported old clients, legacy disabled capabilities, or oversized requests.

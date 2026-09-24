@@ -593,7 +593,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "read_binary_chunk",
         "Read binary chunk",
-        "Read a bounded byte range as Base64. Use REST fs/content with HTTP Range for large transfers.",
+        "Read a bounded byte range as Base64 for files up to 32 MiB. Larger files require read_large_file.",
         _object_schema(
             {
                 "path": PATH,
@@ -601,6 +601,21 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "length": {**POSITIVE, "maximum": 1048576, "default": 262144},
             },
             ("path",),
+        ),
+        read_only=True,
+        idempotent=True,
+    ),
+    _tool(
+        "read_large_file",
+        "Read large-file range",
+        "Read one explicit byte range from a file larger than 32 MiB. Offset and length are required; returns Base64 bytes, exact ETag and range SHA-256 for a guarded equal-length replacement.",
+        _object_schema(
+            {
+                "path": PATH,
+                "offset": NONNEGATIVE,
+                "length": {**POSITIVE, "maximum": 262144},
+            },
+            ("path", "offset", "length"),
         ),
         read_only=True,
         idempotent=True,
@@ -670,6 +685,49 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         ),
         read_only=False,
         destructive=True,
+    ),
+    _tool(
+        "mutate_files",
+        "Transactional file mutation",
+        "Apply one transaction across files in a single filesystem domain. Existing files require exact ETags. Supports exact text replacement, JSON/YAML/TOML structured patch, create-only files, and whole-file replacement. All preconditions are checked before publication and ordinary errors roll back the whole request. Files above 32 MiB are rejected.",
+        _object_schema(
+            {
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "items": {"type": "object"},
+                },
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            ("items",),
+        ),
+        read_only=False,
+        destructive=True,
+        idempotent=False,
+    ),
+    _tool(
+        "replace_large_file_range",
+        "Replace large-file range",
+        "Replace one exact byte range in a file larger than 32 MiB without changing file size. Requires the exact ETag and range SHA-256 returned by read_large_file; replacement byte length must equal length.",
+        _object_schema(
+            {
+                "path": PATH,
+                "offset": NONNEGATIVE,
+                "length": {"type": "integer", "minimum": 1, "maximum": 262144},
+                "data_base64": {"type": "string"},
+                "expected_etag": {"type": "string", "minLength": 1},
+                "expected_range_sha256": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64,
+                },
+            },
+            ("path", "offset", "length", "data_base64", "expected_etag", "expected_range_sha256"),
+        ),
+        read_only=False,
+        destructive=True,
+        idempotent=True,
     ),
     _tool(
         "create_directory",
@@ -1049,6 +1107,7 @@ def tools_for(
                 "read_file",
                 "stat_file",
                 "read_binary_chunk",
+                "read_large_file",
                 "prepare_download",
                 "search_files",
                 "list_tree",
@@ -1064,6 +1123,8 @@ def tools_for(
             {
                 "write_file",
                 "replace_text",
+                "mutate_files",
+                "replace_large_file_range",
                 "create_directory",
                 "move_path",
                 "start_upload",

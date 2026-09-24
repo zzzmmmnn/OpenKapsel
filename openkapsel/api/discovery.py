@@ -30,6 +30,11 @@ from openkapsel.api.discovery_sections import (
 from openkapsel.errors import ApiError
 from openkapsel.auth.oauth_consent import consent_metadata
 from openkapsel.files.git_operations import git_discovery
+from openkapsel.files.mutation import (
+    LARGE_FILE_WINDOW_MAX_BYTES,
+    SMALL_FILE_MAX_BYTES,
+    STANDARD_FILE_MAX_BYTES,
+)
 from openkapsel.execution.environment_store import (
     EnvironmentStore,
     MAX_ENVIRONMENT_NAME_CHARS,
@@ -243,7 +248,7 @@ class DiscoveryMixin:
                     key: full["limits"][key]
                     for key in (
                         "workspace_storage", "max_request_body_bytes", "max_file_bytes",
-                        "max_concurrent_transfers", "max_concurrent_shell_tasks_per_token",
+                        "file_size_tiers", "max_concurrent_transfers", "max_concurrent_shell_tasks_per_token",
                         "max_sse_streams_per_token", "max_sse_duration_seconds",
                         "http_socket_timeout_seconds",
                         "max_batch_file_operations",
@@ -692,6 +697,9 @@ class DiscoveryMixin:
                     "tree": read_enabled,
                     "write_text": write_enabled,
                     "batch_replace_text": write_enabled,
+                    "transactional_mutation": write_enabled,
+                    "large_file_range_read": read_enabled,
+                    "large_file_equal_length_replace": write_enabled,
                     "mkdir": write_enabled,
                     "move": write_enabled,
                     "recoverable_delete": write_enabled and recycle_enabled,
@@ -877,6 +885,13 @@ class DiscoveryMixin:
                 "mapping_provider_idle_timeout_seconds": self.server.config.mapping_provider_idle_timeout_seconds,
                 "max_direct_upload_bytes": self.server.config.max_direct_upload_bytes,
                 "max_file_bytes": self.server.config.max_file_bytes,
+                "file_size_tiers": {
+                    "small_max_bytes": SMALL_FILE_MAX_BYTES,
+                    "medium_max_bytes": STANDARD_FILE_MAX_BYTES,
+                    "large_min_bytes": STANDARD_FILE_MAX_BYTES + 1,
+                    "ordinary_content_max_bytes": STANDARD_FILE_MAX_BYTES,
+                    "large_range_max_bytes": LARGE_FILE_WINDOW_MAX_BYTES,
+                },
                 "recommended_upload_chunk_bytes": self.server.config.upload_chunk_bytes,
                 "max_mcp_binary_chunk_bytes": self.server.config.mcp_binary_chunk_bytes,
                 "upload_ttl_seconds": self.server.config.upload_ttl_seconds,
@@ -1295,7 +1310,64 @@ class DiscoveryMixin:
                         "taskname": "<required task grouping name>",
                         "message": "<required brief operation summary>",
                     },
-                    "notes": "replace-only multi-file edit; every rule matches the original file text, all files and non-overlapping source ranges are preflighted before publication, and a post-preflight race can return 207 with per-file results",
+                    "notes": "legacy replace-only multi-file edit; use fs_mutate for request-transactional multi-file changes. Files above the standard 32 MiB limit are rejected.",
+                },
+                "fs_mutate": {
+                    "method": "POST",
+                    "url": f"{base}/fs/mutate",
+                    "json": {
+                        "items": [
+                            {
+                                "path": "<file>",
+                                "op": "text.replace | structured.patch | file.create | file.replace",
+                                "expected_etag": "<exact prior ETag for existing files>",
+                                "replacements": [{"old": "<exact>", "new": "<exact>", "expected_count": 1}],
+                                "operations": [{"op": "replace", "path": "/json/pointer", "value": "<value>"}],
+                            }
+                        ],
+                        "dry_run": False,
+                        "plan_id": "<required owning plan id>",
+                        "taskname": "<required task grouping name>",
+                        "message": "<required brief operation summary>",
+                    },
+                    "notes": (
+                        "single-backend request transaction for files at or below "
+                        f"{STANDARD_FILE_MAX_BYTES} bytes. Existing targets require exact ETags; "
+                        "all items are preflighted and staged before publication. Supports exact "
+                        "text replacement, JSON/YAML/TOML structured patch, create-only files and "
+                        "whole-file replacement. Ordinary request failures roll back all published "
+                        "items; v1 does not claim durable crash recovery across process/OS failure."
+                    ),
+                },
+                "fs_read_large": {
+                    "method": "POST",
+                    "url": f"{base}/fs/large/read",
+                    "json": {"path": "<file>", "offset": 0, "length": LARGE_FILE_WINDOW_MAX_BYTES},
+                    "notes": (
+                        f"only accepts files larger than {STANDARD_FILE_MAX_BYTES} bytes; offset and "
+                        f"length are mandatory and length is at most {LARGE_FILE_WINDOW_MAX_BYTES} bytes. "
+                        "Returns Base64 data plus the exact ETag and SHA-256 of the returned range."
+                    ),
+                },
+                "fs_replace_large": {
+                    "method": "POST",
+                    "url": f"{base}/fs/large/replace",
+                    "json": {
+                        "path": "<file>",
+                        "offset": 0,
+                        "length": "<1..262144>",
+                        "data_base64": "<replacement bytes>",
+                        "expected_etag": "<exact ETag from fs_read_large>",
+                        "expected_range_sha256": "<SHA-256 from fs_read_large>",
+                        "plan_id": "<required owning plan id>",
+                        "taskname": "<required task grouping name>",
+                        "message": "<required brief operation summary>",
+                    },
+                    "notes": (
+                        "replacement byte length must equal length, so the file size cannot change. "
+                        "The current file ETag and current selected range SHA-256 are both checked before writing; "
+                        "ordinary write/verification failures attempt to restore the original range."
+                    ),
                 },
                 "fs_mkdir": {
                     "method": "POST",
@@ -1639,7 +1711,8 @@ class DiscoveryMixin:
                 "Use direct fs_content PUT for small binary files, or create an upload session for large files and send raw bytes in chunks.",
                 "Uploads never overwrite. To replace a file, first use delete_path/fs_delete so its previous version is retained in private recycle storage, then upload the new file.",
                 "Create directories with create_directory/fs_mkdir, and move or rename paths with move_path/fs_move.",
-                "Prefer replace_text/fs_replace for one focused edit. Use fs_replace_batch for multiple exact non-overlapping replacements in one or more files; all rules match each file's original text. Use write_file/fs_write for complete file creation or replacement, and pass expected_etag to prevent overwriting a concurrent change.",
+                "For ordinary files up to 32 MiB, prefer mutate_files/fs_mutate when one logical change touches multiple files or structured configuration; existing files require exact ETags and all items are preflighted before publication. Keep replace_text/fs_replace for one simple focused edit.",
+                "Files above 32 MiB are large files: inspect them only through read_large_file/fs_read_large with explicit offset+length, and mutate them only through replace_large_file_range/fs_replace_large using exact ETag + range SHA-256 and equal-length bytes.",
                 "Use delete_path/fs_delete for recoverable deletion, list_recycle/recycle_list to inspect deleted items, and restore_recycle/recycle_restore to recover them.",
                 "For cross-workspace transfer, create_share/share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with import_share/share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
                 "Run tests or builds with run_shell/shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
@@ -1686,7 +1759,7 @@ class DiscoveryMixin:
                 "routing": "Core file RPC is always enabled; rpc.file is not a client setting. File operation/version negotiation and read/write permissions still apply. Optional RPC extensions advertise available/unsupported/disabled; the server derives offline from provider connectivity. File and plugin RPC operations never fall back to native mounts.",
                 "configuration": "Client config rpc.<family>=true|false selectively enables implemented families. Missing local dependencies are unsupported, not disabled. Plugin families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mappings. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
                 "families": {
-                    "file": {"version": 3, "fallback": None, "operations": sorted(FILE_API_OPERATIONS)},
+                    "file": {"version": 4, "fallback": None, "operations": sorted(FILE_API_OPERATIONS)},
                     "git": {"version": 2, "fallback": "none", "sync_reads": ["status", "diff", "log", "show", "ls_files", "diff_stat"], "task_writes": ["add", "commit", "restore", "checkout"]},
                     "archive": {"version": 1, "fallback": "none", "sync_reads": ["list", "read"], "task_writes": ["create", "extract"],
                                 "formats": "Runtime-advertised Python standard-library archive extensions."},
@@ -1710,7 +1783,7 @@ class DiscoveryMixin:
             "git_api": {"version": 2, "legacy": True,
                         "routing": "Legacy advertisement accepted for rolling upgrades; mapped Git has no FUSE/server fallback."},
             "file_api": {
-                "version": 3, "legacy": True, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
+                "version": 4, "legacy": True, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
                 "routing": "Legacy advertisements remain accepted for supported operations. File APIs never mount or fall back to FUSE; unsupported clients must be upgraded.",
                 "batching": "Same-mapping batches execute on the client. Mixed-root batches use the guarded local/RPC backend and never require FUSE.",
                 "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
@@ -1804,6 +1877,9 @@ class DiscoveryMixin:
             "fs_write": ("Bearer control token + files.write", write_enabled),
             "fs_replace": ("Bearer control token + files.write", write_enabled),
             "fs_replace_batch": ("Bearer control token + files.write", write_enabled),
+            "fs_mutate": ("Bearer control token + files.write", write_enabled),
+            "fs_read_large": ("files.read", read_enabled),
+            "fs_replace_large": ("Bearer control token + files.write", write_enabled),
             "fs_mkdir": ("Bearer control token + files.write", write_enabled),
             "fs_delete": (
                 "Bearer control token + files.write + recycle",

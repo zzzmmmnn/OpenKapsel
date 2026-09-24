@@ -15,6 +15,7 @@ SHARED_FILES = (
     "openkapsel/__init__.py",
     "openkapsel/source_fingerprint.py",
     "openkapsel/files/file_support.py",
+    "openkapsel/files/mutation.py",
     "openkapsel/mapping/mapping_transport.py",
     "openkapsel/mapping/mapping_capabilities.py",
 )

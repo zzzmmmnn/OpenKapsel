@@ -12,7 +12,7 @@ from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS
 RPC_STATES = frozenset({"available", "unsupported", "disabled", "offline"})
 RPC_FAMILIES = {
     "file": {
-        "version": 3,
+        "version": 4,
         "legacy_key": "file_api",
         "operations": frozenset(FILE_API_OPERATIONS),
         "fallback": None,

@@ -326,7 +326,7 @@ class MappingTransportTests(unittest.TestCase):
                     sessions[0].call("task_get", {"task_id": "bad"})
                 self.assertEqual(errno.EINVAL, error.exception.errno)
                 self.assertEqual("invalid task id", error.exception.strerror)
-                self.assertEqual(sessions[0].capabilities["file_api"]["version"], 3)
+                self.assertEqual(sessions[0].capabilities["file_api"]["version"], 4)
                 self.assertEqual(sessions[0].capabilities["git_api"], {"version": 2, "read_only": True})
                 self.assertEqual(sessions[0].capabilities["rpc"]["file"]["state"], "available")
                 self.assertEqual(sessions[0].capabilities["rpc"]["git"]["state"], "available")

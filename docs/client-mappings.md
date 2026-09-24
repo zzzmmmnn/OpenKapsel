@@ -143,7 +143,7 @@ The file RPC path supports list, stat/hash, text read (including byte offsets),
 tree, search, text write, replace, mkdir, same-mapping move, recoverable delete,
 and same-mapping manifest/replace/delete batches. Multi-file reads, filtered
 search and recursive manifests require the corresponding client capabilities;
-text codecs and exact newline preservation require file RPC version 3.
+text codecs and exact newline preservation require file RPC version 3. Transactional multi-file mutation and dedicated large-file range read/equal-length replace require file RPC version 4.
 
 Binary downloads, static Web Preview, direct uploads, resumable upload commits,
 shared snapshots/imports, cross-root copies/moves, and mixed-root batches use a

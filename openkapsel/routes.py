@@ -196,6 +196,20 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="fs_replace_batch",
     ),
     _exact(
+        "fs_mutate", ("POST",), "/fs/mutate", "_handle_fs_mutate",
+        control_required=True, request_body=True, context_mode="deferred",
+        context_operations=(("POST", "fs.mutate"),), discovery_key="fs_mutate",
+    ),
+    _exact(
+        "fs_read_large", ("POST",), "/fs/large/read", "_handle_fs_read_large",
+        request_body=True, transfer_slot=True, discovery_key="fs_read_large",
+    ),
+    _exact(
+        "fs_replace_large", ("POST",), "/fs/large/replace", "_handle_fs_replace_large",
+        control_required=True, request_body=True, context_mode="deferred",
+        context_operations=(("POST", "fs.large.replace"),), discovery_key="fs_replace_large",
+    ),
+    _exact(
         "fs_mkdir", ("POST",), "/fs/mkdir", "_handle_fs_mkdir",
         control_required=True, request_body=True, context_mode="deferred",
         context_operations=(("POST", "fs.mkdir"),), discovery_key="fs_mkdir",

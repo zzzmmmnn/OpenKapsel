@@ -1,5 +1,6 @@
 """File API equivalence and one-RPC routing without needing a FUSE mount."""
 
+import base64
 import errno
 import hashlib
 import json
@@ -39,7 +40,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         def call(op, args):
             self.calls.append((op, args))
             return self.files.dispatch(op, args)
-        self.session = SimpleNamespace(closed=False, ready=True, generation="fixture", capabilities={"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
+        self.session = SimpleNamespace(closed=False, ready=True, generation="fixture", capabilities={"file_api": {"version": 4, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
         self.server.mappings.sessions[self.row["id"]] = self.session
 
     def tearDown(self):
@@ -85,6 +86,53 @@ class MappingFileHTTPTests(unittest.TestCase):
         status, body = self.api("/fs/delete/batch", {"paths": ["laptop/a"]})
         self.assertEqual(200, status, body)
         self.assertEqual("laptop", body["items"][0]["root"])
+
+    def test_transactional_mutation_and_large_file_ranges_use_one_rpc(self):
+        (self.export / "a").write_text("old A", encoding="utf-8")
+        (self.export / "b").write_text("old B", encoding="utf-8")
+        status, a_stat = self.api("/fs/stat?path=laptop/a&fields=etag,size")
+        self.assertEqual(200, status, a_stat)
+        status, b_stat = self.api("/fs/stat?path=laptop/b&fields=etag,size")
+        self.assertEqual(200, status, b_stat)
+        before = len(self.calls)
+        status, body = self.api("/fs/mutate", {
+            "items": [
+                {"op": "text.replace", "path": "laptop/a", "expected_etag": a_stat["etag"],
+                 "replacements": [{"old": "old A", "new": "new A", "expected_count": 1}]},
+                {"op": "text.replace", "path": "laptop/b", "expected_etag": b_stat["etag"],
+                 "replacements": [{"old": "old B", "new": "new B", "expected_count": 1}]},
+                {"op": "file.create", "path": "laptop/c", "content": "created"},
+            ]
+        })
+        self.assertEqual(200, status, body)
+        self.assertEqual(before + 1, len(self.calls))
+        self.assertEqual("api_fs_mutate", self.calls[-1][0])
+        self.assertEqual(["laptop/a", "laptop/b", "laptop/c"], [item["path"] for item in body["items"]])
+        self.assertEqual("new A", (self.export / "a").read_text(encoding="utf-8"))
+        self.assertEqual("new B", (self.export / "b").read_text(encoding="utf-8"))
+        self.assertEqual("created", (self.export / "c").read_text(encoding="utf-8"))
+
+        large = self.export / "large.bin"
+        with large.open("wb") as handle:
+            handle.write(b"0123456789abcdef")
+            handle.truncate(32 * 1024 * 1024 + 1)
+        before = len(self.calls)
+        status, read = self.api("/fs/large/read", {"path": "laptop/large.bin", "offset": 4, "length": 6})
+        self.assertEqual(200, status, read)
+        self.assertEqual(before + 1, len(self.calls))
+        self.assertEqual("api_fs_read_large", self.calls[-1][0])
+        status, replaced = self.api("/fs/large/replace", {
+            "path": "laptop/large.bin",
+            "offset": 4,
+            "length": 6,
+            "data_base64": base64.b64encode(b"ABCDEF").decode("ascii"),
+            "expected_etag": read["etag"],
+            "expected_range_sha256": read["range_sha256"],
+        })
+        self.assertEqual(200, status, replaced)
+        self.assertEqual("api_fs_replace_large", self.calls[-1][0])
+        with large.open("rb") as handle:
+            self.assertEqual(b"0123ABCDEFabcdef", handle.read(16))
 
     def test_new_read_operations_are_single_rpc_and_read_token_accessible(self):
         (self.export / "a.py").write_text("needle")

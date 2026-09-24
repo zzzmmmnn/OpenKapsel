@@ -579,6 +579,9 @@ class McpHandlersMixin:
             "file_manifest": self._handle_fs_manifest,
             "write_file": self._handle_fs_write,
             "replace_text": self._handle_fs_replace,
+            "mutate_files": self._handle_fs_mutate,
+            "read_large_file": self._handle_fs_read_large,
+            "replace_large_file_range": self._handle_fs_replace_large,
             "create_directory": self._handle_fs_mkdir,
             "move_path": self._handle_fs_move,
             "delete_path": self._handle_fs_delete,
@@ -725,6 +728,8 @@ class McpHandlersMixin:
             file_stat = self._stream_stat(handle)
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+            from openkapsel.files.mutation import require_standard_file_size
+            require_standard_file_size(file_stat, operation="read_binary_chunk")
             size = file_stat.st_size
             if offset > size:
                 raise ApiError(

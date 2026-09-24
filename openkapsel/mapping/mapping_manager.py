@@ -517,7 +517,7 @@ class MappingManager:
             "file",
             operation=operation,
             min_version=min_version,
-            max_version=3,
+            max_version=4,
         ).available
 
     def accept(self, handler, row):
