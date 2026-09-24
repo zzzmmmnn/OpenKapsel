@@ -80,8 +80,8 @@ class StorageHandlersMixin:
                         if kind not in {"google_drive", "dropbox"}:
                             raise ValueError("browser OAuth is supported only for Google Drive and Dropbox")
                         create_values = {
-                            "name": manager.store.validate_name(
-                                self._form_one(form, "name"), label="provider name"
+                            "name": manager.store.validate_provider_name(
+                                self._form_one(form, "name")
                             ),
                             "remote_path": manager.store.validate_remote_path(
                                 self._form_one(form, "remote_path")

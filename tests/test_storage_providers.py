@@ -186,7 +186,7 @@ class StorageProviderStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "storage.sqlite3"
             store = StorageProviderStore(path)
-            provider = store.create("drive", "google_drive", remote_path="Projects", writable=True)
+            provider = store.create("Google Drive 測試", "google_drive", remote_path="Projects", writable=True)
             self.assertTrue(provider["writable"])
             self.assertEqual(1 * 1024**3, DEFAULT_CACHE_MAX_BYTES)
             self.assertEqual(DEFAULT_CACHE_MAX_BYTES, provider["cache_max_bytes"])
@@ -195,6 +195,8 @@ class StorageProviderStoreTests(unittest.TestCase):
             mapping = store.add_mapping(provider["id"], "workspace", "drive")
             self.assertEqual("workspace", mapping["workspace"])
             self.assertTrue(store.reserved("workspace", "drive"))
+            with self.assertRaises(ValueError):
+                store.add_mapping(provider["id"], "workspace", "Google Drive")
             with self.assertRaises(sqlite3.IntegrityError):
                 store.add_mapping(provider["id"], "workspace", "drive")
 
@@ -521,7 +523,7 @@ class StorageProviderHTTPTests(unittest.TestCase):
         path = "/kapsel/admin/storage-providers"
         payload = {
             "action": "oauth_start",
-            "name": "drive",
+            "name": "Google Drive",
             "kind": "google_drive",
             "remote_path": "Projects",
             "cache_gib": "1",
@@ -556,7 +558,7 @@ class StorageProviderHTTPTests(unittest.TestCase):
         self.assertNotIn("REFRESH", page)
         providers = self.server.storage_providers.store.list()
         self.assertEqual(1, len(providers))
-        self.assertEqual("drive", providers[0]["name"])
+        self.assertEqual("Google Drive", providers[0]["name"])
         self.assertNotIn("token", providers[0])
         configure = next(
             values for action, values in self.server.storage_providers.helper.calls

@@ -125,7 +125,7 @@ def render_storage_providers(
 <span class="summary-toggle" aria-hidden="true"></span></summary><div class="token-details">
 {delete_warning_html}
 <form method="post" action="{action}">{hidden}<input type="hidden" name="id" value="{esc(provider["id"], quote=True)}"><div class="grid">
-<div><label>Name</label><input name="name" value="{esc(provider["name"], quote=True)}" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"></div>
+<div><label>Name</label><input name="name" value="{esc(provider["name"], quote=True)}" required maxlength="64"></div>
 <div><label>Remote path</label><input name="remote_path" value="{esc(provider["remote_path"], quote=True)}"></div>
 <div><label>VFS cache limit (GiB)</label><input name="cache_gib" type="number" min="1" max="1024" value="{max(1, provider["cache_max_bytes"] // (1024**3))}"></div>
 <div><label>Comment</label><input name="comment" maxlength="200" value="{esc(provider["comment"], quote=True)}"></div>
@@ -155,7 +155,7 @@ def render_storage_providers(
 <div class="panel-heading"><h2>Storage Providers</h2><div class="muted">Server-managed rclone mounts. Remote data is read on demand; the VFS cache does not pre-download the whole drive.</div></div>{notice}
 <h2>Existing providers ({len(providers)})</h2>{''.join(cards) or '<section class="card"><p class="muted">No storage providers configured.</p></section>'}
 <section class="card"><h2>Create provider</h2><form method="post" action="{action}" data-storage-create>{hidden}<div class="grid">
-<div><label>Name</label><input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"></div>
+<div><label>Name</label><input name="name" required maxlength="64" placeholder="e.g. Google Drive"></div>
 <div><label>Type</label><select name="kind" onchange="storageKind(this.form,this.value)">{kind_options}</select></div>
 <div><label>Remote path</label><input name="remote_path" placeholder="Optional subdirectory/share"></div>
 <div><label>VFS cache limit (GiB)</label><input name="cache_gib" type="number" min="1" max="1024" value="1"></div>

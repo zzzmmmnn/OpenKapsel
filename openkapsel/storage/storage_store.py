@@ -68,6 +68,15 @@ class StorageProviderStore:
         return name
 
     @staticmethod
+    def validate_provider_name(name: str) -> str:
+        if not isinstance(name, str):
+            raise ValueError("provider name must contain 1-64 printable characters")
+        name = name.strip()
+        if not 1 <= len(name) <= 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+            raise ValueError("provider name must contain 1-64 printable characters")
+        return name
+
+    @staticmethod
     def validate_kind(kind: str) -> str:
         if kind not in PROVIDER_KINDS:
             raise ValueError("storage provider kind must be google_drive, dropbox, sftp, or smb")
@@ -119,7 +128,7 @@ class StorageProviderStore:
         writable: bool = False,
         cache_max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
     ) -> dict:
-        name = self.validate_name(name, label="provider name")
+        name = self.validate_provider_name(name)
         kind = self.validate_kind(kind)
         remote_path = self.validate_remote_path(remote_path)
         comment = self.validate_comment(comment)
@@ -149,7 +158,7 @@ class StorageProviderStore:
         self.get(provider_id)
         values = {}
         if name is not None:
-            values["name"] = self.validate_name(name, label="provider name")
+            values["name"] = self.validate_provider_name(name)
         if remote_path is not None:
             values["remote_path"] = self.validate_remote_path(remote_path)
         if comment is not None:
