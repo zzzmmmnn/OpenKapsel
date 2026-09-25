@@ -368,6 +368,76 @@ class TransactionalMutationTests(unittest.TestCase):
         listing = self.files.dispatch("recycle_list", {"offset": 0, "limit": 100})
         self.assertEqual(0, listing["total"], listing)
 
+    def test_text_replace_line_range_is_zero_based_inclusive_and_preserves_outside(self):
+        path = self.root / "lines.txt"
+        path.write_bytes(b"hit\r\nskip\r\nhit\r\nhit")
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "lines.txt",
+            "expected_etag": self.etag("lines.txt"),
+            "start_line": 1,
+            "end_line": 2,
+            "replacements": [{"old": "hit", "new": "changed", "expected_count": 1}],
+        }]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(b"hit\r\nskip\r\nchanged\r\nhit", path.read_bytes())
+
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "lines.txt",
+            "expected_etag": self.etag("lines.txt"),
+            "start_line": 3,
+            "replacements": [{"old": "hit", "new": "tail", "expected_count": 1}],
+        }]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(b"hit\r\nskip\r\nchanged\r\ntail", path.read_bytes())
+
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "lines.txt",
+            "expected_etag": self.etag("lines.txt"),
+            "end_line": 0,
+            "replacements": [{"old": "hit", "new": "head", "expected_count": 1}],
+        }]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(b"head\r\nskip\r\nchanged\r\ntail", path.read_bytes())
+
+    def test_text_replace_line_range_validation_and_count_are_range_local(self):
+        path = self.root / "lines.txt"
+        path.write_text("same\nsame\nsame\n", encoding="utf-8")
+        before = path.read_bytes()
+
+        mismatch = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "lines.txt",
+            "expected_etag": self.etag("lines.txt"),
+            "start_line": 1,
+            "end_line": 1,
+            "replacements": [{"old": "same", "new": "x", "expected_count": 2}],
+        }]})
+        self.assertEqual(409, mismatch["status"], mismatch)
+        details = mismatch["error"]["details"]
+        self.assertEqual(1, details["actual"])
+        self.assertEqual(1, details["start_line"])
+        self.assertEqual(1, details["end_line"])
+        self.assertEqual(before, path.read_bytes())
+
+        for start_line, end_line in ((-1, None), (2, 1), (10, None), (0, 10)):
+            body = {
+                "op": "text.replace",
+                "path": "lines.txt",
+                "expected_etag": self.etag("lines.txt"),
+                "replacements": [{"old": "same", "new": "x"}],
+            }
+            if start_line is not None:
+                body["start_line"] = start_line
+            if end_line is not None:
+                body["end_line"] = end_line
+            rejected = self.call("fs_mutate", {"items": [body]})
+            self.assertEqual(400, rejected["status"], rejected)
+            self.assertEqual("invalid_line_range", rejected["error"]["code"])
+            self.assertEqual(before, path.read_bytes())
+
     def test_delete_stale_etag_and_overlapping_paths_change_nothing(self):
         (self.root / "folder").mkdir()
         (self.root / "folder/child.txt").write_text("old", encoding="utf-8")

@@ -101,6 +101,92 @@ TEXT_ENCODING = {"type": "string", "enum": list(ENCODINGS), "default": "utf-8",
                  "description": "Explicit file encoding; strict conversion. LF/CRLF/CR are preserved literally. UTF-16 requires explicit endian; BOM is preserved as U+FEFF."}
 
 
+def _mutation_item_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "description": (
+            "One transactional mutation item. op and path are always required. Existing "
+            "targets also require exact expected_etag. Operation-specific required fields "
+            "are enforced by the server."
+        ),
+        "properties": {
+            "op": {
+                "type": "string",
+                "enum": ["text.replace", "structured.patch", "file.create", "file.replace", "path.delete"],
+                "description": "Mutation operation to perform on path.",
+            },
+            "path": PATH,
+            "expected_etag": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact current ETag required for every existing target; omit only for file.create.",
+            },
+            "encoding": TEXT_ENCODING,
+            "content": {
+                "type": "string",
+                "description": "Text content for file.create or file.replace.",
+            },
+            "start_line": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": "text.replace only: zero-based inclusive first line. Omit to start at line 0.",
+            },
+            "end_line": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "text.replace only: zero-based inclusive last line. Omit to continue through EOF.",
+            },
+            "replacements": {
+                "type": "array",
+                "minItems": 1,
+                "description": "text.replace only: exact replacements evaluated only inside the selected line range.",
+                "items": _object_schema(
+                    {
+                        "old": {"type": "string", "minLength": 1, "description": "Exact source text."},
+                        "new": {"type": "string", "description": "Exact replacement text."},
+                        "expected_count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 1,
+                            "description": "Required exact occurrence count inside the selected line range.",
+                        },
+                    },
+                    ("old", "new"),
+                ),
+            },
+            "format": {
+                "type": "string",
+                "enum": ["json", "yaml", "toml"],
+                "description": "structured.patch only: explicit structured format; inferred from suffix when omitted.",
+            },
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "description": "structured.patch only: guarded JSON Pointer operations.",
+                "items": _object_schema(
+                    {
+                        "op": {"type": "string", "enum": ["test", "add", "replace", "remove"]},
+                        "path": {"type": "string", "description": "JSON Pointer path."},
+                        "value": {"description": "Value for test/add/replace; omitted for remove."},
+                    },
+                    ("op", "path"),
+                ),
+            },
+        },
+        "required": ["op", "path"],
+        "additionalProperties": False,
+        "allOf": [
+            {"if": {"properties": {"op": {"const": "text.replace"}}}, "then": {"required": ["expected_etag", "replacements"]}},
+            {"if": {"properties": {"op": {"const": "structured.patch"}}}, "then": {"required": ["expected_etag", "operations"]}},
+            {"if": {"properties": {"op": {"const": "file.create"}}}, "then": {"required": ["content"]}},
+            {"if": {"properties": {"op": {"const": "file.replace"}}}, "then": {"required": ["expected_etag", "content"]}},
+            {"if": {"properties": {"op": {"const": "path.delete"}}}, "then": {"required": ["expected_etag"]}},
+        ],
+    }
+
+
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool("read_files", "Read multiple files", "Read bounded text files with explicit encoding (default UTF-8), per-item status/content/etag and partial errors. No write or Shell permission required.",
           _object_schema({"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
@@ -665,7 +751,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "replace_text",
         "Replace exact text",
-        "Transactionally replace every exact occurrence when its count matches expected_matches. Requires the exact current ETag returned by a prior read/search/stat.",
+        "Transactionally replace exact text when its count matches expected_matches. Optional zero-based inclusive start_line/end_line restrict matching; omitted start_line begins at 0 and omitted end_line runs through EOF. Requires the exact current ETag returned by a prior read/search/stat.",
         _object_schema(
             {
                 "path": PATH,
@@ -674,6 +760,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "new": {"type": "string"},
                 "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
                 "expected_etag": {"type": "string", "minLength": 1},
+                "start_line": {
+                    "type": "integer", "minimum": 0, "default": 0,
+                    "description": "Zero-based inclusive first line; omit to start at line 0.",
+                },
+                "end_line": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Zero-based inclusive last line; omit to continue through EOF.",
+                },
             },
             ("path", "old", "new", "expected_etag"),
         ),
@@ -684,14 +778,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "mutate_files",
         "Transactional file mutation",
-        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
+        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement with optional zero-based inclusive line bounds, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
         _object_schema(
             {
                 "items": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 1000,
-                    "items": {"type": "object"},
+                    "items": _mutation_item_schema(),
+                    "description": "Mutation items; see each item's op-specific fields and preconditions.",
                 },
                 "dry_run": {"type": "boolean", "default": False},
             },

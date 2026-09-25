@@ -2239,6 +2239,31 @@ class WorkspaceServerTests(unittest.TestCase):
             tool for tool in listed["result"]["tools"] if tool["name"] == "mutate_files"
         )
         self.assertTrue(mutate_tool["annotations"]["destructiveHint"])
+        item_schema = mutate_tool["inputSchema"]["properties"]["items"]["items"]
+        self.assertEqual(["op", "path"], item_schema["required"])
+        item_properties = item_schema["properties"]
+        self.assertEqual(
+            ["text.replace", "structured.patch", "file.create", "file.replace", "path.delete"],
+            item_properties["op"]["enum"],
+        )
+        self.assertTrue(
+            {
+                "op", "path", "expected_etag", "encoding", "content",
+                "start_line", "end_line", "replacements", "format", "operations",
+            }.issubset(item_properties)
+        )
+        self.assertEqual(0, item_properties["start_line"]["default"])
+        replacement_schema = item_properties["replacements"]["items"]
+        self.assertEqual(["old", "new"], replacement_schema["required"])
+        self.assertIn("expected_count", replacement_schema["properties"])
+        structured_schema = item_properties["operations"]["items"]
+        self.assertEqual(["op", "path"], structured_schema["required"])
+        self.assertEqual(["test", "add", "replace", "remove"], structured_schema["properties"]["op"]["enum"])
+        replace_tool = next(
+            tool for tool in listed["result"]["tools"] if tool["name"] == "replace_text"
+        )
+        self.assertIn("start_line", replace_tool["inputSchema"]["properties"])
+        self.assertIn("end_line", replace_tool["inputSchema"]["properties"])
         _, oversized_binary_read, _ = self.mcp_request(
             token,
             201,
@@ -2369,12 +2394,12 @@ class WorkspaceServerTests(unittest.TestCase):
             "tools/call",
             {
                 "name": "write_file",
-                "arguments": {"path": "generated/data.txt", "content": "created by MCP"},
+                "arguments": {"path": "generated/data.txt", "content": "same\ncreated by MCP\nsame"},
             },
         )
         self.assertEqual(200, status)
         self.assertFalse(written["result"]["isError"])
-        self.assertEqual("created by MCP", (scope / "generated" / "data.txt").read_text())
+        self.assertEqual("same\ncreated by MCP\nsame", (scope / "generated" / "data.txt").read_text())
 
         _, generated_stat, _ = self.mcp_request(
             token,
@@ -2395,6 +2420,8 @@ class WorkspaceServerTests(unittest.TestCase):
                             "op": "text.replace",
                             "path": "generated/data.txt",
                             "expected_etag": generated_etag,
+                            "start_line": 1,
+                            "end_line": 1,
                             "replacements": [
                                 {
                                     "old": "created by MCP",
@@ -2410,7 +2437,29 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(mutated["result"]["isError"])
         self.assertTrue(mutated["result"]["structuredContent"]["committed"])
-        self.assertEqual("updated by MCP", (scope / "generated" / "data.txt").read_text())
+        self.assertEqual("same\nupdated by MCP\nsame", (scope / "generated" / "data.txt").read_text())
+
+        updated_etag = mutated["result"]["structuredContent"]["items"][0]["etag"]
+        status, line_replaced, _ = self.mcp_request(
+            token,
+            207,
+            "tools/call",
+            {
+                "name": "replace_text",
+                "arguments": {
+                    "path": "generated/data.txt",
+                    "old": "same",
+                    "new": "edge",
+                    "expected_matches": 1,
+                    "expected_etag": updated_etag,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(line_replaced["result"]["isError"])
+        self.assertEqual("edge\nupdated by MCP\nsame", (scope / "generated" / "data.txt").read_text())
 
         _, generated_dir_stat, _ = self.mcp_request(
             token,

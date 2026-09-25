@@ -1267,6 +1267,8 @@ class DiscoveryMixin:
                                 "path": "<file>",
                                 "op": "text.replace | structured.patch | file.create | file.replace | path.delete",
                                 "expected_etag": "<exact prior ETag for existing files>",
+                                "start_line": 0,
+                                "end_line": "<optional zero-based inclusive last line; omit for EOF>",
                                 "replacements": [{"old": "<exact>", "new": "<exact>", "expected_count": 1}],
                                 "operations": [{"op": "replace", "path": "/json/pointer", "value": "<value>"}],
                             }
@@ -1280,7 +1282,7 @@ class DiscoveryMixin:
                         "single-backend request transaction for files at or below "
                         f"{STANDARD_FILE_MAX_BYTES} bytes. Existing targets require exact ETags; "
                         "all items are preflighted and staged before publication. Supports exact "
-                        "text replacement, JSON/YAML/TOML structured patch, create-only files and "
+                        "text replacement with optional zero-based inclusive start_line/end_line bounds, JSON/YAML/TOML structured patch, create-only files and "
                         "whole-file replacement and recoverable file/directory deletion. Content operations are limited to standard files; path.delete may recycle larger files and directories. Ordinary request failures roll back all published "
                         "items; v1 does not claim durable crash recovery across process/OS failure."
                     ),

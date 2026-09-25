@@ -109,7 +109,7 @@ reduce batch size, character budgets, or traversal depth.
 
 - `file.create`: create-only text content; the destination must not exist.
 - `file.replace`: replace an existing standard-size text file; exact `expected_etag` is required.
-- `text.replace`: apply one or more exact replacement rules to the original text; exact `expected_etag` and exact match counts are required.
+- `text.replace`: apply one or more exact replacement rules; exact `expected_etag` and exact match counts are required. Optional zero-based inclusive `start_line` / `end_line` bounds restrict matching to that line range; omitted `start_line` starts at 0 and omitted `end_line` runs through EOF.
 - `structured.patch`: apply guarded JSON/YAML/TOML `test`, `add`, `replace`, and `remove` operations; exact `expected_etag` is required.
 - `path.delete`: recoverably recycle an existing file or directory; exact `expected_etag` is required. Content size is irrelevant, so large files may be recycled this way.
 

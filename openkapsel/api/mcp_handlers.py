@@ -638,6 +638,10 @@ class McpHandlersMixin:
                             "expected_count": arguments.get("expected_matches", 1),
                         }],
                     }
+                    if "start_line" in arguments:
+                        item["start_line"] = arguments["start_line"]
+                    if "end_line" in arguments:
+                        item["end_line"] = arguments["end_line"]
                 else:
                     item = {
                         "op": "path.delete",

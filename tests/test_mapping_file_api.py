@@ -93,7 +93,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertTrue(body["items"][0]["recycled"])
 
     def test_transactional_mutation_and_large_file_ranges_use_one_rpc(self):
-        (self.export / "a").write_text("old A", encoding="utf-8")
+        (self.export / "a").write_text("old A\nold A", encoding="utf-8")
         (self.export / "b").write_text("old B", encoding="utf-8")
         status, a_stat = self.api("/fs/stat?path=laptop/a&fields=etag,size")
         self.assertEqual(200, status, a_stat)
@@ -103,6 +103,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         status, body = self.api("/fs/mutate", {
             "items": [
                 {"op": "text.replace", "path": "laptop/a", "expected_etag": a_stat["etag"],
+                 "start_line": 1, "end_line": 1,
                  "replacements": [{"old": "old A", "new": "new A", "expected_count": 1}]},
                 {"op": "text.replace", "path": "laptop/b", "expected_etag": b_stat["etag"],
                  "replacements": [{"old": "old B", "new": "new B", "expected_count": 1}]},
@@ -113,7 +114,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual(before + 1, len(self.calls))
         self.assertEqual("api_fs_mutate", self.calls[-1][0])
         self.assertEqual(["laptop/a", "laptop/b", "laptop/c"], [item["path"] for item in body["items"]])
-        self.assertEqual("new A", (self.export / "a").read_text(encoding="utf-8"))
+        self.assertEqual("old A\nnew A", (self.export / "a").read_text(encoding="utf-8"))
         self.assertEqual("new B", (self.export / "b").read_text(encoding="utf-8"))
         self.assertEqual("created", (self.export / "c").read_text(encoding="utf-8"))
 

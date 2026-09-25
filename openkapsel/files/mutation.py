@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import io
 import os
+import re
 import secrets
 import stat
 from dataclasses import dataclass
@@ -91,9 +92,63 @@ def _read_regular_bytes(handler, path: Path, expected_etag: str) -> tuple[bytes,
     return raw, current
 
 
-def _apply_text_replacements(text: str, replacements: Any, item_index: int) -> tuple[str, int]:
+def _line_window(
+    text: str,
+    start_line: Any,
+    end_line: Any,
+    item_index: int,
+) -> tuple[int, int, int, int]:
+    if isinstance(start_line, bool) or not isinstance(start_line, int) or start_line < 0:
+        raise ApiError(
+            400,
+            "invalid_line_range",
+            f"items[{item_index}].start_line must be a non-negative integer",
+        )
+    if end_line is not None and (
+        isinstance(end_line, bool) or not isinstance(end_line, int) or end_line < 0
+    ):
+        raise ApiError(
+            400,
+            "invalid_line_range",
+            f"items[{item_index}].end_line must be a non-negative integer",
+        )
+
+    starts = [0]
+    starts.extend(match.end() for match in re.finditer(r"\r\n|\r|\n", text))
+
+    line_count = len(starts)
+    resolved_end = line_count - 1 if end_line is None else end_line
+    if start_line >= line_count or resolved_end >= line_count or resolved_end < start_line:
+        raise ApiError(
+            400,
+            "invalid_line_range",
+            f"items[{item_index}] line range is outside the file",
+            {
+                "item_index": item_index,
+                "start_line": start_line,
+                "end_line": resolved_end,
+                "line_count": line_count,
+            },
+        )
+    start_offset = starts[start_line]
+    end_offset = starts[resolved_end + 1] if resolved_end + 1 < line_count else len(text)
+    return start_offset, end_offset, start_line, resolved_end
+
+
+def _apply_text_replacements(
+    text: str,
+    replacements: Any,
+    item_index: int,
+    *,
+    start_line: Any = 0,
+    end_line: Any = None,
+) -> tuple[str, int]:
     if not isinstance(replacements, list) or not replacements:
         raise ApiError(400, "invalid_request", f"items[{item_index}].replacements must be a non-empty array")
+    range_start, range_end, resolved_start, resolved_end = _line_window(
+        text, start_line, end_line, item_index
+    )
+    selected = text[range_start:range_end]
     spans: list[tuple[int, int, str, int]] = []
     total = 0
     for replacement_index, replacement in enumerate(replacements):
@@ -112,7 +167,7 @@ def _apply_text_replacements(text: str, replacements: Any, item_index: int) -> t
             raise ApiError(400, "invalid_request", "replacement new must be a string")
         if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
             raise ApiError(400, "invalid_request", "expected_count must be a positive integer")
-        actual = text.count(old)
+        actual = selected.count(old)
         if actual != expected_count:
             raise ApiError(
                 409,
@@ -124,12 +179,15 @@ def _apply_text_replacements(text: str, replacements: Any, item_index: int) -> t
                     "replacement_index": replacement_index,
                     "expected": expected_count,
                     "actual": actual,
+                    "start_line": resolved_start,
+                    "end_line": resolved_end,
                 },
             )
         cursor = 0
         for _ in range(actual):
-            position = text.find(old, cursor)
-            spans.append((position, position + len(old), new, replacement_index))
+            position = selected.find(old, cursor)
+            absolute = range_start + position
+            spans.append((absolute, absolute + len(old), new, replacement_index))
             cursor = position + len(old)
         total += actual
     spans.sort(key=lambda value: (value[0], value[1], value[3]))
@@ -342,7 +400,13 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
             text = raw.decode(encoding, errors="strict")
         except UnicodeDecodeError:
             raise decode_error(encoding) from None
-        updated, replacements = _apply_text_replacements(text, item.get("replacements"), index)
+        updated, replacements = _apply_text_replacements(
+            text,
+            item.get("replacements"),
+            index,
+            start_line=item.get("start_line", 0),
+            end_line=item.get("end_line"),
+        )
         data = encode_text(updated, encoding)
     else:
         try:
