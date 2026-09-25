@@ -133,7 +133,7 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, _, raw = self.request("GET", self.base + endpoint)
         return status, json.loads(raw)
 
-    def test_local_archive_preview_and_mcp_tools(self):
+    def test_local_archive_preview_remains_http_only(self):
         archive = self.root / "local.zip"
         self.make_zip(archive)
         status, body = self.get_json("/archive/list?path=local.zip")
@@ -146,15 +146,16 @@ class ArchiveHTTPTests(unittest.TestCase):
         self.assertEqual("mapped preview", body["content"])
 
         conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Archive reads")
-        tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "archive_list", "arguments": {"path": "local.zip"}
-        }}
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
         _, _, raw = self.request(
-            "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(tool),
+            "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(request),
             {"Authorization": "Bearer " + conn["secret"], "Content-Type": "application/json"},
         )
         payload = json.loads(raw)
-        self.assertFalse(payload["result"]["isError"], payload)
+        names = {tool["name"] for tool in payload["result"]["tools"]}
+        self.assertIn("rpc", names)
+        self.assertNotIn("archive_list", names)
+        self.assertNotIn("archive_read", names)
 
     def test_mapped_archive_uses_plugin_and_never_fuse_fallbacks(self):
         archive = self.export / "mapped.zip"

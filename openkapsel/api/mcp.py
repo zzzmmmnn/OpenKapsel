@@ -232,31 +232,6 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             _object_schema(git_tool_properties(operation)), read_only=True)
       for operation in GIT_OPERATIONS),
     _tool(
-        "archive_list",
-        "List archive contents",
-        "Browse one ZIP or standard-library tar archive without extracting it. Mapped paths use the Archive RPC plugin; ordinary workspace paths are inspected locally.",
-        _object_schema({
-            "path": PATH,
-            "inner_path": {"type": "string", "default": "", "description": "Archive-internal directory path."},
-            "offset": NONNEGATIVE,
-            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
-        }, ("path",)),
-        read_only=True,
-    ),
-    _tool(
-        "archive_read",
-        "Read archive member",
-        "Read a bounded member preview from one ZIP or standard-library tar archive without extracting it. Returns text when decoding succeeds and Base64 bytes always.",
-        _object_schema({
-            "path": PATH,
-            "member": {"type": "string", "minLength": 1},
-            "offset": {"type": "integer", "minimum": 0, "maximum": 16777216, "default": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 262144, "default": 65536},
-            "encoding": TEXT_ENCODING,
-        }, ("path", "member")),
-        read_only=True,
-    ),
-    _tool(
         "rpc",
         "Call mapping RPC plugin",
         "Call one dynamic RPC plugin operation on a mapping. Inspect mappings first: operation_specs.<operation> publishes description/input_schema/write/execution. execution=sync returns the result directly; execution=task returns a task_id immediately and continues on the client across provider reconnects—poll it with get_task/read_task_output and do not replay a write RPC after transport uncertainty. write=true operations require write permission, control authorization, a writable mapping, and plan_id/taskname/message. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
@@ -1302,7 +1277,7 @@ def tools_for(
     if record.can_read or record.can_write:
         readable.add("rpc")
     if record.can_read:
-        readable.update({"read_files", "file_manifest", "archive_list", "archive_read"})
+        readable.update({"read_files", "file_manifest"})
         readable.update("git_" + operation for operation in GIT_OPERATIONS)
         readable.update(
             {

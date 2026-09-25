@@ -595,10 +595,6 @@ class McpHandlersMixin:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
                          for key, value in arguments.items()}
                 self._handle_git(name[4:], query)
-            elif name in {"archive_list", "archive_read"}:
-                query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
-                         for key, value in arguments.items()}
-                self._handle_archive(name[8:], query)
             elif name == "rpc":
                 self._mcp_tool_arguments = {
                     key: value

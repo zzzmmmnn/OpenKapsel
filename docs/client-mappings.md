@@ -207,8 +207,10 @@ Listing is capped at 100000 entries, one member preview at 256 KiB, and preview
 offset at 16 MiB. Supported formats come from the current Python standard library:
 normally `.zip`, `.tar`, `.tar.gz`/`.tgz`,
 `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available
-`.tar.zst`/`.tzst`. Use `archive_list` and `archive_read` for previews;
-use generic `rpc`/`kapsel_rpc` with the advertised schema for create/extract.
+`.tar.zst`/`.tzst`. Use generic `rpc`/`kapsel_rpc` with the advertised
+Archive operation schema for mapped archive list/read/create/extract. Local
+workspace archives should use ordinary local archive tools instead of MCP-specific
+archive helpers.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 
