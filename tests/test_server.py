@@ -2249,10 +2249,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(
             {
                 "op", "path", "expected_etag", "encoding", "content",
-                "start_line", "end_line", "replacements", "format", "operations",
+                "start_line", "end_line", "start_text", "end_text",
+                "replacements", "format", "operations",
             }.issubset(item_properties)
         )
         self.assertEqual(0, item_properties["start_line"]["default"])
+        self.assertIn({"not": {"required": ["start_line", "start_text"]}}, item_schema["allOf"])
+        self.assertIn({"not": {"required": ["end_line", "end_text"]}}, item_schema["allOf"])
         replacement_schema = item_properties["replacements"]["items"]
         self.assertEqual(["old", "new"], replacement_schema["required"])
         self.assertIn("expected_count", replacement_schema["properties"])
@@ -2264,6 +2267,8 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertIn("start_line", replace_tool["inputSchema"]["properties"])
         self.assertIn("end_line", replace_tool["inputSchema"]["properties"])
+        self.assertIn("start_text", replace_tool["inputSchema"]["properties"])
+        self.assertIn("end_text", replace_tool["inputSchema"]["properties"])
         _, oversized_binary_read, _ = self.mcp_request(
             token,
             201,
@@ -2452,14 +2457,13 @@ class WorkspaceServerTests(unittest.TestCase):
                     "new": "edge",
                     "expected_matches": 1,
                     "expected_etag": updated_etag,
-                    "start_line": 0,
-                    "end_line": 0,
+                    "start_text": "updated by MCP\n",
                 },
             },
         )
         self.assertEqual(200, status)
         self.assertFalse(line_replaced["result"]["isError"])
-        self.assertEqual("edge\nupdated by MCP\nsame", (scope / "generated" / "data.txt").read_text())
+        self.assertEqual("same\nupdated by MCP\nedge", (scope / "generated" / "data.txt").read_text())
 
         _, generated_dir_stat, _ = self.mcp_request(
             token,

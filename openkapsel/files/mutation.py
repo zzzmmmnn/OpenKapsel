@@ -92,47 +92,156 @@ def _read_regular_bytes(handler, path: Path, expected_etag: str) -> tuple[bytes,
     return raw, current
 
 
-def _line_window(
-    text: str,
-    start_line: Any,
-    end_line: Any,
-    item_index: int,
-) -> tuple[int, int, int, int]:
-    if isinstance(start_line, bool) or not isinstance(start_line, int) or start_line < 0:
+def _line_starts(text: str) -> list[int]:
+    starts = [0]
+    starts.extend(match.end() for match in re.finditer(r"\r\n|\r|\n", text))
+    return starts
+
+
+def _line_start_offset(starts: list[int], line: Any, item_index: int) -> tuple[int, int]:
+    if isinstance(line, bool) or not isinstance(line, int) or line < 0:
         raise ApiError(
             400,
             "invalid_line_range",
             f"items[{item_index}].start_line must be a non-negative integer",
         )
-    if end_line is not None and (
-        isinstance(end_line, bool) or not isinstance(end_line, int) or end_line < 0
-    ):
+    if line >= len(starts):
+        raise ApiError(
+            400,
+            "invalid_line_range",
+            f"items[{item_index}].start_line is outside the file",
+            {"item_index": item_index, "start_line": line, "line_count": len(starts)},
+        )
+    return starts[line], line
+
+
+def _line_end_offset(
+    text: str,
+    starts: list[int],
+    line: Any,
+    item_index: int,
+) -> tuple[int, int]:
+    if isinstance(line, bool) or not isinstance(line, int) or line < 0:
         raise ApiError(
             400,
             "invalid_line_range",
             f"items[{item_index}].end_line must be a non-negative integer",
         )
-
-    starts = [0]
-    starts.extend(match.end() for match in re.finditer(r"\r\n|\r|\n", text))
-
-    line_count = len(starts)
-    resolved_end = line_count - 1 if end_line is None else end_line
-    if start_line >= line_count or resolved_end >= line_count or resolved_end < start_line:
+    if line >= len(starts):
         raise ApiError(
             400,
             "invalid_line_range",
-            f"items[{item_index}] line range is outside the file",
+            f"items[{item_index}].end_line is outside the file",
+            {"item_index": item_index, "end_line": line, "line_count": len(starts)},
+        )
+    offset = starts[line + 1] if line + 1 < len(starts) else len(text)
+    return offset, line
+
+
+def _unique_text_marker(
+    text: str,
+    marker: Any,
+    field: str,
+    item_index: int,
+) -> tuple[int, int]:
+    if not isinstance(marker, str) or not marker:
+        raise ApiError(
+            400,
+            "invalid_text_marker",
+            f"items[{item_index}].{field} must be a non-empty string",
+        )
+    first = text.find(marker)
+    if first < 0:
+        raise ApiError(
+            409,
+            "text_marker_not_unique",
+            f"items[{item_index}].{field} must occur exactly once in the full file; found 0 matches",
+            {"item_index": item_index, "field": field, "matches": 0},
+        )
+    if text.find(marker, first + 1) >= 0:
+        raise ApiError(
+            409,
+            "text_marker_not_unique",
+            f"items[{item_index}].{field} must occur exactly once in the full file; found multiple matches",
+            {"item_index": item_index, "field": field, "matches": "multiple"},
+        )
+    return first, first + len(marker)
+
+
+def _text_window(
+    text: str,
+    item_index: int,
+    *,
+    start_line: Any = None,
+    end_line: Any = None,
+    start_text: Any = None,
+    end_text: Any = None,
+) -> tuple[int, int, dict[str, Any]]:
+    if start_text is not None and start_line is not None:
+        raise ApiError(
+            400,
+            "text_range_selector_conflict",
+            f"items[{item_index}] cannot specify both start_line and start_text",
+        )
+    if end_text is not None and end_line is not None:
+        raise ApiError(
+            400,
+            "text_range_selector_conflict",
+            f"items[{item_index}] cannot specify both end_line and end_text",
+        )
+
+    starts = _line_starts(text)
+    details: dict[str, Any] = {"item_index": item_index}
+
+    if start_text is not None:
+        _marker_start, range_start = _unique_text_marker(
+            text, start_text, "start_text", item_index
+        )
+        details["start_selector"] = "text"
+    else:
+        resolved_start = 0 if start_line is None else start_line
+        range_start, resolved_start = _line_start_offset(
+            starts, resolved_start, item_index
+        )
+        details["start_selector"] = "line"
+        details["start_line"] = resolved_start
+
+    if end_text is not None:
+        range_end, _marker_end = _unique_text_marker(
+            text, end_text, "end_text", item_index
+        )
+        details["end_selector"] = "text"
+    else:
+        resolved_end = len(starts) - 1 if end_line is None else end_line
+        range_end, resolved_end = _line_end_offset(
+            text, starts, resolved_end, item_index
+        )
+        details["end_selector"] = "line"
+        details["end_line"] = resolved_end
+
+    if (
+        details["start_selector"] == "line"
+        and details["end_selector"] == "line"
+        and details["end_line"] < details["start_line"]
+    ):
+        raise ApiError(
+            400,
+            "invalid_line_range",
+            f"items[{item_index}] end_line must not be before start_line",
+            details,
+        )
+    if range_start > range_end:
+        raise ApiError(
+            400,
+            "invalid_text_range",
+            f"items[{item_index}] resolved text range starts after it ends",
             {
-                "item_index": item_index,
-                "start_line": start_line,
-                "end_line": resolved_end,
-                "line_count": line_count,
+                **details,
+                "start_offset": range_start,
+                "end_offset": range_end,
             },
         )
-    start_offset = starts[start_line]
-    end_offset = starts[resolved_end + 1] if resolved_end + 1 < line_count else len(text)
-    return start_offset, end_offset, start_line, resolved_end
+    return range_start, range_end, details
 
 
 def _apply_text_replacements(
@@ -140,13 +249,20 @@ def _apply_text_replacements(
     replacements: Any,
     item_index: int,
     *,
-    start_line: Any = 0,
+    start_line: Any = None,
     end_line: Any = None,
+    start_text: Any = None,
+    end_text: Any = None,
 ) -> tuple[str, int]:
     if not isinstance(replacements, list) or not replacements:
         raise ApiError(400, "invalid_request", f"items[{item_index}].replacements must be a non-empty array")
-    range_start, range_end, resolved_start, resolved_end = _line_window(
-        text, start_line, end_line, item_index
+    range_start, range_end, range_details = _text_window(
+        text,
+        item_index,
+        start_line=start_line,
+        end_line=end_line,
+        start_text=start_text,
+        end_text=end_text,
     )
     selected = text[range_start:range_end]
     spans: list[tuple[int, int, str, int]] = []
@@ -179,8 +295,7 @@ def _apply_text_replacements(
                     "replacement_index": replacement_index,
                     "expected": expected_count,
                     "actual": actual,
-                    "start_line": resolved_start,
-                    "end_line": resolved_end,
+                    **range_details,
                 },
             )
         cursor = 0
@@ -404,8 +519,10 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
             text,
             item.get("replacements"),
             index,
-            start_line=item.get("start_line", 0),
+            start_line=item.get("start_line"),
             end_line=item.get("end_line"),
+            start_text=item.get("start_text"),
+            end_text=item.get("end_text"),
         )
         data = encode_text(updated, encoding)
     else:

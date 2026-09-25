@@ -438,6 +438,96 @@ class TransactionalMutationTests(unittest.TestCase):
             self.assertEqual("invalid_line_range", rejected["error"]["code"])
             self.assertEqual(before, path.read_bytes())
 
+    def test_text_replace_unique_multiline_markers_and_mixed_line_bounds(self):
+        path = self.root / "markers.txt"
+        path.write_text(
+            "before\nSTART one\nSTART two\nold\nEND one\nEND two\nafter old\n",
+            encoding="utf-8",
+        )
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "markers.txt",
+            "expected_etag": self.etag("markers.txt"),
+            "start_text": "START one\nSTART two\n",
+            "end_text": "\nEND one\nEND two",
+            "replacements": [{"old": "old", "new": "new", "expected_count": 1}],
+        }]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(
+            "before\nSTART one\nSTART two\nnew\nEND one\nEND two\nafter old\n",
+            path.read_text(encoding="utf-8"),
+        )
+
+        mixed = self.root / "mixed.txt"
+        mixed.write_text("zero\nBEGIN\ntarget\ntail\n", encoding="utf-8")
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "mixed.txt",
+            "expected_etag": self.etag("mixed.txt"),
+            "start_text": "BEGIN\n",
+            "end_line": 2,
+            "replacements": [{"old": "target", "new": "changed", "expected_count": 1}],
+        }]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual("zero\nBEGIN\nchanged\ntail\n", mixed.read_text(encoding="utf-8"))
+
+    def test_text_replace_marker_uniqueness_conflicts_and_order_fail_closed(self):
+        path = self.root / "markers.txt"
+        path.write_text("dup\nmiddle\ndup\nEND\n", encoding="utf-8")
+        before = path.read_bytes()
+
+        cases = [
+            (
+                {"start_text": "missing"},
+                409,
+                "text_marker_not_unique",
+            ),
+            (
+                {"start_text": "dup"},
+                409,
+                "text_marker_not_unique",
+            ),
+            (
+                {"start_text": ""},
+                400,
+                "invalid_text_marker",
+            ),
+            (
+                {"start_line": 0, "start_text": "middle"},
+                400,
+                "text_range_selector_conflict",
+            ),
+            (
+                {"start_text": "END", "end_text": "middle"},
+                400,
+                "invalid_text_range",
+            ),
+        ]
+        for selectors, expected_status, expected_code in cases:
+            item = {
+                "op": "text.replace",
+                "path": "markers.txt",
+                "expected_etag": self.etag("markers.txt"),
+                "replacements": [{"old": "middle", "new": "changed"}],
+                **selectors,
+            }
+            result = self.call("fs_mutate", {"items": [item]})
+            self.assertEqual(expected_status, result["status"], result)
+            self.assertEqual(expected_code, result["error"]["code"], result)
+            self.assertEqual(before, path.read_bytes())
+
+        overlap = self.root / "overlap.txt"
+        overlap.write_text("aaaa\nvalue\n", encoding="utf-8")
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "overlap.txt",
+            "expected_etag": self.etag("overlap.txt"),
+            "start_text": "aa",
+            "replacements": [{"old": "value", "new": "changed"}],
+        }]})
+        self.assertEqual(409, result["status"], result)
+        self.assertEqual("text_marker_not_unique", result["error"]["code"])
+
     def test_delete_stale_etag_and_overlapping_paths_change_nothing(self):
         (self.root / "folder").mkdir()
         (self.root / "folder/child.txt").write_text("old", encoding="utf-8")

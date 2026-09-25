@@ -642,6 +642,10 @@ class McpHandlersMixin:
                         item["start_line"] = arguments["start_line"]
                     if "end_line" in arguments:
                         item["end_line"] = arguments["end_line"]
+                    if "start_text" in arguments:
+                        item["start_text"] = arguments["start_text"]
+                    if "end_text" in arguments:
+                        item["end_text"] = arguments["end_text"]
                 else:
                     item = {
                         "op": "path.delete",

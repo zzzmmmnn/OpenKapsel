@@ -137,10 +137,28 @@ def _mutation_item_schema() -> dict[str, Any]:
                 "minimum": 0,
                 "description": "text.replace only: zero-based inclusive last line. Omit to continue through EOF.",
             },
+            "start_text": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "text.replace only: unique full-file marker. The editable range starts "
+                    "immediately after its final character. May contain multiple lines; "
+                    "mutually exclusive with start_line."
+                ),
+            },
+            "end_text": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "text.replace only: unique full-file marker. The editable range ends "
+                    "at its first character. May contain multiple lines; mutually exclusive "
+                    "with end_line."
+                ),
+            },
             "replacements": {
                 "type": "array",
                 "minItems": 1,
-                "description": "text.replace only: exact replacements evaluated only inside the selected line range.",
+                "description": "text.replace only: exact replacements evaluated only inside the selected line/text-marker range.",
                 "items": _object_schema(
                     {
                         "old": {"type": "string", "minLength": 1, "description": "Exact source text."},
@@ -149,7 +167,7 @@ def _mutation_item_schema() -> dict[str, Any]:
                             "type": "integer",
                             "minimum": 1,
                             "default": 1,
-                            "description": "Required exact occurrence count inside the selected line range.",
+                            "description": "Required exact occurrence count inside the selected line/text-marker range.",
                         },
                     },
                     ("old", "new"),
@@ -178,6 +196,8 @@ def _mutation_item_schema() -> dict[str, Any]:
         "required": ["op", "path"],
         "additionalProperties": False,
         "allOf": [
+            {"not": {"required": ["start_line", "start_text"]}},
+            {"not": {"required": ["end_line", "end_text"]}},
             {"if": {"properties": {"op": {"const": "text.replace"}}}, "then": {"required": ["expected_etag", "replacements"]}},
             {"if": {"properties": {"op": {"const": "structured.patch"}}}, "then": {"required": ["expected_etag", "operations"]}},
             {"if": {"properties": {"op": {"const": "file.create"}}}, "then": {"required": ["content"]}},
@@ -751,7 +771,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "replace_text",
         "Replace exact text",
-        "Transactionally replace exact text when its count matches expected_matches. Optional zero-based inclusive start_line/end_line restrict matching; omitted start_line begins at 0 and omitted end_line runs through EOF. Requires the exact current ETag returned by a prior read/search/stat.",
+        "Transactionally replace exact text when its count matches expected_matches. Range boundaries may use zero-based inclusive start_line/end_line or unique full-file start_text/end_text markers; start_text begins after the marker and end_text stops before it. Markers may span lines. Requires the exact current ETag returned by a prior read/search/stat.",
         _object_schema(
             {
                 "path": PATH,
@@ -768,6 +788,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "type": "integer", "minimum": 0,
                     "description": "Zero-based inclusive last line; omit to continue through EOF.",
                 },
+                "start_text": {
+                    "type": "string", "minLength": 1,
+                    "description": "Unique full-file marker; start immediately after it. May span lines; mutually exclusive with start_line.",
+                },
+                "end_text": {
+                    "type": "string", "minLength": 1,
+                    "description": "Unique full-file marker; end immediately before it. May span lines; mutually exclusive with end_line.",
+                },
             },
             ("path", "old", "new", "expected_etag"),
         ),
@@ -778,7 +806,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "mutate_files",
         "Transactional file mutation",
-        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement with optional zero-based inclusive line bounds, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
+        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement with optional line bounds or unique multiline full-file text markers, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
         _object_schema(
             {
                 "items": {
