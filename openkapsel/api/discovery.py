@@ -1265,12 +1265,15 @@ class DiscoveryMixin:
                         "items": [
                             {
                                 "path": "<file>",
-                                "op": "text.replace | structured.patch | file.create | file.replace | path.delete",
+                                "op": "text.replace | text.insert_before | text.insert_after | structured.patch | file.create | file.replace | path.delete",
                                 "expected_etag": "<exact prior ETag for existing files>",
                                 "start_line": 0,
                                 "end_line": "<optional zero-based inclusive last line; omit for EOF>",
                                 "start_text": "<optional unique full-file marker; range starts at its first character>",
                                 "end_text": "<optional unique full-file marker; range ends after its final character>",
+                                "match": "<exact insertion anchor>",
+                                "content": "<text to insert/create/replace>",
+                                "expected_count": 1,
                                 "replacements": [{"old": "<exact>", "new": "<exact>", "expected_count": 1}],
                                 "operations": [{"op": "replace", "path": "/json/pointer", "value": "<value>"}],
                             }
@@ -1284,7 +1287,7 @@ class DiscoveryMixin:
                         "single-backend request transaction for files at or below "
                         f"{STANDARD_FILE_MAX_BYTES} bytes. Existing targets require exact ETags; "
                         "all items are preflighted and staged before publication. Supports exact "
-                        "text replacement with optional zero-based inclusive line bounds or unique multiline full-file start_text/end_text markers, JSON/YAML/TOML structured patch, create-only files and "
+                        "text replacement/insertion with optional zero-based inclusive line bounds or unique multiline full-file start_text/end_text markers, JSON/YAML/TOML structured patch, create-only files and "
                         "whole-file replacement and recoverable file/directory deletion. Content operations are limited to standard files; path.delete may recycle larger files and directories. Ordinary request failures roll back all published "
                         "items; v1 does not claim durable crash recovery across process/OS failure."
                     ),
@@ -1644,7 +1647,7 @@ class DiscoveryMixin:
                 "Use direct fs_content PUT for small binary files, or create an upload session for large files and send raw bytes in chunks.",
                 "Uploads never overwrite. To replace a file, first use mutate_files/fs_mutate with path.delete so its previous version is retained in private recycle storage, then upload the new file.",
                 "Create directories with create_directory/fs_mkdir, and move or rename paths with move_path/fs_move.",
-                "For ordinary files up to 32 MiB, use mutate_files/fs_mutate for content changes; existing paths require exact ETags and all items are preflighted before publication. MCP write_file, replace_text, and delete_path are convenience wrappers over the same transaction engine.",
+                "For ordinary files up to 32 MiB, use mutate_files/fs_mutate for content changes; existing paths require exact ETags and all items are preflighted before publication. MCP write_file, replace_text, insert_before, insert_after, and delete_path are convenience wrappers over the same transaction engine.",
                 "Files above 32 MiB are large files: inspect them only through read_large_file/fs_read_large with explicit offset+length, and mutate them only through replace_large_file_range/fs_replace_large using exact ETag + range SHA-256 and equal-length bytes.",
                 "Use mutate_files/fs_mutate path.delete (or MCP delete_path) for recoverable transactional deletion, list_recycle/recycle_list to inspect deleted items, and restore_recycle/recycle_restore to recover them.",
                 "For cross-workspace transfer, create_share/share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with import_share/share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",

@@ -329,6 +329,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 modifying_tools = {
                     "write_file",
                     "replace_text",
+                    "insert_before",
+                    "insert_after",
                     "mutate_files",
                     "replace_large_file_range",
                     "create_directory",
@@ -2243,19 +2245,29 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(["op", "path"], item_schema["required"])
         item_properties = item_schema["properties"]
         self.assertEqual(
-            ["text.replace", "structured.patch", "file.create", "file.replace", "path.delete"],
+            ["text.replace", "text.insert_before", "text.insert_after", "structured.patch", "file.create", "file.replace", "path.delete"],
             item_properties["op"]["enum"],
         )
         self.assertTrue(
             {
                 "op", "path", "expected_etag", "encoding", "content",
                 "start_line", "end_line", "start_text", "end_text",
-                "replacements", "format", "operations",
+                "match", "expected_count", "replacements", "format", "operations",
             }.issubset(item_properties)
         )
         self.assertEqual(0, item_properties["start_line"]["default"])
         self.assertIn({"not": {"required": ["start_line", "start_text"]}}, item_schema["allOf"])
         self.assertIn({"not": {"required": ["end_line", "end_text"]}}, item_schema["allOf"])
+        self.assertIn(
+            {"if": {"properties": {"op": {"const": "text.insert_before"}}},
+             "then": {"required": ["expected_etag", "match", "content"]}},
+            item_schema["allOf"],
+        )
+        self.assertIn(
+            {"if": {"properties": {"op": {"const": "text.insert_after"}}},
+             "then": {"required": ["expected_etag", "match", "content"]}},
+            item_schema["allOf"],
+        )
         replacement_schema = item_properties["replacements"]["items"]
         self.assertEqual(["old", "new"], replacement_schema["required"])
         self.assertIn("expected_count", replacement_schema["properties"])
@@ -2269,6 +2281,20 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("end_line", replace_tool["inputSchema"]["properties"])
         self.assertIn("start_text", replace_tool["inputSchema"]["properties"])
         self.assertIn("end_text", replace_tool["inputSchema"]["properties"])
+        insert_before_tool = next(
+            tool for tool in listed["result"]["tools"] if tool["name"] == "insert_before"
+        )
+        insert_after_tool = next(
+            tool for tool in listed["result"]["tools"] if tool["name"] == "insert_after"
+        )
+        for tool in (insert_before_tool, insert_after_tool):
+            self.assertEqual(
+                ["path", "match", "content", "expected_etag", "plan_id", "taskname", "message"],
+                tool["inputSchema"]["required"],
+            )
+            self.assertIn("expected_matches", tool["inputSchema"]["properties"])
+            self.assertIn("start_text", tool["inputSchema"]["properties"])
+            self.assertTrue(tool["annotations"]["destructiveHint"])
         _, oversized_binary_read, _ = self.mcp_request(
             token,
             201,
@@ -2295,6 +2321,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 "list_tree",
                 "write_file",
                 "replace_text",
+                "insert_before",
+                "insert_after",
                 "mutate_files",
                 "replace_large_file_range",
                 "create_directory",
@@ -2464,6 +2492,48 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(line_replaced["result"]["isError"])
         self.assertEqual("same\nupdated by MCP\nedge", (scope / "generated" / "data.txt").read_text())
+
+        insert_etag = line_replaced["result"]["structuredContent"]["items"][0]["etag"]
+        status, inserted_before, _ = self.mcp_request(
+            token,
+            208,
+            "tools/call",
+            {
+                "name": "insert_before",
+                "arguments": {
+                    "path": "generated/data.txt",
+                    "match": "edge",
+                    "content": "<",
+                    "expected_matches": 1,
+                    "expected_etag": insert_etag,
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(inserted_before["result"]["isError"])
+        self.assertEqual(1, inserted_before["result"]["structuredContent"]["items"][0]["insertions"])
+        self.assertEqual("same\nupdated by MCP\n<edge", (scope / "generated" / "data.txt").read_text())
+
+        insert_etag = inserted_before["result"]["structuredContent"]["items"][0]["etag"]
+        status, inserted_after, _ = self.mcp_request(
+            token,
+            209,
+            "tools/call",
+            {
+                "name": "insert_after",
+                "arguments": {
+                    "path": "generated/data.txt",
+                    "match": "edge",
+                    "content": ">",
+                    "expected_matches": 1,
+                    "expected_etag": insert_etag,
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(inserted_after["result"]["isError"])
+        self.assertEqual(1, inserted_after["result"]["structuredContent"]["items"][0]["insertions"])
+        self.assertEqual("same\nupdated by MCP\n<edge>", (scope / "generated" / "data.txt").read_text())
 
         _, generated_dir_stat, _ = self.mcp_request(
             token,
@@ -3591,6 +3661,11 @@ class WorkspaceServerTests(unittest.TestCase):
         ])
         self.assertEqual(409, status)
         self.assertEqual("match_count_mismatch", payload["error"]["code"])
+        self.assertEqual(2, payload["error"]["details"]["actual"])
+        self.assertEqual(
+            [{"replacement_index": 0, "expected": 1, "actual": 2, "matches": False}],
+            payload["error"]["details"]["match_counts"],
+        )
         self.assertEqual("x x", (self.root / "duplicate.txt").read_text())
 
     def test_batch_replace_supports_multiple_original_text_edits_per_file(self) -> None:

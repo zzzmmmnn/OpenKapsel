@@ -244,6 +244,35 @@ def _text_window(
     return range_start, range_end, details
 
 
+def _expected_match_count(value: Any, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ApiError(400, "invalid_request", f"{context} must be a positive integer")
+    return value
+
+
+def _match_count_mismatch(
+    item_index: int,
+    *,
+    expected: int,
+    actual: int,
+    range_details: dict[str, Any],
+    message: str,
+    extra: dict[str, Any] | None = None,
+    match_counts: list[dict[str, Any]] | None = None,
+) -> ApiError:
+    details: dict[str, Any] = {
+        "item_index": item_index,
+        "expected": expected,
+        "actual": actual,
+        **range_details,
+    }
+    if extra:
+        details.update(extra)
+    if match_counts is not None:
+        details["match_counts"] = match_counts
+    return ApiError(409, "match_count_mismatch", message, details)
+
+
 def _apply_text_replacements(
     text: str,
     replacements: Any,
@@ -265,8 +294,8 @@ def _apply_text_replacements(
         end_text=end_text,
     )
     selected = text[range_start:range_end]
-    spans: list[tuple[int, int, str, int]] = []
-    total = 0
+    parsed: list[tuple[str, str, int, int]] = []
+    match_counts: list[dict[str, Any]] = []
     for replacement_index, replacement in enumerate(replacements):
         if not isinstance(replacement, dict):
             raise ApiError(
@@ -276,28 +305,45 @@ def _apply_text_replacements(
             )
         old = replacement.get("old")
         new = replacement.get("new")
-        expected_count = replacement.get("expected_count", 1)
         if not isinstance(old, str) or not old:
             raise ApiError(400, "invalid_request", "replacement old must be a non-empty string")
         if not isinstance(new, str):
             raise ApiError(400, "invalid_request", "replacement new must be a string")
-        if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
-            raise ApiError(400, "invalid_request", "expected_count must be a positive integer")
+        expected_count = _expected_match_count(
+            replacement.get("expected_count", 1),
+            "expected_count",
+        )
         actual = selected.count(old)
-        if actual != expected_count:
-            raise ApiError(
-                409,
-                "match_count_mismatch",
+        parsed.append((old, new, expected_count, actual))
+        match_counts.append(
+            {
+                "replacement_index": replacement_index,
+                "expected": expected_count,
+                "actual": actual,
+                "matches": actual == expected_count,
+            }
+        )
+
+    mismatches = [entry for entry in match_counts if not entry["matches"]]
+    if mismatches:
+        first = mismatches[0]
+        replacement_index = first["replacement_index"]
+        raise _match_count_mismatch(
+            item_index,
+            expected=first["expected"],
+            actual=first["actual"],
+            range_details=range_details,
+            message=(
                 f"items[{item_index}].replacements[{replacement_index}] expected "
-                f"{expected_count} exact match(es), found {actual}",
-                {
-                    "item_index": item_index,
-                    "replacement_index": replacement_index,
-                    "expected": expected_count,
-                    "actual": actual,
-                    **range_details,
-                },
-            )
+                f"{first['expected']} exact match(es), found {first['actual']}"
+            ),
+            extra={"replacement_index": replacement_index},
+            match_counts=match_counts,
+        )
+
+    spans: list[tuple[int, int, str, int]] = []
+    total = 0
+    for replacement_index, (old, new, _expected_count, actual) in enumerate(parsed):
         cursor = 0
         for _ in range(actual):
             position = selected.find(old, cursor)
@@ -326,6 +372,69 @@ def _apply_text_replacements(
         cursor = end
     chunks.append(text[cursor:])
     return "".join(chunks), total
+
+
+def _apply_text_insertion(
+    text: str,
+    item: dict[str, Any],
+    item_index: int,
+    *,
+    after: bool,
+) -> tuple[str, int]:
+    match = item.get("match")
+    content = item.get("content")
+    if not isinstance(match, str) or not match:
+        raise ApiError(400, "invalid_request", f"items[{item_index}].match must be a non-empty string")
+    if not isinstance(content, str):
+        raise ApiError(400, "invalid_request", f"items[{item_index}].content must be a string")
+    expected_count = _expected_match_count(
+        item.get("expected_count", 1),
+        f"items[{item_index}].expected_count",
+    )
+    range_start, range_end, range_details = _text_window(
+        text,
+        item_index,
+        start_line=item.get("start_line"),
+        end_line=item.get("end_line"),
+        start_text=item.get("start_text"),
+        end_text=item.get("end_text"),
+    )
+    selected = text[range_start:range_end]
+    actual = selected.count(match)
+    if actual != expected_count:
+        raise _match_count_mismatch(
+            item_index,
+            expected=expected_count,
+            actual=actual,
+            range_details=range_details,
+            message=(
+                f"items[{item_index}] expected {expected_count} exact anchor match(es), "
+                f"found {actual}"
+            ),
+            extra={"operation": "text.insert_after" if after else "text.insert_before"},
+            match_counts=[{
+                "expected": expected_count,
+                "actual": actual,
+                "matches": actual == expected_count,
+            }],
+        )
+
+    points: list[int] = []
+    cursor = 0
+    for _ in range(actual):
+        position = selected.find(match, cursor)
+        absolute = range_start + position
+        points.append(absolute + len(match) if after else absolute)
+        cursor = position + len(match)
+
+    chunks: list[str] = []
+    cursor = 0
+    for point in points:
+        chunks.append(text[cursor:point])
+        chunks.append(content)
+        cursor = point
+    chunks.append(text[cursor:])
+    return "".join(chunks), actual
 
 
 def _structured_format(path: Path, requested: Any) -> str:
@@ -374,6 +483,14 @@ def _apply_structured_patch(text: str, path: Path, item: dict[str, Any]) -> str:
         updated = "\ufeff" + updated
     _parse(updated, fmt)
     return updated
+
+
+def _edit_count_result(plan: "MutationPlan") -> dict[str, int]:
+    if not plan.replacements:
+        return {}
+    if plan.operation in {"text.insert_before", "text.insert_after"}:
+        return {"insertions": plan.replacements}
+    return {"replacements": plan.replacements}
 
 
 @dataclass
@@ -440,11 +557,20 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
     operation = item.get("op")
     if not isinstance(requested_path, str) or not requested_path:
         raise ApiError(400, "invalid_request", f"items[{index}].path must be a non-empty string")
-    if operation not in {"text.replace", "structured.patch", "file.create", "file.replace", "path.delete"}:
+    if operation not in {
+        "text.replace",
+        "text.insert_before",
+        "text.insert_after",
+        "structured.patch",
+        "file.create",
+        "file.replace",
+        "path.delete",
+    }:
         raise ApiError(
             400,
             "invalid_request",
-            f"items[{index}].op must be text.replace, structured.patch, file.create, file.replace or path.delete",
+            f"items[{index}].op must be text.replace, text.insert_before, text.insert_after, "
+            "structured.patch, file.create, file.replace or path.delete",
         )
     path = handler._resolve_path(requested_path, write=True)
 
@@ -509,21 +635,29 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
         encoding = text_encoding(item.get("encoding", "utf-8"))
         data = encode_text(content, encoding)
         replacements = 0
-    elif operation == "text.replace":
+    elif operation in {"text.replace", "text.insert_before", "text.insert_after"}:
         encoding = text_encoding(item.get("encoding", "utf-8"))
         try:
             text = raw.decode(encoding, errors="strict")
         except UnicodeDecodeError:
             raise decode_error(encoding) from None
-        updated, replacements = _apply_text_replacements(
-            text,
-            item.get("replacements"),
-            index,
-            start_line=item.get("start_line"),
-            end_line=item.get("end_line"),
-            start_text=item.get("start_text"),
-            end_text=item.get("end_text"),
-        )
+        if operation == "text.replace":
+            updated, replacements = _apply_text_replacements(
+                text,
+                item.get("replacements"),
+                index,
+                start_line=item.get("start_line"),
+                end_line=item.get("end_line"),
+                start_text=item.get("start_text"),
+                end_text=item.get("end_text"),
+            )
+        else:
+            updated, replacements = _apply_text_insertion(
+                text,
+                item,
+                index,
+                after=operation == "text.insert_after",
+            )
         data = encode_text(updated, encoding)
     else:
         try:
@@ -705,7 +839,7 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                         "changed": plan.changed,
                         "bytes_after": 0 if plan.deleted else len(plan.data),
                         **({"deleted": True} if plan.deleted else {}),
-                        **({"replacements": plan.replacements} if plan.replacements else {}),
+                        **_edit_count_result(plan),
                     }
                     for plan in plans
                 ],
@@ -791,7 +925,7 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                     "changed": plan.changed,
                     "etag": handler._path_etag(plan.path, final),
                     "size": final.st_size,
-                    **({"replacements": plan.replacements} if plan.replacements else {}),
+                    **_edit_count_result(plan),
                 }
             )
         return {

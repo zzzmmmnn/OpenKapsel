@@ -418,6 +418,10 @@ class TransactionalMutationTests(unittest.TestCase):
         self.assertEqual(409, mismatch["status"], mismatch)
         details = mismatch["error"]["details"]
         self.assertEqual(1, details["actual"])
+        self.assertEqual(
+            [{"replacement_index": 0, "expected": 2, "actual": 1, "matches": False}],
+            details["match_counts"],
+        )
         self.assertEqual(1, details["start_line"])
         self.assertEqual(1, details["end_line"])
         self.assertEqual(before, path.read_bytes())
@@ -437,6 +441,83 @@ class TransactionalMutationTests(unittest.TestCase):
             self.assertEqual(400, rejected["status"], rejected)
             self.assertEqual("invalid_line_range", rejected["error"]["code"])
             self.assertEqual(before, path.read_bytes())
+
+    def test_text_replace_mismatch_reports_all_rule_counts_without_writing(self):
+        path = self.root / "count-preflight.txt"
+        path.write_text("alpha beta beta\n", encoding="utf-8")
+        before = path.read_bytes()
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "count-preflight.txt",
+            "expected_etag": self.etag("count-preflight.txt"),
+            "replacements": [
+                {"old": "alpha", "new": "A", "expected_count": 2},
+                {"old": "beta", "new": "B", "expected_count": 1},
+            ],
+        }]})
+        self.assertEqual(409, result["status"], result)
+        details = result["error"]["details"]
+        self.assertEqual(2, len(details["match_counts"]))
+        self.assertEqual(
+            [
+                {"replacement_index": 0, "expected": 2, "actual": 1, "matches": False},
+                {"replacement_index": 1, "expected": 1, "actual": 2, "matches": False},
+            ],
+            details["match_counts"],
+        )
+        self.assertEqual(1, details["actual"])
+        self.assertEqual(before, path.read_bytes())
+
+    def test_text_insert_before_and_after_use_exact_counts_and_ranges(self):
+        path = self.root / "insert.txt"
+        path.write_text("head\nanchor\nanchor\ntail\n", encoding="utf-8")
+
+        before = self.call("fs_mutate", {"items": [{
+            "op": "text.insert_before",
+            "path": "insert.txt",
+            "expected_etag": self.etag("insert.txt"),
+            "start_line": 1,
+            "end_line": 1,
+            "match": "anchor",
+            "content": "B:",
+            "expected_count": 1,
+        }]})
+        self.assertEqual(200, before["status"], before)
+        self.assertEqual(1, before["body"]["items"][0]["insertions"])
+        self.assertEqual("head\nB:anchor\nanchor\ntail\n", path.read_text(encoding="utf-8"))
+
+        after = self.call("fs_mutate", {"items": [{
+            "op": "text.insert_after",
+            "path": "insert.txt",
+            "expected_etag": self.etag("insert.txt"),
+            "start_line": 2,
+            "end_line": 2,
+            "match": "anchor",
+            "content": ":A",
+            "expected_count": 1,
+        }]})
+        self.assertEqual(200, after["status"], after)
+        self.assertEqual(1, after["body"]["items"][0]["insertions"])
+        self.assertEqual("head\nB:anchor\nanchor:A\ntail\n", path.read_text(encoding="utf-8"))
+
+        unchanged = path.read_bytes()
+        mismatch = self.call("fs_mutate", {"items": [{
+            "op": "text.insert_after",
+            "path": "insert.txt",
+            "expected_etag": self.etag("insert.txt"),
+            "match": "anchor",
+            "content": "!",
+            "expected_count": 3,
+        }]})
+        self.assertEqual(409, mismatch["status"], mismatch)
+        details = mismatch["error"]["details"]
+        self.assertEqual(2, details["actual"])
+        self.assertEqual(
+            [{"expected": 3, "actual": 2, "matches": False}],
+            details["match_counts"],
+        )
+        self.assertEqual("text.insert_after", details["operation"])
+        self.assertEqual(unchanged, path.read_bytes())
 
     def test_text_replace_unique_multiline_markers_and_mixed_line_bounds(self):
         path = self.root / "markers.txt"

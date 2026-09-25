@@ -95,10 +95,13 @@ class MappingFileHTTPTests(unittest.TestCase):
     def test_transactional_mutation_and_large_file_ranges_use_one_rpc(self):
         (self.export / "a").write_text("old A\nold A", encoding="utf-8")
         (self.export / "b").write_text("MARK\nold B", encoding="utf-8")
+        (self.export / "d").write_text("anchor", encoding="utf-8")
         status, a_stat = self.api("/fs/stat?path=laptop/a&fields=etag,size")
         self.assertEqual(200, status, a_stat)
         status, b_stat = self.api("/fs/stat?path=laptop/b&fields=etag,size")
         self.assertEqual(200, status, b_stat)
+        status, d_stat = self.api("/fs/stat?path=laptop/d&fields=etag,size")
+        self.assertEqual(200, status, d_stat)
         before = len(self.calls)
         status, body = self.api("/fs/mutate", {
             "items": [
@@ -108,15 +111,19 @@ class MappingFileHTTPTests(unittest.TestCase):
                 {"op": "text.replace", "path": "laptop/b", "expected_etag": b_stat["etag"],
                  "start_text": "MARK\n",
                  "replacements": [{"old": "old B", "new": "new B", "expected_count": 1}]},
+                {"op": "text.insert_after", "path": "laptop/d", "expected_etag": d_stat["etag"],
+                 "match": "anchor", "content": "!", "expected_count": 1},
                 {"op": "file.create", "path": "laptop/c", "content": "created"},
             ]
         })
         self.assertEqual(200, status, body)
         self.assertEqual(before + 1, len(self.calls))
         self.assertEqual("api_fs_mutate", self.calls[-1][0])
-        self.assertEqual(["laptop/a", "laptop/b", "laptop/c"], [item["path"] for item in body["items"]])
+        self.assertEqual(["laptop/a", "laptop/b", "laptop/d", "laptop/c"], [item["path"] for item in body["items"]])
         self.assertEqual("old A\nnew A", (self.export / "a").read_text(encoding="utf-8"))
         self.assertEqual("MARK\nnew B", (self.export / "b").read_text(encoding="utf-8"))
+        self.assertEqual("anchor!", (self.export / "d").read_text(encoding="utf-8"))
+        self.assertEqual(1, body["items"][2]["insertions"])
         self.assertEqual("created", (self.export / "c").read_text(encoding="utf-8"))
 
         large = self.export / "large.bin"

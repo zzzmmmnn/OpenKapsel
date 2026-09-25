@@ -121,7 +121,7 @@ SECTION_SUMMARIES = {
 SECTION_WORKFLOWS = {
     "files": [
         "Inspect with fs_list/list_files, fs_tree/list_tree, fs_stat/stat_file, and fs_search/search_files before editing.",
-        "Use fs_mutate/mutate_files as the single ordinary mutation protocol for create, whole-file replace, exact text replacement, structured patch, and recoverable path.delete; existing paths require exact ETags.",
+        "Use fs_mutate/mutate_files as the single ordinary mutation protocol for create, whole-file replace, exact text replacement, exact insert-before/insert-after, structured patch, and recoverable path.delete; existing paths require exact ETags.",
         "For files above 32 MiB use the explicit large-file range API: reads require offset+length and writes require an exact ETag, range SHA-256, and equal-length replacement bytes.",
         "Binary uploads create new files only, so recycle an existing destination before uploading a replacement.",
         "Use fs_manifest for bounded multi-file synchronization preflight; recycle one or many paths transactionally with fs_mutate path.delete items.",

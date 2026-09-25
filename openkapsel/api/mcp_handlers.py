@@ -154,7 +154,7 @@ class McpHandlersMixin:
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer replace_text for focused edits. "
                 "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one add_context call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived overview, architecture, conventions, decisions, and known issues. Tags and paths are primary Memory relevance signals. Use add_memory/update_memory during work, or complete a plan with debrief containing summary, outcome, and memory_actions; an empty memory_actions array explicitly retains nothing. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
-                "Pass expected_etag to write_file or replace_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
+                "Pass expected_etag to write_file, replace_text, insert_before, or insert_after to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use read_binary_chunk and Base64 upload_chunk for small binary chunks; for large files call prepare_download or use the raw_transfer URLs returned by start_upload. "
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
                 "delete_path is recoverable through list_recycle and restore_recycle. "
@@ -610,7 +610,7 @@ class McpHandlersMixin:
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)
-            elif name in {"write_file", "replace_text", "delete_path"}:
+            elif name in {"write_file", "replace_text", "insert_before", "insert_after", "delete_path"}:
                 context = {
                     key: arguments[key]
                     for key in ("plan_id", "taskname", "message")
@@ -626,18 +626,29 @@ class McpHandlersMixin:
                     }
                     if expected_etag is not None:
                         item["expected_etag"] = expected_etag
-                elif name == "replace_text":
-                    item = {
-                        "op": "text.replace",
-                        "path": arguments["path"],
-                        "encoding": arguments.get("encoding", "utf-8"),
-                        "expected_etag": arguments["expected_etag"],
-                        "replacements": [{
-                            "old": arguments["old"],
-                            "new": arguments["new"],
+                elif name in {"replace_text", "insert_before", "insert_after"}:
+                    if name == "replace_text":
+                        item = {
+                            "op": "text.replace",
+                            "path": arguments["path"],
+                            "encoding": arguments.get("encoding", "utf-8"),
+                            "expected_etag": arguments["expected_etag"],
+                            "replacements": [{
+                                "old": arguments["old"],
+                                "new": arguments["new"],
+                                "expected_count": arguments.get("expected_matches", 1),
+                            }],
+                        }
+                    else:
+                        item = {
+                            "op": "text.insert_before" if name == "insert_before" else "text.insert_after",
+                            "path": arguments["path"],
+                            "encoding": arguments.get("encoding", "utf-8"),
+                            "expected_etag": arguments["expected_etag"],
+                            "match": arguments["match"],
+                            "content": arguments["content"],
                             "expected_count": arguments.get("expected_matches", 1),
-                        }],
-                    }
+                        }
                     if "start_line" in arguments:
                         item["start_line"] = arguments["start_line"]
                     if "end_line" in arguments:

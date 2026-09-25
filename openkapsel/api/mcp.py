@@ -112,7 +112,7 @@ def _mutation_item_schema() -> dict[str, Any]:
         "properties": {
             "op": {
                 "type": "string",
-                "enum": ["text.replace", "structured.patch", "file.create", "file.replace", "path.delete"],
+                "enum": ["text.replace", "text.insert_before", "text.insert_after", "structured.patch", "file.create", "file.replace", "path.delete"],
                 "description": "Mutation operation to perform on path.",
             },
             "path": PATH,
@@ -124,24 +124,24 @@ def _mutation_item_schema() -> dict[str, Any]:
             "encoding": TEXT_ENCODING,
             "content": {
                 "type": "string",
-                "description": "Text content for file.create or file.replace.",
+                "description": "Text content for file.create/file.replace, or inserted text for text.insert_before/text.insert_after.",
             },
             "start_line": {
                 "type": "integer",
                 "minimum": 0,
                 "default": 0,
-                "description": "text.replace only: zero-based inclusive first line. Omit to start at line 0.",
+                "description": "Text operations only: zero-based inclusive first line. Omit to start at line 0.",
             },
             "end_line": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "text.replace only: zero-based inclusive last line. Omit to continue through EOF.",
+                "description": "Text operations only: zero-based inclusive last line. Omit to continue through EOF.",
             },
             "start_text": {
                 "type": "string",
                 "minLength": 1,
                 "description": (
-                    "text.replace only: unique full-file marker. The editable range starts "
+                    "Text operations only: unique full-file marker. The editable range starts "
                     "at its first character, so the marker itself may be replaced. May contain multiple lines; "
                     "mutually exclusive with start_line."
                 ),
@@ -150,10 +150,21 @@ def _mutation_item_schema() -> dict[str, Any]:
                 "type": "string",
                 "minLength": 1,
                 "description": (
-                    "text.replace only: unique full-file marker. The editable range ends "
+                    "Text operations only: unique full-file marker. The editable range ends "
                     "immediately after its final character, so the marker itself may be replaced. May contain multiple lines; mutually exclusive "
                     "with end_line."
                 ),
+            },
+            "match": {
+                "type": "string",
+                "minLength": 1,
+                "description": "text.insert_before/text.insert_after only: exact anchor text evaluated inside the selected range.",
+            },
+            "expected_count": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 1,
+                "description": "text.insert_before/text.insert_after only: required exact anchor occurrence count inside the selected range.",
             },
             "replacements": {
                 "type": "array",
@@ -199,6 +210,8 @@ def _mutation_item_schema() -> dict[str, Any]:
             {"not": {"required": ["start_line", "start_text"]}},
             {"not": {"required": ["end_line", "end_text"]}},
             {"if": {"properties": {"op": {"const": "text.replace"}}}, "then": {"required": ["expected_etag", "replacements"]}},
+            {"if": {"properties": {"op": {"const": "text.insert_before"}}}, "then": {"required": ["expected_etag", "match", "content"]}},
+            {"if": {"properties": {"op": {"const": "text.insert_after"}}}, "then": {"required": ["expected_etag", "match", "content"]}},
             {"if": {"properties": {"op": {"const": "structured.patch"}}}, "then": {"required": ["expected_etag", "operations"]}},
             {"if": {"properties": {"op": {"const": "file.create"}}}, "then": {"required": ["content"]}},
             {"if": {"properties": {"op": {"const": "file.replace"}}}, "then": {"required": ["expected_etag", "content"]}},
@@ -771,7 +784,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "replace_text",
         "Replace exact text",
-        "Transactionally replace exact text when its count matches expected_matches. Range boundaries may use zero-based inclusive start_line/end_line or unique full-file start_text/end_text markers; marker bounds are inclusive, from the first character of start_text through the final character of end_text. Markers may span lines and may themselves be replaced. Requires the exact current ETag returned by a prior read/search/stat.",
+        "Transactionally replace exact text when its count matches expected_matches. On a count mismatch, returns the observed actual count (and match_counts for all rules in mutate_files) without modifying the file. Range boundaries may use zero-based inclusive start_line/end_line or unique full-file start_text/end_text markers; marker bounds are inclusive, from the first character of start_text through the final character of end_text. Markers may span lines and may themselves be replaced. Requires the exact current ETag returned by a prior read/search/stat.",
         _object_schema(
             {
                 "path": PATH,
@@ -804,9 +817,79 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=False,
     ),
     _tool(
+        "insert_before",
+        "Insert before exact text",
+        "Transactionally insert content immediately before each exact anchor match when its count matches expected_matches. The anchor is preserved. On a count mismatch, returns the observed actual count without modifying the file. Range boundaries support the same zero-based line selectors or unique full-file text markers as replace_text. Requires the exact current ETag returned by a prior read/search/stat.",
+        _object_schema(
+            {
+                "path": PATH,
+                "match": {"type": "string", "minLength": 1},
+                "content": {"type": "string"},
+                "encoding": TEXT_ENCODING,
+                "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
+                "expected_etag": {"type": "string", "minLength": 1},
+                "start_line": {
+                    "type": "integer", "minimum": 0, "default": 0,
+                    "description": "Zero-based inclusive first line; omit to start at line 0.",
+                },
+                "end_line": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Zero-based inclusive last line; omit to continue through EOF.",
+                },
+                "start_text": {
+                    "type": "string", "minLength": 1,
+                    "description": "Unique full-file marker; start at its first character. May span lines; mutually exclusive with start_line.",
+                },
+                "end_text": {
+                    "type": "string", "minLength": 1,
+                    "description": "Unique full-file marker; end after its final character. May span lines; mutually exclusive with end_line.",
+                },
+            },
+            ("path", "match", "content", "expected_etag"),
+        ),
+        read_only=False,
+        destructive=True,
+        idempotent=False,
+    ),
+    _tool(
+        "insert_after",
+        "Insert after exact text",
+        "Transactionally insert content immediately after each exact anchor match when its count matches expected_matches. The anchor is preserved. On a count mismatch, returns the observed actual count without modifying the file. Range boundaries support the same zero-based line selectors or unique full-file text markers as replace_text. Requires the exact current ETag returned by a prior read/search/stat.",
+        _object_schema(
+            {
+                "path": PATH,
+                "match": {"type": "string", "minLength": 1},
+                "content": {"type": "string"},
+                "encoding": TEXT_ENCODING,
+                "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
+                "expected_etag": {"type": "string", "minLength": 1},
+                "start_line": {
+                    "type": "integer", "minimum": 0, "default": 0,
+                    "description": "Zero-based inclusive first line; omit to start at line 0.",
+                },
+                "end_line": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Zero-based inclusive last line; omit to continue through EOF.",
+                },
+                "start_text": {
+                    "type": "string", "minLength": 1,
+                    "description": "Unique full-file marker; start at its first character. May span lines; mutually exclusive with start_line.",
+                },
+                "end_text": {
+                    "type": "string", "minLength": 1,
+                    "description": "Unique full-file marker; end after its final character. May span lines; mutually exclusive with end_line.",
+                },
+            },
+            ("path", "match", "content", "expected_etag"),
+        ),
+        read_only=False,
+        destructive=True,
+        idempotent=False,
+    ),
+    _tool(
         "mutate_files",
         "Transactional file mutation",
-        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement with optional line bounds or unique multiline full-file text markers, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
+        "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement and insert-before/insert-after with optional line bounds or unique multiline full-file text markers, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. Match-count mismatches report observed counts without publishing changes. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
         _object_schema(
             {
                 "items": {
@@ -1248,6 +1331,8 @@ def tools_for(
             {
                 "write_file",
                 "replace_text",
+                "insert_before",
+                "insert_after",
                 "mutate_files",
                 "replace_large_file_range",
                 "create_directory",
