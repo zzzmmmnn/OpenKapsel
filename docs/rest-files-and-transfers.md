@@ -109,7 +109,7 @@ reduce batch size, character budgets, or traversal depth.
 
 - `file.create`: create-only text content; the destination must not exist.
 - `file.replace`: replace an existing standard-size text file; exact `expected_etag` is required.
-- `text.replace`: apply one or more exact replacement rules; exact `expected_etag` and exact match counts are required. Range boundaries may use zero-based inclusive `start_line` / `end_line`, or full-file-unique `start_text` / `end_text` markers that may span multiple lines. `start_text` excludes the marker and begins immediately after it; `end_text` excludes the marker and stops at its first character. A text marker and line selector cannot both define the same side. With no start selector the range begins at line 0; with no end selector it runs through EOF.
+- `text.replace`: apply one or more exact replacement rules; exact `expected_etag` and exact match counts are required. Range boundaries may use zero-based inclusive `start_line` / `end_line`, or full-file-unique `start_text` / `end_text` markers that may span multiple lines. Text markers are inclusive: the range starts at the first character of `start_text` and ends immediately after the final character of `end_text`, so either marker may be part of the replaced text. A text marker and line selector cannot both define the same side. With no start selector the range begins at line 0; with no end selector it runs through EOF.
 - `structured.patch`: apply guarded JSON/YAML/TOML `test`, `add`, `replace`, and `remove` operations; exact `expected_etag` is required.
 - `path.delete`: recoverably recycle an existing file or directory; exact `expected_etag` is required. Content size is irrelevant, so large files may be recycled this way.
 

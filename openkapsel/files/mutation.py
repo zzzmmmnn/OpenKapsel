@@ -194,7 +194,7 @@ def _text_window(
     details: dict[str, Any] = {"item_index": item_index}
 
     if start_text is not None:
-        _marker_start, range_start = _unique_text_marker(
+        range_start, _marker_end = _unique_text_marker(
             text, start_text, "start_text", item_index
         )
         details["start_selector"] = "text"
@@ -207,7 +207,7 @@ def _text_window(
         details["start_line"] = resolved_start
 
     if end_text is not None:
-        range_end, _marker_end = _unique_text_marker(
+        _marker_start, range_end = _unique_text_marker(
             text, end_text, "end_text", item_index
         )
         details["end_selector"] = "text"

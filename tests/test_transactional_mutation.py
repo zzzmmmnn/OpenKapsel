@@ -471,6 +471,27 @@ class TransactionalMutationTests(unittest.TestCase):
         self.assertEqual(200, result["status"], result)
         self.assertEqual("zero\nBEGIN\nchanged\ntail\n", mixed.read_text(encoding="utf-8"))
 
+    def test_text_replace_marker_bounds_are_inclusive_and_replaceable(self):
+        path = self.root / "inclusive-markers.txt"
+        path.write_text("before\nSTART\ninside\nEND\nafter\n", encoding="utf-8")
+        result = self.call("fs_mutate", {"items": [{
+            "op": "text.replace",
+            "path": "inclusive-markers.txt",
+            "expected_etag": self.etag("inclusive-markers.txt"),
+            "start_text": "START",
+            "end_text": "END",
+            "replacements": [{
+                "old": "START\ninside\nEND",
+                "new": "replaced",
+                "expected_count": 1,
+            }],
+        }]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(
+            "before\nreplaced\nafter\n",
+            path.read_text(encoding="utf-8"),
+        )
+
     def test_text_replace_marker_uniqueness_conflicts_and_order_fail_closed(self):
         path = self.root / "markers.txt"
         path.write_text("dup\nmiddle\ndup\nEND\n", encoding="utf-8")

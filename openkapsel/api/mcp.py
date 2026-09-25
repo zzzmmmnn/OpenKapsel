@@ -142,7 +142,7 @@ def _mutation_item_schema() -> dict[str, Any]:
                 "minLength": 1,
                 "description": (
                     "text.replace only: unique full-file marker. The editable range starts "
-                    "immediately after its final character. May contain multiple lines; "
+                    "at its first character, so the marker itself may be replaced. May contain multiple lines; "
                     "mutually exclusive with start_line."
                 ),
             },
@@ -151,7 +151,7 @@ def _mutation_item_schema() -> dict[str, Any]:
                 "minLength": 1,
                 "description": (
                     "text.replace only: unique full-file marker. The editable range ends "
-                    "at its first character. May contain multiple lines; mutually exclusive "
+                    "immediately after its final character, so the marker itself may be replaced. May contain multiple lines; mutually exclusive "
                     "with end_line."
                 ),
             },
@@ -771,7 +771,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "replace_text",
         "Replace exact text",
-        "Transactionally replace exact text when its count matches expected_matches. Range boundaries may use zero-based inclusive start_line/end_line or unique full-file start_text/end_text markers; start_text begins after the marker and end_text stops before it. Markers may span lines. Requires the exact current ETag returned by a prior read/search/stat.",
+        "Transactionally replace exact text when its count matches expected_matches. Range boundaries may use zero-based inclusive start_line/end_line or unique full-file start_text/end_text markers; marker bounds are inclusive, from the first character of start_text through the final character of end_text. Markers may span lines and may themselves be replaced. Requires the exact current ETag returned by a prior read/search/stat.",
         _object_schema(
             {
                 "path": PATH,
@@ -790,11 +790,11 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
                 "start_text": {
                     "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; start immediately after it. May span lines; mutually exclusive with start_line.",
+                    "description": "Unique full-file marker; start at its first character, including the marker in the editable range. May span lines; mutually exclusive with start_line.",
                 },
                 "end_text": {
                     "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; end immediately before it. May span lines; mutually exclusive with end_line.",
+                    "description": "Unique full-file marker; end after its final character, including the marker in the editable range. May span lines; mutually exclusive with end_line.",
                 },
             },
             ("path", "old", "new", "expected_etag"),

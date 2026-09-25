@@ -1269,8 +1269,8 @@ class DiscoveryMixin:
                                 "expected_etag": "<exact prior ETag for existing files>",
                                 "start_line": 0,
                                 "end_line": "<optional zero-based inclusive last line; omit for EOF>",
-                                "start_text": "<optional unique full-file marker; range starts after it>",
-                                "end_text": "<optional unique full-file marker; range ends before it>",
+                                "start_text": "<optional unique full-file marker; range starts at its first character>",
+                                "end_text": "<optional unique full-file marker; range ends after its final character>",
                                 "replacements": [{"old": "<exact>", "new": "<exact>", "expected_count": 1}],
                                 "operations": [{"op": "replace", "path": "/json/pointer", "value": "<value>"}],
                             }
