@@ -180,8 +180,7 @@ class ArchiveHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         names = {tool["name"] for tool in payload["result"]["tools"]}
         self.assertIn("rpc", names)
-        self.assertNotIn("archive_list", names)
-        self.assertNotIn("archive_read", names)
+        self.assertFalse({name for name in names if name.startswith("archive_")} - {"archive_memory"})
 
         status, payload = self.rpc(conn["secret"], "tools/call", {
             "name": "rpc",

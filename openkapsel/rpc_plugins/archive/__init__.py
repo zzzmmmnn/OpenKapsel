@@ -188,7 +188,7 @@ def _open_guarded(access, path: Path):
     return handle
 
 
-def archive_list(access, path: Path, *, inner_path: str = "", offset: int = 0, limit: int = 200) -> dict[str, Any]:
+def _list_entries(access, path: Path, *, inner_path: str = "", offset: int = 0, limit: int = 200) -> dict[str, Any]:
     kind = _archive_kind(path)
     handle = _open_guarded(access, path)
     try:
@@ -219,7 +219,7 @@ def _read_exact_prefix(stream, offset: int, limit: int) -> bytes:
     return stream.read(limit)
 
 
-def archive_read(access, path: Path, *, member: str, offset: int = 0, limit: int = 65536,
+def _read_member_preview(access, path: Path, *, member: str, offset: int = 0, limit: int = 65536,
                  encoding: str = "utf-8") -> dict[str, Any]:
     normalized = _member_name(member)
     if normalized != member:
@@ -789,7 +789,7 @@ class ArchiveRpcPlugin:
         try:
             path = files.path(args.get("path", ""))
             if operation == "list":
-                body = archive_list(
+                body = _list_entries(
                     files.paths,
                     path,
                     inner_path=args.get("inner_path", ""),
@@ -797,7 +797,7 @@ class ArchiveRpcPlugin:
                     limit=args.get("limit", 200),
                 )
             elif operation == "read":
-                body = archive_read(
+                body = _read_member_preview(
                     files.paths,
                     path,
                     member=args.get("member", ""),

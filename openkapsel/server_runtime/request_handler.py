@@ -17,7 +17,6 @@ from openkapsel.execution.environment_handlers import EnvironmentHandlersMixin
 from openkapsel.execution.sandbox import SandboxMixin
 from openkapsel.execution.schedule_handlers import ScheduleHandlersMixin
 from openkapsel.execution.shell_routing import ShellRoutingMixin
-from openkapsel.files.archive_handlers import ArchiveHandlersMixin
 from openkapsel.files.file_handlers import FileHandlersMixin
 from openkapsel.files.share_handlers import ShareHandlersMixin
 from openkapsel.mapping.mapping_handlers import MappingHandlersMixin
@@ -36,7 +35,6 @@ class WorkspaceRequestHandler(
     HttpSupportMixin,
     ContextCreationMixin,
     ShellRoutingMixin,
-    ArchiveHandlersMixin,
     MappingHandlersMixin,
     StorageHandlersMixin,
     AdminHandlersMixin,
