@@ -1,4 +1,4 @@
-"""Read-only Git inspection RPC plugin."""
+"""Fixed Git RPC family shared by server and mapping execution."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import shutil
 from typing import Any
 
 from openkapsel.errors import ApiError
-from openkapsel.files.git_operations import GIT_OPERATIONS
+from openkapsel.files.git_operations import GIT_READ_OPERATIONS
 from openkapsel.files.git_read import inspect_git
 from openkapsel.files.git_write import mutate_git
 
@@ -26,7 +26,7 @@ def _schema(operation: str) -> dict[str, Any]:
         "cwd": {
             "type": "string",
             "default": ".",
-            "description": "Client-export-relative repository root.",
+            "description": "Execution-root-relative repository root.",
         },
         "paths": {
             "type": "array",
@@ -56,12 +56,21 @@ def _schema(operation: str) -> dict[str, Any]:
     }
 
 
+def _write_schema(properties: dict[str, Any], required=()):
+    return {
+        "type": "object",
+        "properties": {"cwd": {"type": "string", "default": "."}, **properties},
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
 class GitRpcPlugin:
     family = "git"
     version = 2
     description = (
-        "Git inspection plus common local mutations. Read operations use sanitized snapshots; "
-        "write operations run as persistent client tasks with hooks/signing/network helpers disabled."
+        "Fixed Git reads and common mutations for server or mapping RPC execution. "
+        "Hooks/signing/helpers are disabled; fetch/pull/clone require caller-supplied network policy."
     )
     operations = {
         **{
@@ -70,80 +79,64 @@ class GitRpcPlugin:
                 "input_schema": _schema(operation),
                 "execution": "sync",
             }
-            for operation in GIT_OPERATIONS
+            for operation in GIT_READ_OPERATIONS
         },
         "add": {
-            "description": "Stage selected paths or all working-tree changes. Runs as a persistent client task.",
+            "description": "Stage selected repository-relative paths. Runs as an RPC task on the selected execution host.",
             "write": True,
             "execution": "task",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "cwd": {"type": "string", "default": "."},
-                    "paths": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 100,
-                    },
-                },
-                "required": ["paths"],
-                "additionalProperties": False,
-            },
+            "input_schema": _write_schema({
+                "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
+            }, ("paths",)),
         },
         "commit": {
-            "description": "Commit the current index with a supplied message. Hooks and signing are disabled. Runs as a persistent client task.",
+            "description": "Commit the current index with a supplied message. Hooks and signing are disabled.",
             "write": True,
             "execution": "task",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "cwd": {"type": "string", "default": "."},
-                    "message": {"type": "string", "minLength": 1, "maxLength": 10000},
-                    "amend": {"type": "boolean", "default": False},
-                    "author_name": {"type": "string", "maxLength": 200},
-                    "author_email": {"type": "string", "maxLength": 200},
-                },
-                "required": ["message"],
-                "additionalProperties": False,
-            },
+            "input_schema": _write_schema({
+                "message": {"type": "string", "minLength": 1, "maxLength": 10000},
+                "amend": {"type": "boolean", "default": False},
+                "author_name": {"type": "string", "maxLength": 200},
+                "author_email": {"type": "string", "maxLength": 200},
+            }, ("message",)),
         },
         "restore": {
-            "description": "Restore selected paths in the index and/or worktree. Runs as a persistent client task.",
+            "description": "Restore selected repository-relative paths in the worktree/index.",
             "write": True,
             "execution": "task",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "cwd": {"type": "string", "default": "."},
-                    "paths": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 100,
-                    },
-                    "source": {"type": "string", "maxLength": 256},
-                    "staged": {"type": "boolean", "default": False},
-                    "worktree": {"type": "boolean", "default": True},
-                },
-                "required": ["paths"],
-                "additionalProperties": False,
-            },
+            "input_schema": _write_schema({
+                "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
+                "source": {"type": "string", "maxLength": 256},
+                "staged": {"type": "boolean", "default": False},
+                "worktree": {"type": "boolean", "default": True},
+            }, ("paths",)),
         },
         "checkout": {
-            "description": "Switch to a revision, optionally creating a new branch. Runs as a persistent client task.",
+            "description": "Switch to one revision/branch; optional branch creation remains available to legacy internal callers.",
             "write": True,
             "execution": "task",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "cwd": {"type": "string", "default": "."},
-                    "revision": {"type": "string", "minLength": 1, "maxLength": 256},
-                    "new_branch": {"type": "string", "minLength": 1, "maxLength": 256},
-                },
-                "required": ["revision"],
-                "additionalProperties": False,
-            },
+            "input_schema": _write_schema({
+                "revision": {"type": "string", "minLength": 1, "maxLength": 256},
+                "new_branch": {"type": "string", "minLength": 1, "maxLength": 256},
+            }, ("revision",)),
+        },
+        "fetch": {
+            "description": "Fetch one HTTPS remote (origin by default) under the caller's network policy.",
+            "write": True,
+            "execution": "task",
+            "input_schema": _write_schema({"remote": {"type": "string", "maxLength": 256}}),
+        },
+        "pull": {
+            "description": "Fast-forward-only pull from one HTTPS remote (origin by default) under the caller's network policy.",
+            "write": True,
+            "execution": "task",
+            "input_schema": _write_schema({"remote": {"type": "string", "maxLength": 256}}),
+        },
+        "clone": {
+            "description": "Clone one HTTPS repository into a new export-relative destination under the caller's network policy.",
+            "write": True,
+            "execution": "task",
+            "input_schema": _write_schema({"source": {"type": "string", "minLength": 1, "maxLength": 4096}}, ("cwd", "source")),
         },
     }
 
@@ -154,8 +147,6 @@ class GitRpcPlugin:
 
     def dispatch(self, files, operation: str, args: dict[str, Any]):
         try:
-            # Internal server Git routing still sends an explicit options object.
-            # Generic RPC callers use the self-described flattened schema above.
             if "options" in args:
                 options = args.get("options", {})
             else:
@@ -175,11 +166,7 @@ class GitRpcPlugin:
         except ApiError as exc:
             return {
                 "status": int(exc.status),
-                "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "details": exc.details,
-                },
+                "error": {"code": exc.code, "message": exc.message, "details": exc.details},
             }
 
     def dispatch_task(self, files, operation: str, args: dict[str, Any], task):
@@ -189,11 +176,7 @@ class GitRpcPlugin:
         except ApiError as exc:
             return {
                 "status": int(exc.status),
-                "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "details": exc.details,
-                },
+                "error": {"code": exc.code, "message": exc.message, "details": exc.details},
             }
 
 

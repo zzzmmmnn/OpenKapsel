@@ -601,8 +601,12 @@ class McpHandlersMixin:
                     for key, value in arguments.items()
                     if key in {"args", "timeout_seconds", "plan_id", "taskname", "message"}
                 }
-                target = f"{arguments['mapping_id']}/rpc/{arguments['family']}/{arguments['operation']}"
-                self._handle_mapping_rpc(target)
+                if arguments.get("mapping_id"):
+                    target = f"{arguments['mapping_id']}/rpc/{arguments['family']}/{arguments['operation']}"
+                    self._handle_mapping_rpc(target)
+                else:
+                    target = f"{arguments['family']}/{arguments['operation']}"
+                    self._handle_server_rpc(target)
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)

@@ -692,7 +692,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "mapping_list", "mapping_rpc", "mapping_tasks", "mapping_task",
+                "server_rpc", "mapping_list", "mapping_rpc", "mapping_tasks", "mapping_task",
                 "archive_list", "archive_read", "fs_copy", "file_transfer", "recycle_purge",
                 "discovery",
                 "discovery_section",

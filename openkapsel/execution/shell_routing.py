@@ -97,8 +97,11 @@ class ShellRoutingMixin:
         return self.server.tasks.get(task_id, self.token_record.token)
 
     def _authorize_task_access(self, task):
-        if isinstance(task, RemoteTask) and task.result.get("kind") == "rpc":
-            if task.result.get("write"):
+        remote_rpc = isinstance(task, RemoteTask) and task.result.get("kind") == "rpc"
+        local_rpc = not isinstance(task, RemoteTask) and getattr(task, "kind", "shell") == "rpc"
+        if remote_rpc or local_rpc:
+            write = task.result.get("write") if remote_rpc else bool(getattr(task, "write", False))
+            if write:
                 self._require_permission(self.token_record.can_write, "write permission is required for this RPC task")
             else:
                 self._require_permission(self.token_record.can_read, "read permission is required for this RPC task")

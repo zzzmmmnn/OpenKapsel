@@ -201,6 +201,121 @@ class MappingHandlersMixin:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         self._send_json(200, {"mappings": self.server.mappings.list(self.token_record.path_prefix)})
 
+    def _rpc_args_with_policy(self, family, operation, args):
+        payload = dict(args)
+        if family == "git" and operation in {"fetch", "pull", "clone"}:
+            if self.token_record.network_mode == "none":
+                raise ApiError(403, "git_network_denied", "Git network access is not granted")
+            payload["_network_mode"] = self.token_record.network_mode
+            payload["_allowed_domains"] = list(self.token_record.allowed_domains)
+        return payload
+
+    def _handle_server_rpc(self, target):
+        match = re.fullmatch(
+            r"([a-z][a-z0-9_]{0,31})/([a-z][a-z0-9_]{0,31})",
+            target,
+        )
+        if not match:
+            raise ApiError(404, "not_found", "server RPC operation does not exist")
+        family, operation = match.groups()
+        if family == "file":
+            raise ApiError(400, "invalid_rpc_family", "file RPC uses the normal file APIs")
+        capability = self.server.rpc_capabilities.get(family, {})
+        spec = self.server.rpc_registry.operation_spec(family, operation)
+        if capability.get("state") != "available" or spec is None:
+            raise ApiError(
+                409,
+                "server_rpc_unsupported",
+                "server RPC capability is unavailable or unsupported",
+                {"family": family, "operation": operation, "capability": capability},
+            )
+        write = bool(spec["write"])
+        execution = spec["execution"]
+        if write:
+            self._require_control_token()
+            self._require_permission(self.token_record.can_write, "write permission is not granted")
+        else:
+            self._require_permission(self.token_record.can_read, "read permission is not granted")
+
+        body = self._read_json()
+        if (
+            set(body) - {"args", "plan_id", "taskname", "message", "timeout_seconds"}
+            or not isinstance(body.get("args", {}), dict)
+        ):
+            raise ApiError(400, "invalid_request", "body must contain args plus optional Context/task timeout fields")
+        timeout = body.get("timeout_seconds")
+        if timeout is not None and (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < float(timeout) <= 86400
+        ):
+            raise ApiError(400, "invalid_request", "timeout_seconds must be between 0 and 86400")
+        if write:
+            self._begin_context_operation(
+                "server.rpc",
+                body.get("taskname", self._context_header_taskname()),
+                body.get("message", self._context_header_message()),
+                body.get("plan_id", self._context_header_plan_id()),
+                self._context_request_details(body),
+                plan_required=True,
+            )
+
+        from openkapsel.client_runtime.client_files import ClientFiles
+
+        files = ClientFiles(
+            self.token_scope_root,
+            writable=self.token_record.can_write,
+            rpc_registry=self.server.rpc_registry,
+            rpc_capabilities=self.server.rpc_capabilities,
+        )
+        rpc_args = self._rpc_args_with_policy(family, operation, body.get("args", {}))
+        if execution == "task":
+            task = self.server.tasks.start_rpc(
+                family=family,
+                operation=operation,
+                cwd=self.token_scope_root,
+                timeout_seconds=float(timeout) if timeout is not None else 600.0,
+                owner_token=self.token_record.token,
+                write=write,
+                network_access=(family == "git" and operation in {"fetch", "pull", "clone"}),
+                runner=lambda context: self.server.rpc_registry.dispatch_task(
+                    files, family, operation, rpc_args, context
+                ),
+            )
+            self._send_json(202, {
+                "task_id": task.id,
+                "status": task.status,
+                "location": "server",
+                "family": family,
+                "operation": operation,
+                "execution": "task",
+                "status_url": f"{self._base_path()}/tasks/{task.id}",
+            })
+            return
+
+        response = self.server.rpc_registry.dispatch(files, family + "_" + operation, rpc_args)
+        if not isinstance(response, dict) or type(response.get("status")) is not int:
+            raise ApiError(502, "invalid_server_rpc_response", "server RPC plugin returned an invalid response")
+        if "error" in response:
+            error = response["error"]
+            if not isinstance(error, dict) or not 400 <= response["status"] <= 599:
+                raise ApiError(502, "invalid_server_rpc_response", "server RPC plugin returned an invalid error")
+            raise ApiError(
+                response["status"],
+                error.get("code", "server_rpc_failed"),
+                error.get("message", "server RPC plugin failed"),
+                error.get("details"),
+            )
+        result = response.get("body")
+        if response["status"] != 200 or not isinstance(result, dict):
+            raise ApiError(502, "invalid_server_rpc_response", "server RPC plugin returned an invalid result")
+        self._send_json(200, {
+            "location": "server",
+            "family": family,
+            "operation": operation,
+            "result": result,
+        })
+
     def _handle_mapping_rpc(self, target):
         match = re.fullmatch(
             r"([A-Za-z0-9_-]{24})/rpc/([a-z][a-z0-9_]{0,31})/([a-z][a-z0-9_]{0,31})",
@@ -263,6 +378,7 @@ class MappingHandlersMixin:
                 self._context_request_details(body),
                 plan_required=True,
             )
+        rpc_args = self._rpc_args_with_policy(family, operation, body.get("args", {}))
         if execution == "task":
             from openkapsel.execution.shell_routing import client_summary
 
@@ -272,7 +388,7 @@ class MappingHandlersMixin:
                 "rpc": {
                     "family": family,
                     "operation": operation,
-                    "args": body.get("args", {}),
+                    "args": rpc_args,
                 },
             }
             if timeout is not None:
@@ -310,7 +426,7 @@ class MappingHandlersMixin:
             )
             self._send_json(202, task)
             return
-        result = self._mapping_rpc(row, family + "_" + operation, body.get("args", {}))
+        result = self._mapping_rpc(row, family + "_" + operation, rpc_args)
         if not isinstance(result, dict) or type(result.get("status")) is not int:
             raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin response")
         if "error" in result:

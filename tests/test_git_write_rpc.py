@@ -7,6 +7,8 @@ from pathlib import Path
 
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
+from openkapsel.errors import ApiError
+from openkapsel.files.git_write import mutate_git
 from tests.test_git_operations import make_repo
 
 
@@ -60,6 +62,65 @@ class GitWriteRpcTests(unittest.TestCase):
 
         self.run_rpc("checkout", {"revision": "HEAD", "new_branch": "task-branch"})
         self.assertEqual("task-branch", self.git("branch", "--show-current").stdout.decode().strip())
+
+    def test_network_git_operations_use_fixed_argv_and_policy(self):
+        self.git("remote", "add", "origin", "https://example.com/repo.git")
+
+        class Task:
+            def __init__(self):
+                self.calls = []
+            def check_cancelled(self):
+                pass
+            def write(self, value):
+                pass
+            def run_process(self, argv, *, cwd=None, env=None):
+                self.calls.append((list(argv), Path(cwd), dict(env)))
+                return 0
+
+        for operation in ("fetch", "pull"):
+            task = Task()
+            result = mutate_git(
+                self.files, operation,
+                {"remote": "origin", "_network_mode": "full", "_allowed_domains": []},
+                task,
+            )
+            self.assertEqual(operation, result["operation"])
+            argv = task.calls[0][0]
+            self.assertIn(operation, argv)
+            self.assertIn("--no-recurse-submodules", argv)
+            self.assertIn("credential.helper=", argv)
+            self.assertIn("http.followRedirects=false", argv)
+            self.assertIn("http.proxy=", argv)
+            self.assertEqual("https", task.calls[0][2]["GIT_ALLOW_PROTOCOL"])
+
+        task = Task()
+        result = mutate_git(
+            self.files, "clone",
+            {"cwd": "cloned", "source": "https://example.com/repo.git",
+             "_network_mode": "domain_allowlist", "_allowed_domains": ["example.com"]},
+            task,
+        )
+        self.assertEqual("clone", result["operation"])
+        self.assertIn("clone", task.calls[0][0])
+        self.assertEqual(self.root, task.calls[0][1])
+
+        with self.assertRaises(ApiError) as denied:
+            mutate_git(
+                self.files, "fetch",
+                {"remote": "origin", "_network_mode": "domain_allowlist",
+                 "_allowed_domains": ["other.example"]},
+                Task(),
+            )
+        self.assertEqual("git_network_denied", denied.exception.code)
+
+        with self.assertRaises(ApiError) as no_network:
+            mutate_git(
+                self.files, "clone",
+                {"cwd": "blocked", "source": "https://example.com/repo.git",
+                 "_network_mode": "none", "_allowed_domains": []},
+                Task(),
+            )
+        self.assertEqual("git_network_denied", no_network.exception.code)
 
     def test_git_write_rejects_external_filter_configuration(self):
         self.git("config", "filter.evil.clean", "touch should-not-run")

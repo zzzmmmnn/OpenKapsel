@@ -12,7 +12,7 @@ from unittest.mock import patch
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.errors import ApiError
-from openkapsel.files.git_operations import GIT_OPERATIONS, git_arguments
+from openkapsel.files.git_operations import GIT_READ_OPERATIONS, git_arguments
 
 
 def make_repo(root):
@@ -78,7 +78,7 @@ class GitClientTests(unittest.TestCase):
 
     def test_all_six_operations_and_staged_changes(self):
         (self.root / "source.txt").write_text("modified\n", encoding="utf-8")
-        for operation in GIT_OPERATIONS:
+        for operation in GIT_READ_OPERATIONS:
             result = self.call(operation)
             self.assertTrue(result["output"], operation)
         self.assertIn("+modified", self.call("diff")["output"])

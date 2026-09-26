@@ -85,11 +85,15 @@ class TaskHttpMixin:
         if target not in {"auto", "server", "client"}:
             raise ApiError(400, "invalid_target", "target must be auto, server, or client")
         tasks, unavailable = [], []
-        if target != "client" and self.token_record.shell_mode != "none":
-            tasks, _ = self.server.tasks.list(self.token_record.token, 0, 100000, status)
-            tasks = [dict(task, location="server") for task in tasks]
-        elif target == "server" and self.token_record.shell_mode == "none":
-            raise ApiError(HTTPStatus.FORBIDDEN, "permission_denied", "Shell permission is required for server tasks")
+        if target != "client":
+            local_tasks, _ = self.server.tasks.list(self.token_record.token, 0, 100000, status)
+            for task in local_tasks:
+                if task.get("kind") == "rpc":
+                    visible = self.token_record.can_write if task.get("write") else self.token_record.can_read
+                else:
+                    visible = self.token_record.shell_mode != "none"
+                if visible:
+                    tasks.append(dict(task, location="server"))
         if target != "server":
             remote, unavailable = self._list_client_shell_tasks()
             tasks.extend(task for task in remote if status is None or task["status"] == status)
@@ -170,7 +174,10 @@ class TaskHttpMixin:
     def _handle_task_stdin(self, task_id: str) -> None:
         task = self._get_shell_task(task_id)
         self._authorize_task_access(task)
-        if isinstance(task, RemoteTask) and task.result.get("kind") == "rpc":
+        if (
+            isinstance(task, RemoteTask) and task.result.get("kind") == "rpc"
+            or not isinstance(task, RemoteTask) and getattr(task, "kind", "shell") == "rpc"
+        ):
             raise ApiError(HTTPStatus.CONFLICT, "not_interactive", "RPC tasks do not accept stdin")
         body = self._read_json()
         text_data = body.get("data")
@@ -242,7 +249,9 @@ class TaskHttpMixin:
             "interrupted": task.interrupted,
             "force_killed": task.force_killed,
         }
-        if isinstance(task, RemoteTask) and task.result.get("kind") == "rpc":
+        remote_rpc = isinstance(task, RemoteTask) and task.result.get("kind") == "rpc"
+        local_rpc = not isinstance(task, RemoteTask) and getattr(task, "kind", "shell") == "rpc"
+        if remote_rpc or local_rpc:
             summary = task.summary()
             for key in (
                 "kind",

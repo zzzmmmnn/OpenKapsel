@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from openkapsel.files.git_operations import GIT_OPERATIONS
+from openkapsel.files.git_operations import GIT_READ_OPERATIONS
 from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS
 
 
@@ -20,7 +20,7 @@ RPC_FAMILIES = {
     "git": {
         "version": 2,
         "legacy_key": "git_api",
-        "operations": frozenset(GIT_OPERATIONS),
+        "operations": frozenset(GIT_READ_OPERATIONS),
         "fallback": None,
     },
     "archive": {

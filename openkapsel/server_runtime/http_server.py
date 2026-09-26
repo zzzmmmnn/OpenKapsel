@@ -32,6 +32,7 @@ from openkapsel.files.share_store import ShareStore
 from openkapsel.files.uploads import UploadRegistry
 from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.mapping.mapping_transfers import FileTransferManager
+from openkapsel.rpc_plugins import load_server_rpc_registry
 from openkapsel.storage.storage_manager import StorageProviderManager
 from openkapsel.storage.storage_oauth import StorageOAuthFlows
 from openkapsel.workspace.workspace_images import WorkspaceImageClient
@@ -117,6 +118,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             mappings=self.mappings,
         )
         self.tasks = TaskRegistry(config, self.cgroups)
+        self.rpc_registry = load_server_rpc_registry()
+        self.rpc_capabilities = self.rpc_registry.capability_map({})
         self.uploads = UploadRegistry(
             config.upload_state_dir,
             ttl_seconds=config.upload_ttl_seconds,
@@ -196,6 +199,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.api_workers.close()
         self.scheduler.close()
         self.tasks.close()
+        self.rpc_registry.close()
         self.file_transfers.close()
         self.storage_providers.close()
         self.mappings.close()

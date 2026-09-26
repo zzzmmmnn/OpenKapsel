@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import logging
 import os
 import secrets
@@ -103,6 +104,12 @@ class ShellTask:
     sandbox_backend: str | None = None
     network_access: bool = True
     resource_limited: bool = False
+    kind: str = "shell"
+    rpc_family: str | None = None
+    rpc_operation: str | None = None
+    write: bool = False
+    execution: str | None = None
+    result: dict[str, Any] | None = None
     cgroup_procs_file: Path | None = field(default=None, repr=False)
     sandbox_controller: Any | None = field(default=None, repr=False)
     environment_file: Path | None = field(default=None, repr=False)
@@ -110,7 +117,7 @@ class ShellTask:
     mount_lease: Any | None = field(default=None, repr=False)
     status: str = "running"
     exit_code: int | None = None
-    error: str | None = None
+    error: Any = None
     started_at: str = field(default_factory=_utc_now)
     finished_at: str | None = None
     timed_out: bool = False
@@ -132,7 +139,7 @@ class ShellTask:
         stdout, stdout_dropped = self.stdout.snapshot()
         stderr, stderr_dropped = self.stderr.snapshot()
         with self._lock:
-            return {
+            payload = {
                 "task_id": self.id,
                 "status": self.status,
                 "command": self.command,
@@ -161,12 +168,98 @@ class ShellTask:
                 "network_access": self.network_access,
                 "resource_limited": self.resource_limited,
             }
+            if self.kind == "rpc":
+                payload.update(
+                    kind="rpc",
+                    rpc_family=self.rpc_family,
+                    rpc_operation=self.rpc_operation,
+                    write=self.write,
+                    execution=self.execution or "task",
+                    result=self.result,
+                )
+            return payload
 
     def summary(self) -> dict[str, Any]:
         payload = self.serialize()
         payload.pop("stdout", None)
         payload.pop("stderr", None)
         return payload
+
+
+class ServerRpcTaskContext:
+    """Cooperative execution context for task-based server RPC plugins."""
+
+    def __init__(self, task: ShellTask):
+        self.task = task
+
+    @property
+    def cancelled(self) -> bool:
+        return self.task.interrupted or self.task.timed_out
+
+    def check_cancelled(self) -> None:
+        if self.cancelled:
+            raise OSError(errno.ECANCELED, "RPC task was cancelled")
+
+    def write(self, value: Any) -> None:
+        data = value if isinstance(value, bytes) else str(value).encode("utf-8", errors="replace")
+        self.task.stdout.append(data)
+
+    def cancel(self, *, force: bool = False, timed_out: bool = False) -> None:
+        with self.task._lock:
+            if timed_out:
+                self.task.timed_out = True
+            else:
+                self.task.interrupted = True
+            if force:
+                self.task.force_killed = True
+            process = self.task.process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                process.kill() if force else process.terminate()
+            else:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
+        except ProcessLookupError:
+            pass
+
+    def run_process(self, argv, *, cwd=None, env=None) -> int:
+        self.check_cancelled()
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            shell=False,
+        )
+        with self.task._lock:
+            self.task.process = process
+
+        def collect() -> None:
+            assert process.stdout is not None
+            with process.stdout:
+                while data := process.stdout.read(8192):
+                    self.write(data)
+
+        reader = threading.Thread(target=collect, daemon=True)
+        reader.start()
+        try:
+            while process.poll() is None:
+                if self.cancelled:
+                    self.cancel(force=self.task.force_killed, timed_out=self.task.timed_out)
+                time.sleep(0.05)
+            reader.join()
+            self.check_cancelled()
+            return int(process.returncode or 0)
+        finally:
+            with self.task._lock:
+                if self.task.process is process:
+                    self.task.process = None
 
 
 class TaskRegistry:
@@ -321,6 +414,68 @@ class TaskRegistry:
             thread.start()
         return task
 
+    def start_rpc(
+        self,
+        *,
+        family: str,
+        operation: str,
+        cwd: Path,
+        timeout_seconds: float | None,
+        owner_token: str,
+        write: bool,
+        network_access: bool,
+        runner: Any,
+    ) -> ShellTask:
+        task = ShellTask(
+            id=f"task_{token_urlsafe_alnum(12)}",
+            command=f"rpc {family}.{operation}",
+            cwd=str(cwd),
+            output_limit=self.config.max_task_output_bytes,
+            timeout_seconds=timeout_seconds,
+            owner_token=owner_token,
+            interactive=False,
+            network_access=network_access,
+            kind="rpc",
+            rpc_family=family,
+            rpc_operation=operation,
+            write=write,
+            execution="task",
+        )
+        with self._lock:
+            if self._closing:
+                raise ApiError(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "task_registry_closing",
+                    "the server is shutting down and cannot start another task",
+                )
+            running = [item for item in self._tasks.values() if item.status == "running"]
+            global_running = len(running)
+            token_running = sum(item.owner_token == owner_token for item in running)
+            if token_running >= self.config.max_concurrent_shell_tasks_per_token:
+                raise ApiError(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    "task_token_limit_reached",
+                    "this token already has the maximum number of running tasks",
+                    {"scope": "token", "limit": self.config.max_concurrent_shell_tasks_per_token, "running": token_running},
+                )
+            if global_running >= self.config.max_concurrent_shell_tasks:
+                raise ApiError(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    "task_global_limit_reached",
+                    "the server already has the maximum number of running tasks",
+                    {"scope": "global", "limit": self.config.max_concurrent_shell_tasks, "running": global_running},
+                )
+            self._tasks[task.id] = task
+            thread = threading.Thread(
+                target=self._run_rpc,
+                args=(task, runner),
+                name=f"rpc-{task.id}",
+                daemon=True,
+            )
+            self._threads[task.id] = thread
+            thread.start()
+        return task
+
     def get(self, task_id: str, owner_token: str) -> ShellTask | ArchivedTask:
         with self._lock:
             task = self._tasks.get(task_id)
@@ -460,6 +615,82 @@ class TaskRegistry:
             if pending and not discarding_redacted_line:
                 append_line(bytes(pending))
             stream.close()
+
+    def _run_rpc(self, task: ShellTask, runner: Any) -> None:
+        context = ServerRpcTaskContext(task)
+        timer = None
+        if task.timeout_seconds is not None:
+            timer = threading.Timer(
+                task.timeout_seconds,
+                lambda: context.cancel(timed_out=True),
+            )
+            timer.daemon = True
+            timer.start()
+        try:
+            response = runner(context)
+            if not isinstance(response, dict) or type(response.get("status")) is not int:
+                raise OSError(errno.EPROTO, "invalid RPC task response")
+            if response["status"] == 200 and isinstance(response.get("body"), dict):
+                task.result = response["body"]
+                task.exit_code = 0
+            else:
+                error = response.get("error")
+                if not isinstance(error, dict):
+                    error = {"code": "rpc_task_failed", "message": "RPC task failed"}
+                task.error = {
+                    "status": response["status"],
+                    "code": error.get("code", "rpc_task_failed"),
+                    "message": error.get("message", "RPC task failed"),
+                    "details": error.get("details"),
+                }
+                task.exit_code = 1
+        except ApiError as exc:
+            task.exit_code = 1
+            task.error = {
+                "status": int(exc.status),
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+            }
+        except OSError as exc:
+            if task.timed_out:
+                task.exit_code = 124
+                code, message = "rpc_task_timeout", "RPC task timed out"
+            elif task.force_killed:
+                task.exit_code = 137
+                code, message = "rpc_task_killed", "RPC task was killed"
+            elif task.interrupted or exc.errno == errno.ECANCELED:
+                task.exit_code = 130
+                code, message = "rpc_task_cancelled", "RPC task was cancelled"
+            else:
+                task.exit_code = 1
+                code, message = "rpc_task_failed", str(exc)
+            task.error = {"status": 409 if exc.errno == errno.ECANCELED else 500, "code": code, "message": message}
+        except Exception as exc:  # pragma: no cover - plugin/runtime failures
+            LOGGER.exception("RPC task %s failed", task.id)
+            task.exit_code = 1
+            task.error = {"status": 500, "code": "rpc_task_failed", "message": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if timer is not None:
+                timer.cancel()
+            with task._lock:
+                task.status = "finished"
+                task.finished_at = _utc_now()
+            stdout, stdout_dropped = task.stdout.snapshot_bytes()
+            stderr, stderr_dropped = task.stderr.snapshot_bytes()
+            metadata = task.summary()
+            metadata["stdout_truncated_bytes"] = stdout_dropped
+            metadata["stderr_truncated_bytes"] = stderr_dropped
+            try:
+                self.history.save(task.owner_token, metadata, stdout, stderr)
+            except (OSError, ValueError):
+                LOGGER.exception("could not archive completed RPC task %s", task.id)
+            finally:
+                task._finished_event.set()
+                with self._lock:
+                    if self._tasks.get(task.id) is task:
+                        self._tasks.pop(task.id, None)
+                    self._threads.pop(task.id, None)
 
     def _run(self, task: ShellTask) -> None:
         injected_file = None

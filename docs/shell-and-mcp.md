@@ -63,8 +63,9 @@ Git runs on a private sanitized temporary snapshot: source config, includes,
 hooks, filter definitions, global config, and private `.openkapsel` storage
 are not loaded. No original workspace path is passed to the Git process.
 There is no arbitrary argv, no Shell task, and no execution-permission fallback.
-Git must be installed on the host. A mapped path uses one `git_api` version 2
-RPC; old clients must update/reconnect and fail closed until then.
+Git must be installed on the selected execution host. A mapped path uses the
+`git` RPC family version 2; old clients must update/reconnect and fail closed
+until the requested operation is advertised.
 
 Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per
 process, 15-second default timeout (maximum 20), and 64 KiB output per stream.
@@ -82,9 +83,14 @@ Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
 task ID or polling. Narrow queries when output is truncated. Errors use 413 for
 snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
 422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
-MCP exposes the six `git_*` tools; `get_git_task` is no longer needed.
-Read Context is optional. Mutating RPCs still need write permission, and
-arbitrary Shell/client tasks still require their execution permissions.
+MCP keeps the six `git_*` read tools. Git mutations use the generic `rpc` tool
+with `family=git`: provide `mapping_id` for a mapped repository or omit it for
+the server workspace. `add`, `commit`, `restore`, `checkout`, `fetch`, `pull`,
+and `clone` run as RPC tasks and use the normal task APIs; they do not require
+Shell permission. Mutations require write permission and Plan Context, mapped
+writes also require a writable mapping, and fetch/pull/clone additionally obey
+the caller's network/domain policy. Complex arbitrary Git commands still require
+an explicitly authorized Shell command.
 
 ### Persistent environment
 

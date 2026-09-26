@@ -8,7 +8,7 @@ from typing import Any
 from openkapsel.context.memory_contracts import plan_debrief_schema
 from openkapsel.context.context_plans import creation_properties
 from openkapsel.auth.tokens import TokenRecord
-from openkapsel.files.git_operations import GIT_OPERATIONS, git_tool_properties
+from openkapsel.files.git_operations import GIT_READ_OPERATIONS, git_tool_properties
 from openkapsel import __version__
 
 
@@ -230,13 +230,13 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     *(_tool("git_" + operation, "Git " + operation.replace("_", " "),
             "Read-only Git inspection using a bounded sanitized snapshot, locally or in one mapped client RPC. Read permission only: no Shell/write/allow_exec required. Synchronous text result, no task. Ordinary SHA-1 .git directory required; no linked worktrees/alternates/symlinks. Snapshot max 128 MiB/100000 nodes, output 64 KiB per stream, timeout at most 20s. Source config/hooks/filters are not loaded. Git must be installed on the host.",
             _object_schema(git_tool_properties(operation)), read_only=True)
-      for operation in GIT_OPERATIONS),
+      for operation in GIT_READ_OPERATIONS),
     _tool(
         "rpc",
-        "Call mapping RPC plugin",
-        "Call one dynamic RPC plugin operation on a mapping. Inspect mappings first: operation_specs.<operation> publishes description/input_schema/write/execution. execution=sync returns the result directly; execution=task returns a task_id immediately and continues on the client across provider reconnects—poll it with get_task/read_task_output and do not replay a write RPC after transport uncertainty. write=true operations require write permission, control authorization, a writable mapping, and plan_id/taskname/message. New plugin families require no new MCP tool. No server/FUSE fallback is attempted.",
+        "Call RPC plugin",
+        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; provide mapping_id for that client mapping. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id for get_task/read_task_output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
         _object_schema({
-            "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$"},
+            "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$", "description": "Optional mapping target. Omit to execute the RPC family on the server workspace."},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "args": {"type": "object", "default": {}},
@@ -244,7 +244,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             "plan_id": {"type": "integer", "minimum": 1, "description": "Required owning Plan id when operation_specs.<operation>.write is true."},
             "taskname": {"type": "string", "minLength": 1, "maxLength": 32, "description": "Required task grouping name for a write RPC operation."},
             "message": {"type": "string", "minLength": 1, "maxLength": 200, "description": "Required short reason for a write RPC operation."},
-        }, ("mapping_id", "family", "operation")),
+        }, ("family", "operation")),
         read_only=False,
         context_message=False,
     ),
@@ -1278,7 +1278,7 @@ def tools_for(
         readable.add("rpc")
     if record.can_read:
         readable.update({"read_files", "file_manifest"})
-        readable.update("git_" + operation for operation in GIT_OPERATIONS)
+        readable.update("git_" + operation for operation in GIT_READ_OPERATIONS)
         readable.update(
             {
                 "query_context",

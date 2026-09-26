@@ -740,7 +740,7 @@ class ArchiveRpcPlugin:
             },
         },
         "create": {
-            "description": "Create an archive atomically from exported files/directories. Runs as a persistent client task.",
+            "description": "Create an archive atomically from exported files/directories. Runs as an RPC task on the selected execution host.",
             "write": True,
             "execution": "task",
             "input_schema": {
@@ -764,7 +764,7 @@ class ArchiveRpcPlugin:
             },
         },
         "extract": {
-            "description": "Extract an archive atomically into a new directory. Links/special members are rejected. Runs as a persistent client task.",
+            "description": "Extract an archive atomically into a new directory. Links/special members are rejected. Runs as an RPC task on the selected execution host.",
             "write": True,
             "execution": "task",
             "input_schema": {

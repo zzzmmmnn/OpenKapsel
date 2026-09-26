@@ -270,6 +270,17 @@ class ClientRpcRegistry:
         return registered.plugin.dispatch_task(files, operation, args, task)
 
 
+def load_server_rpc_registry() -> ClientRpcRegistry:
+    """Load RPC families that are safe to execute against a server workspace."""
+    registry = ClientRpcRegistry()
+    from .git import plugin as git_plugin
+    from .archive import plugin as archive_plugin
+
+    registry.register(git_plugin, source="openkapsel.rpc_plugins.git:plugin")
+    registry.register(archive_plugin, source="openkapsel.rpc_plugins.archive:plugin")
+    return registry
+
+
 def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:
     registry = ClientRpcRegistry()
     from .git import plugin as git_plugin

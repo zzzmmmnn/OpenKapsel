@@ -89,6 +89,7 @@ class ArchivePluginTests(unittest.TestCase):
 @unittest.skipIf(os.name == "nt", "server runs on POSIX")
 class ArchiveHTTPTests(unittest.TestCase):
     request = test_oauth.OAuthHTTPTests.request
+    rpc = test_oauth.OAuthHTTPTests.rpc
 
     def setUp(self):
         test_oauth.OAuthHTTPTests.setUp(self)
@@ -133,7 +134,7 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, _, raw = self.request("GET", self.base + endpoint)
         return status, json.loads(raw)
 
-    def test_local_archive_preview_remains_http_only(self):
+    def test_local_archive_keeps_generic_rpc_surface_and_adds_server_execution(self):
         archive = self.root / "local.zip"
         self.make_zip(archive)
         status, body = self.get_json("/archive/list?path=local.zip")
@@ -146,16 +147,42 @@ class ArchiveHTTPTests(unittest.TestCase):
         self.assertEqual("mapped preview", body["content"])
 
         conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Archive reads")
-        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-        _, _, raw = self.request(
-            "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(request),
-            {"Authorization": "Bearer " + conn["secret"], "Content-Type": "application/json"},
-        )
-        payload = json.loads(raw)
+        self.mcp = "/kapsel/mcp-connect/" + conn["id"] + "/mcp"
+        status, payload = self.rpc(conn["secret"], "tools/list")
+        self.assertEqual(200, status, payload)
         names = {tool["name"] for tool in payload["result"]["tools"]}
         self.assertIn("rpc", names)
         self.assertNotIn("archive_list", names)
         self.assertNotIn("archive_read", names)
+
+        status, payload = self.rpc(conn["secret"], "tools/call", {
+            "name": "rpc",
+            "arguments": {
+                "family": "archive", "operation": "list",
+                "args": {"path": "local.zip", "limit": 100},
+            },
+        })
+        self.assertEqual(200, status, payload)
+        self.assertFalse(payload["result"]["isError"], payload)
+        result = payload["result"]["structuredContent"]
+        self.assertEqual("server", result["location"])
+        self.assertEqual({"docs", "root.txt"}, {
+            item["name"] for item in result["result"]["entries"]
+        })
+
+        status, payload = self.rpc(conn["secret"], "tools/call", {
+            "name": "rpc",
+            "arguments": {
+                "family": "archive", "operation": "read",
+                "args": {"path": "local.zip", "member": "docs/readme.txt"},
+            },
+        })
+        self.assertEqual(200, status, payload)
+        self.assertFalse(payload["result"]["isError"], payload)
+        self.assertEqual(
+            "mapped preview",
+            payload["result"]["structuredContent"]["result"]["content"],
+        )
 
     def test_mapped_archive_uses_plugin_and_never_fuse_fallbacks(self):
         archive = self.export / "mapped.zip"

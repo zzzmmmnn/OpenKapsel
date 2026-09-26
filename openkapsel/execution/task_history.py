@@ -70,6 +70,12 @@ class ArchivedTask:
         self.sandbox_backend = metadata.get("sandbox_backend")
         self.network_access = bool(metadata.get("network_access", False))
         self.resource_limited = bool(metadata.get("resource_limited", False))
+        self.kind = str(metadata.get("kind", "shell"))
+        self.rpc_family = metadata.get("rpc_family")
+        self.rpc_operation = metadata.get("rpc_operation")
+        self.write = bool(metadata.get("write", False))
+        self.execution = metadata.get("execution")
+        self.result = metadata.get("result")
         self.process = None
         self.stdout = ArchivedOutput(stdout, int(metadata.get("stdout_truncated_bytes", 0)))
         self.stderr = ArchivedOutput(stderr, int(metadata.get("stderr_truncated_bytes", 0)))
@@ -78,7 +84,7 @@ class ArchivedTask:
     def serialize(self) -> dict[str, Any]:
         stdout, stdout_dropped = self.stdout.snapshot()
         stderr, stderr_dropped = self.stderr.snapshot()
-        return {
+        payload = {
             "task_id": self.id,
             "status": self.status,
             "command": self.command,
@@ -101,6 +107,16 @@ class ArchivedTask:
             "network_access": self.network_access,
             "resource_limited": self.resource_limited,
         }
+        if self.kind == "rpc":
+            payload.update(
+                kind="rpc",
+                rpc_family=self.rpc_family,
+                rpc_operation=self.rpc_operation,
+                write=self.write,
+                execution=self.execution or "task",
+                result=self.result,
+            )
+        return payload
 
     def summary(self) -> dict[str, Any]:
         payload = self.serialize()
