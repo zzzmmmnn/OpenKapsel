@@ -143,9 +143,13 @@ class ProxyPolicyError(ValueError):
     pass
 
 
-class _ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
-    allow_reuse_address = False
+_UnixStreamServer = getattr(socketserver, "UnixStreamServer", None)
+if _UnixStreamServer is not None:
+    class _ThreadingUnixServer(socketserver.ThreadingMixIn, _UnixStreamServer):
+        daemon_threads = True
+        allow_reuse_address = False
+else:
+    _ThreadingUnixServer = None
 
 
 class _ProxyHandler(socketserver.BaseRequestHandler):
@@ -265,7 +269,7 @@ class DomainProxy:
     socket_path: Path
     domains: tuple[str, ...]
     ports: tuple[int, ...]
-    _server: _ThreadingUnixServer
+    _server: socketserver.BaseServer
     _thread: threading.Thread
     _slots: threading.BoundedSemaphore
     _global_slots: threading.BoundedSemaphore
@@ -278,6 +282,8 @@ class DomainProxy:
         domains: tuple[str, ...],
         ports: tuple[int, ...] = DEFAULT_NETWORK_PORTS,
     ) -> "DomainProxy":
+        if _ThreadingUnixServer is None:
+            raise OSError("Unix domain socket proxy is not supported on this platform")
         normalized = normalize_domain_rules(list(domains))
         if not normalized:
             raise ValueError("domain_allowlist network mode requires at least one domain")

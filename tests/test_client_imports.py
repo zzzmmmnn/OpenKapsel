@@ -61,3 +61,27 @@ else:
                                 cwd=Path(__file__).resolve().parents[1],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_client_rpc_registry_loads_without_unix_socket_server(self):
+        code = '''
+import socketserver
+for name in (
+    "UnixStreamServer",
+    "UnixDatagramServer",
+    "ThreadingUnixStreamServer",
+    "ThreadingUnixDatagramServer",
+):
+    if hasattr(socketserver, name):
+        delattr(socketserver, name)
+from openkapsel.rpc_plugins import load_client_rpc_registry
+registry = load_client_rpc_registry({})
+try:
+    assert "git" in registry.families
+    assert "archive" in registry.families
+finally:
+    registry.close()
+'''
+        result = subprocess.run([sys.executable, "-c", code],
+                                cwd=Path(__file__).resolve().parents[1],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
