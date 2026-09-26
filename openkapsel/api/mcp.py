@@ -48,28 +48,16 @@ def _tool(
         schema["properties"]["plan_id"] = {
             "type": "integer",
             "minimum": 1,
-            "description": (
-                "Required owning plan id for a modifying operation. For a recorded "
-                "read it is optional and associates the read with that plan."
-            ),
         }
         schema["properties"]["taskname"] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 32,
-            "description": (
-                "Required task grouping name for a modifying operation. For reads, "
-                "taskname and message are optional as a pair."
-            ),
         }
         schema["properties"]["message"] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": (
-                "Required brief reason for a modifying operation. For reads, taskname "
-                "and message are optional as a pair; an unlabelled read is not recorded."
-            ),
         }
         if not read_only:
             required = schema.setdefault("required", [])
