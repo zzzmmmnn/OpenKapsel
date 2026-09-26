@@ -28,7 +28,6 @@ SECTION_CAPABILITIES = {
     "memory": {"memory"},
     "shell": {
         "mappings",
-        "git",
         "shell", "shell_sandbox", "shell_sandbox_requested", "sandbox_backends",
         "shell_pid_namespace", "shell_sandbox_image", "shell_sandbox_image_requested",
         "network", "network_mode", "network_domains",
@@ -93,7 +92,7 @@ SECTION_SUMMARIES = {
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
-    "shell": "Git inspection, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
+    "shell": "Generic RPC, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
     "sharing": "Temporary ID-addressed transfer of one file or directory between workspaces.",

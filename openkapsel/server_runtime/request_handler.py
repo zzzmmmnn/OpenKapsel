@@ -19,7 +19,6 @@ from openkapsel.execution.schedule_handlers import ScheduleHandlersMixin
 from openkapsel.execution.shell_routing import ShellRoutingMixin
 from openkapsel.files.archive_handlers import ArchiveHandlersMixin
 from openkapsel.files.file_handlers import FileHandlersMixin
-from openkapsel.files.git_handlers import GitHandlersMixin
 from openkapsel.files.share_handlers import ShareHandlersMixin
 from openkapsel.mapping.mapping_handlers import MappingHandlersMixin
 from openkapsel.storage.storage_handlers import StorageHandlersMixin
@@ -37,7 +36,6 @@ class WorkspaceRequestHandler(
     HttpSupportMixin,
     ContextCreationMixin,
     ShellRoutingMixin,
-    GitHandlersMixin,
     ArchiveHandlersMixin,
     MappingHandlersMixin,
     StorageHandlersMixin,

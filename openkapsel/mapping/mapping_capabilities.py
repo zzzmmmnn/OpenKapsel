@@ -13,19 +13,16 @@ RPC_STATES = frozenset({"available", "unsupported", "disabled", "offline"})
 RPC_FAMILIES = {
     "file": {
         "version": 4,
-        "legacy_key": "file_api",
         "operations": frozenset(FILE_API_OPERATIONS),
         "fallback": None,
     },
     "git": {
         "version": 2,
-        "legacy_key": "git_api",
         "operations": frozenset(GIT_READ_OPERATIONS),
         "fallback": None,
     },
     "archive": {
         "version": 1,
-        "legacy_key": None,
         "operations": frozenset({"list", "read"}),
         "fallback": None,
     },
@@ -62,20 +59,3 @@ class MappingRpcCapability:
         if self.details:
             result["details"] = self.details
         return result
-
-
-def legacy_rpc_capability(capabilities: dict[str, Any], family: str) -> dict[str, Any] | None:
-    """Translate pre-rpc-map capability advertisements for rolling upgrades."""
-    spec = RPC_FAMILIES.get(family)
-    if spec is None:
-        return None
-    legacy_key = spec["legacy_key"]
-    if not legacy_key:
-        return None
-    legacy = capabilities.get(legacy_key)
-    if not isinstance(legacy, dict):
-        return None
-    result = dict(legacy, state="available")
-    if family == "git":
-        result.setdefault("operations", sorted(spec["operations"]))
-    return result

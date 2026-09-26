@@ -69,7 +69,11 @@ class GitClientTests(unittest.TestCase):
         self.temp.cleanup()
 
     def call(self, operation, options=None):
-        response = self.files.dispatch("git_" + operation, {"options": options or {}})
+        response = self.files.dispatch("rpc", {
+            "family": "git",
+            "operation": operation,
+            "args": {"options": options or {}},
+        })
         self.assertEqual(200, response["status"], response)
         result = response["body"]
         self.assertFalse(result["running"], result)
@@ -100,7 +104,10 @@ class GitClientTests(unittest.TestCase):
             self.assertEqual("git_failed", exc.code)
         else:
             self.fail("unknown revision must fail")
-        response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
+        response = self.files.dispatch("rpc", {
+            "family": "git", "operation": "show",
+            "args": {"options": {"revision": "bad-ref"}},
+        })
         self.assertEqual(422, response["status"], response)
         (self.root / "source.txt").write_text("x" * 100000, encoding="utf-8")
         result = self.call("diff")
@@ -122,10 +129,14 @@ class GitClientTests(unittest.TestCase):
     def test_snapshot_limit_and_external_object_store_fail_closed(self):
         from openkapsel import git_read
         with patch.object(git_read, "MAX_SNAPSHOT_BYTES", 1):
-            self.assertEqual(413, self.files.dispatch("git_status", {})["status"])
+            self.assertEqual(413, self.files.dispatch("rpc", {
+                "family": "git", "operation": "status", "args": {},
+            })["status"])
         alternate = self.root / ".git/objects/info/alternates"
         alternate.write_text(str(self.root.parent), encoding="utf-8")
-        result = self.files.dispatch("git_log", {})
+        result = self.files.dispatch("rpc", {
+            "family": "git", "operation": "log", "args": {},
+        })
         self.assertEqual("git_unsupported_layout", result["error"]["code"])
 
     def test_disappearing_git_maintenance_lock_is_not_snapshot_data(self):
@@ -154,7 +165,10 @@ class GitClientTests(unittest.TestCase):
                 yield iterate()
 
         with patch("openkapsel.files.git_read.os.scandir", racing_scandir):
-            response = self.files.dispatch("git_show", {"options": {"revision": "bad-ref"}})
+            response = self.files.dispatch("rpc", {
+                "family": "git", "operation": "show",
+                "args": {"options": {"revision": "bad-ref"}},
+            })
         self.assertEqual([True], injected)
         self.assertEqual(422, response["status"], response)
         self.assertEqual("git_failed", response["error"]["code"])

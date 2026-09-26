@@ -89,8 +89,8 @@ The client configuration can independently enable or disable extensions with
 starting the updated client. Read/write restrictions remain controlled by the
 caller token, mapping permissions, and client `writable` setting.
 Git is reported as `unsupported` when enabled but the local Git
-executable is missing. Legacy `file_api` and `git_api` advertisements remain
-accepted during rolling upgrades.
+executable is missing. Mapping clients advertise RPC capabilities only through
+`capabilities.rpc`.
 
 Git and Archive are client RPC plugins rather than branches hard-coded into the
 filesystem provider. Built-in plugins are registered explicitly by the client.

@@ -127,8 +127,8 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 self.assertTrue(capabilities["vendor"]["operation_specs"]["update"]["write"])
                 self.assertEqual("task", capabilities["vendor"]["operation_specs"]["update"]["execution"])
                 self.assertFalse(capabilities["vendor"]["read_only"])
-                self.assertTrue(registry.accepts("vendor_inspect"))
-                self.assertTrue(registry.accepts("vendor_update"))
+                self.assertIsNotNone(registry.operation_spec("vendor", "inspect"))
+                self.assertIsNotNone(registry.operation_spec("vendor", "update"))
                 from openkapsel.client_runtime.client_files import ClientFiles
                 export = Path(directory) / "export"
                 export.mkdir()
@@ -139,7 +139,11 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                     rpc_capabilities=capabilities,
                 )
                 try:
-                    result = files.dispatch("vendor_inspect", {"value": 1})
+                    result = files.dispatch("rpc", {
+                        "family": "vendor",
+                        "operation": "inspect",
+                        "args": {"value": 1},
+                    })
                     self.assertEqual({"status": 200, "body": {"ok": True}}, result)
                 finally:
                     files.close()
@@ -191,23 +195,23 @@ class MappingRpcCapabilityTests(unittest.TestCase):
         self.assertEqual("offline", state.state)
         self.assertEqual("client_offline", state.reason)
 
-    def test_legacy_client_is_translated_without_native_fallback(self):
+    def test_legacy_capability_aliases_are_not_accepted(self):
         self.session({
-            "file_api": {"version": 1, "operations": ["fs_list"]},
+            "file_api": {"version": 4, "operations": ["fs_list"]},
             "git_api": {"version": 2, "read_only": True},
         })
         file_state = self.manager.rpc_capability(
-            self.row["id"], "file", operation="fs_read_many", min_version=2, max_version=3
+            self.row["id"], "file", operation="fs_list", min_version=1, max_version=4
         )
         self.assertEqual("unsupported", file_state.state)
-        self.assertEqual("version_mismatch", file_state.reason)
+        self.assertEqual("not_advertised", file_state.reason)
         self.assertIsNone(file_state.fallback)
 
         git_state = self.manager.rpc_capability(
             self.row["id"], "git", operation="status", min_version=2, max_version=2,
-            required={"read_only": True},
         )
-        self.assertTrue(git_state.available)
+        self.assertEqual("unsupported", git_state.state)
+        self.assertEqual("not_advertised", git_state.reason)
 
     def test_client_disabled_and_dependency_unsupported_preserve_family_fallback_policy(self):
         session = self.session({

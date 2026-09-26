@@ -43,7 +43,11 @@ class StructuredTests(unittest.TestCase):
         if operation in {"write", "patch"}:
             value = plugin.dispatch_task(self.files, operation, args, task or Task())
         else:
-            value = self.files.dispatch("structured_" + operation, args)
+            value = self.files.dispatch("rpc", {
+                "family": "structured",
+                "operation": operation,
+                "args": args,
+            })
         self.assertEqual(expected, value["status"], value)
         return value.get("body", value.get("error"))
     def tag(self, path):

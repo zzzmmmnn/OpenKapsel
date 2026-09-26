@@ -63,7 +63,11 @@ class TabularTests(unittest.TestCase):
         if operation == "scan":
             value = plugin.dispatch_task(self.files, operation, args, task or Task())
         else:
-            value = self.files.dispatch("tabular_" + operation, args)
+            value = self.files.dispatch("rpc", {
+                "family": "tabular",
+                "operation": operation,
+                "args": args,
+            })
         self.assertEqual(expected, value["status"], value)
         return value.get("body", value.get("error"))
     def pages(self, args):

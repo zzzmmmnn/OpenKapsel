@@ -123,21 +123,3 @@ def git_tool_properties(operation):
             skip={"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
         )
     return properties
-
-
-def git_discovery(base):
-    result = {}
-    for operation in GIT_READ_OPERATIONS:
-        query = {"path": ".", "file": "optional repeated literal repository-relative path", "timeout_seconds": 15}
-        if operation in {"diff", "diff_stat", "log", "show"}:
-            query["revision"] = "optional revision (HEAD by default for log/show)"
-        if operation in {"diff", "diff_stat"}:
-            query.update(to_revision="optional second revision", staged=False)
-        if operation == "log":
-            query.update(limit=20, skip=0)
-        result["git_" + operation] = {
-            "method": "GET", "url": f"{base}/git/{operation}", "query": query,
-            "authentication": "read permission; read URL is sufficient for REST; MCP uses its existing connection authentication",
-            "notes": "Read-only bounded sanitized snapshot; no Shell/write/client allow_exec needed. Git RPC family version 2 for mapped reads; legacy git_api advertisements remain accepted during upgrades and unsupported operations fail closed. Synchronous result (no task/polling); 422 on Git failure, 504 timeout, 413 snapshot limit, 409 unsupported layout. Requires an ordinary SHA-1 repository root with .git directory, not linked worktrees or alternates. Symlinks/reparse points and special files in copied paths are rejected. Max 128 MiB and 100000 nodes; 4 concurrent queries per process. Timeout 15s default, maximum 20s. Output capped at 64 KiB per stream; narrow queries if truncated. Git is installed on the host, not in a Shell container. Config/hooks/filters/global config are excluded. Log/show/revision comparisons copy metadata only; status and working-tree diffs also copy working files. Private .openkapsel is excluded; the snapshot is not transactional.",
-        }
-    return result

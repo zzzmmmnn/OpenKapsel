@@ -293,7 +293,7 @@ class MappingHandlersMixin:
             })
             return
 
-        response = self.server.rpc_registry.dispatch(files, family + "_" + operation, rpc_args)
+        response = self.server.rpc_registry.dispatch_sync(files, family, operation, rpc_args)
         if not isinstance(response, dict) or type(response.get("status")) is not int:
             raise ApiError(502, "invalid_server_rpc_response", "server RPC plugin returned an invalid response")
         if "error" in response:
@@ -426,7 +426,11 @@ class MappingHandlersMixin:
             )
             self._send_json(202, task)
             return
-        result = self._mapping_rpc(row, family + "_" + operation, rpc_args)
+        result = self._mapping_rpc(row, "rpc", {
+            "family": family,
+            "operation": operation,
+            "args": rpc_args,
+        })
         if not isinstance(result, dict) or type(result.get("status")) is not int:
             raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin response")
         if "error" in result:

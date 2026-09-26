@@ -159,7 +159,7 @@ class GitHTTPTests(unittest.TestCase):
         calls = []
 
         def call(op, args):
-            calls.append(op)
+            calls.append((op, args.get("family"), args.get("operation")))
             return files.dispatch(op, args)
 
         self.server.mappings.sessions[row["id"]] = SimpleNamespace(
@@ -181,7 +181,7 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual(row["id"], result["mapping_id"])
             self.assertEqual("git", result["family"])
             self.assertEqual("status", result["operation"])
-            self.assertEqual(["git_status"], calls)
+            self.assertEqual([("rpc", "git", "status")], calls)
         finally:
             self.server.mappings.sessions.pop(row["id"], None)
             self.server.mappings.store.delete(row["id"])
@@ -198,7 +198,7 @@ class GitHTTPTests(unittest.TestCase):
         calls = []
 
         def call(op, args):
-            calls.append(op)
+            calls.append((op, args.get("family"), args.get("operation")))
             return files.dispatch(op, args)
 
         def rpc(operation):
@@ -221,26 +221,37 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual(404, self.request("GET", self.base + "/git/status?path=laptop")[0])
 
             status, body = rpc("log")
-            self.assertEqual(200, status, body)
-            self.assertEqual(["git_log"], calls)
-            self.assertIn("Initial fixture", body["result"]["output"])
+            self.assertEqual(409, status, body)
+            self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
+            self.assertEqual("not_advertised", body["error"]["details"]["reason"])
+            self.assertEqual([], calls)
 
             session.capabilities = {"rpc": {"git": {
                 "state": "available", "version": 2,
-                "operations": ["status", "commit"], "read_only": False,
+                "operations": ["log", "status", "commit"], "read_only": False,
                 "operation_specs": {
+                    "log": {"write": False, "execution": "sync"},
                     "status": {"write": False, "execution": "sync"},
                     "commit": {"write": True, "execution": "task"},
                 },
             }}}
+            status, body = rpc("log")
+            self.assertEqual(200, status, body)
+            self.assertEqual([("rpc", "git", "log")], calls)
+            self.assertIn("Initial fixture", body["result"]["output"])
+
             status, body = rpc("status")
             self.assertEqual(200, status, body)
-            self.assertEqual(["git_log", "git_status"], calls)
+            self.assertEqual([
+                ("rpc", "git", "log"),
+                ("rpc", "git", "status"),
+            ], calls)
 
             session.capabilities = {"git_api": {"version": 1, "enabled": True}}
             status, body = rpc("status")
-            self.assertEqual(409, status)
-            self.assertEqual("mapping_rpc_metadata_required", body["error"]["code"])
+            self.assertEqual(409, status, body)
+            self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
+            self.assertEqual("not_advertised", body["error"]["details"]["reason"])
 
             session.capabilities = {"rpc": {"git": {
                 "state": "disabled", "reason": "client_config", "version": 2,

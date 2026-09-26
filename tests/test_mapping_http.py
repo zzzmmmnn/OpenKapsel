@@ -79,10 +79,13 @@ class MappingHTTPTests(unittest.TestCase):
         calls = []
 
         def call(operation, args):
-            calls.append((operation, args))
-            if operation == "vendor_update":
-                return {"status": 200, "body": {"updated": args.get("value")}}
-            return {"status": 200, "body": {"echo": args.get("value")}}
+            calls.append((operation, args.get("family"), args.get("operation"), args.get("args")))
+            if operation != "rpc" or args.get("family") != "vendor":
+                raise AssertionError((operation, args))
+            rpc_args = args.get("args", {})
+            if args.get("operation") == "update":
+                return {"status": 200, "body": {"updated": rpc_args.get("value")}}
+            return {"status": 200, "body": {"echo": rpc_args.get("value")}}
 
         session = SimpleNamespace(
             closed=False, ready=True,
@@ -138,7 +141,9 @@ class MappingHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, raw)
             payload = json.loads(raw)
             self.assertEqual(7, payload["result"]["echo"])
-            self.assertEqual([("vendor_inspect", {"value": 7})], calls)
+            self.assertEqual([
+                ("rpc", "vendor", "inspect", {"value": 7}),
+            ], calls)
 
             write_endpoint = base + f"/mappings/{row['id']}/rpc/vendor/update"
             status, _, raw = self.request(
@@ -147,7 +152,9 @@ class MappingHTTPTests(unittest.TestCase):
             )
             self.assertEqual(403, status, raw)
             self.assertEqual("mapping_read_only", json.loads(raw)["error"]["code"])
-            self.assertEqual([("vendor_inspect", {"value": 7})], calls)
+            self.assertEqual([
+                ("rpc", "vendor", "inspect", {"value": 7}),
+            ], calls)
 
             self.server.mappings.store.update(row["id"], writable=True)
             status, _, raw = self.request(
@@ -178,7 +185,7 @@ class MappingHTTPTests(unittest.TestCase):
             )
             self.assertEqual(200, status, raw)
             self.assertEqual(9, json.loads(raw)["result"]["updated"])
-            self.assertEqual(("vendor_update", {"value": 9}), calls[-1])
+            self.assertEqual(("rpc", "vendor", "update", {"value": 9}), calls[-1])
 
             conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Plugin reads")
             tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
@@ -217,7 +224,7 @@ class MappingHTTPTests(unittest.TestCase):
             write_result = json.loads(raw)["result"]
             self.assertFalse(write_result["isError"], write_result)
             self.assertEqual(11, json.loads(write_result["content"][0]["text"])["result"]["updated"])
-            self.assertEqual(("vendor_update", {"value": 11}), calls[-1])
+            self.assertEqual(("rpc", "vendor", "update", {"value": 11}), calls[-1])
 
             # Family read_only is compatibility metadata only; operation write is authoritative.
             session.capabilities["rpc"]["vendor"]["read_only"] = True

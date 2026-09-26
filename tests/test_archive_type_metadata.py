@@ -22,7 +22,10 @@ class ArchiveTypeMetadataTests(unittest.TestCase):
                 archive.addfile(info, io.BytesIO(data))
             files = ClientFiles(root, writable=False)
             try:
-                result = files.dispatch("archive_list", {"path": "sample.tar"})
+                result = files.dispatch("rpc", {
+                    "family": "archive", "operation": "list",
+                    "args": {"path": "sample.tar"},
+                })
                 self.assertEqual(200, result["status"], result)
                 entry = next(item for item in result["body"]["entries"] if item["name"] == "hello.txt")
                 self.assertEqual("file", entry["type"])
@@ -40,7 +43,10 @@ class ArchiveTypeMetadataTests(unittest.TestCase):
                 archive.writestr(info, b"hello")
             files = ClientFiles(root, writable=False)
             try:
-                result = files.dispatch("archive_list", {"path": "sample.zip"})
+                result = files.dispatch("rpc", {
+                    "family": "archive", "operation": "list",
+                    "args": {"path": "sample.zip"},
+                })
                 self.assertEqual(200, result["status"], result)
                 entry = next(item for item in result["body"]["entries"] if item["name"] == "hello.txt")
                 self.assertEqual("file", entry["type"])
@@ -58,7 +64,10 @@ class ArchiveTypeMetadataTests(unittest.TestCase):
                 archive.writestr(info, b"")
             files = ClientFiles(root, writable=False)
             try:
-                result = files.dispatch("archive_list", {"path": "sample.zip"})
+                result = files.dispatch("rpc", {
+                    "family": "archive", "operation": "list",
+                    "args": {"path": "sample.zip"},
+                })
                 self.assertEqual(200, result["status"], result)
                 entry = next(item for item in result["body"]["entries"] if item["name"] == "fifo")
                 self.assertEqual("special", entry["type"])

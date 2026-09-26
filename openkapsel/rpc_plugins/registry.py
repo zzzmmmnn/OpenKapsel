@@ -201,9 +201,6 @@ class ClientRpcRegistry:
                 except Exception:
                     pass
 
-    def accepts(self, wire_operation: str) -> bool:
-        return self._registered_for(wire_operation) is not None
-
     def operation_spec(self, family: str, operation: str) -> dict[str, Any] | None:
         registered = self._plugins.get(family)
         if registered is None:
@@ -211,40 +208,27 @@ class ClientRpcRegistry:
         spec = registered.operations.get(operation)
         return dict(spec) if spec is not None else None
 
-    def read_only(self, wire_operation: str) -> bool:
-        registered = self._registered_for(wire_operation)
-        if registered is None:
-            return False
-        prefix = registered.family + "_"
-        return not registered.operations[wire_operation[len(prefix):]]["write"]
-
-    def _registered_for(self, wire_operation: str) -> RegisteredPlugin | None:
-        if not isinstance(wire_operation, str):
-            return None
-        for family, registered in self._plugins.items():
-            prefix = family + "_"
-            if wire_operation.startswith(prefix) and wire_operation[len(prefix):] in registered.operations:
-                return registered
-        return None
-
-    def dispatch(self, files: Any, wire_operation: str, args: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(wire_operation, str) or not isinstance(args, dict):
+    def dispatch_sync(
+        self,
+        files: Any,
+        family: str,
+        operation: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(family, str) or not isinstance(operation, str) or not isinstance(args, dict):
             raise ValueError("invalid RPC plugin request")
-        for family, registered in self._plugins.items():
-            prefix = family + "_"
-            if not wire_operation.startswith(prefix):
-                continue
-            operation = wire_operation[len(prefix):]
-            spec = registered.operations.get(operation)
-            if spec is None:
-                raise OSError(errno.ENOSYS, "unsupported RPC plugin operation")
-            if spec["execution"] != "sync":
-                raise OSError(errno.EINVAL, "RPC plugin operation must run as a task")
-            capability = files.rpc_capabilities.get(family, {})
-            if capability.get("state") != "available":
-                raise OSError(errno.ENOSYS, "RPC plugin is not available")
-            return registered.plugin.dispatch(files, operation, args)
-        raise OSError(errno.ENOSYS, "unsupported RPC plugin family")
+        registered = self._plugins.get(family)
+        if registered is None:
+            raise OSError(errno.ENOSYS, "unsupported RPC plugin family")
+        spec = registered.operations.get(operation)
+        if spec is None:
+            raise OSError(errno.ENOSYS, "unsupported RPC plugin operation")
+        if spec["execution"] != "sync":
+            raise OSError(errno.EINVAL, "RPC plugin operation must run as a task")
+        capability = files.rpc_capabilities.get(family, {})
+        if capability.get("state") != "available":
+            raise OSError(errno.ENOSYS, "RPC plugin is not available")
+        return registered.plugin.dispatch(files, operation, args)
 
     def dispatch_task(
         self,

@@ -21,7 +21,7 @@ MAX_CAPABILITIES = 256 * 1024
 CHUNK_SIZE = 128 * 1024
 DEFAULT_RPC_TIMEOUT_SECONDS = 90.0
 DEFAULT_PROVIDER_IDLE_TIMEOUT_SECONDS = 60.0
-MAPPING_HANDSHAKE_VERSION = 2
+MAPPING_HANDSHAKE_VERSION = 3
 MAPPING_HELLO_TIMEOUT_SECONDS = 30
 MINIMUM_MAPPING_CLIENT_VERSION = "1.62.0"
 SERVER_SOURCE_FINGERPRINT = running_fingerprint("server")
@@ -29,7 +29,7 @@ FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read", "fs_read_
 FILE_API_WRITE_OPERATIONS = frozenset({"fs_replace_large", "fs_mutate", "fs_mkdir", "fs_move"})
 FILE_API_OPERATIONS = FILE_API_READ_OPERATIONS | FILE_API_WRITE_OPERATIONS
 READ_OPERATIONS = frozenset({"fstat", "stat", "list", "read", "open", "close", "flush", "statfs", "recycle_list",
-                             "task_get", "task_list", "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat"}) | frozenset("api_" + op for op in FILE_API_READ_OPERATIONS)
+                             "task_get", "task_list"}) | frozenset("api_" + op for op in FILE_API_READ_OPERATIONS)
 
 
 def encode(value):

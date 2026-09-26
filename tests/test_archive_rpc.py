@@ -34,17 +34,23 @@ class ArchivePluginTests(unittest.TestCase):
                     with self.subTest(format=format_name):
                         archive = Path(shutil.make_archive(str(root / ("sample-" + format_name)), format_name, root_dir=source))
                         relative = archive.relative_to(root).as_posix()
-                        listed = files.dispatch("archive_list", {"path": relative, "limit": 100})
+                        listed = files.dispatch("rpc", {
+                            "family": "archive", "operation": "list",
+                            "args": {"path": relative, "limit": 100},
+                        })
                         self.assertEqual(200, listed["status"], listed)
                         names = {item["name"] for item in listed["body"]["entries"]}
                         self.assertIn("hello.txt", names)
                         self.assertIn("folder", names)
 
-                        read = files.dispatch("archive_read", {
-                            "path": relative,
-                            "member": "hello.txt",
-                            "limit": 1024,
-                            "encoding": "utf-8",
+                        read = files.dispatch("rpc", {
+                            "family": "archive", "operation": "read",
+                            "args": {
+                                "path": relative,
+                                "member": "hello.txt",
+                                "limit": 1024,
+                                "encoding": "utf-8",
+                            },
                         })
                         self.assertEqual(200, read["status"], read)
                         self.assertEqual("hello archive", read["body"]["content"])
@@ -76,10 +82,16 @@ class ArchivePluginTests(unittest.TestCase):
                 handle.addfile(link)
             files = ClientFiles(root, writable=False)
             try:
-                listed = files.dispatch("archive_list", {"path": "links.tar"})
+                listed = files.dispatch("rpc", {
+                    "family": "archive", "operation": "list",
+                    "args": {"path": "links.tar"},
+                })
                 entries = {item["name"]: item for item in listed["body"]["entries"]}
                 self.assertEqual("link", entries["link.txt"]["type"])
-                read = files.dispatch("archive_read", {"path": "links.tar", "member": "link.txt"})
+                read = files.dispatch("rpc", {
+                    "family": "archive", "operation": "read",
+                    "args": {"path": "links.tar", "member": "link.txt"},
+                })
                 self.assertEqual(400, read["status"])
                 self.assertEqual("archive_member_not_file", read["error"]["code"])
             finally:
@@ -106,7 +118,7 @@ class ArchiveHTTPTests(unittest.TestCase):
         self.calls = []
 
         def call(op, args):
-            self.calls.append(op)
+            self.calls.append((op, args.get("family"), args.get("operation")))
             return self.files.dispatch(op, args)
 
         self.session = SimpleNamespace(
@@ -207,7 +219,7 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(200, status, body)
         self.assertEqual(self.row["id"], body["mapping_id"])
-        self.assertEqual(["archive_list"], self.calls)
+        self.assertEqual([("rpc", "archive", "list")], self.calls)
         self.assertFalse((self.mount / "mapped.zip").exists())
 
         status, body = self.rpc_json(
@@ -215,7 +227,10 @@ class ArchiveHTTPTests(unittest.TestCase):
         )
         self.assertEqual(200, status, body)
         self.assertEqual("mapped preview", body["result"]["content"])
-        self.assertEqual(["archive_list", "archive_read"], self.calls)
+        self.assertEqual([
+            ("rpc", "archive", "list"),
+            ("rpc", "archive", "read"),
+        ], self.calls)
 
         self.session.capabilities["rpc"]["archive"] = {
             "state": "available",
@@ -231,7 +246,11 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(200, status, body)
         self.assertEqual(self.row["id"], body["mapping_id"])
-        self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
+        self.assertEqual([
+            ("rpc", "archive", "list"),
+            ("rpc", "archive", "read"),
+            ("rpc", "archive", "list"),
+        ], self.calls)
 
         self.session.capabilities["rpc"]["archive"] = {
             "state": "disabled",
@@ -243,13 +262,21 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(403, status, body)
         self.assertEqual("mapping_rpc_disabled", body["error"]["code"])
-        self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
+        self.assertEqual([
+            ("rpc", "archive", "list"),
+            ("rpc", "archive", "read"),
+            ("rpc", "archive", "list"),
+        ], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
         status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(503, status, body)
         self.assertEqual("mapping_offline", body["error"]["code"])
-        self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
+        self.assertEqual([
+            ("rpc", "archive", "list"),
+            ("rpc", "archive", "read"),
+            ("rpc", "archive", "list"),
+        ], self.calls)
 
 
 if __name__ == "__main__":

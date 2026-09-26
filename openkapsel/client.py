@@ -276,15 +276,6 @@ def _capabilities(files, tasks):
         "rpc": files.rpc_capabilities,
         "execution": tasks.capabilities(),
     }
-    capabilities["file_api"] = {
-        "version": files.rpc_capabilities["file"]["version"],
-        "operations": files.rpc_capabilities["file"]["operations"],
-    }
-    if files.rpc_capabilities["git"]["state"] == "available":
-        capabilities["git_api"] = {
-            "version": files.rpc_capabilities["git"]["version"],
-            "read_only": True,
-        }
     return capabilities
 
 

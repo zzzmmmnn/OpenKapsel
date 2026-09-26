@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from openkapsel.mapping.mapping_capabilities import MappingRpcCapability, RPC_FAMILIES, RPC_STATES, legacy_rpc_capability
+from openkapsel.mapping.mapping_capabilities import MappingRpcCapability, RPC_FAMILIES, RPC_STATES
 from openkapsel.mapping.mapping_store import MappingStore
 from openkapsel.mapping.mapping_transport import ProviderSession, READ_OPERATIONS, encode, recv_line
 
@@ -366,25 +366,26 @@ class MappingManager:
                 pass
             elif not row["allow_exec"]:
                 raise OSError(errno.EACCES, "mapping execution is disabled")
+        elif op == "rpc":
+            family = args.get("family")
+            operation = args.get("operation")
+            rpc_args = args.get("args")
+            if (
+                not isinstance(family, str)
+                or not isinstance(operation, str)
+                or not isinstance(rpc_args, dict)
+                or set(args) != {"family", "operation", "args"}
+            ):
+                raise OSError(errno.EINVAL, "invalid RPC request")
+            capability = self.rpc_capability(mid, family, operation=operation)
+            if not capability.available or capability.operation_spec is None:
+                raise OSError(errno.ENOSYS, "RPC capability is unavailable")
+            if capability.operation_spec.get("execution") != "sync":
+                raise OSError(errno.EINVAL, "RPC operation is not synchronous")
+            if capability.operation_spec.get("write") and not row["writable"]:
+                raise OSError(errno.EROFS, "mapping is read-only")
         else:
-            plugin_read_only = False
-            capabilities = getattr(session, "capabilities", {})
-            rpc = capabilities.get("rpc") if isinstance(capabilities, dict) else None
-            if isinstance(rpc, dict):
-                for family, capability in rpc.items():
-                    prefix = family + "_"
-                    if not op.startswith(prefix) or not isinstance(capability, dict):
-                        continue
-                    operation = op[len(prefix):]
-                    if capability.get("state", "available") == "available" and operation in capability.get("operations", []):
-                        specs = capability.get("operation_specs")
-                        spec = specs.get(operation) if isinstance(specs, dict) else None
-                        if isinstance(spec, dict) and isinstance(spec.get("write", False), bool):
-                            plugin_read_only = not spec.get("write", False)
-                        elif capability.get("read_only") is True:
-                            plugin_read_only = True
-                    break
-            read_operation = op in READ_OPERATIONS or plugin_read_only
+            read_operation = op in READ_OPERATIONS
             if op == "open" and (args.get("mode", "r") != "r" or args.get("truncate")):
                 read_operation = False
             if not read_operation and not row["writable"]:
@@ -404,7 +405,7 @@ class MappingManager:
     def rpc_capability(self, mid, family, *, operation=None, min_version=1, max_version=None, required=None):
         if not isinstance(family, str) or not family:
             raise ValueError("invalid mapping RPC family")
-        spec = RPC_FAMILIES.get(family, {"legacy_key": None, "fallback": None, "operations": frozenset()})
+        spec = RPC_FAMILIES.get(family, {"fallback": None, "operations": frozenset()})
         row = self.store.get(mid)
         if not row["enabled"]:
             return MappingRpcCapability(family, "disabled", reason="mapping_disabled")
@@ -416,8 +417,6 @@ class MappingManager:
 
         rpc = capabilities.get("rpc")
         advertised = rpc.get(family) if isinstance(rpc, dict) else None
-        if advertised is None:
-            advertised = legacy_rpc_capability(capabilities, family)
         if not isinstance(advertised, dict):
             return MappingRpcCapability(
                 family,
@@ -450,13 +449,6 @@ class MappingManager:
                     operation_spec["execution"] = execution
                 else:
                     operation_spec = None
-            elif isinstance(advertised.get("read_only"), bool):
-                # Rolling-upgrade compatibility for pre-operation metadata.
-                write = not advertised["read_only"]
-                operation_spec = {
-                    "write": write,
-                    "execution": "sync",
-                }
         details = {"advertised_reason": advertised.get("reason")} if advertised.get("reason") else None
         fallback = spec["fallback"] if state in {"unsupported", "disabled"} else None
         result = MappingRpcCapability(
@@ -503,15 +495,7 @@ class MappingManager:
                     )
         return result
 
-    def supports_git_api(self, mid):
-        return self.rpc_capability(
-            mid,
-            "git",
-            min_version=2,
-            max_version=2,
-        ).available
-
-    def supports_file_api(self, mid, operation, *, min_version=1):
+    def supports_file_rpc(self, mid, operation, *, min_version=1):
         return self.rpc_capability(
             mid,
             "file",

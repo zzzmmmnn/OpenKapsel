@@ -40,7 +40,11 @@ class MappingFileHTTPTests(unittest.TestCase):
         def call(op, args):
             self.calls.append((op, args))
             return self.files.dispatch(op, args)
-        self.session = SimpleNamespace(closed=False, ready=True, generation="fixture", capabilities={"file_api": {"version": 4, "operations": sorted(FILE_API_OPERATIONS)}}, call=call, close=lambda: None)
+        self.session = SimpleNamespace(
+            closed=False, ready=True, generation="fixture",
+            capabilities={"rpc": self.files.rpc_capabilities},
+            call=call, close=lambda: None,
+        )
         self.server.mappings.sessions[self.row["id"]] = self.session
 
     def tearDown(self):
@@ -158,8 +162,8 @@ class MappingFileHTTPTests(unittest.TestCase):
             status, result = self.api(endpoint, body)
             self.assertEqual(200, status, result)
             self.assertEqual(before + 1, len(self.calls))
-        self.session.capabilities["file_api"]["version"] = 1
-        self.assertFalse(self.server.mappings.supports_file_api(self.row["id"], "fs_manifest", min_version=2))
+        self.session.capabilities["rpc"]["file"]["version"] = 1
+        self.assertFalse(self.server.mappings.supports_file_rpc(self.row["id"], "fs_manifest", min_version=2))
         # An old native backing view must not turn into an RPC fallback or
         # receive filters the old client cannot implement.
         (self.mount / "a.py").write_text("needle")
@@ -235,13 +239,18 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
         self.assertEqual([], self.calls)
 
-        self.session.capabilities = {"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}
+        self.session.capabilities = {"file_api": {"version": 4, "operations": sorted(FILE_API_OPERATIONS)}}
         status, body = self.api("/fs/write/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "once"}]})
         self.assertEqual(409, status, body)
         self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
+        self.assertEqual("not_advertised", body["error"]["details"]["reason"])
         self.assertEqual([], self.calls)
 
-        self.session.capabilities = {"file_api": {"version": 4, "operations": sorted(FILE_API_OPERATIONS)}}
+        self.session.capabilities = {"rpc": {"file": {
+            "state": "available",
+            "version": 4,
+            "operations": sorted(FILE_API_OPERATIONS),
+        }}}
         original = self.session.call
         def ambiguous(op, args):
             original(op, args)

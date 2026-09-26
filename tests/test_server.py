@@ -808,6 +808,7 @@ class WorkspaceServerTests(unittest.TestCase):
             },
             set(payload["endpoints"]),
         )
+        self.assertNotIn("git", payload["capabilities"])
         self.assertFalse(payload["capabilities"]["recycle"])
         self.assertTrue(payload["capabilities"]["network"])
         self.assertEqual([], payload["capabilities"]["extra_paths"])
@@ -820,9 +821,18 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(30.0, payload["limits"]["http_socket_timeout_seconds"])
         self.assertEqual(90.0, payload["limits"]["mapping_rpc_timeout_seconds"])
         self.assertEqual(60.0, payload["limits"]["mapping_provider_idle_timeout_seconds"])
-        mapping_handshake = payload["capabilities"]["mappings"]["handshake"]
+        mapping_capabilities = payload["capabilities"]["mappings"]
+        mapping_handshake = mapping_capabilities["handshake"]
         self.assertTrue(mapping_handshake["server_first"])
-        self.assertEqual(2, mapping_handshake["handshake_version"])
+        self.assertEqual(3, mapping_handshake["handshake_version"])
+        self.assertNotIn("file_api", mapping_capabilities)
+        self.assertNotIn("git_api", mapping_capabilities)
+        mapping_discovery = json.dumps(mapping_capabilities, sort_keys=True)
+        for legacy_git_name in (
+            "git_status", "git_diff", "git_diff_stat",
+            "git_log", "git_show", "git_ls_files",
+        ):
+            self.assertNotIn(legacy_git_name, mapping_discovery)
         self.assertEqual("1.62.0", mapping_handshake["minimum_client_version"])
         self.assertEqual(30, mapping_handshake["client_hello_timeout_seconds"])
         self.assertEqual(44, len(mapping_handshake["server_fingerprint"]))

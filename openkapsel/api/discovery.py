@@ -534,7 +534,11 @@ class DiscoveryMixin:
             ),
             "context": capabilities["context"]["enabled"],
             "memory": capabilities["memory"]["enabled"],
-            "shell": capabilities["shell"] != "none" or capabilities["git"]["enabled"],
+            "shell": bool(
+                capabilities["shell"] != "none"
+                or capabilities["files"]["read"]
+                or capabilities["files"]["write"]
+            ),
             "schedules": capabilities["schedules"]["enabled"],
             "web": capabilities["web_preview"]["enabled"],
             "sharing": capabilities["sharing"]["enabled"],
@@ -760,9 +764,6 @@ class DiscoveryMixin:
                 "openkapsel_rest": skill_discovery(self._public_base_url()),
             },
             "capabilities": {
-                "git": {"enabled": read_enabled,
-                        "operations": ["status", "diff", "diff_stat", "log", "show", "ls_files"],
-                        "execution_policy": "read-only sanitized snapshot, independent of Shell/client allow_exec"},
                 "files": {"read": read_enabled, "write": write_enabled},
                 "sharing": {
                     "enabled": True,
@@ -2013,7 +2014,12 @@ class DiscoveryMixin:
                 "routing": "Core file RPC is always enabled; rpc.file is not a client setting. File operation/version negotiation and read/write permissions still apply. Optional RPC extensions advertise available/unsupported/disabled; the server derives offline from provider connectivity. File and plugin RPC operations never fall back to native mounts.",
                 "configuration": "Client config rpc.<family>=true|false selectively enables implemented mapping families. Missing local dependencies are unsupported, not disabled. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mappings. Generic RPC exposes Git and Archive on mappings, and the server registry exposes its explicitly registered Git and Archive families. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
                 "families": {
-                    "file": {"version": 4, "fallback": None, "operations": sorted(FILE_API_OPERATIONS)},
+                    "file": {
+                        "version": 4, "fallback": None, "operations": sorted(FILE_API_OPERATIONS),
+                        "max_message_bytes": MAX_MESSAGE,
+                        "batching": "Same-mapping batches execute on the client. Mixed-root batches use the guarded local/RPC backend and never require FUSE.",
+                        "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
+                    },
                     "git": {"version": 2, "fallback": "none", "generic_rpc_exposed": True, "server_rpc": True, "sync_reads": ["status", "diff", "log", "show", "ls_files", "diff_stat"], "task_writes": ["add", "commit", "restore", "checkout", "fetch", "pull", "clone"]},
                     "archive": {"version": 1, "fallback": "none", "generic_rpc_exposed": True, "server_rpc": True, "sync_reads": ["list", "read"], "task_writes": ["create", "extract"],
                                 "formats": "Runtime-advertised Python standard-library archive extensions."},
@@ -2033,14 +2039,6 @@ class DiscoveryMixin:
                             "connection_reuse": "opaque process-scoped connection_id; 60-second default idle timeout after active operations finish",
                             "dependency": "Paramiko optional client dependency; credentials remain client-local"},
                 },
-            },
-            "git_api": {"version": 2, "legacy": True,
-                        "routing": "Legacy advertisement accepted for rolling upgrades; mapped Git has no FUSE/server fallback."},
-            "file_api": {
-                "version": 4, "legacy": True, "operations": sorted(FILE_API_OPERATIONS), "max_message_bytes": MAX_MESSAGE,
-                "routing": "Legacy advertisements remain accepted for supported operations. File APIs never mount or fall back to FUSE; unsupported clients must be upgraded.",
-                "batching": "Same-mapping batches execute on the client. Mixed-root batches use the guarded local/RPC backend and never require FUSE.",
-                "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
             },
         }
         payload["endpoints"].update({

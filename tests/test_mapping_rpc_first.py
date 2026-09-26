@@ -358,7 +358,7 @@ class MappingLeaseTests(unittest.TestCase):
         self.manager = MappingManager(self.root, base / "state", enabled=True, mount_idle_seconds=0)
         self.row, self.secret = self.manager.store.create("project", "laptop", writable=True)
         self.manager.prepare(self.row)
-        self.session = SimpleNamespace(closed=False, ready=True, capabilities={"file_api": {}}, generation="g", call=lambda *a: None)
+        self.session = SimpleNamespace(closed=False, ready=True, capabilities={"rpc": {}}, generation="g", call=lambda *a: None)
         self.session.close = lambda: setattr(self.session, "closed", True)
         self.manager.sessions[self.row["id"]] = self.session
 

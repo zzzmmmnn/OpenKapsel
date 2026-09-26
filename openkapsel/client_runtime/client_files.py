@@ -82,7 +82,27 @@ class ClientFiles:
     def dispatch(self, operation, args):
         if not isinstance(args, dict):
             raise OSError(errno.EINVAL, "arguments must be an object")
-        read_only = operation in READ_OPERATIONS or self.rpc_registry.read_only(operation)
+        if operation == "rpc":
+            family = args.get("family")
+            rpc_operation = args.get("operation")
+            rpc_args = args.get("args")
+            if (
+                not isinstance(family, str)
+                or not isinstance(rpc_operation, str)
+                or not isinstance(rpc_args, dict)
+                or set(args) != {"family", "operation", "args"}
+            ):
+                raise OSError(errno.EINVAL, "invalid RPC request")
+            spec = self.rpc_registry.operation_spec(family, rpc_operation)
+            if spec is None:
+                raise OSError(errno.ENOSYS, "RPC plugin capability is unavailable")
+            if spec["execution"] != "sync":
+                raise OSError(errno.EINVAL, "RPC plugin operation must run as a task")
+            if spec["write"] and not self.writable:
+                raise OSError(errno.EROFS, "client export is read-only")
+            with self.lock:
+                return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
+        read_only = operation in READ_OPERATIONS
         if not read_only and not self.writable:
             raise OSError(errno.EROFS, "client export is read-only")
         # POSIX directory descriptors prevent path-component substitution.
@@ -91,8 +111,6 @@ class ClientFiles:
             return self._dispatch(operation, args)
 
     def _dispatch(self, op, args):
-        if self.rpc_registry.accepts(op):
-            return self.rpc_registry.dispatch(self, op, args)
         if op.startswith("api_"):
             from openkapsel.client_runtime.client_file_api import ClientFileAPI
             return ClientFileAPI.dispatch(self, op[4:], args)
