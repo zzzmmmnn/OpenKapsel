@@ -65,10 +65,10 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
         base = "/kapsel/w/" + self.record.token
         self.assertNotIn(config["token"].encode(), self.request("GET", base + "/mappings")[2])
-        # Provider credentials cannot grant REST control or task access.
+        # Provider credentials cannot grant REST control or unified task access.
         for credential in (None, config["token"]):
             headers = {} if credential is None else {"Authorization": "Bearer " + credential}
-            self.assertEqual(401, self.request("GET", base + "/mappings/" + row["id"] + "/tasks", headers=headers)[0])
+            self.assertEqual(401, self.request("GET", base + "/tasks?target=client", headers=headers)[0])
 
     def test_generic_readonly_rpc_plugin_rest_and_mcp(self):
         from types import SimpleNamespace

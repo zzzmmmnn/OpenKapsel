@@ -536,42 +536,6 @@ class MappingHandlersMixin:
                 details,
             ) from None
 
-    def _handle_mapping_tasks(self, mid, query):
-        row = self._mapping_for_caller(mid)
-        self._require_permission(self.token_record.shell_mode != "none", "Shell permission is required for client tasks")
-        if self.command == "GET":
-            tasks = [
-                task
-                for task in self._mapping_rpc(row, "task_list", {})
-                if task.get("kind", "shell") == "shell"
-            ]
-            self._send_json(200, {"tasks": tasks})
-            return
-        body = self._read_json()
-        if not row["writable"] or not self.token_record.can_write:
-            raise ApiError(403, "client_execution_requires_write", "client execution requires a writable mapping and caller")
-        args = {"task_id": token_urlsafe_alnum(18), "argv": body.get("argv"), "cwd": body.get("cwd", ".")}
-        if "timeout_seconds" in body:
-            args["timeout_seconds"] = body["timeout_seconds"]
-        self._send_json(202, self._mapping_rpc(row, "task_start", args))
-
-    def _handle_mapping_task(self, target, query):
-        mid, _tasks, tid, *action_parts = target.split("/")
-        row = self._mapping_for_caller(mid)
-        self._require_permission(self.token_record.shell_mode != "none", "Shell permission is required for client tasks")
-        action = action_parts[0] if action_parts else "get"
-        task_meta = self._mapping_rpc(row, "task_get", {"task_id": tid, "offset": 0})
-        if task_meta.get("kind", "shell") != "shell":
-            raise ApiError(404, "task_not_found", "task does not exist")
-        if self.command == "GET" and action == "get":
-            args = {"task_id": tid, "offset": self._query_int(query, "offset", 0, minimum=0)}
-        elif self.command == "POST" and action in {"stdin", "interrupt", "kill"}:
-            body = self._read_json()
-            args = {"task_id": tid, "data": body.get("data", ""), "eof": body.get("eof", False)}
-        else:
-            raise ApiError(404, "not_found", "task operation does not exist")
-        self._send_json(200, self._mapping_rpc(row, "task_" + action, args))
-
     def _mapped_recycle_root(self, root):
         if root in {"", "."}:
             return None

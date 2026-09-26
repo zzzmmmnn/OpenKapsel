@@ -263,18 +263,8 @@ class DiscoveryMixin:
             ),
             "mappings": family(
                 "./mappings",
-                "Mapping discovery plus legacy client-task lifecycle.",
-                {
-                    "list": operation("mapping_list"),
-                    "tasks": operation(
-                        "mapping_tasks",
-                        path="./mappings/<mapping_id>/tasks",
-                    ),
-                    "task": operation(
-                        "mapping_task",
-                        path="./mappings/<mapping_id>/tasks/<task_id>[/<control>]",
-                    ),
-                },
+                "Mapping discovery and client capability inspection.",
+                {"list": operation("mapping_list")},
             ),
             "fs_query": family(
                 "./fs/query/<operation>",
@@ -2065,12 +2055,6 @@ class DiscoveryMixin:
             "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_id>/rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
                 "description": "Invoke one advertised client RPC operation. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /tasks routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
-            "mapping_tasks": {"method": "GET/POST", "url": "./mappings/<mapping_id>/tasks",
-                "description": "GET lists client tasks; POST starts a task on that client, not on the server.",
-                "body": {"argv": ["python", "-m", "pytest"], "cwd": ".", "timeout_seconds": 300,
-                         "plan_id": "required for POST", "taskname": "required for POST", "message": "required for POST"}},
-            "mapping_task": {"method": "GET/POST", "url": "./mappings/<mapping_id>/tasks/<task_id>",
-                "description": "GET ?offset=0 returns bounded base64 combined output and next_offset. POST /stdin, /interrupt, or /kill controls a task; mutations require plan_id/taskname/message. stdin accepts base64 data or eof=true. Client 1.58.0+ keeps tasks and offline-completed results across reconnects, not client process restarts. Uncollected results remain in bounded client memory; reading through the end of completed output starts one-hour/four-collected-record retention. Total records: max_tasks + 4; new starts fail when full. Deadlines continue offline. Reconnect and list/query existing IDs; never automatically replay uncertain starts."},
         })
         payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
@@ -2081,8 +2065,6 @@ class DiscoveryMixin:
             "server_rpc": ("write=false: files.read; write=true: Bearer control token + write + Plan Context", read_enabled or (control_authorized and self.token_record.can_write)),
             "mapping_list": ("read", self.token_record.can_read),
             "mapping_rpc": ("write=false: files.read; write=true: Bearer control token + write + writable mapping + Plan Context", read_enabled or (control_authorized and self.token_record.can_write)),
-            "mapping_tasks": ("Bearer control token + Shell + mapping/client execution permission", shell_enabled),
-            "mapping_task": ("Bearer control token + Shell + mapping/client execution permission", shell_enabled),
             "discovery_section": ("URL token", True),
             "credentials_renew": ("Bearer control token", control_authorized),
             "environment_get": ("Bearer control token", control_authorized),
@@ -2181,7 +2163,6 @@ class DiscoveryMixin:
             privileged_endpoints = {
                 "recycle_purge",
                 "fs_copy", "file_transfer",
-                "mapping_tasks", "mapping_task",
                 "credentials_renew",
                 "environment_get",
                 "environment_replace",

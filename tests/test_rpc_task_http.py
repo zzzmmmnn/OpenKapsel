@@ -280,13 +280,16 @@ class RpcTaskHTTPTests(unittest.TestCase):
         self.assertIn("query/list", details["recovery"])
         self.assertFalse((self.export / "ambiguous.zip").exists())
 
-    def test_shell_task_start_remains_disabled_for_same_mapping(self):
+    def test_unified_shell_start_remains_disabled_for_same_mapping(self):
+        self.record = self.server.tokens.update(self.record.token, shell_mode="full")
         plan_id = self.create_plan()
         status, _, raw = self.request(
             "POST",
-            self.base + f"/mappings/{self.row['id']}/tasks",
+            self.base + "/shell/exec",
             json.dumps({
-                "argv": ["python", "-V"],
+                "command": "python -V",
+                "cwd": self.row["name"],
+                "target": "client",
                 "plan_id": plan_id,
                 "taskname": "rpc-task",
                 "message": "Shell should remain disabled",
@@ -294,6 +297,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
             self.control(),
         )
         self.assertEqual(403, status, raw)
+        self.assertEqual("client_execution_disabled", json.loads(raw)["error"]["code"])
 
 
 if __name__ == "__main__":

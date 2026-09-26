@@ -120,9 +120,6 @@ There is intentionally no MCP route in this skill.
 - `POST /fs/write/copy`: start an asynchronous copy.
 - `GET /fs/transfers/<id>`: inspect transfer progress.
 - `POST /fs/transfers/<id>/cancel` and `/resume`: control transfers.
-- `GET/POST /mappings/<mapping_id>/tasks`: list/start client tasks.
-- `GET /mappings/<mapping_id>/tasks/<task_id>`: incremental client task output.
-- `POST /mappings/<mapping_id>/tasks/<task_id>/stdin`, `/interrupt`, `/kill`: control a client task.
 
 See [mappings.md](mappings.md) for permissions, request fields, and root-scoped recycling.
 
