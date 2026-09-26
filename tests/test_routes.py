@@ -105,7 +105,7 @@ class EndpointContractTests(unittest.TestCase):
                 True,
             )
         }
-        self.assertIn("create_schedule", names)
+        self.assertTrue({"schedule_read", "schedule_write", "schedule_control"} <= names)
         disabled = {
             tool["name"]
             for tool in tools_for(
@@ -113,7 +113,9 @@ class EndpointContractTests(unittest.TestCase):
                 True,
             )
         }
-        self.assertNotIn("create_schedule", disabled)
+        self.assertTrue(
+            {"schedule_read", "schedule_write", "schedule_control"}.isdisjoint(disabled)
+        )
 
 
 if __name__ == "__main__":

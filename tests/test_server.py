@@ -303,7 +303,118 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(1, runs["count"])
 
         tools = self.mcp_request("test-token", 90, "tools/list")[1]["result"]["tools"]
-        self.assertIn("create_schedule", {tool["name"] for tool in tools})
+        names = {tool["name"] for tool in tools}
+        self.assertTrue({"schedule_read", "schedule_write", "schedule_control"} <= names)
+        self.assertTrue(
+            {
+                "list_schedules",
+                "get_schedule",
+                "create_schedule",
+                "update_schedule",
+                "delete_schedule",
+                "run_schedule_now",
+                "pause_schedule",
+                "resume_schedule",
+                "list_schedule_runs",
+                "get_schedule_run",
+            }.isdisjoint(names)
+        )
+
+    def test_grouped_schedule_mcp_tools_dispatch(self) -> None:
+        self.server.tokens.update("test-token", can_schedule=True)
+
+        def call(request_id: int, name: str, arguments: dict) -> dict:
+            status, payload, _ = self.mcp_request(
+                "test-token",
+                request_id,
+                "tools/call",
+                {"name": name, "arguments": arguments},
+            )
+            self.assertEqual(HTTPStatus.OK, status)
+            self.assertNotIn("error", payload)
+            return payload["result"]["structuredContent"]
+
+        created = call(
+            91,
+            "schedule_write",
+            {
+                "operation": "create",
+                "name": "grouped MCP schedule",
+                "schedule": {"type": "interval", "minutes": 3, "timezone": "UTC"},
+                "command": "printf grouped-schedule",
+                "cwd": ".",
+            },
+        )
+        schedule_id = created["schedule_id"]
+        self.assertEqual("active", created["status"])
+
+        listed = call(92, "schedule_read", {"operation": "list"})
+        self.assertIn(schedule_id, {item["schedule_id"] for item in listed["schedules"]})
+
+        fetched = call(
+            93,
+            "schedule_read",
+            {"operation": "get", "schedule_id": schedule_id},
+        )
+        self.assertEqual(schedule_id, fetched["schedule_id"])
+
+        updated = call(
+            94,
+            "schedule_write",
+            {
+                "operation": "update",
+                "schedule_id": schedule_id,
+                "expected_revision": fetched["revision"],
+                "name": "updated grouped MCP schedule",
+            },
+        )
+        self.assertEqual("updated grouped MCP schedule", updated["name"])
+
+        paused = call(
+            95,
+            "schedule_control",
+            {"operation": "pause", "schedule_id": schedule_id},
+        )
+        self.assertEqual("paused", paused["status"])
+        resumed = call(
+            96,
+            "schedule_control",
+            {"operation": "resume", "schedule_id": schedule_id},
+        )
+        self.assertEqual("active", resumed["status"])
+
+        run = call(
+            97,
+            "schedule_control",
+            {"operation": "run", "schedule_id": schedule_id},
+        )
+        run_id = run["run_id"]
+        deadline = time.monotonic() + 3
+        request_id = 98
+        while run["status"] in {"claimed", "running"} and time.monotonic() < deadline:
+            time.sleep(0.02)
+            run = call(
+                request_id,
+                "schedule_read",
+                {"operation": "get_run", "run_id": run_id},
+            )
+            request_id += 1
+        self.assertEqual("succeeded", run["status"])
+
+        runs = call(
+            request_id,
+            "schedule_read",
+            {"operation": "list_runs", "schedule_id": schedule_id, "limit": 10},
+        )
+        request_id += 1
+        self.assertIn(run_id, {item["run_id"] for item in runs["runs"]})
+
+        deleted = call(
+            request_id,
+            "schedule_control",
+            {"operation": "delete", "schedule_id": schedule_id},
+        )
+        self.assertTrue(deleted["deleted"])
 
     def mcp_endpoint(self, token):
         record = self.server.tokens.get(token)
@@ -345,6 +456,8 @@ class WorkspaceServerTests(unittest.TestCase):
                     "send_task_input",
                     "interrupt_task",
                     "kill_task",
+                    "schedule_write",
+                    "schedule_control",
                     "create_share",
                     "import_share",
                     "delete_share",

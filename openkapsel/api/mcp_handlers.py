@@ -159,7 +159,7 @@ class McpHandlersMixin:
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
                 "delete_path is recoverable through list_recycle and restore_recycle. "
                 "run_shell defaults to target=auto: a mapped cwd runs on that client, otherwise on the server. Set target=server or client explicitly when needed. Client execution follows its own sandbox and platform policy. The returned task_id works with get_task, read_task_output, send_task_input, interrupt_task, and kill_task. Client stdout and stderr are combined in stdout, and client stdin is limited to 16 KiB per call. "
-                "When schedule tools are available, use create_schedule for persistent once, interval, or strict six-field cron Shell work; use run_schedule_now for explicit immediate execution. "
+                "When schedule tools are available, use schedule_write for persistent once, interval, or strict six-field cron Shell work; use schedule_control operation=run for explicit immediate execution. "
                 "Use interrupt_task for normal termination and kill_task only for immediate forced termination. "
                 "When connected through OAuth or Static MCP, use MCP tools by default. "
                 "Use get_workspace_credentials only when portable REST access is needed on another platform; "
@@ -191,6 +191,22 @@ class McpHandlersMixin:
             validate_arguments(tool, arguments)
         except ValueError as exc:
             raise McpError(-32602, str(exc), {"name": name}) from None
+        schedule_requirements = {
+            ("schedule_read", "get"): ("schedule_id",),
+            ("schedule_read", "list_runs"): ("schedule_id",),
+            ("schedule_read", "get_run"): ("run_id",),
+            ("schedule_write", "create"): ("name", "schedule", "command"),
+            ("schedule_write", "update"): ("schedule_id", "expected_revision"),
+        }
+        required = schedule_requirements.get((name, arguments.get("operation")), ())
+        missing = [key for key in required if key not in arguments]
+        if missing:
+            raise McpError(
+                -32602,
+                f"{name} operation={arguments.get('operation')} requires: "
+                + ", ".join(missing),
+                {"name": name},
+            )
 
         context_tools = {
             "query_context",
@@ -584,7 +600,6 @@ class McpHandlersMixin:
             "move_path": self._handle_fs_move,
             "restore_recycle": self._handle_recycle_restore,
             "run_shell": self._handle_shell_exec,
-            "create_schedule": self._handle_schedule_create,
             "start_upload": self._handle_upload_create,
             "create_share": self._handle_share_create,
         }
@@ -703,30 +718,39 @@ class McpHandlersMixin:
                 except UploadError as exc:
                     self._raise_upload_error(exc)
                 return {"upload_id": upload_id, "cancelled": True}
-            elif name == "list_schedules":
-                self._handle_schedule_list({})
-            elif name == "get_schedule":
-                self._handle_schedule_get(str(arguments["schedule_id"]))
-            elif name == "update_schedule":
-                self._mcp_tool_arguments = arguments
-                self._handle_schedule_update(str(arguments["schedule_id"]))
-            elif name == "delete_schedule":
-                self._mcp_tool_arguments = arguments
-                self._handle_schedule_delete(str(arguments["schedule_id"]))
-            elif name == "run_schedule_now":
-                self._mcp_tool_arguments = arguments
-                self._handle_schedule_run(str(arguments["schedule_id"]))
-            elif name == "pause_schedule":
-                self._mcp_tool_arguments = arguments
-                self._handle_schedule_pause(str(arguments["schedule_id"]))
-            elif name == "resume_schedule":
-                self._mcp_tool_arguments = arguments
-                self._handle_schedule_resume(str(arguments["schedule_id"]))
-            elif name == "list_schedule_runs":
-                query = {"limit": [str(arguments.get("limit", 50))]}
-                self._handle_schedule_runs(str(arguments["schedule_id"]), query)
-            elif name == "get_schedule_run":
-                self._handle_schedule_run_get(str(arguments["run_id"]))
+            elif name == "schedule_read":
+                operation = str(arguments["operation"])
+                if operation == "list":
+                    self._handle_schedule_list({})
+                elif operation == "get":
+                    self._handle_schedule_get(str(arguments["schedule_id"]))
+                elif operation == "list_runs":
+                    query = {"limit": [str(arguments.get("limit", 50))]}
+                    self._handle_schedule_runs(str(arguments["schedule_id"]), query)
+                else:
+                    self._handle_schedule_run_get(str(arguments["run_id"]))
+            elif name == "schedule_write":
+                operation = str(arguments["operation"])
+                body = {key: value for key, value in arguments.items() if key != "operation"}
+                self._mcp_tool_arguments = body
+                if operation == "create":
+                    self._handle_schedule_create()
+                else:
+                    self._handle_schedule_update(str(arguments["schedule_id"]))
+            elif name == "schedule_control":
+                operation = str(arguments["operation"])
+                schedule_id = str(arguments["schedule_id"])
+                self._mcp_tool_arguments = {
+                    key: value for key, value in arguments.items() if key != "operation"
+                }
+                if operation == "delete":
+                    self._handle_schedule_delete(schedule_id)
+                elif operation == "run":
+                    self._handle_schedule_run(schedule_id)
+                elif operation == "pause":
+                    self._handle_schedule_pause(schedule_id)
+                else:
+                    self._handle_schedule_resume(schedule_id)
             elif name == "list_tasks":
                 query = {key: [str(value)] for key, value in arguments.items()}
                 self._handle_task_list(query)
