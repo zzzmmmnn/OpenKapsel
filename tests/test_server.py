@@ -2323,12 +2323,23 @@ class WorkspaceServerTests(unittest.TestCase):
             ["replace", "insert_before", "insert_after"],
             edit_properties["operation"]["enum"],
         )
+        operation_description = edit_properties["operation"]["description"]
+        self.assertIn("replace requires old + new", operation_description)
+        self.assertIn("insert_before and insert_after require match + content", operation_description)
+        self.assertIn("operation=replace", edit_properties["old"]["description"])
+        self.assertIn("operation=replace", edit_properties["new"]["description"])
+        self.assertIn("operation=insert_before or insert_after", edit_properties["match"]["description"])
+        self.assertIn("operation=insert_before or insert_after", edit_properties["content"]["description"])
         self.assertTrue(
             {
                 "old", "new", "match", "content", "expected_matches",
                 "start_line", "end_line", "start_text", "end_text",
             }.issubset(edit_properties)
         )
+        for marker in ("start_text", "end_text"):
+            description = edit_properties[marker]["description"]
+            self.assertIn("inclusive", description)
+            self.assertIn("marker text itself is inside the range", description)
         self.assertTrue(edit_tool["annotations"]["destructiveHint"])
         _, invalid_edit, _ = self.mcp_request(
             token,

@@ -657,12 +657,25 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "operation": {
                     "type": "string",
                     "enum": ["replace", "insert_before", "insert_after"],
+                    "description": "replace requires old + new; insert_before and insert_after require match + content.",
                 },
                 "path": PATH,
-                "old": {"type": "string", "minLength": 1},
-                "new": {"type": "string"},
-                "match": {"type": "string", "minLength": 1},
-                "content": {"type": "string"},
+                "old": {
+                    "type": "string", "minLength": 1,
+                    "description": "Used only with operation=replace; exact text to replace. Required for replace.",
+                },
+                "new": {
+                    "type": "string",
+                    "description": "Used only with operation=replace; replacement text. Required for replace.",
+                },
+                "match": {
+                    "type": "string", "minLength": 1,
+                    "description": "Used only with operation=insert_before or insert_after; exact anchor text. Required for both insert operations.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Used only with operation=insert_before or insert_after; text to insert. Required for both insert operations.",
+                },
                 "encoding": TEXT_ENCODING,
                 "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
                 "expected_etag": {"type": "string", "minLength": 1},
@@ -676,11 +689,11 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
                 "start_text": {
                     "type": "string", "minLength": 1,
-                    "description": "Unique full-file start marker; may span lines; mutually exclusive with start_line.",
+                    "description": "Unique full-file start marker; inclusive, so the marker text itself is inside the range; may span lines; mutually exclusive with start_line.",
                 },
                 "end_text": {
                     "type": "string", "minLength": 1,
-                    "description": "Unique full-file end marker; may span lines; mutually exclusive with end_line.",
+                    "description": "Unique full-file end marker; inclusive, so the marker text itself is inside the range; may span lines; mutually exclusive with end_line.",
                 },
             },
             ("operation", "path", "expected_etag"),
