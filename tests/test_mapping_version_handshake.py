@@ -16,6 +16,7 @@ from openkapsel import __version__
 from openkapsel.client import (
     ClientReloadRequired,
     ClientVersionRequired,
+    _periodic_reload_check,
     _reload_decision,
 )
 from openkapsel.client_runtime.client_reload import ClientReloadState, LocalSource, exec_local_source
@@ -99,9 +100,14 @@ class ReloadDecisionTests(unittest.TestCase):
             return self.active
 
     class State:
-        def __init__(self, last_server=None, last_reload=None):
+        def __init__(self, last_server=None, last_check=None):
             self.last_server_fingerprint = last_server
-            self.last_reload_at = time.time() if last_reload is None else last_reload
+            self.last_source_check_at = time.time() if last_check is None else last_check
+            self.source_checks = 0
+
+        def mark_source_checked(self):
+            self.last_source_check_at = time.time()
+            self.source_checks += 1
 
     def test_local_source_defaults_to_running_project_root_and_allows_override(self):
         from openkapsel.client_runtime.client_reload import inspect_local_source
@@ -145,7 +151,7 @@ class ReloadDecisionTests(unittest.TestCase):
         self.assertFalse(error.exception.required)
 
         runtime = self.Runtime()
-        state = self.State(last_server="B" * 44, last_reload=time.time() - 86401)
+        state = self.State(last_server="B" * 44, last_check=time.time() - 86401)
         with patch("openkapsel.client.inspect_local_source", return_value=source):
             with self.assertRaises(ClientReloadRequired):
                 _reload_decision({}, runtime, state, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
@@ -157,6 +163,38 @@ class ReloadDecisionTests(unittest.TestCase):
         with patch("openkapsel.client.inspect_local_source", return_value=source):
             _reload_decision({}, runtime, state, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
         self.assertTrue(runtime.pending_reload)
+
+    def test_periodic_refresh_detects_changed_source_on_healthy_connection(self):
+        runtime = self.Runtime()
+        source = LocalSource(Path("/source"), __version__, "L" * 44)
+        state = self.State(last_server="B" * 44, last_check=time.time() - 86401)
+        with patch("openkapsel.client.inspect_local_source", return_value=source):
+            self.assertTrue(
+                _periodic_reload_check(
+                    {"auto_reload": True}, runtime, state, MINIMUM_MAPPING_CLIENT_VERSION
+                )
+            )
+        self.assertTrue(runtime.pending_reload)
+        self.assertEqual(1, state.source_checks)
+
+    def test_periodic_refresh_unchanged_source_advances_check_clock(self):
+        runtime = self.Runtime()
+        source = LocalSource(Path("/source"), __version__, runtime.client_fingerprint)
+        state = self.State(last_server="B" * 44, last_check=time.time() - 86401)
+        with patch("openkapsel.client.inspect_local_source", return_value=source) as inspect:
+            self.assertFalse(
+                _periodic_reload_check(
+                    {"auto_reload": True}, runtime, state, MINIMUM_MAPPING_CLIENT_VERSION
+                )
+            )
+            self.assertFalse(
+                _periodic_reload_check(
+                    {"auto_reload": True}, runtime, state, MINIMUM_MAPPING_CLIENT_VERSION
+                )
+            )
+        self.assertEqual(1, inspect.call_count)
+        self.assertEqual(1, state.source_checks)
+        self.assertFalse(runtime.pending_reload)
 
     def test_required_reload_backoff_persists_and_ready_resets(self):
         with tempfile.TemporaryDirectory() as directory:

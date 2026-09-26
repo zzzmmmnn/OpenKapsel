@@ -21,7 +21,9 @@ class ClientReloadState:
         self.path = config_path.with_name(config_path.name + ".state.json")
         self.data = self._load()
         if not self.data.get("last_reload_at"):
-            self.data["last_reload_at"] = time.time()
+            now = time.time()
+            self.data["last_reload_at"] = now
+            self.data["last_source_check_at"] = now
             self.save()
 
     def _load(self):
@@ -35,12 +37,16 @@ class ClientReloadState:
             return {"version": STATE_VERSION, "required_reload_attempts": 0}
         try:
             last_reload_at = float(raw.get("last_reload_at", 0) or 0)
+            last_source_check_at = float(
+                raw.get("last_source_check_at", last_reload_at) or last_reload_at
+            )
             attempts = max(0, int(raw.get("required_reload_attempts", 0) or 0))
         except (TypeError, ValueError, OverflowError):
             return {"version": STATE_VERSION, "required_reload_attempts": 0}
         return {
             "version": STATE_VERSION,
             "last_reload_at": last_reload_at,
+            "last_source_check_at": last_source_check_at,
             "last_successful_server_fingerprint": (
                 raw.get("last_successful_server_fingerprint")
                 if isinstance(raw.get("last_successful_server_fingerprint"), str)
@@ -80,6 +86,10 @@ class ClientReloadState:
         return float(self.data.get("last_reload_at", 0) or 0)
 
     @property
+    def last_source_check_at(self) -> float:
+        return float(self.data.get("last_source_check_at", self.last_reload_at) or 0)
+
+    @property
     def last_server_fingerprint(self) -> str | None:
         value = self.data.get("last_successful_server_fingerprint")
         return value if isinstance(value, str) and value else None
@@ -89,7 +99,13 @@ class ClientReloadState:
         return int(self.data.get("required_reload_attempts", 0) or 0)
 
     def mark_process_reload(self):
-        self.data["last_reload_at"] = time.time()
+        now = time.time()
+        self.data["last_reload_at"] = now
+        self.data["last_source_check_at"] = now
+        self.save()
+
+    def mark_source_checked(self):
+        self.data["last_source_check_at"] = time.time()
         self.save()
 
     def mark_ready(self, server_fingerprint: str):

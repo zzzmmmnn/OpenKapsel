@@ -226,11 +226,12 @@ def _reload_decision(config, runtime, reload_state, server_fingerprint, minimum_
         reload_state.last_server_fingerprint is not None
         and reload_state.last_server_fingerprint != server_fingerprint
     )
-    refresh_due = time.time() - reload_state.last_reload_at >= LOCAL_REFRESH_SECONDS
+    refresh_due = time.time() - reload_state.last_source_check_at >= LOCAL_REFRESH_SECONDS
     inspect = runtime.pending_reload or server_changed or refresh_due
     if not inspect:
         return
     source = inspect_local_source(config)
+    reload_state.mark_source_checked()
     if (
         source is None
         or source.fingerprint == runtime.client_fingerprint
@@ -243,6 +244,27 @@ def _reload_decision(config, runtime, reload_state, server_fingerprint, minimum_
         LOG.info("Deferring optional client source reload until active tasks drain")
         return
     raise ClientReloadRequired(source, required=False)
+
+
+def _periodic_reload_check(config, runtime, reload_state, minimum_version):
+    if reload_state is None or runtime.pending_reload:
+        return runtime.pending_reload
+    if time.time() - reload_state.last_source_check_at < LOCAL_REFRESH_SECONDS:
+        return False
+    source = inspect_local_source(config)
+    reload_state.mark_source_checked()
+    if (
+        source is None
+        or source.fingerprint == runtime.client_fingerprint
+        or not local_source_can_satisfy(source, minimum_version)
+    ):
+        return False
+    runtime.pending_reload = True
+    if runtime.has_active_tasks():
+        LOG.info("Deferring periodic client source reload until active tasks drain")
+    else:
+        LOG.info("Updated client source detected; reconnecting to reload")
+    return True
 
 
 def _capabilities(files, tasks):
@@ -305,6 +327,7 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
         LOG.info("Mapping provider connected and READY")
         def heartbeat():
             while not stopped.wait(10):
+                _periodic_reload_check(config, runtime, reload_state, minimum_version)
                 if runtime.pending_reload and not runtime.has_active_tasks():
                     sock.close()
                     return
@@ -363,8 +386,8 @@ def main():
     config = config_lock.config
     try:
         reload_state = ClientReloadState(options.config)
-        # Every process start loads code afresh, whether caused by our exec, a
-        # service restart, or an operator. Use that as the 24-hour refresh origin.
+        # Every process start loads code afresh. It also initializes the periodic
+        # trusted-source check used by healthy long-lived provider connections.
         os.environ.pop("OPENKAPSEL_CLIENT_RELOADED", None)
         reload_state.mark_process_reload()
         runtime = ClientRuntime(config, protected_paths=(options.config,))
