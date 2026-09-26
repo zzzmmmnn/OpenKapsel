@@ -219,12 +219,32 @@ class UploadClient:
         )
 
     @staticmethod
-    def endpoint_available(payload: dict[str, object], name: str) -> bool:
+    def endpoint_available(
+        payload: dict[str, object],
+        family: str,
+        operation: str,
+    ) -> bool:
         endpoints = payload.get("endpoints")
         if not isinstance(endpoints, dict):
             return False
-        endpoint = endpoints.get(name)
-        return isinstance(endpoint, dict) and endpoint.get("available") is True
+        endpoint_family = endpoints.get(family)
+        if not isinstance(endpoint_family, dict):
+            return False
+        operations = endpoint_family.get("operations")
+        if not isinstance(operations, dict):
+            return False
+        endpoint = operations.get(operation)
+        if not isinstance(endpoint, dict):
+            return False
+        available = True
+        defaults = payload.get("endpoint_defaults")
+        if isinstance(defaults, dict) and isinstance(defaults.get("available"), bool):
+            available = defaults["available"]
+        if isinstance(endpoint_family.get("available"), bool):
+            available = endpoint_family["available"]
+        if isinstance(endpoint.get("available"), bool):
+            available = endpoint["available"]
+        return available
 
     def manifest(
         self,
@@ -234,7 +254,7 @@ class UploadClient:
     ) -> dict[str, object]:
         _result, payload = self.json_request(
             "POST",
-            "fs/manifest",
+            "fs/query/manifest",
             {"items": items, "include_sha256": include_sha256},
         )
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
@@ -244,7 +264,7 @@ class UploadClient:
     def ensure_directory(self, path: str) -> object:
         _result, payload = self.json_request(
             "POST",
-            "fs/mkdir",
+            "fs/write/mkdir",
             {"path": path, "parents": True, "exist_ok": True},
             mutation=True,
         )
@@ -253,7 +273,7 @@ class UploadClient:
     def recycle_existing(self, path: str) -> bool:
         stat_result = self.request(
             "GET",
-            "fs/stat",
+            "fs/query/stat",
             query=(("path", path), ("fields", "type,etag")),
         )
         if stat_result.status == 404 and _error_code(stat_result) == "path_not_found":
@@ -271,7 +291,7 @@ class UploadClient:
         })
         result = self.request(
             "POST",
-            "fs/mutate",
+            "fs/write/mutate",
             headers={"Content-Type": "application/json"},
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         )
@@ -281,7 +301,7 @@ class UploadClient:
     def remote_matches(self, path: str, size: int, digest: str) -> bool:
         result = self.request(
             "GET",
-            "fs/stat",
+            "fs/query/stat",
             query=(("path", path), ("fields", "type,size,sha256")),
         )
         if result.status in {401, 403, 404}:

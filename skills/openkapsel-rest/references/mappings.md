@@ -77,7 +77,7 @@ also include `timeout_seconds`; the client enforces its local `max_seconds`
 policy (600 seconds by default). The server forwards exactly one start RPC and
 never falls back to server/FUSE for a generic plugin operation.
 
-Archive preview is also exposed through ordinary workspace routes: `GET /archive/list?path=<archive>&inner_path=&offset=0&limit=200` and `GET /archive/read?path=<archive>&member=<member>&offset=0&limit=65536&encoding=utf-8`. Local workspace archives are read on the server; mapped archives use the Archive client plugin. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
+Archive preview uses the generic `archive` RPC family. Call `POST /rpc/archive/list` or `POST /rpc/archive/read` for the server workspace, and `POST /mappings/<mapping_id>/rpc/archive/<operation>` for mapped archives. Put archive-specific parameters under `args`. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
 
 `GET /recycle/list?root=.` selects the ordinary workspace recycle bin. Use `root=<mapping-name>` for that client's recycle bin. `POST /recycle/restore` accepts the same `root` and `recycle_id`, plus normal mutation Context. Never infer a recycle root from the ID alone.
 
@@ -119,8 +119,8 @@ transport response limit.
 
 ## Cross-root transfers
 
-- `POST /fs/copy`: JSON `source`, `destination`, `plan_id`, `taskname`, `message`. The destination parent must exist. Overwrite is not supported.
-- `POST /fs/move`: moving between different storage roots returns an asynchronous transfer, not an immediate rename.
+- `POST /fs/write/copy`: JSON `source`, `destination`, `plan_id`, `taskname`, `message`. The destination parent must exist. Overwrite is not supported.
+- `POST /fs/write/move`: moving between different storage roots returns an asynchronous transfer, not an immediate rename.
 - Both return HTTP 202 with an `id`. Poll `GET /fs/transfers/<id>`.
 - `POST /fs/transfers/<id>/cancel` or `/resume`: supply normal mutation Context. Resume validates the source and partial destination before continuing. Do not start a second transfer to resume the first one.
 - `completed` is success. `copied_source_retained` means a move copied the destination but could not safely recycle the source. Do not delete the source blindly.

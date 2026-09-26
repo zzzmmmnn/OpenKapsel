@@ -61,9 +61,9 @@ class MappingFileHTTPTests(unittest.TestCase):
         (self.export / "folder").mkdir()
         data = b"needle\n" * 200000
         (self.export / "folder/large.txt").write_bytes(data)
-        for endpoint in ("/fs/list?path=laptop", "/fs/stat?path=laptop/folder/large.txt&fields=sha256,size,etag",
-                         "/fs/search?path=laptop&query=needle&max_results=2", "/fs/tree?path=laptop&depth=2",
-                         "/fs/read?path=laptop/folder/large.txt&limit=10"):
+        for endpoint in ("/fs/query/list?path=laptop", "/fs/query/stat?path=laptop/folder/large.txt&fields=sha256,size,etag",
+                         "/fs/query/search?path=laptop&query=needle&max_results=2", "/fs/query/tree?path=laptop&depth=2",
+                         "/fs/read/text?path=laptop/folder/large.txt&limit=10"):
             before = len(self.calls)
             status, body = self.api(endpoint)
             self.assertEqual(200, status, body)
@@ -74,18 +74,18 @@ class MappingFileHTTPTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(data).hexdigest(), body["sha256"])
 
     def test_batch_manifest_and_mutation_context_remain_intact(self):
-        status, body = self.api("/fs/mutate", {"items": [
+        status, body = self.api("/fs/write/mutate", {"items": [
             {"op": "file.create", "path": "laptop/a", "content": "hello"},
         ]})
         self.assertEqual(200, status, body)
         self.assertTrue((self.export / "a").exists())
         self.assertFalse((self.mount / "a").exists())
         self.assertIn("context_id", body)
-        status, manifest = self.api("/fs/manifest", {"items": [{"path": "laptop/a"}, {"path": "laptop/missing"}], "include_sha256": True})
+        status, manifest = self.api("/fs/query/manifest", {"items": [{"path": "laptop/a"}, {"path": "laptop/missing"}], "include_sha256": True})
         self.assertEqual(200, status, manifest)
         self.assertEqual(["laptop/a", "laptop/missing"], [item["path"] for item in manifest["items"]])
         self.assertEqual("api_fs_manifest", self.calls[-1][0])
-        status, body = self.api("/fs/mutate", {"items": [
+        status, body = self.api("/fs/write/mutate", {"items": [
             {"op": "path.delete", "path": "laptop/a", "expected_etag": manifest["items"][0]["etag"]},
         ]})
         self.assertEqual(200, status, body)
@@ -96,14 +96,14 @@ class MappingFileHTTPTests(unittest.TestCase):
         (self.export / "a").write_text("old A\nold A", encoding="utf-8")
         (self.export / "b").write_text("MARK\nold B", encoding="utf-8")
         (self.export / "d").write_text("anchor", encoding="utf-8")
-        status, a_stat = self.api("/fs/stat?path=laptop/a&fields=etag,size")
+        status, a_stat = self.api("/fs/query/stat?path=laptop/a&fields=etag,size")
         self.assertEqual(200, status, a_stat)
-        status, b_stat = self.api("/fs/stat?path=laptop/b&fields=etag,size")
+        status, b_stat = self.api("/fs/query/stat?path=laptop/b&fields=etag,size")
         self.assertEqual(200, status, b_stat)
-        status, d_stat = self.api("/fs/stat?path=laptop/d&fields=etag,size")
+        status, d_stat = self.api("/fs/query/stat?path=laptop/d&fields=etag,size")
         self.assertEqual(200, status, d_stat)
         before = len(self.calls)
-        status, body = self.api("/fs/mutate", {
+        status, body = self.api("/fs/write/mutate", {
             "items": [
                 {"op": "text.replace", "path": "laptop/a", "expected_etag": a_stat["etag"],
                  "start_line": 1, "end_line": 1,
@@ -131,11 +131,11 @@ class MappingFileHTTPTests(unittest.TestCase):
             handle.write(b"0123456789abcdef")
             handle.truncate(32 * 1024 * 1024 + 1)
         before = len(self.calls)
-        status, read = self.api("/fs/large/read", {"path": "laptop/large.bin", "offset": 4, "length": 6})
+        status, read = self.api("/fs/read/large", {"path": "laptop/large.bin", "offset": 4, "length": 6})
         self.assertEqual(200, status, read)
         self.assertEqual(before + 1, len(self.calls))
         self.assertEqual("api_fs_read_large", self.calls[-1][0])
-        status, replaced = self.api("/fs/large/replace", {
+        status, replaced = self.api("/fs/write/large", {
             "path": "laptop/large.bin",
             "offset": 4,
             "length": 6,
@@ -151,9 +151,9 @@ class MappingFileHTTPTests(unittest.TestCase):
     def test_new_read_operations_are_single_rpc_and_read_token_accessible(self):
         (self.export / "a.py").write_text("needle")
         self.headers = {"Content-Type": "application/json"}
-        for endpoint, body in (("/fs/read_many", {"paths": ["laptop/a.py"]}),
-                               ("/fs/manifest", {"recursive": True, "path": "laptop", "include_sha256": True}),
-                               ("/fs/search?path=laptop&query=needle&include=*.py", None)):
+        for endpoint, body in (("/fs/read/many", {"paths": ["laptop/a.py"]}),
+                               ("/fs/query/manifest", {"recursive": True, "path": "laptop", "include_sha256": True}),
+                               ("/fs/query/search?path=laptop&query=needle&include=*.py", None)):
             before = len(self.calls)
             status, result = self.api(endpoint, body)
             self.assertEqual(200, status, result)
@@ -165,7 +165,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         (self.mount / "a.py").write_text("needle")
         (self.mount / "b.txt").write_text("needle")
         before = len(self.calls)
-        status, result = self.api("/fs/search?path=laptop&query=needle&include=*.py")
+        status, result = self.api("/fs/query/search?path=laptop&query=needle&include=*.py")
         self.assertEqual(409, status, result)
         self.assertEqual("mapping_rpc_unsupported", result["error"]["code"])
         self.assertEqual(before, len(self.calls))
@@ -182,19 +182,19 @@ class MappingFileHTTPTests(unittest.TestCase):
                 }
             }
         }
-        status, body = self.api("/fs/list?path=laptop")
+        status, body = self.api("/fs/query/list?path=laptop")
         self.assertEqual(403, status, body)
         self.assertEqual("mapping_rpc_disabled", body["error"]["code"])
         self.assertEqual([], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
-        status, body = self.api("/fs/list?path=laptop")
+        status, body = self.api("/fs/query/list?path=laptop")
         self.assertEqual(503, status, body)
         self.assertEqual("mapping_offline", body["error"]["code"])
 
         self.server.mappings.sessions[self.row["id"]] = self.session
         self.server.mappings.store.update(self.row["id"], enabled=False)
-        status, body = self.api("/fs/list?path=laptop")
+        status, body = self.api("/fs/query/list?path=laptop")
         self.assertEqual(403, status, body)
         self.assertEqual("mapping_disabled", body["error"]["code"])
 
@@ -205,23 +205,23 @@ class MappingFileHTTPTests(unittest.TestCase):
         backend = WorkspaceFiles(self.server.mappings, (scope,))
         with backend.open(self.mount / "a") as stream:
             actual = stream_stat(stream)
-        status, body = self.api("/fs/stat?path=laptop/a&fields=etag")
+        status, body = self.api("/fs/query/stat?path=laptop/a&fields=etag")
         self.assertEqual(200, status, body)
         self.assertEqual(WorkspaceRequestHandler._stat_etag(actual), body["etag"])
         old_etag = body["etag"]
         (self.export / "a").write_text("changed file")
-        status, body = self.api("/fs/stat?path=laptop/a&fields=etag")
+        status, body = self.api("/fs/query/stat?path=laptop/a&fields=etag")
         self.assertNotEqual(old_etag, body["etag"])
 
     def test_missing_context_readonly_mapping_and_protected_paths_are_rejected_before_rpc(self):
         raw = {"items": [{"op": "file.create", "path": "laptop/a", "content": "x"}]}
-        status, _, _ = self.request("POST", self.base + "/fs/mutate", json.dumps(raw), self.headers)
+        status, _, _ = self.request("POST", self.base + "/fs/write/mutate", json.dumps(raw), self.headers)
         self.assertEqual(400, status)
         for path in ("laptop", "laptop/.openkapsel/private"):
-            status, _ = self.api("/fs/mutate", {"items": [{"op": "file.create", "path": path, "content": "x"}]})
+            status, _ = self.api("/fs/write/mutate", {"items": [{"op": "file.create", "path": path, "content": "x"}]})
             self.assertEqual(403, status)
         self.server.mappings.store.update(self.row["id"], writable=False)
-        self.assertEqual(403, self.api("/fs/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "x"}]})[0])
+        self.assertEqual(403, self.api("/fs/write/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "x"}]})[0])
         with self.assertRaises(OSError) as error:
             self.server.mappings.call(self.row["id"], "api_fs_mutate", {"body": {"items": [{"op": "file.create", "path": "a", "content": "x"}]}})
         self.assertEqual(errno.EROFS, error.exception.errno)
@@ -230,13 +230,13 @@ class MappingFileHTTPTests(unittest.TestCase):
     def test_old_client_is_rejected_and_ambiguous_write_is_never_replayed(self):
         self.session.capabilities = {}
         (self.mount / "fallback").write_text("old transport")
-        status, body = self.api("/fs/list?path=laptop")
+        status, body = self.api("/fs/query/list?path=laptop")
         self.assertEqual(409, status, body)
         self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
         self.assertEqual([], self.calls)
 
         self.session.capabilities = {"file_api": {"version": 3, "operations": sorted(FILE_API_OPERATIONS)}}
-        status, body = self.api("/fs/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "once"}]})
+        status, body = self.api("/fs/write/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "once"}]})
         self.assertEqual(409, status, body)
         self.assertEqual("mapping_rpc_unsupported", body["error"]["code"])
         self.assertEqual([], self.calls)
@@ -247,7 +247,7 @@ class MappingFileHTTPTests(unittest.TestCase):
             original(op, args)
             raise OSError(errno.ETIMEDOUT, "result unknown")
         with patch.object(self.session, "call", side_effect=ambiguous):
-            status, _ = self.api("/fs/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "once"}]})
+            status, _ = self.api("/fs/write/mutate", {"items": [{"op": "file.create", "path": "laptop/a", "content": "once"}]})
         self.assertEqual(503, status)
         self.assertEqual(1, len(self.calls))
         self.assertEqual("api_fs_mutate", self.calls[0][0])

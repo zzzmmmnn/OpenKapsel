@@ -416,7 +416,7 @@ def apply_manifest_preflight(
     overwrite: bool,
 ) -> tuple[set[str], set[str], list[dict[str, str]]]:
     """Use the optional native manifest route to skip matches and flag conflicts."""
-    if not client.endpoint_available(discovery, "fs_manifest"):
+    if not client.endpoint_available(discovery, "fs_query", "manifest"):
         return set(), set(), []
     discovery_limits = discovery.get("limits")
     if not isinstance(discovery_limits, dict):

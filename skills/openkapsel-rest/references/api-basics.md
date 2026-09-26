@@ -38,11 +38,14 @@ Directory-scoped helpers discover and cache `OPENKAPSEL_CREDENTIALS_EXPIRES_AT`.
 | `GET` | `/discovery/context` | Context and Plan contract |
 | `GET` | `/discovery/memory` | Long-term Memory contract |
 | `GET` | `/discovery/shell` | Shell, task, process, and resource limits |
+| `GET` | `/discovery/schedules` | Schedule operations and schedule-specific limits |
 | `GET` | `/discovery/web` | Preview, FastAPI, libraries, and database runtime |
 | `GET` | `/discovery/sharing` | Temporary share contract |
 | `GET` | `/discovery/full` | Complete compatibility document; load only when necessary |
 
 Send `Accept: application/json`. Supplying the Bearer token changes capability fields from redacted/read-only to the privileges actually available.
+
+Endpoint contracts are grouped into families. For `available` and `required_capability`, resolve values in the order operation, family, then `endpoint_defaults`; omitted values intentionally inherit instead of repeating identical metadata. Operation `path` overrides the family `path` for routes such as public share inspection or workspace FastAPI APIs.
 
 Every Discovery response also contains `skills.openkapsel_rest`. Its `manifest_url`, `entrypoint_url`, and `archive_url` are public, contain no workspace credential, and require no Authorization header. To install, download `archive_url`, verify it against `archive_sha256`, and extract the single `openkapsel-rest` directory into the AI client's skill directory. An agent that cannot install may read `entrypoint_url` and its linked files directly.
 
@@ -77,7 +80,7 @@ Examples from the skill directory:
 ```bash
 python3 scripts/openkapsel_http.py GET discovery/files
 
-python3 scripts/openkapsel_http.py GET fs/stat \
+python3 scripts/openkapsel_http.py GET fs/query/stat \
   --query path=src/app.py --query fields=type,size,etag,sha256
 
 python3 scripts/openkapsel_http.py POST fs/mkdir \

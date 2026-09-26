@@ -67,7 +67,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual([0, 1, 1], [p["depth"] for p in tree["plans"]])
         child = created["subplans"][0]["id"]
-        status, written = self.rest("POST", "/fs/mutate", {"items": [{"op": "file.create", "path": "batch.txt", "content": "works"}], "plan_id": child, "taskname": "feature", "message": "Use the returned child ID"})
+        status, written = self.rest("POST", "/fs/write/mutate", {"items": [{"op": "file.create", "path": "batch.txt", "content": "works"}], "plan_id": child, "taskname": "feature", "message": "Use the returned child ID"})
         self.assertEqual(200, status, written)
         status, tree = self.rest("GET", f'/context/plans/{created["id"]}/tree')
         self.assertTrue(any(e["plan_id"] == child and e["type"] == "operation" for e in tree["entries"]))
@@ -188,7 +188,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, listed)
         tool = next(t for t in listed["result"]["tools"] if t["name"] == "add_context")
         schema = tool["inputSchema"]["properties"]
-        for name, extension in discovery["endpoints"]["context_add"]["plan_extension_schema"].items():
+        for name, extension in discovery["endpoints"]["context"]["operations"]["add"]["plan_extension_schema"].items():
             self.assertEqual(extension, schema[name])
         self.assertFalse(schema["subplans"]["items"]["additionalProperties"])
         self.assertEqual(["content"], schema["subplans"]["items"]["required"])

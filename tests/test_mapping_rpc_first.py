@@ -81,24 +81,24 @@ class RpcOnlyHTTPTests(unittest.TestCase):
     def test_root_listing_tree_manifest_search_and_mixed_reads(self):
         (self.export / "remote.txt").write_text("remote needle\r\n")
         (self.scope / "local.txt").write_text("local needle")
-        status, listing = self.api("/fs/list?path=.")
+        status, listing = self.api("/fs/query/list?path=.")
         self.assertEqual(200, status, listing)
         entry = next(e for e in listing["entries"] if e["name"] == "laptop")
         self.assertTrue(entry["is_mapping"])
-        status, result = self.api("/fs/tree?path=.&depth=2")
+        status, result = self.api("/fs/query/tree?path=.&depth=2")
         self.assertEqual(200, status, result)
         self.assertIn("remote.txt", json.dumps(result))
-        status, result = self.api("/fs/search?path=.&query=needle")
+        status, result = self.api("/fs/query/search?path=.&query=needle")
         self.assertEqual(200, status, result)
         self.assertEqual(2, result["match_count"])
-        status, result = self.api("/fs/read_many", {"paths": ["local.txt", "laptop/remote.txt"], "max_total_chars": 100})
+        status, result = self.api("/fs/read/many", {"paths": ["local.txt", "laptop/remote.txt"], "max_total_chars": 100})
         self.assertEqual(200, status, result)
         self.assertEqual(["local needle", "remote needle\r\n"], [i["content"] for i in result["items"]])
-        status, result = self.api("/fs/manifest", {"recursive": True, "path": ".", "include_sha256": True})
+        status, result = self.api("/fs/query/manifest", {"recursive": True, "path": ".", "include_sha256": True})
         self.assertEqual(200, status, result)
         self.assertIn(hashlib.sha256(b"remote needle\r\n").hexdigest(), json.dumps(result))
         self.session.closed = True
-        status, result = self.api("/fs/tree?path=.&depth=2")
+        status, result = self.api("/fs/query/tree?path=.&depth=2")
         self.assertEqual(200, status, result)
         self.assertIn('"unavailable": true', json.dumps(result))
 
@@ -174,12 +174,12 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         (self.export / "dir/data").write_bytes(data)
         for source, destination in (("laptop/dir", "local-copy"), ("local-copy", "second/copy"),
                                     ("second/copy", "laptop/returned")):
-            status, result = self.api("/fs/copy", {"source": source, "destination": destination})
+            status, result = self.api("/fs/write/copy", {"source": source, "destination": destination})
             self.assertEqual(202, status, result)
             self.transfer_done(result)
         self.assertEqual(data, (second / "copy/data").read_bytes())
         self.assertEqual(data, (self.export / "returned/data").read_bytes())
-        status, result = self.api("/fs/move", {"source": "laptop/returned", "destination": "moved"})
+        status, result = self.api("/fs/write/move", {"source": "laptop/returned", "destination": "moved"})
         self.assertEqual(202, status, result)
         self.transfer_done(result)
         self.assertFalse((self.export / "returned").exists())
@@ -190,14 +190,14 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         (self.export / "c").write_text("delete remote")
         (self.scope / "b").write_text("old local")
 
-        status, a = self.api("/fs/stat?path=laptop/a&fields=etag")
+        status, a = self.api("/fs/query/stat?path=laptop/a&fields=etag")
         self.assertEqual(200, status, a)
-        status, c = self.api("/fs/stat?path=laptop/c&fields=etag")
+        status, c = self.api("/fs/query/stat?path=laptop/c&fields=etag")
         self.assertEqual(200, status, c)
-        status, b = self.api("/fs/stat?path=b&fields=etag")
+        status, b = self.api("/fs/query/stat?path=b&fields=etag")
         self.assertEqual(200, status, b)
 
-        status, result = self.api("/fs/mutate", {"items": [
+        status, result = self.api("/fs/write/mutate", {"items": [
             {"op": "text.replace", "path": "laptop/a", "expected_etag": a["etag"],
              "replacements": [{"old": "old", "new": "new"}]},
             {"op": "text.replace", "path": "b", "expected_etag": b["etag"],
@@ -208,7 +208,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         self.assertEqual("old remote", (self.export / "a").read_text())
         self.assertEqual("old local", (self.scope / "b").read_text())
 
-        status, result = self.api("/fs/mutate", {"items": [
+        status, result = self.api("/fs/write/mutate", {"items": [
             {"op": "text.replace", "path": "laptop/a", "expected_etag": a["etag"],
              "replacements": [{"old": "missing", "new": "new"}]},
             {"op": "path.delete", "path": "laptop/c", "expected_etag": c["etag"]},
@@ -217,7 +217,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         self.assertEqual("old remote", (self.export / "a").read_text())
         self.assertTrue((self.export / "c").exists())
 
-        status, result = self.api("/fs/mutate", {"items": [
+        status, result = self.api("/fs/write/mutate", {"items": [
             {"op": "text.replace", "path": "laptop/a", "expected_etag": a["etag"],
              "replacements": [{"old": "old", "new": "new"}]},
             {"op": "path.delete", "path": "laptop/c", "expected_etag": c["etag"]},
@@ -253,7 +253,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         status, _, body = self.raw("PUT", "/fs/content?path=laptop/x", b"x", {"Content-Type": "application/octet-stream"})
         self.assertEqual(403, status, body)
         self.session.capabilities = {}
-        self.assertEqual(409, self.api("/fs/read?path=laptop/a")[0])
+        self.assertEqual(409, self.api("/fs/read/text?path=laptop/a")[0])
         self.assertTrue((self.export / "a").exists())
 
     def test_api_resolution_and_private_state_do_not_mount(self):
@@ -329,15 +329,15 @@ class NativeExecutionTests(unittest.TestCase):
 
     def test_aliases_stay_rpc_and_preview_cannot_alias_private_api_source(self):
         (self.scope / "alias").symlink_to("laptop")
-        status, result = self.api("/fs/mkdir", {"path": "alias/new"})
+        status, result = self.api("/fs/write/mkdir", {"path": "alias/new"})
         self.assertIn(status, (200, 201), result)
         self.assertTrue((self.export / "new").is_dir())
-        status, result = self.api("/fs/mutate", {"items": [{"op": "file.create", "path": "alias/new/a", "content": "rpc"}]})
+        status, result = self.api("/fs/write/mutate", {"items": [{"op": "file.create", "path": "alias/new/a", "content": "rpc"}]})
         self.assertEqual(200, status, result)
         self.assertEqual("rpc", (self.export / "new/a").read_text())
         status, result = self.api("/git/status?path=.")
-        self.assertEqual(409, status, result)
-        self.assertEqual("git_mapping_boundary", result["error"]["code"])
+        self.assertEqual(404, status, result)
+        self.assertEqual("not_found", result["error"]["code"])
         self.record = self.server.tokens.update(self.record.token, can_preview=True)
         (self.export / "api").mkdir()
         (self.export / "api/app.py").write_text("private")

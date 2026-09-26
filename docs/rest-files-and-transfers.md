@@ -15,15 +15,15 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `PATCH` | `/context/plans/<id>` | Update Plan content, status, parent, and debrief |
 | `GET/POST` | `/memory`, `/memory/project` | Query, create, or read project Memory |
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
-| `GET` | `/fs/list`, `/fs/tree`, `/fs/search` | List, recursively inspect, or search files |
-| `GET` | `/fs/read`, `/fs/stat` | Read explicitly encoded text or selected metadata |
-| `GET` | `/git/status`, `/git/diff`, `/git/diff_stat`, `/git/log`, `/git/show`, `/git/ls_files` | Read-only Git snapshot inspection; see [Git options](shell-and-mcp.md#git-inspection) |
-| `POST` | `/fs/manifest` | Batch synchronization preflight or recursive metadata manifest |
-| `POST` | `/fs/read_many` | Read multiple small text files in one request |
+| `GET` | `/fs/query/list`, `/fs/query/tree`, `/fs/query/search` | List, recursively inspect, or search files |
+| `GET` | `/fs/read/text`, `/fs/query/stat` | Read explicitly encoded text or selected metadata |
+| `POST` | `/rpc/git/<operation>` | Generic Git reads/writes for the server workspace; use mapping RPC for mapped repositories |
+| `POST` | `/fs/query/manifest` | Batch synchronization preflight or recursive metadata manifest |
+| `POST` | `/fs/read/many` | Read multiple small text files in one request |
 | `GET/HEAD/PUT` | `/fs/content` | Stream or atomically upload raw bytes |
-| `POST` | `/fs/mutate` | Transactionally create, replace, exact-edit, structured-edit, or recycle one or more paths |
-| `POST` | `/fs/large/read`, `/fs/large/replace` | Bounded large-file inspection and equal-length guarded replacement |
-| `POST` | `/fs/mkdir`, `/fs/move` | Create directories or move/rename paths |
+| `POST` | `/fs/write/mutate` | Transactionally create, replace, exact-edit, structured-edit, or recycle one or more paths |
+| `POST` | `/fs/read/large`, `/fs/write/large` | Bounded large-file inspection and equal-length guarded replacement |
+| `POST` | `/fs/write/mkdir`, `/fs/write/move` | Create directories or move/rename paths |
 | `GET/POST` | `/recycle/list`, `/recycle/restore` | List and restore recycled paths |
 | `POST` | `/uploads` | Start a resumable upload |
 | `GET/HEAD/PATCH` | `/uploads/<id>` | Inspect or append upload bytes |
@@ -53,7 +53,7 @@ PLAN_ID=$(curl -fsS -X POST "$BASE/context" \
   -d '{"type":"plan","taskname":"release","content":"Prepare the release."}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
-curl -fsS -X POST "$BASE/fs/mutate" \
+curl -fsS -X POST "$BASE/fs/write/mutate" \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d "{\"items\":[{\"op\":\"file.create\",\"path\":\"release.txt\",\"content\":\"ready\"}],\"plan_id\":$PLAN_ID,\"taskname\":\"release\",\"message\":\"Write release marker\"}"
 ```
@@ -66,24 +66,24 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the body. Raw-byte 
 
 ## Metadata, search, and trees
 
-`POST /fs/read_many` accepts `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}`.
+`POST /fs/read/many` accepts `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}`.
 `limit` caps characters per file; `max_total_chars` caps their combined content.
 Both are bounded by `max_read_chars`, and paths by `max_batch_file_operations`.
 Results preserve input order with per-item `status`, `content`, `etag`, `length`,
 `truncated`, and `next_offset`, or an `error`. Partial failures return HTTP 207.
 When the shared budget is exhausted, remaining items report `read_budget_exhausted`.
-Use `/fs/read?path=...&offset=<next_offset>` to continue a truncated file.
+Use `/fs/read/text?path=...&offset=<next_offset>` to continue a truncated file.
 This endpoint is read-only despite using POST; it needs no control token or Plan.
 
 Search accepts repeated `include` and `exclude` glob query parameters, for example
-`/fs/search?path=src&query=TODO&include=*.py&include=*.js&exclude=node_modules`.
+`/fs/query/search?path=src&query=TODO&include=*.py&include=*.js&exclude=node_modules`.
 Patterns without `/` match basenames; others match POSIX paths relative to the
 search root. Matching is case-sensitive regardless of the content-search flag;
 `*` spans `/` (Python fnmatch semantics). Exclude wins, and matching directories
 are pruned. Include only filters files, allowing traversal to matching descendants.
 Each group accepts at most 64 patterns, each at most 512 characters.
 
-`POST /fs/manifest` additionally accepts
+`POST /fs/query/manifest` additionally accepts
 `{"recursive":true,"path":"src","depth":8,"include_sha256":true}` instead of `items`.
 It returns a flat `items` list containing the root and descendants with
 `path`, `name`, `type`, `size`, and `modified_at`, plus optional `sha256`
@@ -105,7 +105,7 @@ reduce batch size, character budgets, or traversal depth.
 
 ## Transactional mutations
 
-`POST /fs/mutate` is the ordinary file mutation protocol. One request may contain up to the configured batch limit of items and supports:
+`POST /fs/write/mutate` is the ordinary file mutation protocol. One request may contain up to the configured batch limit of items and supports:
 
 - `file.create`: create-only text content; the destination must not exist.
 - `file.replace`: replace an existing standard-size text file; exact `expected_etag` is required.
@@ -132,7 +132,7 @@ Reads preserve LF (`\n`), CRLF (`\r\n`), CR (`\r`), and mixed endings. Character
 
 File API deletion moves paths into workspace-local private recycle storage under `.openkapsel`. If that storage was removed, OpenKapsel recreates it safely before moving the path. Restore operations return an item to its prior location.
 
-Uploads only create new files. Direct, resumable, and MCP uploads all reject an existing destination. To replace a binary file, first obtain its exact ETag with `/fs/stat`, then call `/fs/mutate` with a `path.delete` item so the previous version enters private recycle storage, and finally upload the replacement.
+Uploads only create new files. Direct, resumable, and MCP uploads all reject an existing destination. To replace a binary file, first obtain its exact ETag with `/fs/query/stat`, then call `/fs/write/mutate` with a `path.delete` item so the previous version enters private recycle storage, and finally upload the replacement.
 
 Full Shell deletion is direct and is not recoverable through the recycle API.
 

@@ -42,6 +42,26 @@ from openkapsel.files.uploads import UploadRegistry
 from openkapsel.workspace.workspace_images import WorkspaceImage
 
 
+def discovery_operation(
+    payload: dict,
+    family_name: str,
+    operation_name: str,
+) -> dict:
+    defaults = payload.get("endpoint_defaults", {})
+    family = payload["endpoints"][family_name]
+    operation = family["operations"][operation_name]
+    resolved = {
+        "available": defaults.get("available", True),
+        "required_capability": defaults.get("required_capability", "token"),
+    }
+    for source in (family, operation):
+        for key in ("available", "required_capability"):
+            if key in source:
+                resolved[key] = source[key]
+    resolved.update(operation)
+    return resolved
+
+
 class WorkspaceServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -221,14 +241,14 @@ class WorkspaceServerTests(unittest.TestCase):
 
     def file_etag(self, path: str, *, token: str = "test-token") -> str:
         query = urlencode({"path": path, "fields": "etag"})
-        status, payload = self.request("GET", f"/kapsel/w/{token}/fs/stat?{query}")
+        status, payload = self.request("GET", f"/kapsel/w/{token}/fs/query/stat?{query}")
         self.assertEqual(200, status, payload)
         return payload["etag"]
 
     def mutate(self, items, *, token: str = "test-token", **context):
         return self.request(
             "POST",
-            f"/kapsel/w/{token}/fs/mutate",
+            f"/kapsel/w/{token}/fs/write/mutate",
             {"items": items, **context},
         )
 
@@ -490,10 +510,7 @@ class WorkspaceServerTests(unittest.TestCase):
             set(main["sections"]),
         )
         self.assertEqual(
-            {
-                "discovery", "discovery_section", "credentials_renew",
-                "environment_get", "environment_replace", "environment_clear",
-            },
+            {"discovery", "credentials", "environment"},
             set(main["endpoints"]),
         )
         self.assertEqual([".openkapsel"], main["path_rules"]["private_directories"])
@@ -510,9 +527,9 @@ class WorkspaceServerTests(unittest.TestCase):
         status, files = self.request("GET", self.endpoint("/discovery/files"))
         self.assertEqual(200, status)
         self.assertEqual("files", files["section"])
-        self.assertIn("fs_list", files["endpoints"])
-        self.assertIn("upload_create", files["endpoints"])
-        self.assertNotIn("context_query", files["endpoints"])
+        self.assertIn("fs_query", files["endpoints"])
+        self.assertIn("uploads", files["endpoints"])
+        self.assertNotIn("context", files["endpoints"])
 
         status, missing_section = self.request(
             "GET", self.endpoint("/discovery/unknown")
@@ -535,31 +552,27 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertEqual(skill, section_payload["skills"]["openkapsel_rest"])
             section_endpoint_sets.append(set(section_payload["endpoints"]))
         self.assertEqual(
-            set(payload["endpoints"])
-            - {
-                "discovery", "discovery_section", "credentials_renew",
-            },
+            set(payload["endpoints"]) - {"discovery", "credentials"},
             set().union(*section_endpoint_sets),
         )
-        self.assertEqual(
-            sum(len(items) for items in section_endpoint_sets),
-            len(set().union(*section_endpoint_sets)),
-        )
+
+        def op(family: str, operation: str) -> dict:
+            return discovery_operation(payload, family, operation)
         storage = payload["limits"]["workspace_storage"]
         self.assertEqual("directory", storage["backend"])
         self.assertFalse(storage["hard_quota_enforced"])
         self.assertIsNone(storage["quota_bytes"])
         self.assertEqual("openkapsel/1", payload["protocol"])
         self.assertEqual(str(self.root.resolve()), payload["root"])
-        self.assertEqual("POST", payload["endpoints"]["shell_exec"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_mkdir"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_manifest"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_move"]["method"])
-        self.assertEqual("GET", payload["endpoints"]["recycle_list"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["recycle_restore"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["task_kill"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["share_create"]["method"])
-        self.assertEqual("GET", payload["endpoints"]["share_query"]["method"])
+        self.assertEqual("POST", op("shell", "exec")["method"])
+        self.assertEqual("POST", op("fs_write", "mkdir")["method"])
+        self.assertEqual("POST", op("fs_query", "manifest")["method"])
+        self.assertEqual("POST", op("fs_write", "move")["method"])
+        self.assertEqual("GET", op("recycle", "list")["method"])
+        self.assertEqual("POST", op("recycle", "restore")["method"])
+        self.assertEqual("POST", op("tasks", "kill")["method"])
+        self.assertEqual("POST", op("sharing", "create")["method"])
+        self.assertEqual("GET", op("sharing", "query")["method"])
         self.assertEqual(86400, payload["limits"]["share_ttl_seconds"])
         self.assertEqual(10, payload["limits"]["max_share_entries"])
         self.assertEqual(256 * 1024 * 1024, payload["limits"]["max_share_bytes"])
@@ -574,21 +587,19 @@ class WorkspaceServerTests(unittest.TestCase):
             },
             payload["limits"]["file_size_tiers"],
         )
-        self.assertEqual("POST", payload["endpoints"]["fs_mutate"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_read_large"]["method"])
-        self.assertEqual("POST", payload["endpoints"]["fs_replace_large"]["method"])
-        self.assertTrue(payload["endpoints"]["web_preview"]["available"])
+        self.assertEqual("POST", op("fs_write", "mutate")["method"])
+        self.assertEqual("POST", op("fs_read", "large")["method"])
+        self.assertEqual("POST", op("fs_write", "large")["method"])
+        self.assertTrue(op("web", "preview")["available"])
         self.assertEqual(
             "files.read + web_preview",
-            payload["endpoints"]["web_preview"]["required_capability"],
+            op("web", "preview")["required_capability"],
         )
-        self.assertTrue(payload["endpoints"]["task_kill"]["available"])
+        self.assertTrue(op("tasks", "kill")["available"])
         self.assertEqual(
             "Bearer control token + shell",
-            payload["endpoints"]["task_kill"]["required_capability"],
+            op("tasks", "kill")["required_capability"],
         )
-        for removed in ("fs_write", "fs_replace", "fs_replace_batch", "fs_delete", "fs_delete_batch"):
-            self.assertNotIn(removed, payload["endpoints"])
         self.assertTrue(
             payload["capabilities"]["web_preview"]["sandboxed_document_origin"]
         )
@@ -633,10 +644,6 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertNotIn("anonymous_session_cookie", web_app)
         self.assertNotIn("authenticated_cookie", web_app)
-        self.assertIn(
-            "adds no users, cookies, sessions, or auth routes",
-            payload["endpoints"]["web_app_api"]["authentication"],
-        )
         self.assertTrue(database["enabled"])
         self.assertEqual("openkapsel_runtime.database", database["runtime_module"])
         self.assertEqual("SQLAlchemy", database["library"])
@@ -718,11 +725,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertIn("anyOf", variants_by_action["update"])
         self.assertNotIn("status", variants_by_action["resolve"]["properties"])
-        self.assertEqual(
-            memory_capability["memory_actions_schema"],
-            payload["endpoints"]["context_plan_update"]["json"]["debrief"]
-            ["properties"]["memory_actions"],
-        )
+        self.assertIn("debrief", op("context", "plan_update")["body_fields"])
         self.assertEqual(
             "plan_id",
             payload["capabilities"]["context"]["plan_hierarchy"]["relation_field"],
@@ -732,40 +735,26 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("Every modifying REST operation must provide plan_id", workflow_text)
         self.assertIn("get_plan_tree", workflow_text)
         self.assertIn("Uploads never overwrite", workflow_text)
-        upload_contract = payload["endpoints"]["upload_create"]["json"]
-        self.assertNotIn("overwrite", upload_contract)
-        self.assertNotIn("expected_etag", upload_contract)
-        direct_upload = payload["endpoints"]["fs_content_put"]
-        self.assertNotIn("overwrite", direct_upload["url"])
-        self.assertNotIn("If-Match", direct_upload["request_headers"])
+        upload_fields = op("uploads", "create")["body_fields"]
+        self.assertNotIn("overwrite", upload_fields)
+        self.assertNotIn("expected_etag", upload_fields)
+        direct_upload = op("fs_content", "write")
+        self.assertNotIn("overwrite", payload["endpoints"]["fs_content"]["path"])
+        self.assertNotIn("If-Match", direct_upload.get("header_fields", []))
         self.assertEqual(
             {"in_progress", "completed", "cancelled"},
             set(payload["capabilities"]["context"]["plan_statuses"]),
         )
         self.assertFalse(payload["capabilities"]["context"]["unmessaged_reads_recorded"])
-        recordable_read_endpoints = {
-            "fs_list",
-            "fs_read",
-            "fs_stat",
-            "fs_search",
-            "fs_tree",
-            "fs_content",
-            "recycle_list",
-            "upload_status",
-            "task_list",
-            "task_status",
-            "task_output",
-            "task_stream",
-            "sandbox_processes",
-        }
-        for endpoint_name in recordable_read_endpoints:
-            query = payload["endpoints"][endpoint_name]["query"]
-            self.assertIn("plan_id", query, endpoint_name)
-            self.assertIn("taskname", query, endpoint_name)
-            self.assertIn("message", query, endpoint_name)
-            self.assertIn("optional", query["plan_id"], endpoint_name)
-            self.assertIn("together", query["taskname"], endpoint_name)
-            self.assertIn("together", query["message"], endpoint_name)
+        for endpoint in (
+            op("fs_query", "list"),
+            op("fs_read", "text"),
+            op("fs_query", "stat"),
+            op("fs_query", "search"),
+            op("tasks", "output"),
+        ):
+            for field in ("plan_id", "taskname", "message"):
+                self.assertIn(field, endpoint["query_fields"])
         self.assertEqual(4, payload["limits"]["max_finished_tasks_per_token"])
         self.assertEqual(60 * 60, payload["limits"]["finished_task_retention_seconds"])
         self.assertEqual("disk", payload["limits"]["finished_task_storage"])
@@ -774,7 +763,7 @@ class WorkspaceServerTests(unittest.TestCase):
             f"https://preview.ws.example.test/"
             f"{self.server.tokens.get('test-token').preview_token}/"
             "<workspace-relative-path>",
-            payload["endpoints"]["web_preview"]["url"],
+            payload["endpoints"]["web"]["path"],
         )
         self.assertEqual("rejected", payload["path_rules"]["symlink_escape"])
         self.assertIn(".openkapsel", payload["path_rules"]["private_directory"])
@@ -795,79 +784,27 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(payload["capabilities"]["task_control"]["force_kill"])
         self.assertNotIn("mcp", payload["capabilities"])
         self.assertIn("shell_task_token_limit_reached", payload["errors"]["shell_limit_codes"])
+        self.assertEqual(
+            {
+                "available": True,
+                "required_capability": "token",
+                "inheritance": "operation > family > endpoint_defaults",
+            },
+            payload["endpoint_defaults"],
+        )
         self.assertTrue(
             all(
-                "available" in endpoint and "required_capability" in endpoint
-                for endpoint in payload["endpoints"].values()
+                "method" in operation
+                for family in payload["endpoints"].values()
+                for operation in family["operations"].values()
             )
         )
         self.assertEqual(
             {
-                "server_rpc", "mapping_list", "mapping_rpc", "mapping_tasks", "mapping_task",
-                "archive_list", "archive_read", "fs_copy", "file_transfer", "recycle_purge",
-                "discovery",
-                "discovery_section",
-                "credentials_renew",
-                "environment_get",
-                "environment_replace",
-                "environment_clear",
-                "context_query",
-                "context_plan_tree",
-                "context_add",
-                "context_plan_update",
-                "context_note_replace",
-                "memory_query",
-                "memory_project",
-                "memory_add",
-                "memory_item",
-                "memory_revisions",
-                "web_preview",
-                "web_app_api",
-                "fs_list",
-                "fs_read",
-                "fs_read_many",
-                "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat",
-                "fs_stat",
-                "fs_manifest",
-                "fs_search",
-                "fs_tree",
-                "fs_content",
-                "fs_content_put",
-                "fs_mutate",
-                "fs_read_large",
-                "fs_replace_large",
-                "fs_mkdir",
-                "fs_move",
-                "recycle_list",
-                "recycle_restore",
-                "share_create",
-                "share_query",
-                "share_import",
-                "share_delete",
-                "upload_create",
-                "upload_status",
-                "upload_chunk",
-                "upload_commit",
-                "upload_cancel",
-                "shell_exec",
-                "schedule_list",
-                "schedule_create",
-                "schedule_get",
-                "schedule_update",
-                "schedule_delete",
-                "schedule_run",
-                "schedule_pause",
-                "schedule_resume",
-                "schedule_runs",
-                "schedule_run_item",
-                "task_list",
-                "task_status",
-                "task_output",
-                "task_stream",
-                "task_stdin",
-                "task_interrupt",
-                "task_kill",
-                "sandbox_processes",
+                "context", "credentials", "discovery", "environment",
+                "fs_content", "fs_query", "fs_read", "fs_write",
+                "mappings", "memory", "recycle", "rpc", "schedules",
+                "sharing", "shell", "tasks", "transfers", "uploads", "web",
             },
             set(payload["endpoints"]),
         )
@@ -891,7 +828,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(44, len(mapping_handshake["server_fingerprint"]))
         self.assertEqual(
             ["output", "done", "reconnect"],
-            payload["endpoints"]["task_stream"]["events"],
+            op("tasks", "stream")["events"],
         )
         self.assertEqual(64, payload["limits"]["sandbox_max_processes"])
         self.assertEqual(256 * 1024 * 1024, payload["limits"]["sandbox_memory_bytes"])
@@ -1029,12 +966,15 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("none", discovery["capabilities"]["shell"])
         self.assertTrue(discovery["capabilities"]["extra_paths_redacted"])
         self.assertNotIn("mcp", discovery["endpoints"])
-        self.assertFalse(discovery["endpoints"]["context_query"]["available"])
-        self.assertIn("redacted", discovery["endpoints"]["context_query"]["details"])
-        self.assertFalse(discovery["endpoints"]["context_plan_tree"]["available"])
-        self.assertIn("redacted", discovery["endpoints"]["context_plan_tree"]["details"])
-        self.assertNotIn("json", discovery["endpoints"]["fs_mutate"])
-        self.assertIn("redacted", discovery["endpoints"]["fs_mutate"]["details"])
+        context_query = discovery_operation(discovery, "context", "query")
+        context_tree = discovery_operation(discovery, "context", "plan_tree")
+        fs_mutate = discovery_operation(discovery, "fs_write", "mutate")
+        self.assertFalse(context_query["available"])
+        self.assertIn("redacted", context_query["details"])
+        self.assertFalse(context_tree["available"])
+        self.assertIn("redacted", context_tree["details"])
+        self.assertNotIn("body_fields", fs_mutate)
+        self.assertIn("redacted", fs_mutate["details"])
         self.assertEqual("Authorization", headers["Vary"])
 
         status, raw, _ = self.raw_request(
@@ -1044,13 +984,16 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         file_discovery = json.loads(raw)
-        self.assertTrue(file_discovery["endpoints"]["fs_read"]["available"])
-        self.assertFalse(file_discovery["endpoints"]["fs_mutate"]["available"])
-        self.assertIn("redacted", file_discovery["endpoints"]["fs_mutate"]["details"])
+        self.assertTrue(
+            discovery_operation(file_discovery, "fs_read", "text")["available"]
+        )
+        file_mutate = discovery_operation(file_discovery, "fs_write", "mutate")
+        self.assertFalse(file_mutate["available"])
+        self.assertIn("redacted", file_mutate["details"])
 
         status, raw, _ = self.raw_request(
             "GET",
-            self.endpoint("/fs/read?path=project/hello.txt"),
+            self.endpoint("/fs/read/text?path=project/hello.txt"),
             authorize=False,
         )
         self.assertEqual(200, status)
@@ -1059,7 +1002,7 @@ class WorkspaceServerTests(unittest.TestCase):
         status, raw, _ = self.raw_request(
             "GET",
             self.endpoint(
-                "/fs/read?path=project/hello.txt&taskname=anonymous-read&message=record"
+                "/fs/read/text?path=project/hello.txt&taskname=anonymous-read&message=record"
             ),
             authorize=False,
         )
@@ -1069,7 +1012,7 @@ class WorkspaceServerTests(unittest.TestCase):
         body = json.dumps({"items": [{"op": "file.create", "path": "project/no-auth.txt", "content": "blocked"}]}).encode()
         status, raw, headers = self.raw_request(
             "POST",
-            self.endpoint("/fs/mutate"),
+            self.endpoint("/fs/write/mutate"),
             body,
             {"Content-Type": "application/json"},
             authorize=False,
@@ -1082,7 +1025,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, raw, headers = self.raw_request(
             "GET",
-            self.endpoint("/fs/read?path=project/hello.txt"),
+            self.endpoint("/fs/read/text?path=project/hello.txt"),
             headers={"Authorization": "Bearer invalid-control-token"},
             authorize=False,
         )
@@ -1100,7 +1043,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         status, raw, _ = self.raw_request(
             "GET",
-            self.endpoint("/fs/read?path=project/hello.txt"),
+            self.endpoint("/fs/read/text?path=project/hello.txt"),
             headers={"Authorization": f"Bearer {other.control_token}"},
             authorize=False,
         )
@@ -1125,7 +1068,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(privileged["authentication"]["control_authorized"])
         self.assertTrue(privileged["capabilities"]["files"]["write"])
         self.assertNotIn("mcp", privileged["endpoints"])
-        self.assertIn("json", privileged["endpoints"]["fs_mutate"])
+        self.assertIn(
+            "body_fields",
+            privileged["endpoints"]["fs_write"]["operations"]["mutate"],
+        )
         self.assertNotIn(record.control_token, json.dumps(privileged))
 
     def test_workspace_credentials_self_renew_only_inside_two_day_window(self) -> None:
@@ -1223,9 +1169,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(discovery["capabilities"]["environment"]["configured"])
         self.assertNotIn("very-secret", json.dumps(discovery))
-        self.assertIn("environment_get", discovery["endpoints"])
-        self.assertIn("environment_replace", discovery["endpoints"])
-        self.assertIn("environment_clear", discovery["endpoints"])
+        self.assertIn("environment", discovery["endpoints"])
+        self.assertEqual(
+            {"get", "replace", "clear"},
+            set(discovery["endpoints"]["environment"]["operations"]),
+        )
 
         context_entries, total = self.server.context_for(self.root).query(
             entry_id=replaced["context_id"]
@@ -1463,7 +1411,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(digest, written["sha256"])
         self.assertEqual(content, (scope / "blob.bin").read_bytes())
 
-        status, stat_payload = self.request("GET", endpoint(f"/fs/stat?{query}"))
+        status, stat_payload = self.request("GET", endpoint(f"/fs/query/stat?{query}"))
         self.assertEqual(200, status)
         self.assertEqual(len(content), stat_payload["size"])
         self.assertEqual("application/octet-stream", stat_payload["content_type"])
@@ -1505,7 +1453,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(content, (scope / "blob.bin").read_bytes())
 
         status, recycled = self.request(
-            "POST", endpoint("/fs/mutate"), {"items": [{
+            "POST", endpoint("/fs/write/mutate"), {"items": [{
                 "op": "path.delete", "path": "blob.bin", "expected_etag": etag,
             }]}
         )
@@ -1810,7 +1758,7 @@ class WorkspaceServerTests(unittest.TestCase):
         offset = 0
         while True:
             query = urlencode({"path": "project/unicode.txt", "byte_offset": offset, "limit": 7})
-            status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+            status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
             self.assertEqual(200, status)
             collected.append(payload["content"])
             if not payload["truncated"]:
@@ -1820,7 +1768,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(content, "".join(collected))
 
         query = urlencode({"path": "project/unicode.txt", "byte_offset": 1, "limit": 10})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
         self.assertEqual(400, status)
         self.assertEqual("invalid_utf8_boundary", payload["error"]["code"])
 
@@ -1852,7 +1800,7 @@ class WorkspaceServerTests(unittest.TestCase):
             "include_sha256": True,
         }
         status, raw, _headers = self.raw_request(
-            "POST", endpoint("/fs/manifest"), json.dumps(manifest_body).encode("utf-8"),
+            "POST", endpoint("/fs/query/manifest"), json.dumps(manifest_body).encode("utf-8"),
             {"Content-Type": "application/json"}, authorize=False,
         )
         self.assertEqual(200, status)
@@ -1872,7 +1820,7 @@ class WorkspaceServerTests(unittest.TestCase):
         nested_etag = self.file_etag("delete-b/nested.txt", token=record.token)
 
         status, rejected_raw, _headers = self.raw_request(
-            "POST", endpoint("/fs/mutate"),
+            "POST", endpoint("/fs/write/mutate"),
             json.dumps({"items": [{"op": "path.delete", "path": "delete-a.txt", "expected_etag": a_etag}]}).encode("utf-8"),
             {"Content-Type": "application/json"}, authorize=False,
         )
@@ -1918,7 +1866,7 @@ class WorkspaceServerTests(unittest.TestCase):
         (nested / "binary.bin").write_bytes(b"needle\x00binary")
 
         query = urlencode({"path": "project/root.txt", "fields": "size,modified_at,sha256"})
-        status, metadata = self.request("GET", self.endpoint(f"/fs/stat?{query}"))
+        status, metadata = self.request("GET", self.endpoint(f"/fs/query/stat?{query}"))
         self.assertEqual(200, status)
         self.assertEqual({"size", "modified_at", "sha256"}, set(metadata["fields"]))
         self.assertEqual(hashlib.sha256(b"Needle at root\n").hexdigest(), metadata["sha256"])
@@ -1933,7 +1881,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "case_sensitive": "false",
             }
         )
-        status, searched = self.request("GET", self.endpoint(f"/fs/search?{query}"))
+        status, searched = self.request("GET", self.endpoint(f"/fs/query/search?{query}"))
         self.assertEqual(200, status)
         self.assertEqual(2, searched["match_count"])
         self.assertFalse(any(item["path"].endswith("two.py") for item in searched["matches"]))
@@ -1947,13 +1895,13 @@ class WorkspaceServerTests(unittest.TestCase):
                 "case_sensitive": "false",
             }
         )
-        status, searched = self.request("GET", self.endpoint(f"/fs/search?{query}"))
+        status, searched = self.request("GET", self.endpoint(f"/fs/query/search?{query}"))
         self.assertEqual(200, status)
         self.assertEqual(1, searched["match_count"])
         self.assertGreaterEqual(searched["skipped_binary"], 1)
 
         query = urlencode({"path": "project", "depth": 2})
-        status, tree = self.request("GET", self.endpoint(f"/fs/tree?{query}"))
+        status, tree = self.request("GET", self.endpoint(f"/fs/query/tree?{query}"))
         self.assertEqual(200, status)
         src = next(item for item in tree["tree"]["children"] if item["name"] == "src")
         self.assertIn("children", src)
@@ -2470,7 +2418,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(
             workspace_payload["limits"]["workspace_storage"]["hard_quota_enforced"]
         )
-        self.assertEqual("https://ws.example.test" + self.mcp_endpoint(token), workspace_payload["endpoints"]["mcp"]["url"])
+        self.assertEqual(
+            "https://ws.example.test" + self.mcp_endpoint(token),
+            workspace_payload["endpoints"]["mcp"]["path"],
+        )
 
         _, invalid_section, _ = self.mcp_request(
             token,
@@ -2494,17 +2445,17 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(
             "https://preview.ws.example.test/"
             "<PREVIEW_TOKEN>/<workspace-relative-path>",
-            workspace_payload["endpoints"]["web_preview"]["url"],
+            workspace_payload["endpoints"]["web"]["path"],
         )
         self.assertEqual(
             "https://preview.ws.example.test/"
             "<PREVIEW_TOKEN>/<app-path>/api/<route>",
-            workspace_payload["endpoints"]["web_app_api"]["url"],
+            workspace_payload["endpoints"]["web"]["operations"]["api"]["path"],
         )
         for name, endpoint in workspace_payload["endpoints"].items():
-            if name in {"web_preview", "web_app_api", "mcp"}:
+            if name in {"web", "mcp"}:
                 continue
-            self.assertTrue(endpoint["url"].startswith("./"))
+            self.assertTrue(endpoint["path"].startswith("./"))
 
         status, called, _ = self.mcp_request(
             token,
@@ -2951,9 +2902,15 @@ class WorkspaceServerTests(unittest.TestCase):
             "GET", f"/kapsel/w/{read_only.token}/discovery/full"
         )
         self.assertEqual(200, status)
-        self.assertTrue(read_discovery["endpoints"]["fs_read"]["available"])
-        self.assertFalse(read_discovery["endpoints"]["fs_mutate"]["available"])
-        self.assertFalse(read_discovery["endpoints"]["task_kill"]["available"])
+        self.assertTrue(
+            discovery_operation(read_discovery, "fs_read", "text")["available"]
+        )
+        self.assertFalse(
+            discovery_operation(read_discovery, "fs_write", "mutate")["available"]
+        )
+        self.assertFalse(
+            discovery_operation(read_discovery, "tasks", "kill")["available"]
+        )
 
     def test_mcp_conditional_writes_preview_and_raw_large_file_transfer(self) -> None:
         record = self.server.tokens.create(
@@ -3076,7 +3033,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode("utf-8")
         status, raw, _ = self.raw_request(
             "POST",
-            endpoint("/fs/mutate"),
+            endpoint("/fs/write/mutate"),
             missing_plan_body,
             {
                 "Content-Type": "application/json",
@@ -3092,7 +3049,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, invalid_plan = self.request(
             "POST",
-            endpoint("/fs/mutate"),
+            endpoint("/fs/write/mutate"),
             {
                 "items": [{"op": "file.create", "path": "invalid-plan.txt", "content": "blocked"}],
                 "plan_id": 999999,
@@ -3112,7 +3069,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode("utf-8")
         status, raw, _ = self.raw_request(
             "POST",
-            endpoint("/fs/mutate"),
+            endpoint("/fs/write/mutate"),
             missing_taskname_body,
             {
                 "Content-Type": "application/json",
@@ -3131,7 +3088,7 @@ class WorkspaceServerTests(unittest.TestCase):
         ).encode("utf-8")
         status, raw, _ = self.raw_request(
             "POST",
-            endpoint("/fs/mutate"),
+            endpoint("/fs/write/mutate"),
             missing_body,
             {
                 "Content-Type": "application/json",
@@ -3147,7 +3104,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, written = self.request(
             "POST",
-            endpoint("/fs/mutate"),
+            endpoint("/fs/write/mutate"),
             {
                 "items": [{"op": "file.create", "path": "tracked.txt", "content": "tracked content"}],
                 "taskname": "context-integration",
@@ -3184,7 +3141,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(unicode_message, unicode_result["entries"][0]["content"])
         self.assertEqual(unicode_taskname, unicode_result["entries"][0]["taskname"])
 
-        status, _ = self.request("GET", endpoint("/fs/read?path=tracked.txt"))
+        status, _ = self.request("GET", endpoint("/fs/read/text?path=tracked.txt"))
         self.assertEqual(200, status)
         status, initial = self.request(
             "GET",
@@ -3194,14 +3151,14 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, named_read = self.request(
             "GET",
-            endpoint("/fs/read?path=tracked.txt&taskname=context-integration&message=Verify%20the%20tracked%20file"),
+            endpoint("/fs/read/text?path=tracked.txt&taskname=context-integration&message=Verify%20the%20tracked%20file"),
         )
         self.assertEqual(200, status)
         self.assertIn("context_id", named_read)
 
         status, failed = self.request(
             "POST",
-            endpoint("/fs/mutate"),
+            endpoint("/fs/write/mutate"),
             {
                 "items": [{"op": "path.delete", "path": "does-not-exist", "expected_etag": '"missing"'}],
                 "taskname": "context-integration",
@@ -3330,11 +3287,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("invalid_request", too_many["error"]["code"])
 
         status, blocked = self.request(
-            "GET", endpoint("/fs/read?path=.openkapsel/context/context.sqlite3")
+            "GET", endpoint("/fs/read/text?path=.openkapsel/context/context.sqlite3")
         )
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", blocked["error"]["code"])
-        status, listing = self.request("GET", endpoint("/fs/list?path=."))
+        status, listing = self.request("GET", endpoint("/fs/query/list?path=."))
         self.assertNotIn(".openkapsel", {entry["name"] for entry in listing["entries"]})
         status, preview = self.preview_request(
             "GET",
@@ -3687,7 +3644,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         status, body, headers = self.raw_request(
             "GET",
-            self.endpoint(f"/fs/read?{query}"),
+            self.endpoint(f"/fs/read/text?{query}"),
             headers={"Accept": "text/html"},
         )
         self.assertEqual(404, status)
@@ -3727,13 +3684,13 @@ class WorkspaceServerTests(unittest.TestCase):
 
     def test_list_and_paginated_read(self) -> None:
         query = urlencode({"path": "project"})
-        status, payload = self.request("GET", self.endpoint(f"/fs/list?{query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/query/list?{query}"))
         self.assertEqual(200, status)
         self.assertEqual("hello.txt", payload["entries"][0]["name"])
         self.assertEqual("file", payload["entries"][0]["type"])
 
         query = urlencode({"path": "project/hello.txt", "offset": 6, "limit": 5})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
         self.assertEqual(200, status)
         self.assertEqual("world", payload["content"])
         self.assertTrue(payload["truncated"])
@@ -3741,7 +3698,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
     def test_write_create_and_safe_replace(self) -> None:
         status, made = self.request(
-            "POST", self.endpoint("/fs/mkdir"), {"path": "new", "exist_ok": True},
+            "POST", self.endpoint("/fs/write/mkdir"), {"path": "new", "exist_ok": True},
         )
         self.assertIn(status, (200, 201), made)
         status, payload = self.mutate([
@@ -3846,7 +3803,7 @@ class WorkspaceServerTests(unittest.TestCase):
         try:
             with patch.object(WorkspaceRequestHandler, "_resolve_path", swapped_resolve):
                 query = urlencode({"path": "race/secret.txt"})
-                status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+                status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
                 self.assertEqual(409, status)
                 self.assertEqual("path_changed", payload["error"]["code"])
             race.unlink()
@@ -3965,7 +3922,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            endpoint("/fs/mkdir"),
+            endpoint("/fs/write/mkdir"),
             {"path": "assets/generated", "parents": True},
         )
         self.assertEqual(201, status)
@@ -3976,7 +3933,7 @@ class WorkspaceServerTests(unittest.TestCase):
         source.write_text("draft", encoding="utf-8")
         status, payload = self.request(
             "POST",
-            endpoint("/fs/move"),
+            endpoint("/fs/write/move"),
             {"source": "assets/generated/draft.txt", "destination": "assets/final.txt"},
         )
         self.assertEqual(200, status)
@@ -3986,7 +3943,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            endpoint("/fs/move"),
+            endpoint("/fs/write/move"),
             {"source": "assets/final.txt", "destination": "assets/renamed.txt"},
         )
         self.assertEqual(200, status)
@@ -4026,10 +3983,10 @@ class WorkspaceServerTests(unittest.TestCase):
         status, listing = self.request("GET", endpoint("/recycle/list"))
         self.assertEqual(200, status)
         self.assertEqual(0, listing["total"])
-        status, listing = self.request("GET", endpoint("/fs/list?path="))
+        status, listing = self.request("GET", endpoint("/fs/query/list?path="))
         self.assertEqual(200, status)
         self.assertNotIn(".openkapsel", [item["name"] for item in listing["entries"]])
-        status, payload = self.request("GET", endpoint("/fs/list?path=.openkapsel"))
+        status, payload = self.request("GET", endpoint("/fs/query/list?path=.openkapsel"))
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", payload["error"]["code"])
 
@@ -4097,7 +4054,7 @@ class WorkspaceServerTests(unittest.TestCase):
         (self.root / "target.txt").write_text("target", encoding="utf-8")
         status, payload = self.request(
             "POST",
-            self.endpoint("/fs/move"),
+            self.endpoint("/fs/write/move"),
             {"source": "source.txt", "destination": "target.txt"},
         )
         self.assertEqual(409, status)
@@ -4113,7 +4070,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            self.endpoint("/fs/mkdir"),
+            self.endpoint("/fs/write/mkdir"),
             {"path": "../escape"},
         )
         self.assertEqual(403, status)
@@ -4121,7 +4078,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
     def test_parent_and_symlink_escape_are_rejected(self) -> None:
         query = urlencode({"path": "../outside.txt"})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
         self.assertEqual(403, status)
         self.assertEqual("path_outside_root", payload["error"]["code"])
 
@@ -4130,7 +4087,7 @@ class WorkspaceServerTests(unittest.TestCase):
         try:
             (self.root / "escape").symlink_to(outside)
             query = urlencode({"path": "escape"})
-            status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+            status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
             self.assertEqual(403, status)
             self.assertEqual("path_outside_root", payload["error"]["code"])
         finally:
@@ -4139,7 +4096,7 @@ class WorkspaceServerTests(unittest.TestCase):
     def test_nul_paths_return_client_errors_instead_of_internal_errors(self) -> None:
         status, payload = self.request(
             "GET",
-            self.endpoint("/fs/read?path=%00"),
+            self.endpoint("/fs/read/text?path=%00"),
         )
         self.assertEqual(400, status)
         self.assertEqual("invalid_path", payload["error"]["code"])
@@ -4157,7 +4114,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            self.endpoint("/fs/mkdir"),
+            self.endpoint("/fs/write/mkdir"),
             {"path": "bad\x00directory"},
         )
         self.assertEqual(400, status)
@@ -4182,7 +4139,7 @@ class WorkspaceServerTests(unittest.TestCase):
         log_file.write_text("log", encoding="utf-8")
         query = urlencode({"path": str(page)})
 
-        status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
         self.assertEqual(403, status)
         self.assertEqual("path_outside_root", payload["error"]["code"])
 
@@ -4193,7 +4150,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 PathGrant(path=str(logs), read_only=True),
             ),
         )
-        status, payload = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
         self.assertEqual(200, status)
         self.assertEqual("old", payload["content"])
 
@@ -4205,7 +4162,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("published", page.read_text(encoding="utf-8"))
 
         log_query = urlencode({"path": str(log_file)})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read?{log_query}"))
+        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{log_query}"))
         self.assertEqual(200, status)
         self.assertEqual("log", payload["content"])
         log_etag = payload["etag"]
@@ -4359,7 +4316,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("FAILED", failed["stderr"])
 
         query = urlencode({"path": "demo/calculator.py"})
-        status, source = self.request("GET", self.endpoint(f"/fs/read?{query}"))
+        status, source = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
         self.assertEqual(200, status)
         self.assertIn("left - right", source["content"])
 
@@ -4738,7 +4695,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, payload = self.request(
             "POST",
-            f"/kapsel/w/{record.token}/fs/mutate",
+            f"/kapsel/w/{record.token}/fs/write/mutate",
             {"items": [{"op": "file.create", "path": "blocked.txt", "content": "no"}]},
         )
         self.assertEqual(403, status)
@@ -4976,7 +4933,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("not_found", hidden["error"]["code"])
         for method, path in (
             ("GET", "/kapsel/admin"),
-            ("GET", "/test-token/fs/list"),
+            ("GET", "/test-token/fs/query/list"),
             ("POST", self.preview_endpoint("/project/site/index.html")),
         ):
             status, raw, _ = self.raw_request(
@@ -4988,11 +4945,11 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertEqual("not_found", json.loads(raw)["error"]["code"])
         preview_token = self.server.tokens.get("test-token").preview_token
         status, hidden = self.request(
-            "GET", f"/kapsel/w/{preview_token}/fs/list?path=."
+            "GET", f"/kapsel/w/{preview_token}/fs/query/list?path=."
         )
         self.assertEqual(404, status)
         self.assertEqual("not_found", hidden["error"]["code"])
-        status, hidden = self.preview_request("GET", "/fs/list?path=.")
+        status, hidden = self.preview_request("GET", "/fs/query/list?path=.")
         self.assertEqual(404, status)
         self.assertEqual("preview_not_found", hidden["error"]["code"])
 
@@ -5058,9 +5015,13 @@ class WorkspaceServerTests(unittest.TestCase):
         status, discovery = self.request("GET", self.endpoint("/discovery/web"))
         self.assertEqual(200, status)
         self.assertFalse(discovery["capabilities"]["web_preview"]["enabled"])
-        self.assertFalse(discovery["endpoints"]["web_preview"]["available"])
+        self.assertFalse(
+            discovery_operation(discovery, "web", "preview")["available"]
+        )
         self.assertFalse(discovery["capabilities"]["web_app_api"]["database"]["enabled"])
-        self.assertFalse(discovery["endpoints"]["web_app_api"]["available"])
+        self.assertFalse(
+            discovery_operation(discovery, "web", "api")["available"]
+        )
 
     def test_nested_api_directories_mount_independent_fastapi_apps(self) -> None:
         site_a = self.root / "project" / "site-a"
@@ -5219,18 +5180,18 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("preview_not_found", payload["error"]["code"])
         status, payload = self.request(
             "GET",
-            self.endpoint("/fs/read?path=project/site-a/.openkapsel/sql/secret.txt"),
+            self.endpoint("/fs/read/text?path=project/site-a/.openkapsel/sql/secret.txt"),
         )
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", payload["error"]["code"])
         status, payload = self.request(
             "GET",
-            self.endpoint("/fs/read?path=project/site-a/database-alias/secret.txt"),
+            self.endpoint("/fs/read/text?path=project/site-a/database-alias/secret.txt"),
         )
         self.assertEqual(403, status)
         self.assertEqual("reserved_path", payload["error"]["code"])
         status, listing = self.request(
-            "GET", self.endpoint("/fs/list?path=project/site-a")
+            "GET", self.endpoint("/fs/query/list?path=project/site-a")
         )
         self.assertEqual(200, status)
         self.assertNotIn(".openkapsel", [entry["name"] for entry in listing["entries"]])

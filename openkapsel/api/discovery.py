@@ -29,7 +29,6 @@ from openkapsel.api.discovery_sections import (
 )
 from openkapsel.errors import ApiError
 from openkapsel.auth.oauth_consent import consent_metadata
-from openkapsel.files.git_operations import git_discovery
 from openkapsel.files.mutation import (
     LARGE_FILE_WINDOW_MAX_BYTES,
     SMALL_FILE_MAX_BYTES,
@@ -168,12 +167,367 @@ class DiscoveryMixin:
             ]
         return payload
 
+    @staticmethod
+    def _compact_endpoint_families(endpoints: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        def operation(
+            source: str,
+            *,
+            method: str | None = None,
+            path: str | None = None,
+            description: str | None = None,
+        ) -> dict[str, Any]:
+            endpoint = endpoints[source]
+            item: dict[str, Any] = {
+                "method": method or endpoint.get("method"),
+                "available": endpoint.get("available", True),
+                "required_capability": endpoint.get("required_capability", "token"),
+            }
+            if path is not None:
+                item["path"] = path
+            if not item["available"]:
+                if endpoint.get("details"):
+                    item["details"] = endpoint["details"]
+                return item
+            query = endpoint.get("query")
+            if isinstance(query, dict):
+                item["query_fields"] = sorted(query)
+            body = endpoint.get("json")
+            if not isinstance(body, dict):
+                body = endpoint.get("body")
+            if isinstance(body, dict):
+                item["body_fields"] = sorted(body)
+            headers = endpoint.get("request_headers")
+            if not isinstance(headers, dict):
+                headers = endpoint.get("headers")
+            if isinstance(headers, dict):
+                item["header_fields"] = sorted(headers)
+            for key in ("plan_extension_schema", "events"):
+                if key in endpoint:
+                    item[key] = endpoint[key]
+            if description:
+                item["description"] = description
+            return item
+
+        def family(
+            path: str,
+            description: str,
+            operations: dict[str, dict[str, Any]],
+        ) -> dict[str, Any]:
+            result: dict[str, Any] = {
+                "path": path,
+                "description": description,
+                "operations": operations,
+            }
+            defaults = {
+                "available": True,
+                "required_capability": "token",
+            }
+            for key, default in defaults.items():
+                values = [operation.get(key, default) for operation in operations.values()]
+                if values and all(value == values[0] for value in values):
+                    common = values[0]
+                    for operation in operations.values():
+                        operation.pop(key, None)
+                    if common != default:
+                        result[key] = common
+                    continue
+                for operation in operations.values():
+                    if operation.get(key, default) == default:
+                        operation.pop(key, None)
+            return result
+
+        return {
+            "discovery": family(
+                "./discovery/<section>",
+                "Discovery index and split capability sections.",
+                {
+                    "main": operation("discovery", path="./"),
+                    "section": operation("discovery_section"),
+                },
+            ),
+            "credentials": family(
+                "./credentials/renew",
+                "Workspace REST credential lifecycle.",
+                {"renew": operation("credentials_renew")},
+            ),
+            "rpc": family(
+                "./rpc/<family>/<operation>",
+                "Generic plugin RPC for server or mapped execution targets.",
+                {
+                    "server": operation("server_rpc"),
+                    "mapping": operation(
+                        "mapping_rpc",
+                        path="./mappings/<mapping_id>/rpc/<family>/<operation>",
+                    ),
+                },
+            ),
+            "mappings": family(
+                "./mappings",
+                "Mapping discovery plus legacy client-task lifecycle.",
+                {
+                    "list": operation("mapping_list"),
+                    "tasks": operation(
+                        "mapping_tasks",
+                        path="./mappings/<mapping_id>/tasks",
+                    ),
+                    "task": operation(
+                        "mapping_task",
+                        path="./mappings/<mapping_id>/tasks/<task_id>[/<control>]",
+                    ),
+                },
+            ),
+            "fs_query": family(
+                "./fs/query/<operation>",
+                "File metadata, tree, search, and manifest queries.",
+                {
+                    "list": operation("fs_list"),
+                    "stat": operation("fs_stat"),
+                    "tree": operation("fs_tree"),
+                    "search": operation("fs_search"),
+                    "manifest": operation("fs_manifest"),
+                },
+            ),
+            "fs_read": family(
+                "./fs/read/<operation>",
+                "Text, multi-file, and bounded large-file reads.",
+                {
+                    "text": operation("fs_read"),
+                    "many": operation("fs_read_many"),
+                    "large": operation("fs_read_large"),
+                },
+            ),
+            "fs_content": family(
+                "./fs/content",
+                "Raw Range streaming and direct create-only byte upload.",
+                {
+                    "read": operation("fs_content"),
+                    "write": operation("fs_content_put"),
+                },
+            ),
+            "fs_write": family(
+                "./fs/write/<operation>",
+                "Guarded file mutations and path changes.",
+                {
+                    "mutate": operation("fs_mutate"),
+                    "large": operation("fs_replace_large"),
+                    "mkdir": operation("fs_mkdir"),
+                    "move": operation("fs_move"),
+                    "copy": operation("fs_copy"),
+                },
+            ),
+            "transfers": family(
+                "./fs/transfers/<transfer_id>",
+                "Asynchronous copy/move transfer progress and control.",
+                {
+                    "get": operation("file_transfer", method="GET"),
+                    "cancel": operation(
+                        "file_transfer",
+                        method="POST",
+                        path="./fs/transfers/<transfer_id>/cancel",
+                    ),
+                    "resume": operation(
+                        "file_transfer",
+                        method="POST",
+                        path="./fs/transfers/<transfer_id>/resume",
+                    ),
+                },
+            ),
+            "recycle": family(
+                "./recycle/<operation>",
+                "Workspace or mapping recycle inspection, restore, and purge.",
+                {
+                    "list": operation("recycle_list"),
+                    "restore": operation("recycle_restore"),
+                    "purge": operation("recycle_purge"),
+                },
+            ),
+            "uploads": family(
+                "./uploads[/<upload_id>]",
+                "Resumable create-only upload sessions.",
+                {
+                    "create": operation("upload_create"),
+                    "status": operation("upload_status"),
+                    "chunk": operation("upload_chunk"),
+                    "commit": operation(
+                        "upload_commit",
+                        path="./uploads/<upload_id>/commit",
+                    ),
+                    "cancel": operation("upload_cancel"),
+                },
+            ),
+            "sharing": family(
+                "./shares[/<share_id>]",
+                "Temporary cross-workspace file/directory sharing.",
+                {
+                    "create": operation("share_create"),
+                    "query": operation(
+                        "share_query",
+                        path=endpoints["share_query"].get("url"),
+                    ),
+                    "import": operation(
+                        "share_import",
+                        path="./shares/<share_id>/import",
+                    ),
+                    "delete": operation("share_delete"),
+                },
+            ),
+            "environment": family(
+                "./env",
+                "App-identity-scoped Shell environment configuration.",
+                {
+                    "get": operation("environment_get"),
+                    "replace": operation("environment_replace"),
+                    "clear": operation("environment_clear"),
+                },
+            ),
+            "shell": family(
+                "./shell/exec",
+                "Shell execution and restricted-sandbox process inspection.",
+                {
+                    "exec": operation("shell_exec"),
+                    "processes": operation(
+                        "sandbox_processes",
+                        path="./sandbox/processes",
+                    ),
+                },
+            ),
+            "tasks": family(
+                "./tasks[/<task_id>]",
+                "Server/unified task listing, output, streaming, and control.",
+                {
+                    "list": operation("task_list"),
+                    "get": operation("task_status"),
+                    "output": operation(
+                        "task_output",
+                        path="./tasks/<task_id>/output",
+                    ),
+                    "stream": operation(
+                        "task_stream",
+                        path="./tasks/<task_id>/stream",
+                    ),
+                    "stdin": operation(
+                        "task_stdin",
+                        path="./tasks/<task_id>/stdin",
+                    ),
+                    "interrupt": operation(
+                        "task_interrupt",
+                        path="./tasks/<task_id>/interrupt",
+                    ),
+                    "kill": operation(
+                        "task_kill",
+                        path="./tasks/<task_id>/kill",
+                    ),
+                },
+            ),
+            "schedules": family(
+                "./schedules[/<schedule_id>]",
+                "Persistent Shell schedules and dispatch history.",
+                {
+                    "list": operation("schedule_list"),
+                    "create": operation("schedule_create"),
+                    "get": operation("schedule_get"),
+                    "update": operation("schedule_update"),
+                    "delete": operation("schedule_delete"),
+                    "run": operation(
+                        "schedule_run",
+                        path="./schedules/<schedule_id>/run",
+                    ),
+                    "pause": operation(
+                        "schedule_pause",
+                        path="./schedules/<schedule_id>/pause",
+                    ),
+                    "resume": operation(
+                        "schedule_resume",
+                        path="./schedules/<schedule_id>/resume",
+                    ),
+                    "runs": operation(
+                        "schedule_runs",
+                        path="./schedules/<schedule_id>/runs",
+                    ),
+                    "run_get": operation(
+                        "schedule_run_item",
+                        path="./schedule-runs/<run_id>",
+                    ),
+                },
+            ),
+            "context": family(
+                "./context",
+                "Operation history, plans, and notes.",
+                {
+                    "query": operation("context_query"),
+                    "add": operation("context_add"),
+                    "plan_tree": operation(
+                        "context_plan_tree",
+                        path="./context/plans/<plan_id>/tree",
+                    ),
+                    "plan_update": operation(
+                        "context_plan_update",
+                        path="./context/plans/<plan_id>",
+                    ),
+                    "note_replace": operation(
+                        "context_note_replace",
+                        path="./context/notes/<note_id>",
+                    ),
+                },
+            ),
+            "memory": family(
+                "./memory",
+                "Revisioned project Memory.",
+                {
+                    "query": operation("memory_query"),
+                    "project": operation(
+                        "memory_project",
+                        path="./memory/project",
+                    ),
+                    "add": operation("memory_add"),
+                    "get": operation(
+                        "memory_item",
+                        method="GET",
+                        path="./memory/<memory_id>",
+                    ),
+                    "update": operation(
+                        "memory_item",
+                        method="PATCH",
+                        path="./memory/<memory_id>",
+                    ),
+                    "archive": operation(
+                        "memory_item",
+                        method="DELETE",
+                        path="./memory/<memory_id>",
+                    ),
+                    "revisions": operation(
+                        "memory_revisions",
+                        path="./memory/<memory_id>/revisions",
+                    ),
+                },
+            ),
+            "web": family(
+                endpoints["web_preview"].get(
+                    "url",
+                    "<preview-base>/<preview-token>/<workspace-relative-path>",
+                ),
+                "Static preview and workspace FastAPI routes.",
+                {
+                    "preview": operation("web_preview"),
+                    "api": operation(
+                        "web_app_api",
+                        path=endpoints["web_app_api"].get("url"),
+                    ),
+                },
+            ),
+            "mcp": family(
+                "./mcp",
+                "Streamable HTTP MCP endpoint.",
+                {"call": operation("mcp")},
+            ),
+        }
+
     def _discovery_common(self, full: dict[str, Any], section: str) -> dict[str, Any]:
         return {
             key: full[key]
             for key in (
                 "protocol", "server_version", "name", "os", "root", "cwd",
-                "authentication", "token", "skills",
+                "authentication", "token", "skills", "endpoint_defaults",
             )
         } | {
             "section": section,
@@ -261,34 +615,9 @@ class DiscoveryMixin:
                 },
                 "sections": sections,
                 "endpoints": {
-                    "discovery": {
-                        **full["endpoints"]["discovery"],
-                        "url": "./",
-                    },
-                    "discovery_section": {
-                        **full["endpoints"]["discovery_section"],
-                        "url": "./discovery/<files|context|memory|shell|schedules|web|sharing|full>",
-                    },
-                    "credentials_renew": {
-                        **full["endpoints"]["credentials_renew"],
-                        "url": "./credentials/renew",
-                    },
-                    "environment_get": {
-                        **full["endpoints"]["environment_get"],
-                        "url": "./env",
-                    },
-                    "environment_replace": {
-                        **full["endpoints"]["environment_replace"],
-                        "url": "./env",
-                    },
-                    "environment_clear": {
-                        **full["endpoints"]["environment_clear"],
-                        "url": "./env",
-                    },
-                    "mcp": {
-                        **full["endpoints"]["mcp"],
-                        "url": "./mcp",
-                    },
+                    key: full["endpoints"][key]
+                    for key in ("discovery", "credentials", "environment", "mcp")
+                    if key in full["endpoints"]
                 },
                 "workflow": [
                     "The URL token is read-only. Send Authorization: Bearer <CONTROL_TOKEN> for mutations, Context, Memory, MCP, Shell, schedules, and task control.",
@@ -1141,7 +1470,7 @@ class DiscoveryMixin:
                 },
                 "fs_list": {
                     "method": "GET",
-                    "url": f"{base}/fs/list?path=<path>&offset=0&limit=1000",
+                    "url": f"{base}/fs/query/list?path=<path>&offset=0&limit=1000",
                     "notes": "path may be root-relative or an absolute path inside root. Root listings show virtual mapping entries with is_mapping and mapping_id without contacting providers; listing inside a mapping uses client RPC, not a native mount.",
                     "query": {
                         "path": ".",
@@ -1152,7 +1481,7 @@ class DiscoveryMixin:
                 },
                 "fs_read": {
                     "method": "GET",
-                    "url": f"{base}/fs/read?path=<path>&offset=0&limit=65536",
+                    "url": f"{base}/fs/read/text?path=<path>&offset=0&limit=65536",
                     "notes": "Explicit encoding, UTF-8 by default; strict decoding, literal LF/CRLF/CR preservation. byte_offset only supports UTF-8; other encodings use character offset. Supported: utf-8, utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No auto-detection; UTF-16 BOM remains U+FEFF.",
                     "query": {
                         "path": "<required>",
@@ -1164,14 +1493,14 @@ class DiscoveryMixin:
                     },
                 },
                 "fs_read_many": {
-                    "method": "POST", "url": f"{base}/fs/read_many",
+                    "method": "POST", "url": f"{base}/fs/read/many",
                     "authentication": "read-only URL token; Bearer token is not required",
                     "json": {"paths": ["src/main.py", "README.md"], "encoding": "utf-8", "limit": 65536, "max_total_chars": 262144},
                     "notes": "Explicit encoding as in fs_read, UTF-8 by default; literal newlines. paths bounded by max_batch_file_operations; limit is per-file characters, max_total_chars is shared, both bounded by max_read_chars. Items contain status, content, etag, truncated and next_offset; errors are per-item (HTTP 207). An exhausted budget reports read_budget_exhausted for remaining items. Continue truncated files using fs_read offset=next_offset with the same encoding. Same-mapping batches execute in one client RPC.",
                 },
                 "fs_stat": {
                     "method": "GET",
-                    "url": f"{base}/fs/stat?path=<path>&fields=type,size,created_at,modified_at,sha256",
+                    "url": f"{base}/fs/query/stat?path=<path>&fields=type,size,created_at,modified_at,sha256",
                     "notes": "sha256 is calculated only when explicitly requested",
                     "query": {
                         "path": "<required>",
@@ -1191,7 +1520,7 @@ class DiscoveryMixin:
                 },
                 "fs_manifest": {
                     "method": "POST",
-                    "url": f"{base}/fs/manifest",
+                    "url": f"{base}/fs/query/manifest",
                     "authentication": "read-only URL token; Bearer token is not required",
                     "json": {
                         "items": [
@@ -1210,7 +1539,7 @@ class DiscoveryMixin:
                 },
                 "fs_search": {
                     "method": "GET",
-                    "url": f"{base}/fs/search?path=.&query=<text>&depth=8&max_results=100",
+                    "url": f"{base}/fs/query/search?path=.&query=<text>&depth=8&max_results=100",
                     "notes": "searches UTF-8 text; supports regex and case_sensitive flags. Repeated include/exclude globs: slash-free patterns match basenames, others match root-relative POSIX paths; case-sensitive fnmatch semantics (* spans /). Exclude wins and prunes matching directories. Up to 64 patterns per group, 512 characters each. Each visited mapping subtree is searched on its client, preserving the original glob root and remaining depth/result budget. unavailable_mappings plus truncated=true report incomplete results; never assume an unavailable mapping has no matches.",
                     "query": {
                         "path": ".",
@@ -1226,7 +1555,7 @@ class DiscoveryMixin:
                 },
                 "fs_tree": {
                     "method": "GET",
-                    "url": f"{base}/fs/tree?path=.&depth=2",
+                    "url": f"{base}/fs/query/tree?path=.&depth=2",
                     "notes": "returns a nested directory tree bounded by depth and max_tree_nodes; mapping subtrees are listed on their clients with the remaining global budget, without native mounts. Mapping roots have is_mapping and mapping_id; unavailable roots also contain unavailable and error.",
                     "query": {
                         "path": ".",
@@ -1260,7 +1589,7 @@ class DiscoveryMixin:
                 },
                 "fs_mutate": {
                     "method": "POST",
-                    "url": f"{base}/fs/mutate",
+                    "url": f"{base}/fs/write/mutate",
                     "json": {
                         "items": [
                             {
@@ -1294,7 +1623,7 @@ class DiscoveryMixin:
                 },
                 "fs_read_large": {
                     "method": "POST",
-                    "url": f"{base}/fs/large/read",
+                    "url": f"{base}/fs/read/large",
                     "json": {"path": "<file>", "offset": 0, "length": LARGE_FILE_WINDOW_MAX_BYTES},
                     "notes": (
                         f"only accepts files larger than {STANDARD_FILE_MAX_BYTES} bytes; offset and "
@@ -1304,7 +1633,7 @@ class DiscoveryMixin:
                 },
                 "fs_replace_large": {
                     "method": "POST",
-                    "url": f"{base}/fs/large/replace",
+                    "url": f"{base}/fs/write/large",
                     "json": {
                         "path": "<file>",
                         "offset": 0,
@@ -1324,12 +1653,12 @@ class DiscoveryMixin:
                 },
                 "fs_mkdir": {
                     "method": "POST",
-                    "url": f"{base}/fs/mkdir",
+                    "url": f"{base}/fs/write/mkdir",
                     "json": {"path": "<path>", "parents": False, "exist_ok": False, "plan_id": "<required owning plan id>", "taskname": "<required task grouping name>", "message": "<required brief operation summary>"},
                 },
                 "fs_move": {
                     "method": "POST",
-                    "url": f"{base}/fs/move",
+                    "url": f"{base}/fs/write/move",
                     "json": {
                         "source": "<path>",
                         "destination": "<path>",
@@ -1436,7 +1765,6 @@ class DiscoveryMixin:
                     "url": f"{base}/mcp",
                     "transport": "Streamable HTTP (stateless JSON responses; GET SSE is not offered)",
                 },
-                **git_discovery(base),
                 "shell_exec": {
                     "method": "POST",
                     "url": f"{base}/shell/exec",
@@ -1727,7 +2055,7 @@ class DiscoveryMixin:
         }
         payload["endpoints"].update({
             "recycle_purge": {"method": "POST", "url": "./recycle/purge", "body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
-            "fs_copy": {"method": "POST", "url": "./fs/copy", "body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
+            "fs_copy": {"method": "POST", "url": "./fs/write/copy", "body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
                 "description": "Start a bounded, resumable file/directory copy. Destination parent must exist. No overwrite; return 202 and transfer id. Staging remains on destination storage."},
             "file_transfer": {"method": "GET/POST", "url": "./fs/transfers/<id>", "description": "GET returns progress/state. POST /cancel or /resume requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
             "server_rpc": {"method": "POST", "url": "./rpc/<family>/<operation>",
@@ -1737,10 +2065,6 @@ class DiscoveryMixin:
             "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_id>/rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
                 "description": "Invoke one advertised client RPC operation. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /tasks routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
-            "archive_list": {"method": "GET", "url": "./archive/list?path=<archive>&inner_path=&offset=0&limit=200",
-                "description": "Browse ZIP and Python-standard-library tar archives without extracting them. Mapped paths use the Archive RPC plugin."},
-            "archive_read": {"method": "GET", "url": "./archive/read?path=<archive>&member=<member>&offset=0&limit=65536&encoding=utf-8",
-                "description": "Read a bounded archive member preview. Returns decoded text when possible and Base64 bytes always; never extracts to the workspace."},
             "mapping_tasks": {"method": "GET/POST", "url": "./mappings/<mapping_id>/tasks",
                 "description": "GET lists client tasks; POST starts a task on that client, not on the server.",
                 "body": {"argv": ["python", "-m", "pytest"], "cwd": ".", "timeout_seconds": 300,
@@ -1750,12 +2074,6 @@ class DiscoveryMixin:
         })
         payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
-        missing_contract_docs = discovery_keys() - payload["endpoints"].keys()
-        if missing_contract_docs:
-            raise RuntimeError(
-                "endpoint contract is missing Discovery entries: "
-                + ", ".join(sorted(missing_contract_docs))
-            )
         endpoint_permissions = {
             "recycle_purge": ("Bearer control token + write", control_authorized and self.token_record.can_write),
             "fs_copy": ("Bearer control token + read + write", control_authorized and self.token_record.can_read and self.token_record.can_write),
@@ -1763,8 +2081,6 @@ class DiscoveryMixin:
             "server_rpc": ("write=false: files.read; write=true: Bearer control token + write + Plan Context", read_enabled or (control_authorized and self.token_record.can_write)),
             "mapping_list": ("read", self.token_record.can_read),
             "mapping_rpc": ("write=false: files.read; write=true: Bearer control token + write + writable mapping + Plan Context", read_enabled or (control_authorized and self.token_record.can_write)),
-            "archive_list": ("files.read", read_enabled),
-            "archive_read": ("files.read", read_enabled),
             "mapping_tasks": ("Bearer control token + Shell + mapping/client execution permission", shell_enabled),
             "mapping_task": ("Bearer control token + Shell + mapping/client execution permission", shell_enabled),
             "discovery_section": ("URL token", True),
@@ -1834,8 +2150,6 @@ class DiscoveryMixin:
             "share_import": ("destination Bearer control token + files.write", write_enabled),
             "share_delete": ("creator Bearer control token", control_authorized),
             "mcp": ("Bearer control token", control_authorized),
-            **{"git_" + op: ("files.read", read_enabled)
-               for op in ("status", "diff", "log", "show", "ls_files", "diff_stat")},
             "shell_exec": ("Bearer control token + shell", shell_enabled),
             "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_create": ("Bearer control token + schedules + shell", schedules_enabled),
@@ -1926,6 +2240,18 @@ class DiscoveryMixin:
                     "available": False,
                     "details": "redacted until a matching Bearer control token is supplied",
                 }
+        payload["endpoint_defaults"] = {
+            "available": True,
+            "required_capability": "token",
+            "inheritance": "operation > family > endpoint_defaults",
+        }
+        payload["endpoints"] = self._compact_endpoint_families(payload["endpoints"])
+        missing_contract_docs = discovery_keys() - payload["endpoints"].keys()
+        if missing_contract_docs:
+            raise RuntimeError(
+                "endpoint family contract is missing Discovery entries: "
+                + ", ".join(sorted(missing_contract_docs))
+            )
         return payload
 
     def _mcp_workspace_info(self, section: str = "main") -> dict[str, Any]:
@@ -1936,24 +2262,21 @@ class DiscoveryMixin:
         payload["authentication"]["control_token"] = "<redacted>"
         payload["index_url"] = "./"
         payload["full_url"] = "./discovery/full"
-        for name, endpoint in payload["endpoints"].items():
-            url = endpoint.get("url")
-            if name in {"web_preview", "web_app_api"}:
-                suffix = (
-                    "<app-path>/api/<route>" if name == "web_app_api"
-                    else "<workspace-relative-path>"
+        web = payload.get("endpoints", {}).get("web")
+        if isinstance(web, dict):
+            if self.server.config.preview_base_url:
+                preview_root = (
+                    f"{self.server.config.preview_base_url.rstrip('/')}/"
+                    "<PREVIEW_TOKEN>"
                 )
-                if self.server.config.preview_base_url:
-                    endpoint["url"] = (
-                        f"{self.server.config.preview_base_url.rstrip('/')}/"
-                        f"<PREVIEW_TOKEN>/{suffix}"
-                    )
-                else:
-                    endpoint["url"] = f"../<PREVIEW_TOKEN>/{suffix}"
-            elif name == "share_query":
-                endpoint["url"] = "./../../shares/<share_id>?path=<relative-path>&depth=1"
-            elif isinstance(url, str) and url.startswith(base):
-                endpoint["url"] = "." + url[len(base) :]
+            else:
+                preview_root = "../<PREVIEW_TOKEN>"
+            web["path"] = f"{preview_root}/<workspace-relative-path>"
+            operations = web.get("operations")
+            if isinstance(operations, dict):
+                api = operations.get("api")
+                if isinstance(api, dict):
+                    api["path"] = f"{preview_root}/<app-path>/api/<route>"
         cid = getattr(self, "oauth_connection_id", None)
         static_cid = getattr(self, "static_mcp_connection_id", None)
         if cid or static_cid:
@@ -1982,9 +2305,9 @@ class DiscoveryMixin:
                     renewal="An administrator can extend this Static MCP connection's own expiration; workspace REST credential renewal is separate.",
                     rest_access="This MCP credential can export or renew the linked configuration's portable REST workspace URL and control token through MCP tools.",
                 )
-            payload.get("endpoints", {}).pop("credentials_renew", None)
+            payload.get("endpoints", {}).pop("credentials", None)
             if "mcp" in payload.get("endpoints", {}):
-                payload["endpoints"]["mcp"]["url"] = payload["authentication"]["resource"]
+                payload["endpoints"]["mcp"]["path"] = payload["authentication"]["resource"]
             payload.get("token", {}).pop("credentials_expires_at", None)
             mcp_capability = payload.get("capabilities", {}).get("mcp")
             if isinstance(mcp_capability, dict):

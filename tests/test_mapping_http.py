@@ -237,5 +237,5 @@ class MappingHTTPTests(unittest.TestCase):
         root = self.server.tokens.scope_root(self.record)
         (root / row["name"]).mkdir()
         base = "/kapsel/w/" + self.record.token
-        self.assertEqual(503, self.request("GET", base + "/fs/list?path=offline")[0])
-        self.assertEqual(200, self.request("GET", base + "/fs/list?path=.")[0])
+        self.assertEqual(503, self.request("GET", base + "/fs/query/list?path=offline")[0])
+        self.assertEqual(200, self.request("GET", base + "/fs/query/list?path=.")[0])

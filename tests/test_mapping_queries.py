@@ -22,12 +22,12 @@ class MappingQueryTests(unittest.TestCase):
         self.session.capabilities["file_stream"] = {"version": 1, "search_prefix": True}
 
     def search(self, **query):
-        return self.api("/fs/search?" + urlencode(dict(path=".", query="needle", **query), doseq=True))
+        return self.api("/fs/query/search?" + urlencode(dict(path=".", query="needle", **query), doseq=True))
 
     def test_root_list_is_virtual_even_when_provider_offline(self):
         (self.scope / "local.txt").write_text("local")
         self.session.closed = True
-        status, result = self.api("/fs/list?path=.&limit=1")
+        status, result = self.api("/fs/query/list?path=.&limit=1")
         self.assertEqual(200, status, result)
         self.assertEqual(2, result["total"])
         self.assertTrue(result["truncated"])
@@ -87,7 +87,7 @@ class MappingQueryTests(unittest.TestCase):
     def test_tree_and_hashed_manifest_use_coarse_queries(self):
         (self.export / "nested").mkdir()
         (self.export / "nested/data.txt").write_text("remote data")
-        status, result = self.api("/fs/tree?path=.&depth=3")
+        status, result = self.api("/fs/query/tree?path=.&depth=3")
         self.assertEqual(200, status, result)
         self.assertEqual(4, result["node_count"])
         node = result["tree"]["children"][0]
@@ -95,7 +95,7 @@ class MappingQueryTests(unittest.TestCase):
         self.assertTrue(node["is_mapping"])
         self.assertEqual(["api_fs_tree"], [op for op, _ in self.calls])
         self.calls.clear()
-        status, result = self.api("/fs/manifest", {"path": ".", "recursive": True,
+        status, result = self.api("/fs/query/manifest", {"path": ".", "recursive": True,
                                                  "depth": 3, "include_sha256": True})
         self.assertEqual(200, status, result)
         self.assertEqual(4, result["total"])
@@ -119,7 +119,7 @@ class MappingQueryTests(unittest.TestCase):
             return original(handler, path)
 
         with patch.object(FileOperationSupportMixin, "_directory_entries", guarded):
-            status, result = self.api("/fs/tree?path=.&depth=3")
+            status, result = self.api("/fs/query/tree?path=.&depth=3")
             self.assertEqual(200, status, result)
             children = {item["name"]: item for item in result["tree"]["children"]}
             denied = children["lost+found"]
@@ -129,7 +129,7 @@ class MappingQueryTests(unittest.TestCase):
             self.assertEqual("ok.txt", children["visible"]["children"][0]["name"])
 
             status, manifest = self.api(
-                "/fs/manifest",
+                "/fs/query/manifest",
                 {"path": ".", "recursive": True, "depth": 3},
             )
             self.assertEqual(200, status, manifest)
@@ -142,17 +142,17 @@ class MappingQueryTests(unittest.TestCase):
         (self.export / "a").write_text("a")
         (self.export / "b").write_text("b")
         (self.scope / "z-local").write_text("local")
-        status, result = self.api("/fs/tree?path=.&depth=0")
+        status, result = self.api("/fs/query/tree?path=.&depth=0")
         self.assertEqual(1, result["node_count"], result)
         self.assertEqual([], self.calls)
-        status, result = self.api("/fs/tree?path=.&depth=1")
+        status, result = self.api("/fs/query/tree?path=.&depth=1")
         self.assertEqual(3, result["node_count"], result)
         self.assertNotIn("children", result["tree"]["children"][0])
         # Config is immutable; temporarily replace the request-facing view.
         from dataclasses import replace
         with patch.object(self.server, "config", replace(self.server.config, max_tree_nodes=3)):
-            for endpoint, body in (("/fs/tree?path=.&depth=2", None),
-                                   ("/fs/manifest", {"path": ".", "recursive": True, "depth": 2})):
+            for endpoint, body in (("/fs/query/tree?path=.&depth=2", None),
+                                   ("/fs/query/manifest", {"path": ".", "recursive": True, "depth": 2})):
                 status, result = self.api(endpoint, body)
                 self.assertEqual(200, status, result)
                 self.assertTrue(result["truncated"])
@@ -174,7 +174,7 @@ class MappingQueryTests(unittest.TestCase):
                 self.assertEqual(1, result["match_count"])
                 self.assertTrue(result["truncated"])
                 self.assertEqual(code, result["unavailable_mappings"][0]["error"]["code"])
-                status, result = self.api("/fs/tree?path=.&depth=2")
+                status, result = self.api("/fs/query/tree?path=.&depth=2")
                 self.assertEqual(code, result["tree"]["children"][0]["error"]["code"])
                 self.assertEqual([], self.calls)
 

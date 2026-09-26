@@ -7,34 +7,15 @@ SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sha
 
 SECTION_ENDPOINTS = {
     "files": {
-        "server_rpc", "mapping_list", "mapping_rpc", "archive_list", "archive_read", "fs_copy", "file_transfer", "recycle_purge",
-        "fs_list", "fs_read", "fs_read_many", "fs_stat", "fs_manifest", "fs_search", "fs_tree", "fs_content",
-        "fs_content_put", "fs_mutate", "fs_read_large", "fs_replace_large", "fs_mkdir",
-        "fs_move", "recycle_list", "recycle_restore", "upload_create",
-        "upload_status", "upload_chunk", "upload_commit", "upload_cancel",
+        "rpc", "mappings", "fs_query", "fs_read", "fs_content", "fs_write",
+        "transfers", "recycle", "uploads",
     },
-    "context": {
-        "context_query", "context_plan_tree", "context_add", "context_plan_update",
-        "context_note_replace",
-    },
-    "memory": {
-        "memory_query", "memory_project", "memory_add", "memory_item",
-        "memory_revisions",
-    },
-    "shell": {
-        "git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat",
-        "mapping_tasks", "mapping_task",
-        "shell_exec", "task_list", "task_status", "task_output", "task_stream",
-        "task_stdin", "task_interrupt", "task_kill", "sandbox_processes",
-        "environment_get", "environment_replace", "environment_clear",
-    },
-    "schedules": {
-        "schedule_list", "schedule_create", "schedule_get", "schedule_update",
-        "schedule_delete", "schedule_run", "schedule_pause", "schedule_resume",
-        "schedule_runs", "schedule_run_item",
-    },
-    "web": {"web_preview", "web_app_api"},
-    "sharing": {"share_create", "share_query", "share_import", "share_delete"},
+    "context": {"context"},
+    "memory": {"memory"},
+    "shell": {"rpc", "mappings", "shell", "tasks", "environment"},
+    "schedules": {"schedules"},
+    "web": {"web"},
+    "sharing": {"sharing"},
 }
 
 SECTION_CAPABILITIES = {
@@ -54,7 +35,7 @@ SECTION_CAPABILITIES = {
         "network_protocols", "shell_outside_workspace", "tasks",
         "task_control", "process", "environment", "extra_paths", "extra_paths_redacted",
     },
-    "schedules": {"schedules", "shell", "tasks", "environment"},
+    "schedules": {"schedules"},
     "web": {"web_preview", "web_app_api", "network", "network_mode", "network_domains", "network_protocols"},
     "sharing": {"sharing"},
 }
@@ -120,13 +101,12 @@ SECTION_SUMMARIES = {
 
 SECTION_WORKFLOWS = {
     "files": [
-        "Inspect with fs_list/list_files, fs_tree/list_tree, fs_stat/stat_file, and fs_search/search_files before editing.",
-        "Use fs_mutate/mutate_files as the single ordinary mutation protocol for create, whole-file replace, exact text replacement, exact insert-before/insert-after, structured patch, and recoverable path.delete; existing paths require exact ETags.",
-        "For files above 32 MiB use the explicit large-file range API: reads require offset+length and writes require an exact ETag, range SHA-256, and equal-length replacement bytes.",
-        "Binary uploads create new files only, so recycle an existing destination before uploading a replacement.",
-        "Use fs_manifest for bounded multi-file synchronization preflight; recycle one or many paths transactionally with fs_mutate path.delete items.",
-        "Use archive_list/archive_read to browse supported ZIP/tar archives without extracting them; mapped paths require the Archive RPC plugin.",
-        "Create directories and move paths explicitly; file API deletion is recoverable through the workspace recycle bin.",
+        "Use /fs/query/<operation> for list/stat/tree/search/manifest inspection.",
+        "Use /fs/read/<operation> for text, multi-file, or bounded large-file reads; keep /fs/content for raw Range streaming.",
+        "Use /fs/write/<operation> for mutate, guarded large-range replace, mkdir, move, and asynchronous copy.",
+        "Binary uploads remain resource-oriented under /uploads because chunking and resume state are stream/session semantics.",
+        "Use generic RPC family=archive for archive list/read; archive-specific REST wrappers are not exposed.",
+        "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],
     "context": [
         "Query active root plans first, then create a root plan only when no suitable plan exists.",
@@ -150,7 +130,7 @@ SECTION_WORKFLOWS = {
         "Create schedules only when background execution is needed; use run-now for an explicit immediate execution.",
         "Use interval minutes of at least 3, a once timestamp at least 3 minutes ahead, or strict six-field cron with an explicit second and IANA timezone.",
         "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically.",
-        "Pause before editing operational intent, use expected_revision for updates, and inspect run history plus the linked Shell task for output.",
+        "Pause before editing operational intent and use expected_revision for updates. Schedule run records link to Shell task IDs; load discovery/shell only when task output or control details are needed.",
     ],
     "web": [
         "Use the independent preview URL for static files and relative browser assets.",

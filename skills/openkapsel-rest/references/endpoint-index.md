@@ -9,25 +9,22 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `GET` | `<workspace_url>/` |
 | `GET` | `<workspace_url>/discovery/{files,context,memory,shell,schedules,web,sharing,full}` |
 | `POST` | `<workspace_url>/credentials/renew` |
-| `GET` | `<workspace_url>/fs/list` |
-| `GET` | `<workspace_url>/fs/read` |
-| `GET` | `<workspace_url>/fs/stat` |
-| `POST` | `<workspace_url>/fs/manifest` |
-| `POST` | `<workspace_url>/fs/read_many` |
-| `GET` | `<workspace_url>/git/status` |
-| `GET` | `<workspace_url>/git/diff` |
-| `GET` | `<workspace_url>/git/diff_stat` |
-| `GET` | `<workspace_url>/git/log` |
-| `GET` | `<workspace_url>/git/show` |
-| `GET` | `<workspace_url>/git/ls_files` |
-| `GET` | `<workspace_url>/fs/search` |
-| `GET` | `<workspace_url>/fs/tree` |
+| `GET` | `<workspace_url>/fs/query/list` |
+| `GET` | `<workspace_url>/fs/read/text` |
+| `GET` | `<workspace_url>/fs/query/stat` |
+| `POST` | `<workspace_url>/fs/query/manifest` |
+| `POST` | `<workspace_url>/fs/read/many` |
+| `POST` | `<workspace_url>/rpc/git/<operation>` |
+| `POST` | `<workspace_url>/rpc/archive/<operation>` |
+| `POST` | `<workspace_url>/mappings/<mapping_id>/rpc/<family>/<operation>` |
+| `GET` | `<workspace_url>/fs/query/search` |
+| `GET` | `<workspace_url>/fs/query/tree` |
 | `GET|HEAD|PUT` | `<workspace_url>/fs/content` |
-| `POST` | `<workspace_url>/fs/mutate` |
-| `POST` | `<workspace_url>/fs/large/read` |
-| `POST` | `<workspace_url>/fs/large/replace` |
-| `POST` | `<workspace_url>/fs/mkdir` |
-| `POST` | `<workspace_url>/fs/move` |
+| `POST` | `<workspace_url>/fs/write/mutate` |
+| `POST` | `<workspace_url>/fs/read/large` |
+| `POST` | `<workspace_url>/fs/write/large` |
+| `POST` | `<workspace_url>/fs/write/mkdir` |
+| `POST` | `<workspace_url>/fs/write/move` |
 | `GET` | `<workspace_url>/recycle/list` |
 | `POST` | `<workspace_url>/recycle/restore` |
 
@@ -117,9 +114,10 @@ There is intentionally no MCP route in this skill.
   and unmounted is normal; file endpoints never start native mounts.
 - `POST /rpc/<family>/<operation>`: invoke one RPC operation on the server workspace for an explicitly registered server family. Inspect Discovery/operation metadata for `write` and `execution`; `sync` returns directly and `task` returns HTTP 202 plus a normal server task id. `write=false` requires read permission; `write=true` requires control/write permission plus `plan_id`/`taskname`/`message`. Server task operations use the ordinary `/tasks` lifecycle. There is no fallback to a mapping after the server target is selected.
 - `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. If a start returns `409 client_task_capacity_reached`, collect completed client task results by reading output through each final offset before retrying; listing alone does not release retained results. No server/FUSE fallback.
-- `GET /archive/list`: browse ZIP/tar archive contents without extracting.
-- `GET /archive/read`: read a bounded archive member preview without extracting.
-- `POST /fs/copy`: start an asynchronous copy.
+- `POST /rpc/archive/list`: browse a server-side ZIP/tar archive without extracting.
+- `POST /rpc/archive/read`: read a bounded server-side archive member preview.
+- For mapped archives use `/mappings/<mapping_id>/rpc/archive/<operation>`.
+- `POST /fs/write/copy`: start an asynchronous copy.
 - `GET /fs/transfers/<id>`: inspect transfer progress.
 - `POST /fs/transfers/<id>/cancel` and `/resume`: control transfers.
 - `GET/POST /mappings/<mapping_id>/tasks`: list/start client tasks.

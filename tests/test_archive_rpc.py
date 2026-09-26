@@ -130,21 +130,37 @@ class ArchiveHTTPTests(unittest.TestCase):
             archive.writestr("docs/readme.txt", "mapped preview")
             archive.writestr("root.txt", "root")
 
-    def get_json(self, endpoint):
-        status, _, raw = self.request("GET", self.base + endpoint)
+    def rpc_json(self, operation, args, *, mapped=False):
+        prefix = (
+            self.base + f"/mappings/{self.row['id']}/rpc/archive/"
+            if mapped
+            else self.base + "/rpc/archive/"
+        )
+        status, _, raw = self.request(
+            "POST",
+            prefix + operation,
+            json.dumps({"args": args}).encode("utf-8"),
+            {"Content-Type": "application/json"},
+        )
         return status, json.loads(raw)
 
     def test_local_archive_keeps_generic_rpc_surface_and_adds_server_execution(self):
         archive = self.root / "local.zip"
         self.make_zip(archive)
-        status, body = self.get_json("/archive/list?path=local.zip")
+        self.assertEqual(404, self.request("GET", self.base + "/archive/list?path=local.zip")[0])
+
+        status, body = self.rpc_json("list", {"path": "local.zip"})
         self.assertEqual(200, status, body)
         self.assertEqual("server", body["location"])
-        self.assertEqual({"docs", "root.txt"}, {item["name"] for item in body["entries"]})
+        self.assertEqual({"docs", "root.txt"}, {
+            item["name"] for item in body["result"]["entries"]
+        })
 
-        status, body = self.get_json("/archive/read?path=local.zip&member=docs/readme.txt")
+        status, body = self.rpc_json(
+            "read", {"path": "local.zip", "member": "docs/readme.txt"}
+        )
         self.assertEqual(200, status, body)
-        self.assertEqual("mapped preview", body["content"])
+        self.assertEqual("mapped preview", body["result"]["content"])
 
         conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Archive reads")
         self.mcp = "/kapsel/mcp-connect/" + conn["id"] + "/mcp"
@@ -188,15 +204,17 @@ class ArchiveHTTPTests(unittest.TestCase):
         archive = self.export / "mapped.zip"
         self.make_zip(archive)
 
-        status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
+        status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(200, status, body)
-        self.assertEqual("client", body["location"])
+        self.assertEqual(self.row["id"], body["mapping_id"])
         self.assertEqual(["archive_list"], self.calls)
         self.assertFalse((self.mount / "mapped.zip").exists())
 
-        status, body = self.get_json("/archive/read?path=laptop/mapped.zip&member=docs/readme.txt")
+        status, body = self.rpc_json(
+            "read", {"path": "mapped.zip", "member": "docs/readme.txt"}, mapped=True
+        )
         self.assertEqual(200, status, body)
-        self.assertEqual("mapped preview", body["content"])
+        self.assertEqual("mapped preview", body["result"]["content"])
         self.assertEqual(["archive_list", "archive_read"], self.calls)
 
         self.session.capabilities["rpc"]["archive"] = {
@@ -210,9 +228,9 @@ class ArchiveHTTPTests(unittest.TestCase):
                 "create": {"write": True},
             },
         }
-        status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
+        status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(200, status, body)
-        self.assertEqual("client", body["location"])
+        self.assertEqual(self.row["id"], body["mapping_id"])
         self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
 
         self.session.capabilities["rpc"]["archive"] = {
@@ -222,13 +240,13 @@ class ArchiveHTTPTests(unittest.TestCase):
             "operations": ["list", "read"],
             "read_only": True,
         }
-        status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
+        status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(403, status, body)
         self.assertEqual("mapping_rpc_disabled", body["error"]["code"])
         self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
-        status, body = self.get_json("/archive/list?path=laptop/mapped.zip")
+        status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(503, status, body)
         self.assertEqual("mapping_offline", body["error"]["code"])
         self.assertEqual(["archive_list", "archive_read", "archive_list"], self.calls)

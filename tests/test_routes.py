@@ -30,7 +30,7 @@ class EndpointContractTests(unittest.TestCase):
                 "discovery_section",
                 {"section": "files"},
             ),
-            ("GET", "/fs/read"): ("fs_read", {}),
+            ("GET", "/fs/read/text"): ("fs_read", {}),
             ("PUT", "/env"): ("environment_replace", {}),
             ("PUT", "/fs/content"): ("fs_content_put", {}),
             ("PATCH", "/uploads/upload_123"): (
@@ -74,7 +74,7 @@ class EndpointContractTests(unittest.TestCase):
                 endpoint, route_match = matched
                 self.assertEqual(expected[0], endpoint.name)
                 self.assertEqual(expected[1], route_match.groupdict())
-        self.assertIsNone(match_endpoint("POST", "/fs/read"))
+        self.assertIsNone(match_endpoint("POST", "/fs/read/text"))
         self.assertIsNone(match_endpoint("GET", "/uploads/a/extra"))
 
     def test_every_routed_endpoint_has_a_discovery_key(self) -> None:

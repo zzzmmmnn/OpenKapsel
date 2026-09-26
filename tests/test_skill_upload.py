@@ -108,6 +108,43 @@ class SkillUploadScriptTests(unittest.TestCase):
             self.assertEqual([3, 3, 1], [size for method, _path, size in large_calls if method == "PATCH"])
             self.assertEqual(("POST", "uploads/upload_test/commit"), large_calls[-1][:2])
 
+    def test_endpoint_available_resolves_discovery_inheritance(self) -> None:
+        payload = {
+            "endpoint_defaults": {"available": True},
+            "endpoints": {
+                "defaulted": {
+                    "operations": {"read": {"method": "GET"}},
+                },
+                "disabled": {
+                    "available": False,
+                    "operations": {
+                        "write": {"method": "POST"},
+                        "override": {"method": "GET", "available": True},
+                    },
+                },
+            },
+        }
+        self.assertTrue(
+            openkapsel_upload.UploadClient.endpoint_available(
+                payload, "defaulted", "read"
+            )
+        )
+        self.assertFalse(
+            openkapsel_upload.UploadClient.endpoint_available(
+                payload, "disabled", "write"
+            )
+        )
+        self.assertTrue(
+            openkapsel_upload.UploadClient.endpoint_available(
+                payload, "disabled", "override"
+            )
+        )
+        self.assertFalse(
+            openkapsel_upload.UploadClient.endpoint_available(
+                payload, "missing", "read"
+            )
+        )
+
     def test_directory_scan_applies_filters_before_hashing_and_rejects_root_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
