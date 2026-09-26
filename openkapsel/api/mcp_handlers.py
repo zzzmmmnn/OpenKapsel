@@ -152,9 +152,9 @@ class McpHandlersMixin:
                 "description": "Token-scoped filesystem, recycle bin, and asynchronous shell tools",
             },
             "instructions": (
-                "Paths are relative to this token's child workspace. Prefer replace_text for focused edits. "
+                "Paths are relative to this token's child workspace. Prefer edit_text for focused edits. "
                 "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one add_context call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived overview, architecture, conventions, decisions, and known issues. Tags and paths are primary Memory relevance signals. Use add_memory/update_memory during work, or complete a plan with debrief containing summary, outcome, and memory_actions; an empty memory_actions array explicitly retains nothing. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
-                "Pass expected_etag to write_file, replace_text, insert_before, or insert_after to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
+                "Pass expected_etag to write_file or edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use read_binary_chunk and Base64 upload_chunk for small binary chunks; for large files call prepare_download or use the raw_transfer URLs returned by start_upload. "
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
                 "delete_path is recoverable through list_recycle and restore_recycle. "
@@ -191,14 +191,17 @@ class McpHandlersMixin:
             validate_arguments(tool, arguments)
         except ValueError as exc:
             raise McpError(-32602, str(exc), {"name": name}) from None
-        schedule_requirements = {
+        operation_requirements = {
             ("schedule_read", "get"): ("schedule_id",),
             ("schedule_read", "list_runs"): ("schedule_id",),
             ("schedule_read", "get_run"): ("run_id",),
             ("schedule_write", "create"): ("name", "schedule", "command"),
             ("schedule_write", "update"): ("schedule_id", "expected_revision"),
+            ("edit_text", "replace"): ("old", "new"),
+            ("edit_text", "insert_before"): ("match", "content"),
+            ("edit_text", "insert_after"): ("match", "content"),
         }
-        required = schedule_requirements.get((name, arguments.get("operation")), ())
+        required = operation_requirements.get((name, arguments.get("operation")), ())
         missing = [key for key in required if key not in arguments]
         if missing:
             raise McpError(
@@ -606,11 +609,7 @@ class McpHandlersMixin:
         self._capturing_mcp_tool = True
         self._mcp_tool_response: tuple[int, dict[str, Any]] | None = None
         try:
-            if name in {"git_status", "git_diff", "git_log", "git_show", "git_ls_files", "git_diff_stat"}:
-                query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)]
-                         for key, value in arguments.items()}
-                self._handle_git(name[4:], query)
-            elif name == "rpc":
+            if name == "rpc":
                 self._mcp_tool_arguments = {
                     key: value
                     for key, value in arguments.items()
@@ -625,7 +624,7 @@ class McpHandlersMixin:
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)
-            elif name in {"write_file", "replace_text", "insert_before", "insert_after", "delete_path"}:
+            elif name in {"write_file", "edit_text", "delete_path"}:
                 context = {
                     key: arguments[key]
                     for key in ("plan_id", "taskname", "message")
@@ -641,8 +640,9 @@ class McpHandlersMixin:
                     }
                     if expected_etag is not None:
                         item["expected_etag"] = expected_etag
-                elif name in {"replace_text", "insert_before", "insert_after"}:
-                    if name == "replace_text":
+                elif name == "edit_text":
+                    operation = str(arguments["operation"])
+                    if operation == "replace":
                         item = {
                             "op": "text.replace",
                             "path": arguments["path"],
@@ -656,7 +656,7 @@ class McpHandlersMixin:
                         }
                     else:
                         item = {
-                            "op": "text.insert_before" if name == "insert_before" else "text.insert_after",
+                            "op": f"text.{operation}",
                             "path": arguments["path"],
                             "encoding": arguments.get("encoding", "utf-8"),
                             "expected_etag": arguments["expected_etag"],

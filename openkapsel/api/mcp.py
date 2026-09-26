@@ -8,7 +8,6 @@ from typing import Any
 from openkapsel.context.memory_contracts import plan_debrief_schema
 from openkapsel.context.context_plans import creation_properties
 from openkapsel.auth.tokens import TokenRecord
-from openkapsel.files.git_operations import GIT_READ_OPERATIONS, git_tool_properties
 from openkapsel import __version__
 
 
@@ -88,132 +87,32 @@ from openkapsel.files.text_encoding import ENCODINGS
 TEXT_ENCODING = {"type": "string", "enum": list(ENCODINGS), "default": "utf-8",
                  "description": "Explicit file encoding; strict conversion. LF/CRLF/CR are preserved literally. UTF-16 requires explicit endian; BOM is preserved as U+FEFF."}
 
-GIT_TOOL_DESCRIPTIONS = {
-    "status": "Show bounded repository status.",
-    "diff": "Show a bounded working-tree, staged, or revision diff.",
-    "log": "List bounded commit history.",
-    "show": "Show one revision and its patch.",
-    "ls_files": "List tracked repository files.",
-    "diff_stat": "Show bounded diff statistics.",
-}
-
-
 def _mutation_item_schema() -> dict[str, Any]:
     return {
         "type": "object",
-        "description": (
-            "One transactional mutation item. op and path are always required. Existing "
-            "targets also require exact expected_etag. Operation-specific required fields "
-            "are enforced by the server."
-        ),
+        "description": "Mutation item; operation-specific fields are validated by the server.",
         "properties": {
             "op": {
                 "type": "string",
-                "enum": ["text.replace", "text.insert_before", "text.insert_after", "structured.patch", "file.create", "file.replace", "path.delete"],
-                "description": "Mutation operation to perform on path.",
+                "enum": [
+                    "text.replace",
+                    "text.insert_before",
+                    "text.insert_after",
+                    "structured.patch",
+                    "file.create",
+                    "file.replace",
+                    "path.delete",
+                ],
             },
             "path": PATH,
             "expected_etag": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Exact current ETag required for every existing target; omit only for file.create.",
-            },
-            "encoding": TEXT_ENCODING,
-            "content": {
-                "type": "string",
-                "description": "Text content for file.create/file.replace, or inserted text for text.insert_before/text.insert_after.",
-            },
-            "start_line": {
-                "type": "integer",
-                "minimum": 0,
-                "default": 0,
-                "description": "Text operations only: zero-based inclusive first line. Omit to start at line 0.",
-            },
-            "end_line": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Text operations only: zero-based inclusive last line. Omit to continue through EOF.",
-            },
-            "start_text": {
-                "type": "string",
-                "minLength": 1,
-                "description": (
-                    "Text operations only: unique full-file marker. The editable range starts "
-                    "at its first character, so the marker itself may be replaced. May contain multiple lines; "
-                    "mutually exclusive with start_line."
-                ),
-            },
-            "end_text": {
-                "type": "string",
-                "minLength": 1,
-                "description": (
-                    "Text operations only: unique full-file marker. The editable range ends "
-                    "immediately after its final character, so the marker itself may be replaced. May contain multiple lines; mutually exclusive "
-                    "with end_line."
-                ),
-            },
-            "match": {
-                "type": "string",
-                "minLength": 1,
-                "description": "text.insert_before/text.insert_after only: exact anchor text evaluated inside the selected range.",
-            },
-            "expected_count": {
-                "type": "integer",
-                "minimum": 1,
-                "default": 1,
-                "description": "text.insert_before/text.insert_after only: required exact anchor occurrence count inside the selected range.",
-            },
-            "replacements": {
-                "type": "array",
-                "minItems": 1,
-                "description": "text.replace only: exact replacements evaluated only inside the selected line/text-marker range.",
-                "items": _object_schema(
-                    {
-                        "old": {"type": "string", "minLength": 1, "description": "Exact source text."},
-                        "new": {"type": "string", "description": "Exact replacement text."},
-                        "expected_count": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "default": 1,
-                            "description": "Required exact occurrence count inside the selected line/text-marker range.",
-                        },
-                    },
-                    ("old", "new"),
-                ),
-            },
-            "format": {
-                "type": "string",
-                "enum": ["json", "yaml", "toml"],
-                "description": "structured.patch only: explicit structured format; inferred from suffix when omitted.",
-            },
-            "operations": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 100,
-                "description": "structured.patch only: guarded JSON Pointer operations.",
-                "items": _object_schema(
-                    {
-                        "op": {"type": "string", "enum": ["test", "add", "replace", "remove"]},
-                        "path": {"type": "string", "description": "JSON Pointer path."},
-                        "value": {"description": "Value for test/add/replace; omitted for remove."},
-                    },
-                    ("op", "path"),
-                ),
+                "description": "Required for existing targets; omit only for file.create.",
             },
         },
         "required": ["op", "path"],
-        "additionalProperties": False,
-        "allOf": [
-            {"not": {"required": ["start_line", "start_text"]}},
-            {"not": {"required": ["end_line", "end_text"]}},
-            {"if": {"properties": {"op": {"const": "text.replace"}}}, "then": {"required": ["expected_etag", "replacements"]}},
-            {"if": {"properties": {"op": {"const": "text.insert_before"}}}, "then": {"required": ["expected_etag", "match", "content"]}},
-            {"if": {"properties": {"op": {"const": "text.insert_after"}}}, "then": {"required": ["expected_etag", "match", "content"]}},
-            {"if": {"properties": {"op": {"const": "structured.patch"}}}, "then": {"required": ["expected_etag", "operations"]}},
-            {"if": {"properties": {"op": {"const": "file.create"}}}, "then": {"required": ["content"]}},
-            {"if": {"properties": {"op": {"const": "file.replace"}}}, "then": {"required": ["expected_etag", "content"]}},
-            {"if": {"properties": {"op": {"const": "path.delete"}}}, "then": {"required": ["expected_etag"]}},
-        ],
+        "additionalProperties": True,
     }
 
 
@@ -224,14 +123,6 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool("file_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
           _object_schema({"items": {"type": "array", "items": _object_schema({"path": {"type": "string"}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string"}}, ("path",))},
                           "recursive": {"type": "boolean"}, "path": {"type": "string"}, "depth": {"type": "integer", "minimum": 0}, "include_sha256": {"type": "boolean"}}), read_only=True),
-    *(_tool(
-            "git_" + operation,
-            "Git " + operation.replace("_", " "),
-            GIT_TOOL_DESCRIPTIONS[operation],
-            _object_schema(git_tool_properties(operation)),
-            read_only=True,
-        )
-      for operation in GIT_READ_OPERATIONS),
     _tool(
         "rpc",
         "Call RPC plugin",
@@ -758,47 +649,18 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=False,
     ),
     _tool(
-        "replace_text",
-        "Replace exact text",
-        "Transactionally replace exact text when its count matches expected_matches. On a count mismatch, returns the observed actual count (and match_counts for all rules in mutate_files) without modifying the file. Range boundaries may use zero-based inclusive start_line/end_line or unique full-file start_text/end_text markers; marker bounds are inclusive, from the first character of start_text through the final character of end_text. Markers may span lines and may themselves be replaced. Requires the exact current ETag returned by a prior read/search/stat.",
+        "edit_text",
+        "Edit exact text",
+        "Replace exact text or insert before/after an exact match transactionally. Requires the exact current ETag; optional line or unique text-marker bounds limit the editable range.",
         _object_schema(
             {
+                "operation": {
+                    "type": "string",
+                    "enum": ["replace", "insert_before", "insert_after"],
+                },
                 "path": PATH,
                 "old": {"type": "string", "minLength": 1},
-                "encoding": TEXT_ENCODING,
                 "new": {"type": "string"},
-                "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
-                "expected_etag": {"type": "string", "minLength": 1},
-                "start_line": {
-                    "type": "integer", "minimum": 0, "default": 0,
-                    "description": "Zero-based inclusive first line; omit to start at line 0.",
-                },
-                "end_line": {
-                    "type": "integer", "minimum": 0,
-                    "description": "Zero-based inclusive last line; omit to continue through EOF.",
-                },
-                "start_text": {
-                    "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; start at its first character, including the marker in the editable range. May span lines; mutually exclusive with start_line.",
-                },
-                "end_text": {
-                    "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; end after its final character, including the marker in the editable range. May span lines; mutually exclusive with end_line.",
-                },
-            },
-            ("path", "old", "new", "expected_etag"),
-        ),
-        read_only=False,
-        destructive=True,
-        idempotent=False,
-    ),
-    _tool(
-        "insert_before",
-        "Insert before exact text",
-        "Transactionally insert content immediately before each exact anchor match when its count matches expected_matches. The anchor is preserved. On a count mismatch, returns the observed actual count without modifying the file. Range boundaries support the same zero-based line selectors or unique full-file text markers as replace_text. Requires the exact current ETag returned by a prior read/search/stat.",
-        _object_schema(
-            {
-                "path": PATH,
                 "match": {"type": "string", "minLength": 1},
                 "content": {"type": "string"},
                 "encoding": TEXT_ENCODING,
@@ -814,49 +676,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
                 "start_text": {
                     "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; start at its first character. May span lines; mutually exclusive with start_line.",
+                    "description": "Unique full-file start marker; may span lines; mutually exclusive with start_line.",
                 },
                 "end_text": {
                     "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; end after its final character. May span lines; mutually exclusive with end_line.",
+                    "description": "Unique full-file end marker; may span lines; mutually exclusive with end_line.",
                 },
             },
-            ("path", "match", "content", "expected_etag"),
-        ),
-        read_only=False,
-        destructive=True,
-        idempotent=False,
-    ),
-    _tool(
-        "insert_after",
-        "Insert after exact text",
-        "Transactionally insert content immediately after each exact anchor match when its count matches expected_matches. The anchor is preserved. On a count mismatch, returns the observed actual count without modifying the file. Range boundaries support the same zero-based line selectors or unique full-file text markers as replace_text. Requires the exact current ETag returned by a prior read/search/stat.",
-        _object_schema(
-            {
-                "path": PATH,
-                "match": {"type": "string", "minLength": 1},
-                "content": {"type": "string"},
-                "encoding": TEXT_ENCODING,
-                "expected_matches": {"type": "integer", "minimum": 1, "default": 1},
-                "expected_etag": {"type": "string", "minLength": 1},
-                "start_line": {
-                    "type": "integer", "minimum": 0, "default": 0,
-                    "description": "Zero-based inclusive first line; omit to start at line 0.",
-                },
-                "end_line": {
-                    "type": "integer", "minimum": 0,
-                    "description": "Zero-based inclusive last line; omit to continue through EOF.",
-                },
-                "start_text": {
-                    "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; start at its first character. May span lines; mutually exclusive with start_line.",
-                },
-                "end_text": {
-                    "type": "string", "minLength": 1,
-                    "description": "Unique full-file marker; end after its final character. May span lines; mutually exclusive with end_line.",
-                },
-            },
-            ("path", "match", "content", "expected_etag"),
+            ("operation", "path", "expected_etag"),
         ),
         read_only=False,
         destructive=True,
@@ -873,7 +700,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "minItems": 1,
                     "maxItems": 1000,
                     "items": _mutation_item_schema(),
-                    "description": "Mutation items; see each item's op-specific fields and preconditions.",
+                    "description": "Mutation items; operation-specific fields and preconditions are validated by the server.",
                 },
                 "dry_run": {"type": "boolean", "default": False},
             },
@@ -1221,7 +1048,6 @@ def tools_for(
         readable.add("rpc")
     if record.can_read:
         readable.update({"read_files", "file_manifest"})
-        readable.update("git_" + operation for operation in GIT_READ_OPERATIONS)
         readable.update(
             {
                 "query_context",
@@ -1248,9 +1074,7 @@ def tools_for(
         readable.update(
             {
                 "write_file",
-                "replace_text",
-                "insert_before",
-                "insert_after",
+                "edit_text",
                 "mutate_files",
                 "replace_large_file_range",
                 "create_directory",

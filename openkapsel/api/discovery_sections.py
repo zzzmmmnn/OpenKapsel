@@ -140,7 +140,7 @@ SECTION_WORKFLOWS = {
         "On plan completion, create, update, resolve, archive, or explicitly retain no Memory through memory_actions.",
     ],
     "shell": [
-        "Use git_status, git_diff, git_diff_stat, git_log, git_show, and git_ls_files for fixed Git queries. Mapped repositories use read-only Git snapshot RPC; only read permission is required. Results are synchronous and bounded, with no Shell task.",
+        "Use generic RPC family=git for Git reads and mutations on the server or a mapping. Read operations are synchronous and bounded; write operations run as tasks and require mutation Context.",
         "Use the env endpoint to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization; writes require mutation Context.",
         "Start asynchronous Shell tasks, then poll status or read output incrementally; use SSE when the client supports it.",
         "Send stdin only to interactive tasks. Interrupt normally before using force-kill.",

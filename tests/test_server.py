@@ -439,9 +439,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 name = params.get("name")
                 modifying_tools = {
                     "write_file",
-                    "replace_text",
-                    "insert_before",
-                    "insert_after",
+                    "edit_text",
                     "mutate_files",
                     "replace_large_file_range",
                     "create_directory",
@@ -2356,58 +2354,49 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(mutate_tool["annotations"]["destructiveHint"])
         item_schema = mutate_tool["inputSchema"]["properties"]["items"]["items"]
         self.assertEqual(["op", "path"], item_schema["required"])
+        self.assertTrue(item_schema["additionalProperties"])
         item_properties = item_schema["properties"]
         self.assertEqual(
             ["text.replace", "text.insert_before", "text.insert_after", "structured.patch", "file.create", "file.replace", "path.delete"],
             item_properties["op"]["enum"],
         )
+        self.assertEqual({"op", "path", "expected_etag"}, set(item_properties))
+        self.assertNotIn("allOf", item_schema)
+
+        edit_tool = next(
+            tool for tool in listed["result"]["tools"] if tool["name"] == "edit_text"
+        )
+        self.assertEqual(
+            ["operation", "path", "expected_etag", "plan_id", "taskname", "message"],
+            edit_tool["inputSchema"]["required"],
+        )
+        edit_properties = edit_tool["inputSchema"]["properties"]
+        self.assertEqual(
+            ["replace", "insert_before", "insert_after"],
+            edit_properties["operation"]["enum"],
+        )
         self.assertTrue(
             {
-                "op", "path", "expected_etag", "encoding", "content",
+                "old", "new", "match", "content", "expected_matches",
                 "start_line", "end_line", "start_text", "end_text",
-                "match", "expected_count", "replacements", "format", "operations",
-            }.issubset(item_properties)
+            }.issubset(edit_properties)
         )
-        self.assertEqual(0, item_properties["start_line"]["default"])
-        self.assertIn({"not": {"required": ["start_line", "start_text"]}}, item_schema["allOf"])
-        self.assertIn({"not": {"required": ["end_line", "end_text"]}}, item_schema["allOf"])
-        self.assertIn(
-            {"if": {"properties": {"op": {"const": "text.insert_before"}}},
-             "then": {"required": ["expected_etag", "match", "content"]}},
-            item_schema["allOf"],
+        self.assertTrue(edit_tool["annotations"]["destructiveHint"])
+        _, invalid_edit, _ = self.mcp_request(
+            token,
+            210,
+            "tools/call",
+            {
+                "name": "edit_text",
+                "arguments": {
+                    "operation": "replace",
+                    "path": "hello.txt",
+                    "expected_etag": "missing-fields",
+                },
+            },
         )
-        self.assertIn(
-            {"if": {"properties": {"op": {"const": "text.insert_after"}}},
-             "then": {"required": ["expected_etag", "match", "content"]}},
-            item_schema["allOf"],
-        )
-        replacement_schema = item_properties["replacements"]["items"]
-        self.assertEqual(["old", "new"], replacement_schema["required"])
-        self.assertIn("expected_count", replacement_schema["properties"])
-        structured_schema = item_properties["operations"]["items"]
-        self.assertEqual(["op", "path"], structured_schema["required"])
-        self.assertEqual(["test", "add", "replace", "remove"], structured_schema["properties"]["op"]["enum"])
-        replace_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "replace_text"
-        )
-        self.assertIn("start_line", replace_tool["inputSchema"]["properties"])
-        self.assertIn("end_line", replace_tool["inputSchema"]["properties"])
-        self.assertIn("start_text", replace_tool["inputSchema"]["properties"])
-        self.assertIn("end_text", replace_tool["inputSchema"]["properties"])
-        insert_before_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "insert_before"
-        )
-        insert_after_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "insert_after"
-        )
-        for tool in (insert_before_tool, insert_after_tool):
-            self.assertEqual(
-                ["path", "match", "content", "expected_etag", "plan_id", "taskname", "message"],
-                tool["inputSchema"]["required"],
-            )
-            self.assertIn("expected_matches", tool["inputSchema"]["properties"])
-            self.assertIn("start_text", tool["inputSchema"]["properties"])
-            self.assertTrue(tool["annotations"]["destructiveHint"])
+        self.assertEqual(-32602, invalid_edit["error"]["code"])
+
         _, oversized_binary_read, _ = self.mcp_request(
             token,
             201,
@@ -2433,9 +2422,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "search_files",
                 "list_tree",
                 "write_file",
-                "replace_text",
-                "insert_before",
-                "insert_after",
+                "edit_text",
                 "mutate_files",
                 "replace_large_file_range",
                 "create_directory",
@@ -2456,6 +2443,9 @@ class WorkspaceServerTests(unittest.TestCase):
                 "interrupt_task",
                 "kill_task",
             }.issubset(names)
+        )
+        self.assertTrue(
+            {"replace_text", "insert_before", "insert_after"}.isdisjoint(names)
         )
         delete_tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "delete_path")
         self.assertTrue(delete_tool["annotations"]["destructiveHint"])
@@ -2591,8 +2581,9 @@ class WorkspaceServerTests(unittest.TestCase):
             207,
             "tools/call",
             {
-                "name": "replace_text",
+                "name": "edit_text",
                 "arguments": {
+                    "operation": "replace",
                     "path": "generated/data.txt",
                     "old": "same",
                     "new": "edge",
@@ -2612,8 +2603,9 @@ class WorkspaceServerTests(unittest.TestCase):
             208,
             "tools/call",
             {
-                "name": "insert_before",
+                "name": "edit_text",
                 "arguments": {
+                    "operation": "insert_before",
                     "path": "generated/data.txt",
                     "match": "edge",
                     "content": "<",
@@ -2633,8 +2625,9 @@ class WorkspaceServerTests(unittest.TestCase):
             209,
             "tools/call",
             {
-                "name": "insert_after",
+                "name": "edit_text",
                 "arguments": {
+                    "operation": "insert_after",
                     "path": "generated/data.txt",
                     "match": "edge",
                     "content": ">",

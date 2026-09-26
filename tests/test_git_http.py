@@ -44,7 +44,7 @@ class GitHTTPTests(unittest.TestCase):
             time.sleep(.02)
         self.fail("Git RPC task did not finish")
 
-    def test_read_url_git_and_readonly_mcp_tools(self):
+    def test_read_url_git_and_generic_mcp_rpc(self):
         operations = ("status", "diff", "log", "show", "ls_files", "diff_stat")
         for op in operations:
             status, _, raw = self.request("GET", self.base + "/git/" + op)
@@ -57,26 +57,32 @@ class GitHTTPTests(unittest.TestCase):
         self.assertNotIn("git", tools)
         self.assertIn("rpc", tools)
         self.assertNotIn("mapping_id", tools["rpc"]["inputSchema"].get("required", []))
-        for op in operations:
-            self.assertIn("git_" + op, tools)
+        self.assertTrue(
+            {"git_" + op for op in operations}.isdisjoint(tools)
+        )
 
-        for name, args in (("git_log", {}), ("read_files", {"paths": ["source.txt"]}),
+        for op in operations:
+            status, payload = self.rpc(conn["secret"], "tools/call", {
+                "name": "rpc",
+                "arguments": {
+                    "family": "git",
+                    "operation": op,
+                    "args": {"cwd": "."},
+                },
+            })
+            self.assertEqual(200, status, payload)
+            self.assertFalse(payload["result"]["isError"], payload)
+            result = payload["result"]["structuredContent"]
+            self.assertEqual("server", result["location"])
+            self.assertEqual("git", result["family"])
+            self.assertEqual(op, result["operation"])
+
+        for name, args in (("read_files", {"paths": ["source.txt"]}),
                            ("file_manifest", {"recursive": True, "depth": 1}),
                            ("search_files", {"query": "original", "include": ["*.txt"], "exclude": [".git"]})):
             status, payload = self.rpc(conn["secret"], "tools/call", {"name": name, "arguments": args})
             self.assertEqual(200, status, payload)
             self.assertFalse(payload["result"]["isError"], payload)
-
-        status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
-            "arguments": {"family": "git", "operation": "status", "args": {"cwd": "."}},
-        })
-        self.assertEqual(200, status, payload)
-        self.assertFalse(payload["result"]["isError"], payload)
-        result = payload["result"]["structuredContent"]
-        self.assertEqual("server", result["location"])
-        self.assertEqual("git", result["family"])
-        self.assertEqual("status", result["operation"])
 
         self.server.tokens.update(self.record.token, can_read=False)
         self.assertEqual(403, self.request("GET", self.base + "/git/status")[0])
