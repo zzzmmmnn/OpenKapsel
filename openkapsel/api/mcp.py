@@ -88,6 +88,15 @@ from openkapsel.files.text_encoding import ENCODINGS
 TEXT_ENCODING = {"type": "string", "enum": list(ENCODINGS), "default": "utf-8",
                  "description": "Explicit file encoding; strict conversion. LF/CRLF/CR are preserved literally. UTF-16 requires explicit endian; BOM is preserved as U+FEFF."}
 
+GIT_TOOL_DESCRIPTIONS = {
+    "status": "Show bounded repository status.",
+    "diff": "Show a bounded working-tree, staged, or revision diff.",
+    "log": "List bounded commit history.",
+    "show": "Show one revision and its patch.",
+    "ls_files": "List tracked repository files.",
+    "diff_stat": "Show bounded diff statistics.",
+}
+
 
 def _mutation_item_schema() -> dict[str, Any]:
     return {
@@ -215,9 +224,13 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool("file_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
           _object_schema({"items": {"type": "array", "items": _object_schema({"path": {"type": "string"}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string"}}, ("path",))},
                           "recursive": {"type": "boolean"}, "path": {"type": "string"}, "depth": {"type": "integer", "minimum": 0}, "include_sha256": {"type": "boolean"}}), read_only=True),
-    *(_tool("git_" + operation, "Git " + operation.replace("_", " "),
-            "Read-only Git inspection using a bounded sanitized snapshot, locally or in one mapped client RPC. Read permission only: no Shell/write/allow_exec required. Synchronous text result, no task. Ordinary SHA-1 .git directory required; no linked worktrees/alternates/symlinks. Snapshot max 128 MiB/100000 nodes, output 64 KiB per stream, timeout at most 20s. Source config/hooks/filters are not loaded. Git must be installed on the host.",
-            _object_schema(git_tool_properties(operation)), read_only=True)
+    *(_tool(
+            "git_" + operation,
+            "Git " + operation.replace("_", " "),
+            GIT_TOOL_DESCRIPTIONS[operation],
+            _object_schema(git_tool_properties(operation)),
+            read_only=True,
+        )
       for operation in GIT_READ_OPERATIONS),
     _tool(
         "rpc",
