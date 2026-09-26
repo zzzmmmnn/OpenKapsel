@@ -49,6 +49,12 @@ class ClientVersionRequired(RuntimeError):
         self.minimum_version = minimum_version
 
 
+class ClientProtocolRequired(RuntimeError):
+    def __init__(self, handshake_version: int):
+        super().__init__(f"mapping server requires handshake version {handshake_version}")
+        self.handshake_version = handshake_version
+
+
 def proxy_options(url):
     if not url:
         return {"http_no_proxy": ["*"]}
@@ -178,12 +184,17 @@ def _recv_message(sock):
 def _server_hello(value):
     if value.get("type") != "server_hello":
         raise ValueError("mapping server_hello required")
-    if value.get("handshake_version") != MAPPING_HANDSHAKE_VERSION:
-        raise ValueError("unsupported mapping handshake version")
+    handshake_version = value.get("handshake_version")
     server_version = value.get("server_version")
     server_fingerprint = value.get("server_fingerprint")
     minimum = value.get("minimum_client_version")
     timeout = value.get("hello_timeout_seconds")
+    if (
+        isinstance(handshake_version, bool)
+        or not isinstance(handshake_version, int)
+        or not 1 <= handshake_version <= 65535
+    ):
+        raise ValueError("invalid mapping handshake version")
     if not isinstance(server_version, str) or not isinstance(minimum, str):
         raise ValueError("invalid mapping server version")
     # Parsing both also rejects malformed version strings.
@@ -200,23 +211,37 @@ def _server_hello(value):
         raise ValueError("invalid mapping server fingerprint")
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 120:
         raise ValueError("invalid mapping hello timeout")
-    return server_fingerprint, minimum
+    return handshake_version, server_fingerprint, minimum
 
 
-def _reload_decision(config, runtime, reload_state, server_fingerprint, minimum_version):
+def _reload_decision(
+    config,
+    runtime,
+    reload_state,
+    server_handshake_version,
+    server_fingerprint,
+    minimum_version,
+):
+    protocol_mismatch = server_handshake_version != MAPPING_HANDSHAKE_VERSION
     below_minimum = not version_at_least(__version__, minimum_version)
     source = None
-    if below_minimum:
+    if protocol_mismatch or below_minimum:
         # A required upgrade never makes an incompatible runtime READY. Preserve
         # already-running client tasks by remaining offline until they drain.
         if runtime.has_active_tasks():
+            if protocol_mismatch:
+                raise ClientProtocolRequired(server_handshake_version)
             raise ClientVersionRequired(minimum_version)
         source = inspect_local_source(config)
         if (
-            local_source_can_satisfy(source, minimum_version)
+            local_source_can_satisfy(
+                source, minimum_version, server_handshake_version
+            )
             and source.fingerprint != runtime.client_fingerprint
         ):
             raise ClientReloadRequired(source, required=True)
+        if protocol_mismatch:
+            raise ClientProtocolRequired(server_handshake_version)
         raise ClientVersionRequired(minimum_version)
 
     if reload_state is None:
@@ -235,7 +260,9 @@ def _reload_decision(config, runtime, reload_state, server_fingerprint, minimum_
     if (
         source is None
         or source.fingerprint == runtime.client_fingerprint
-        or not local_source_can_satisfy(source, minimum_version)
+        or not local_source_can_satisfy(
+            source, minimum_version, MAPPING_HANDSHAKE_VERSION
+        )
     ):
         runtime.pending_reload = False
         return
@@ -256,7 +283,9 @@ def _periodic_reload_check(config, runtime, reload_state, minimum_version):
     if (
         source is None
         or source.fingerprint == runtime.client_fingerprint
-        or not local_source_can_satisfy(source, minimum_version)
+        or not local_source_can_satisfy(
+            source, minimum_version, MAPPING_HANDSHAKE_VERSION
+        )
     ):
         return False
     runtime.pending_reload = True
@@ -298,9 +327,16 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
             timeout=float(config.get("transport_timeout_seconds", 60)),
             **proxy_options(config.get("proxy")),
         )
-        server_fingerprint, minimum_version = _server_hello(_recv_message(sock))
+        server_handshake_version, server_fingerprint, minimum_version = _server_hello(
+            _recv_message(sock)
+        )
         _reload_decision(
-            config, runtime, reload_state, server_fingerprint, minimum_version
+            config,
+            runtime,
+            reload_state,
+            server_handshake_version,
+            server_fingerprint,
+            minimum_version,
         )
         sock.send(encode({
             "type": "client_hello",
@@ -413,6 +449,20 @@ def main():
                     LOG.warning(
                         "Client %s is below required %s; rechecking in %ss",
                         __version__, exc.minimum_version, delay,
+                    )
+                    if options.once:
+                        raise SystemExit(1) from None
+                    if delay:
+                        time.sleep(delay)
+                    continue
+                except ClientProtocolRequired as exc:
+                    delay = reload_state.next_required_delay()
+                    LOG.warning(
+                        "Client mapping handshake %s is incompatible with required %s; "
+                        "rechecking local source in %ss",
+                        MAPPING_HANDSHAKE_VERSION,
+                        exc.handshake_version,
+                        delay,
                     )
                     if options.once:
                         raise SystemExit(1) from None

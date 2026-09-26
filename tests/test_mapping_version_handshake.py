@@ -14,10 +14,12 @@ from unittest.mock import patch
 
 from openkapsel import __version__
 from openkapsel.client import (
+    ClientProtocolRequired,
     ClientReloadRequired,
     ClientVersionRequired,
     _periodic_reload_check,
     _reload_decision,
+    _server_hello,
 )
 from openkapsel.client_runtime.client_reload import ClientReloadState, LocalSource, exec_local_source
 from openkapsel.mapping.mapping_transport import (
@@ -126,47 +128,88 @@ class ReloadDecisionTests(unittest.TestCase):
             })
             self.assertIsNotNone(override)
             self.assertEqual(root.resolve(), override.root)
+            self.assertEqual(MAPPING_HANDSHAKE_VERSION, override.handshake_version)
+
+    def test_server_hello_preserves_protocol_mismatch_for_reload_decision(self):
+        required = MAPPING_HANDSHAKE_VERSION + 1
+        self.assertEqual(
+            (required, SERVER_SOURCE_FINGERPRINT, MINIMUM_MAPPING_CLIENT_VERSION),
+            _server_hello({
+                "type": "server_hello",
+                "handshake_version": required,
+                "server_version": __version__,
+                "server_fingerprint": SERVER_SOURCE_FINGERPRINT,
+                "minimum_client_version": MINIMUM_MAPPING_CLIENT_VERSION,
+                "hello_timeout_seconds": 30,
+            }),
+        )
+
+    def test_required_protocol_reloads_suitable_changed_source(self):
+        runtime = self.Runtime()
+        required = MAPPING_HANDSHAKE_VERSION + 1
+        source = LocalSource(Path("/source"), __version__, "L" * 44, required)
+        with patch("openkapsel.client.inspect_local_source", return_value=source):
+            with self.assertRaises(ClientReloadRequired) as error:
+                _reload_decision(
+                    {}, runtime, None, required, "S" * 44,
+                    MINIMUM_MAPPING_CLIENT_VERSION,
+                )
+        self.assertTrue(error.exception.required)
+
+    def test_required_protocol_without_matching_source_stays_incompatible(self):
+        runtime = self.Runtime()
+        required = MAPPING_HANDSHAKE_VERSION + 1
+        source = LocalSource(
+            Path("/source"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION
+        )
+        with patch("openkapsel.client.inspect_local_source", return_value=source):
+            with self.assertRaises(ClientProtocolRequired) as error:
+                _reload_decision(
+                    {}, runtime, None, required, "S" * 44,
+                    MINIMUM_MAPPING_CLIENT_VERSION,
+                )
+        self.assertEqual(required, error.exception.handshake_version)
 
     def test_required_version_reloads_suitable_changed_source(self):
         runtime = self.Runtime()
-        source = LocalSource(Path("/source"), "9.0.0", "L" * 44)
+        source = LocalSource(Path("/source"), "9.0.0", "L" * 44, MAPPING_HANDSHAKE_VERSION)
         with patch("openkapsel.client.inspect_local_source", return_value=source):
             with self.assertRaises(ClientReloadRequired) as error:
-                _reload_decision({}, runtime, None, "S" * 44, "9.0.0")
+                _reload_decision({}, runtime, None, MAPPING_HANDSHAKE_VERSION, "S" * 44, "9.0.0")
         self.assertTrue(error.exception.required)
 
     def test_required_version_without_usable_source_stays_incompatible(self):
         runtime = self.Runtime()
         with patch("openkapsel.client.inspect_local_source", return_value=None):
             with self.assertRaises(ClientVersionRequired):
-                _reload_decision({}, runtime, None, "S" * 44, "9.0.0")
+                _reload_decision({}, runtime, None, MAPPING_HANDSHAKE_VERSION, "S" * 44, "9.0.0")
 
     def test_server_change_and_24h_refresh_reload_only_changed_local_source(self):
         runtime = self.Runtime()
-        source = LocalSource(Path("/source"), __version__, "L" * 44)
+        source = LocalSource(Path("/source"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION)
         state = self.State(last_server="A" * 44)
         with patch("openkapsel.client.inspect_local_source", return_value=source):
             with self.assertRaises(ClientReloadRequired) as error:
-                _reload_decision({}, runtime, state, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
+                _reload_decision({}, runtime, state, MAPPING_HANDSHAKE_VERSION, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
         self.assertFalse(error.exception.required)
 
         runtime = self.Runtime()
         state = self.State(last_server="B" * 44, last_check=time.time() - 86401)
         with patch("openkapsel.client.inspect_local_source", return_value=source):
             with self.assertRaises(ClientReloadRequired):
-                _reload_decision({}, runtime, state, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
+                _reload_decision({}, runtime, state, MAPPING_HANDSHAKE_VERSION, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
 
     def test_optional_reload_defers_while_task_is_active(self):
         runtime = self.Runtime(active=True)
-        source = LocalSource(Path("/source"), __version__, "L" * 44)
+        source = LocalSource(Path("/source"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION)
         state = self.State(last_server="A" * 44)
         with patch("openkapsel.client.inspect_local_source", return_value=source):
-            _reload_decision({}, runtime, state, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
+            _reload_decision({}, runtime, state, MAPPING_HANDSHAKE_VERSION, "B" * 44, MINIMUM_MAPPING_CLIENT_VERSION)
         self.assertTrue(runtime.pending_reload)
 
     def test_periodic_refresh_detects_changed_source_on_healthy_connection(self):
         runtime = self.Runtime()
-        source = LocalSource(Path("/source"), __version__, "L" * 44)
+        source = LocalSource(Path("/source"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION)
         state = self.State(last_server="B" * 44, last_check=time.time() - 86401)
         with patch("openkapsel.client.inspect_local_source", return_value=source):
             self.assertTrue(
@@ -179,7 +222,7 @@ class ReloadDecisionTests(unittest.TestCase):
 
     def test_periodic_refresh_unchanged_source_advances_check_clock(self):
         runtime = self.Runtime()
-        source = LocalSource(Path("/source"), __version__, runtime.client_fingerprint)
+        source = LocalSource(Path("/source"), __version__, runtime.client_fingerprint, MAPPING_HANDSHAKE_VERSION)
         state = self.State(last_server="B" * 44, last_check=time.time() - 86401)
         with patch("openkapsel.client.inspect_local_source", return_value=source) as inspect:
             self.assertFalse(
@@ -223,7 +266,7 @@ class ReloadDecisionTests(unittest.TestCase):
             self.assertEqual(0, restored.required_reload_attempts)
 
     def test_exec_bootstrap_forces_configured_source_ahead_of_cwd(self):
-        source = LocalSource(Path("/trusted/OpenKapsel"), __version__, "L" * 44)
+        source = LocalSource(Path("/trusted/OpenKapsel"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION)
         config = Path("/config/client.json")
         digest = "a" * 64
         with patch("os.execve", side_effect=RuntimeError("exec intercepted")) as execute:

@@ -9,7 +9,13 @@ import time
 from pathlib import Path
 
 from openkapsel.client_runtime.client_config import REEXEC_CONFIG_FD_ENV, REEXEC_CONFIG_SHA256_ENV
-from openkapsel.source_fingerprint import project_root, source_fingerprint, source_version, version_at_least
+from openkapsel.source_fingerprint import (
+    project_root,
+    source_fingerprint,
+    source_mapping_handshake_version,
+    source_version,
+    version_at_least,
+)
 
 STATE_VERSION = 1
 LOCAL_REFRESH_SECONDS = 24 * 60 * 60
@@ -122,10 +128,11 @@ class ClientReloadState:
 
 
 class LocalSource:
-    def __init__(self, root: Path, version: str, fingerprint: str):
+    def __init__(self, root: Path, version: str, fingerprint: str, handshake_version: int):
         self.root = root
         self.version = version
         self.fingerprint = fingerprint
+        self.handshake_version = handshake_version
 
 
 def inspect_local_source(config: dict) -> LocalSource | None:
@@ -138,13 +145,26 @@ def inspect_local_source(config: dict) -> LocalSource | None:
         else project_root()
     )
     try:
-        return LocalSource(root, source_version(root), source_fingerprint(root, "client"))
+        return LocalSource(
+            root,
+            source_version(root),
+            source_fingerprint(root, "client"),
+            source_mapping_handshake_version(root),
+        )
     except (OSError, ValueError):
         return None
 
 
-def local_source_can_satisfy(source: LocalSource | None, minimum_version: str) -> bool:
-    return bool(source is not None and version_at_least(source.version, minimum_version))
+def local_source_can_satisfy(
+    source: LocalSource | None,
+    minimum_version: str,
+    handshake_version: int,
+) -> bool:
+    return bool(
+        source is not None
+        and version_at_least(source.version, minimum_version)
+        and source.handshake_version == handshake_version
+    )
 
 
 def exec_local_source(

@@ -10,6 +10,7 @@ from pathlib import Path
 FINGERPRINT_FORMAT = 1
 _FORMAT_MARKER = f"openkapsel-source-fingerprint-v{FINGERPRINT_FORMAT}\0".encode("ascii")
 _VERSION_RE = re.compile(rb'^__version__\s*=\s*["\']([0-9]+(?:\.[0-9]+){2})["\']\s*$', re.M)
+_HANDSHAKE_VERSION_RE = re.compile(rb'^MAPPING_HANDSHAKE_VERSION\s*=\s*([0-9]+)\s*$', re.M)
 
 SHARED_FILES = (
     "openkapsel/__init__.py",
@@ -143,6 +144,19 @@ def source_version(root: str | Path) -> str:
     if not match:
         raise ValueError("OpenKapsel source version is missing or invalid")
     return match.group(1).decode("ascii")
+
+
+def source_mapping_handshake_version(root: str | Path) -> int:
+    data = (
+        Path(root).expanduser().resolve()
+        / "openkapsel"
+        / "mapping"
+        / "mapping_transport.py"
+    ).read_bytes()
+    match = _HANDSHAKE_VERSION_RE.search(data)
+    if not match:
+        raise ValueError("mapping handshake version is missing or invalid")
+    return int(match.group(1))
 
 
 def parse_release_version(value: str) -> tuple[int, int, int]:
