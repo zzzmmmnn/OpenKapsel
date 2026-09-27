@@ -41,8 +41,9 @@ reports clients whose tasks could not be listed, not that their tasks stopped.
 Client task IDs remain routable after reconnect/server restart. Retention and
 client process-exit limitations are described in [client mappings](client-mappings.md).
 Never replay an uncertain start automatically: reconnect and list tasks first.
-The existing mapping-specific argv APIs remain available; schedules still
-execute on the server.
+Schedules still execute on the server. Client execution is exposed through the
+unified `/shell/exec` and `/tasks/*` APIs; there are no mapping-specific public
+task or argv REST routes.
 
 ### Git inspection
 
@@ -81,9 +82,9 @@ Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
 task ID or polling. Narrow queries when output is truncated. Errors use 413 for
 snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
 422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
-MCP keeps the six `git_*` read tools. Git mutations use the generic `rpc` tool
-with `family=git`: provide `mapping_id` for a mapped repository or omit it for
-the server workspace. `add`, `commit`, `restore`, `checkout`, `fetch`, `pull`,
+MCP uses the generic `rpc` tool for both Git reads and mutations. Use
+`family=git`; provide `mapping_id` for a mapped repository or omit it for the
+server workspace. `add`, `commit`, `restore`, `checkout`, `fetch`, `pull`,
 and `clone` run as RPC tasks and use the normal task APIs; they do not require
 Shell permission. Mutations require write permission and Plan Context, mapped
 writes also require a writable mapping, and fetch/pull/clone additionally obey
@@ -147,20 +148,22 @@ It is stateless JSON-RPC. Every call requires the connection's Bearer credential
 
 The negotiated protocol is `2025-11-25`, with compatibility for `2025-03-26` and `2025-06-18`. Requests containing `Origin` are checked against the configured public origin to mitigate DNS rebinding.
 
-Tool families include:
+The current tool surface includes:
 
 - Discovery: `workspace_info`
+- portable REST delegation: `get_workspace_credentials` and `renew_workspace_credentials`
+- generic RPC: `rpc` for advertised server or mapping RPC families such as Git and Archive
 - Context: query, create, Plan tree, Plan update, and Note replacement
 - Memory: query, get project Memory, add, revise, and archive
-- files: listing, reading, metadata, search, tree, writes, replacements, directories, move, recycle, and restore
-- transfer: prepared downloads and resumable upload create, chunk, status, commit, and abort
+- files and transfer: bounded reads/queries, transactional edits, binary transfer, recycle, and resumable uploads
+- schedules: grouped `schedule_read`, `schedule_write`, and `schedule_control`
 - preview: independent browser preview URL
-- Shell: run, list, status, output, stdin, interrupt, kill, and process listing
+- Shell/tasks: run, list, status, output, stdin, interrupt, kill, and process listing
 - sharing: create, inspect, import, and delete
 
 MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated `/transfer/...` URLs containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
 
-`workspace_info` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
+`workspace_info` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `schedules`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
 
 The Shell tools in `tools/list` use the same unified task IDs as REST:
 `run_shell` and `list_tasks` accept `target=auto|server|client`; `get_task` and

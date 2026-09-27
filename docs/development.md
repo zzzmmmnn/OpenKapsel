@@ -24,13 +24,15 @@ python3 set_password.py --config config.json --generate-username --generate
 
 Credentials are printed once. Configuration updates are atomic and use mode `0600`. Legacy fixed-salt SHA-256 credentials remain accepted and migrate to PBKDF2 after a successful login.
 
-`config.example.json` documents all settings. Relative paths resolve from the configuration file directory. Important groups include:
+`config.example.json` provides the normal server baseline. Relative paths resolve from the configuration file directory. Important groups include:
 
 - listener, URL prefix, public URL, preview URL, and Workspace Root
-- token registry, uploads, shares, task history, and network-proxy state
+- token registry, uploads, shares, task history, application-worker, and network-proxy state
 - file, search, transfer, batch, task, SSE, and connection limits
 - Bubblewrap, Podman, RootlessKit, cgroups, and default network domains
 - optional workspace-image helper socket
+
+The loader also accepts advanced/optional keys that are not required in the example file: `public_base_url`, `workspace_image_socket`, `api_worker_dir`, `default_command_timeout`, `max_task_output_mb`, and the optional bootstrap-only `bootstrap_token`. Runtime defaults remain authoritative when these keys are omitted.
 
 Local HTTP is supported for development. Production public and preview URLs must use HTTPS.
 
@@ -38,27 +40,20 @@ Local HTTP is supported for development. Production public and preview URLs must
 
 ```text
 openkapsel/
-  admin_handlers.py       administration request handling
-  admin_ui.py             dependency-free administration HTML
-  api_workers.py          isolated FastAPI application workers
-  context_store.py        per-workspace Context database
-  discovery.py            Discovery document construction
-  discovery_sections.py   focused Discovery metadata
-  file_handlers.py        REST file operations
-  mcp.py                  MCP schemas and constants
-  mcp_handlers.py         MCP transport adapters
-  memory_store.py         project Memory database
-  network_proxy.py        token-scoped HTTP/HTTPS egress policy
-  preview_handlers.py     preview and application routing
-  proxy_relay.py          sandbox loopback-to-Unix relay
-  routes.py               route registry
-  sandbox_backends.py     Bubblewrap and Podman backends
-  server.py               HTTP server and shared orchestration
-  skill_handlers.py       dynamic REST Skill packaging
-  tasks.py                asynchronous Shell tasks
-  tokens.py               credentials, permissions, and path grants
-  uploads.py              resumable uploads
-  workspace_images.py     image client and privileged manager
+  api/                     Discovery, MCP, preview and Skill-facing HTTP composition
+  auth/                    administrator UI, token policy, OAuth, Static MCP and security
+  client_runtime/          mapping-client filesystem, tasks, reload and Windows support
+  context/                 Context plans and Memory storage/handlers
+  execution/               Shell/tasks, schedules, sandboxing, cgroups and network policy
+  files/                   file APIs, safe paths, recycle, uploads/shares and Git primitives
+  mapping/                 provider transport, registry, RPC/native views and transfers
+  rpc_plugins/             Git, Archive and extensible client RPC families
+  server_runtime/          server configuration, lifecycle, dispatch and shared HTTP support
+  storage/                 rclone-backed Storage Providers and workspace bindings
+  workspace/               workspace layout and workspace-image helpers
+  client.py                stable mapping-client entry point
+  routes.py                declarative workspace HTTP route registry
+  server.py                stable server entry point
 openkapsel_runtime/        application-facing database runtime
 skills/openkapsel-rest/    portable REST Skill and helpers
 containers/                optional Podman image recipes

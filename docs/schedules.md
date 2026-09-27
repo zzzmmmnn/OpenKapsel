@@ -34,6 +34,8 @@ The focused Discovery document at `GET discovery/schedules` is authoritative. RE
 - `GET schedules/<schedule_id>/runs`
 - `GET schedule-runs/<run_id>`
 
+MCP exposes the same lifecycle through three grouped tools: `schedule_read` (`list`, `get`, `list_runs`, `get_run`), `schedule_write` (`create`, `update`), and `schedule_control` (`delete`, `run`, `pause`, `resume`). `tools/list` is authoritative for the current argument schemas.
+
 Creation and every modifying action requires ordinary `plan_id`, `taskname`, and `message` Context. The creation values also become each run's automatic Context unless a complete `run_context` is supplied. Updates require `expected_revision`; a supplied `run_context` replaces future-run attribution as one unit.
 
 `run` is the explicit immediate-execution path and does not move the next ordinary occurrence. It still observes overlap and task/sandbox capacity. Pause stops future dispatch but does not terminate an already running task. Delete and update are refused while a run is active.

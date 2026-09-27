@@ -181,8 +181,9 @@ restrictions still apply. Unmounted backing directories are inaccessible.
 
 Git RPC family `git` version `2` keeps `status`, `diff`, `diff_stat`, `log`,
 `show`, and `ls_files` as `write=false, execution=sync` sanitized-snapshot reads.
-MCP retains the six existing `git_*` read tools. The generic `rpc` family also
-exposes `add`, `commit`, `restore`, `checkout`, `fetch`, `pull`, and `clone` as
+MCP exposes these reads and the write operations through the single generic `rpc`
+tool. The same family exposes `add`, `commit`, `restore`, `checkout`, `fetch`,
+`pull`, and `clone` as
 `write=true, execution=task`; provide `mapping_id` for a mapping or omit it to
 run against the server workspace. Git RPC tasks do not require Shell or client
 `allow_exec`. Mutations require write permission and Plan Context; mapped writes
@@ -224,7 +225,7 @@ To run native macOS/Windows tasks before native sandbox adapters are implemented
 
 The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/tasks` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
 
-Mapping-specific task APIs also accept argv arrays and export-relative working directories. Output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
+There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/tasks/*` routes. Client output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
 
 ### Task lifetime across reconnects
 

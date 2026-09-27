@@ -50,6 +50,18 @@ OpenKapsel returns `404` for FastAPI's default `/docs`, `/redoc`, and `/openapi.
 
 OpenKapsel does not provide application users, login, CAPTCHA, cookies, sessions, CSRF, or roles. Each application implements its own business authentication.
 
+## Mapped applications and native dependencies
+
+FastAPI workers execute on the server and therefore need native filesystem paths. An application located inside a client mapping automatically leases that containing mapping. Additional workspace mapping names or IDs are declared in `api/mappings.json`, which is limited to 16 KiB and may contain only:
+
+```json
+{"mount_mappings": ["datasets", "assets"]}
+```
+
+The declaration does not mount anything during discovery and does not execute code. An authorized application request acquires the required native mapping leases before worker sandbox creation; leases belong to the worker lifetime and are released when that worker stops or idles out. Missing or disabled native mapping support fails explicitly rather than falling back to client execution or mounting every mapping. Provider generation changes invalidate the worker so stale native handles are not silently reused.
+
+Mapped applications keep their private runtime/database state in server-managed storage rather than the client's exported `.openkapsel` path. Application code should use the managed database API below instead of constructing private storage paths.
+
 ## Server-Sent Events
 
 A FastAPI `GET` route whose response media type is `text/event-stream` is passed through incrementally instead of being buffered to EOF:

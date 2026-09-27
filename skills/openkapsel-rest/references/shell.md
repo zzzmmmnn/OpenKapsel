@@ -99,7 +99,8 @@ token tasks and workspace client tasks; `target=server|client` filters it.
 Inspect `unavailable_mappings` rather than assuming missing tasks stopped.
 Reconnect preserves client tasks while the client process remains alive;
 never automatically retry a start whose response was lost. Schedules remain
-server-side; mapping-specific argv task APIs remain available.
+server-side; client execution uses unified `/shell/exec` and `/tasks/*` routes,
+with no mapping-specific public task or argv REST endpoints.
 
 `POST /shell/exec` returns `202` with `task_id`:
 

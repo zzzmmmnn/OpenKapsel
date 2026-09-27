@@ -22,6 +22,10 @@ Reads are not recorded by default. To record a read, supply both task name and m
 
 Creating a Plan returns up to twenty previously existing, unfinished root Plans in `unfinished_root_plans`. It excludes Sub Plans and the newly created Plan. Counts and truncation fields describe the complete result.
 
+Plan creation may also include up to 64 direct `subplans`. The root and every child are validated and inserted atomically in one transaction: a bad child, duplicate request-local `ref`, invalid parent, or database failure creates none of them. Each child requires `content`; omitted `taskname` inherits from the new parent, `status` defaults independently to `in_progress`, and optional `scope_paths`, `memory_tags`, and unique `ref` are retained. Nested `subplans` are rejected; create deeper levels in a later call using an existing child as `plan_id`.
+
+An optional caller-generated `request_id` makes Plan creation safely retryable for the same workspace and stable actor. The first matching creation returns the new receipt; an identical retry returns the original root/child IDs with `replayed=true` instead of creating duplicates. Reusing the key for different normalized content conflicts. A replay is an immutable creation receipt, not current Plan state, so query the Plan tree after a retry when later edits may have changed status/content. Omitting `request_id` preserves independent-create behavior.
+
 Plan completion requires a debrief containing `summary`, `outcome`, and `memory_actions`. Context result metadata excludes file bodies, commands, stdin, stdout, stderr, tokens, and Authorization headers.
 
 Queries support ID, text, type, status, task name, actor, normalized path, Plan ID, root-only filtering, and cursors. Results are newest first and limited to 200. The Plan-tree endpoint returns flat depth-annotated Plans and attached entries.

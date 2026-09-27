@@ -129,9 +129,9 @@ The Python package is grouped by functional domain rather than kept as one flat 
 - `openkapsel/client_runtime/`: mapping-client filesystem, task, reload, and Windows runtime support.
 - `openkapsel/context/`: Context plans and Memory storage/handlers.
 - `openkapsel/execution/`: sandboxing, cgroups, Shell/tasks, schedules, environment, and network proxying.
-- `openkapsel/files/`: file APIs, safe paths, recycle, uploads/shares, Git, and archive handlers.
+- `openkapsel/files/`: file APIs, safe paths, recycle, uploads/shares, and Git snapshot/mutation primitives.
 - `openkapsel/mapping/`: provider transport, registry, RPC/native mapping, transfers, and mapping administration.
-- `openkapsel/rpc_plugins/`: extensible client RPC families.
+- `openkapsel/rpc_plugins/`: shared Git/Archive and extensible client RPC families.
 - `openkapsel/server_runtime/`: server configuration, listener lifecycle, dispatch, Context/task HTTP, and shared HTTP support.
 - `openkapsel/storage/`: rclone-backed Storage Providers, private credentials, lifecycle, workspace binds, and administration.
 - `openkapsel/workspace/`: workspace layout and workspace-image helpers.
@@ -169,6 +169,10 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 - [Shell tasks and MCP](docs/shell-and-mcp.md): environments, task lifecycle, streaming, connection limits, process control, and MCP transport.
 - [Scheduled Shell tasks](docs/schedules.md): timing rules, permissions, dispatch behavior, Context, and run history.
 - [Context and Memory](docs/context-and-memory.md): Plans, operations, Notes, long-lived Memory, revisions, and queries.
+- [Client mappings and execution](docs/client-mappings.md): outbound mapping setup, client security, unified execution, RPC families, reconnects, and source reloads.
+- [RPC-first mapping architecture](docs/mapping-rpc-first.md): native-mount leasing, migration behavior, boundaries, and validation.
+- [Structured and tabular RPC](docs/data-rpc.md): JSON/YAML/TOML operations plus bounded CSV/Excel inspection and scans.
+- [SSH RPC](docs/ssh-rpc.md): client-local SSH profiles, connection lifecycle, remote commands, and SFTP transfer.
 - [REST Skill](docs/rest-skill.md): installation, `.openkapsel.env`, automatic credential renewal, batch uploads, and filtering.
 - [Security model](docs/security.md): trust boundaries, private data, sandbox exceptions, and response protections.
 - [Development and testing](docs/development.md): source layout, local configuration, tests, and current boundaries.
@@ -195,8 +199,9 @@ File APIs, binary transfer, static preview and cross-root copy/move do not start
 FUSE workers. Server Shell and FastAPI acquire leased native views only for their
 declared mapping dependencies. Mapping client 1.62.0+ uses an authenticated
 server-first version handshake; an optional trusted local source checkout can be
-reloaded automatically when the server generation changes or the local client
-source changes after the 24-hour refresh interval. See
+reloaded automatically for a required handshake/minimum-version upgrade before
+READY, when the server source fingerprint changes, or when a periodic 24-hour
+source check finds compatible changed client code. See
 [client mapping configuration](docs/client-mappings.md) and
 [configuration and migration](docs/mapping-rpc-first.md).
 
