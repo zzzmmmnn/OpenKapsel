@@ -360,6 +360,9 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
                     if runtime.pending_reload and not runtime.has_active_tasks():
                         break
                     sock.ping("keepalive")
+            except websocket.WebSocketConnectionClosedException:
+                if not stopped.is_set():
+                    LOG.info("Mapping heartbeat detected closed connection")
             except Exception as exc:
                 if not stopped.is_set():
                     LOG.warning("Mapping heartbeat failed (%s)", type(exc).__name__)
@@ -377,6 +380,7 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
         while not stop.is_set():
             data = sock.recv()
             if not data:
+                LOG.info("Mapping provider disconnected")
                 break
             if len(data) > MAX_MESSAGE:
                 raise ValueError("mapping request exceeds limit")
@@ -487,6 +491,7 @@ def main():
                         raise SystemExit(1) from None
                 if options.once:
                     return
+                LOG.info("Reconnecting mapping provider in 5s")
                 time.sleep(5)
         except KeyboardInterrupt:
             return

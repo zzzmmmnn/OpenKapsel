@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from unittest.mock import patch
 
+import openkapsel.client as client_module
+
 from openkapsel.client import ClientRuntime, run_once
 from openkapsel.mapping.mapping_transport import MAPPING_HANDSHAKE_VERSION, MINIMUM_MAPPING_CLIENT_VERSION, SERVER_SOURCE_FINGERPRINT
 
@@ -243,6 +245,88 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertFalse(failures, failures)
         self.assertIn("Mapping heartbeat failed (OSError)", "\n".join(logs.output))
+
+    def test_closed_heartbeat_and_clean_disconnect_are_info_logs(self):
+        import websocket
+
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+        ])
+        shutdown_called = threading.Event()
+
+        class Socket:
+            def send(self, _data):
+                pass
+
+            def recv(self):
+                try:
+                    return next(messages)
+                except StopIteration:
+                    shutdown_called.wait(2)
+                    return ""
+
+            def ping(self, *_args):
+                raise websocket.WebSocketConnectionClosedException("closed")
+
+            def shutdown(self):
+                shutdown_called.set()
+
+            def close(self):
+                shutdown_called.set()
+
+        with (
+            patch("websocket.create_connection", return_value=Socket()),
+            patch("openkapsel.client.HEARTBEAT_SECONDS", 0.01),
+            self.assertLogs("openkapsel.client", level="INFO") as logs,
+        ):
+            run_once(self.config, runtime=self.runtime)
+
+        output = "\n".join(logs.output)
+        self.assertTrue(shutdown_called.is_set())
+        self.assertIn("Mapping heartbeat detected closed connection", output)
+        self.assertIn("Mapping provider disconnected", output)
+        self.assertNotIn("WARNING", output)
+
+    def test_main_logs_and_retries_after_clean_disconnect(self):
+        class Lock:
+            config = {"url": "ws://example/provider", "token": "t", "root": "."}
+
+            def close(self):
+                pass
+
+        class ReloadState:
+            def __init__(self, *_args):
+                pass
+
+            def mark_process_reload(self):
+                pass
+
+        class Runtime:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def close(self):
+                pass
+
+        with (
+            patch.object(sys, "argv", ["openkapsel-client", "--config", "dummy.json"]),
+            patch.object(client_module.ClientConfigLock, "acquire", return_value=Lock()),
+            patch.object(client_module, "ClientReloadState", ReloadState),
+            patch.object(client_module, "ClientRuntime", Runtime),
+            patch.object(client_module, "run_once", side_effect=[None, KeyboardInterrupt]) as run,
+            patch.object(client_module.time, "sleep") as sleep,
+            patch.object(client_module.logging, "basicConfig"),
+            self.assertLogs("openkapsel.client", level="INFO") as logs,
+        ):
+            client_module.main()
+
+        self.assertEqual(2, run.call_count)
+        sleep.assert_called_once_with(5)
+        self.assertIn(
+            "Reconnecting mapping provider in 5s",
+            "\n".join(logs.output),
+        )
 
     def test_runtime_close_stops_tasks_and_config_cannot_switch(self):
         task = self.start("runtime-close", "import time; time.sleep(60)")
