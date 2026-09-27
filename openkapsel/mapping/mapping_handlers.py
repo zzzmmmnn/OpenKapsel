@@ -88,7 +88,12 @@ class MappingHandlersMixin:
             if write:
                 self._assert_path_writable(candidate)
             try:
-                self.server.mappings.check_path(candidate, write=write, protect_root=write)
+                self.server.mappings.check_path(
+                    candidate,
+                    write=write,
+                    protect_root=write,
+                    require_online=False,
+                )
             except OSError as exc:
                 if exc.errno == errno.EHOSTDOWN:
                     raise ApiError(503, "mapping_offline", "mapping client is offline") from None
@@ -131,7 +136,7 @@ class MappingHandlersMixin:
         from openkapsel.mapping.mapping_transport import encode
 
         query, body = copy.deepcopy(query or {}), copy.deepcopy(body or {})
-        capability = self.server.mappings.rpc_capability(
+        capability, waited_for_online = self.server.mappings.rpc_capability_for_call(
             selected["id"],
             "file",
             operation=operation,
@@ -161,7 +166,12 @@ class MappingHandlersMixin:
             encode({"id": "0" * 24, "op": "api_" + operation, "args": arguments})
         except OSError:
             raise ApiError(413, "mapping_request_too_large", "use binary upload or a smaller file request; no native fallback") from None
-        result = self._mapping_rpc(selected, "api_" + operation, arguments)
+        result = self._mapping_rpc(
+            selected,
+            "api_" + operation,
+            arguments,
+            retry=not waited_for_online,
+        )
         if not isinstance(result, dict) or not isinstance(result.get("status"), int):
             raise ApiError(502, "invalid_mapping_response", "client returned an invalid file API response")
         if "error" in result:
@@ -327,7 +337,7 @@ class MappingHandlersMixin:
         if family == "file":
             raise ApiError(400, "invalid_rpc_family", "file RPC uses the normal file APIs")
         row = self._mapping_for_caller(mid)
-        capability = self.server.mappings.rpc_capability(
+        capability, waited_for_online = self.server.mappings.rpc_capability_for_call(
             mid,
             family,
             operation=operation,
@@ -394,7 +404,12 @@ class MappingHandlersMixin:
             if timeout is not None:
                 task_args["timeout_seconds"] = float(timeout)
             try:
-                started = self._mapping_rpc(row, "task_start", task_args)
+                started = self._mapping_rpc(
+                    row,
+                    "task_start",
+                    task_args,
+                    retry=not waited_for_online,
+                )
             except ApiError as exc:
                 ambiguous_errnos = {
                     errno.ETIMEDOUT,
@@ -426,11 +441,16 @@ class MappingHandlersMixin:
             )
             self._send_json(202, task)
             return
-        result = self._mapping_rpc(row, "rpc", {
-            "family": family,
-            "operation": operation,
-            "args": rpc_args,
-        })
+        result = self._mapping_rpc(
+            row,
+            "rpc",
+            {
+                "family": family,
+                "operation": operation,
+                "args": rpc_args,
+            },
+            retry=not waited_for_online,
+        )
         if not isinstance(result, dict) or type(result.get("status")) is not int:
             raise ApiError(502, "invalid_mapping_response", "invalid RPC plugin response")
         if "error" in result:
@@ -511,9 +531,9 @@ class MappingHandlersMixin:
             raise ApiError(404, "mapping_not_found", "mapping does not exist")
         return row
 
-    def _mapping_rpc(self, row, operation, args):
+    def _mapping_rpc(self, row, operation, args, *, retry=True):
         try:
-            return self.server.mappings.call(row["id"], operation, args)
+            return self.server.mappings.call(row["id"], operation, args, retry=retry)
         except OSError as exc:
             status = {errno.EROFS: 403, errno.EACCES: 403, errno.EINVAL: 400, errno.ENOENT: 404,
                       errno.E2BIG: 413, errno.EPIPE: 409, errno.ENOTDIR: 400,

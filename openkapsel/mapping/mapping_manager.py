@@ -15,9 +15,12 @@ from pathlib import Path
 
 from openkapsel.mapping.mapping_capabilities import MappingRpcCapability, RPC_FAMILIES, RPC_STATES
 from openkapsel.mapping.mapping_store import MappingStore
-from openkapsel.mapping.mapping_transport import ProviderSession, READ_OPERATIONS, encode, recv_line
+from openkapsel.mapping.mapping_transport import (
+    MappingSessionDisconnected, ProviderSession, READ_OPERATIONS, encode, recv_line,
+)
 
 LOG = logging.getLogger("openkapsel.mappings")
+MAPPING_RPC_RETRY_DELAY_SECONDS = 5.0
 
 
 class MappingManager:
@@ -320,7 +323,7 @@ class MappingManager:
             return None
         return next((row for row in self.store.list(parts[0]) if row["name"] == parts[1]), None)
 
-    def check_path(self, path, *, write=False, protect_root=False):
+    def check_path(self, path, *, write=False, protect_root=False, require_online=True):
         row = self.at_path(path)
         if row:
             if protect_root and path == self.mount_path(row):
@@ -329,13 +332,100 @@ class MappingManager:
                 session = self.sessions.get(row["id"])
                 if not row["enabled"]:
                     raise OSError(errno.EACCES, "mapping is disabled")
-                if session is None or session.closed or not session.ready:
+                if require_online and (session is None or session.closed or not session.ready):
                     raise OSError(errno.EHOSTDOWN, "mapping client is offline")
             if write and not row["writable"]:
                 raise OSError(errno.EROFS, "mapping is read-only")
         return row
 
-    def call(self, mid, op, args, *, generation=None):
+    @staticmethod
+    def _call_retryable(session, op, args, generation):
+        if not isinstance(args, dict) or generation is not None or "handle" in args:
+            return False
+        if op == "rpc":
+            if session is None:
+                return False
+            family = args.get("family")
+            operation = args.get("operation")
+            capabilities = getattr(session, "capabilities", {})
+            rpc = capabilities.get("rpc") if isinstance(capabilities, dict) else None
+            advertised = rpc.get(family) if isinstance(rpc, dict) and isinstance(family, str) else None
+            specs = advertised.get("operation_specs") if isinstance(advertised, dict) else None
+            spec = specs.get(operation) if isinstance(specs, dict) and isinstance(operation, str) else None
+            operations = advertised.get("operations") if isinstance(advertised, dict) else None
+            return bool(
+                advertised
+                and advertised.get("state", "available") == "available"
+                and isinstance(operations, list)
+                and operation in operations
+                and isinstance(spec, dict)
+                and spec.get("write") is False
+                and spec.get("execution", "sync") == "sync"
+            )
+        read_operation = op in READ_OPERATIONS
+        if op == "open" and (args.get("mode", "r") != "r" or args.get("truncate")):
+            read_operation = False
+        return read_operation
+
+    def rpc_capability_for_call(
+        self,
+        mid,
+        family,
+        *,
+        operation=None,
+        min_version=1,
+        max_version=None,
+        required=None,
+    ):
+        capability = self.rpc_capability(
+            mid,
+            family,
+            operation=operation,
+            min_version=min_version,
+            max_version=max_version,
+            required=required,
+        )
+        if capability.state != "offline":
+            return capability, False
+        LOG.info(
+            "Mapping %s is offline before RPC; retrying in %.0fs",
+            mid,
+            MAPPING_RPC_RETRY_DELAY_SECONDS,
+        )
+        time.sleep(MAPPING_RPC_RETRY_DELAY_SECONDS)
+        return (
+            self.rpc_capability(
+                mid,
+                family,
+                operation=operation,
+                min_version=min_version,
+                max_version=max_version,
+                required=required,
+            ),
+            True,
+        )
+
+    def call(self, mid, op, args, *, generation=None, retry=True):
+        with self.lock:
+            current_session = self.sessions.get(mid)
+        replayable_after_send = self._call_retryable(current_session, op, args, generation)
+        try:
+            return self._call_once(mid, op, args, generation=generation)
+        except MappingSessionDisconnected as first_error:
+            if not retry:
+                raise
+            if first_error.request_sent and not replayable_after_send:
+                raise
+            LOG.info(
+                "Mapping RPC %s to %s disconnected; retrying in %.0fs",
+                op,
+                mid,
+                MAPPING_RPC_RETRY_DELAY_SECONDS,
+            )
+            time.sleep(MAPPING_RPC_RETRY_DELAY_SECONDS)
+            return self._call_once(mid, op, args, generation=generation)
+
+    def _call_once(self, mid, op, args, *, generation=None):
         row = self.store.get(mid)
         if not self.workspace_available(row["workspace"]):
             self.disconnect(mid)
@@ -345,7 +435,7 @@ class MappingManager:
             if not row["enabled"]:
                 raise OSError(errno.EACCES, "mapping is disabled")
             if session is None or session.closed or not session.ready:
-                raise OSError(errno.EHOSTDOWN, "mapping client is offline")
+                raise MappingSessionDisconnected(errno.EHOSTDOWN, "mapping client is offline")
         if generation is not None and session.generation != generation:
             raise OSError(errno.ESTALE, "mapping provider changed during the operation")
         if op.startswith("task_"):

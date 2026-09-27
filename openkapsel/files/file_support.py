@@ -182,7 +182,13 @@ class FileOperationSupportMixin(MappingQueryMixin):
                     "invalid_request",
                     "mapped transactional replacement requires the exact current ETag; wildcard is not supported",
                 )
-            capability = manager.rpc_capability(row["id"], "file", operation="fs_mutate", min_version=4, max_version=4)
+            capability, waited_for_online = manager.rpc_capability_for_call(
+                row["id"],
+                "file",
+                operation="fs_mutate",
+                min_version=4,
+                max_version=4,
+            )
             if not capability.available:
                 self._raise_mapping_rpc_unavailable(capability)
             item = {
@@ -201,7 +207,12 @@ class FileOperationSupportMixin(MappingQueryMixin):
                 encode({"id": "0" * 24, "op": "api_fs_mutate", "args": arguments})
             except OSError as exc:
                 self._raise_file_io_error(exc)
-            result = self._mapping_rpc(row, "api_fs_mutate", arguments)
+            result = self._mapping_rpc(
+                row,
+                "api_fs_mutate",
+                arguments,
+                retry=not waited_for_online,
+            )
             if "error" in result:
                 error = result["error"]
                 raise ApiError(result["status"], error["code"], error["message"], error.get("details"))

@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -268,9 +269,11 @@ class ArchiveHTTPTests(unittest.TestCase):
         ], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
-        status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            status, body = self.rpc_json("list", {"path": "mapped.zip"}, mapped=True)
         self.assertEqual(503, status, body)
         self.assertEqual("mapping_offline", body["error"]["code"])
+        sleep.assert_called_once_with(5.0)
         self.assertEqual([
             ("rpc", "archive", "list"),
             ("rpc", "archive", "read"),

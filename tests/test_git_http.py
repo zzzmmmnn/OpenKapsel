@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 from openkapsel.client_runtime.client_files import ClientFiles
@@ -271,9 +272,11 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual("dependency_missing", body["error"]["details"]["reason"])
 
             self.server.mappings.sessions.pop(row["id"])
-            status, body = rpc("status")
+            with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+                status, body = rpc("status")
             self.assertEqual(503, status)
             self.assertEqual("mapping_offline", body["error"]["code"])
+            sleep.assert_called_once_with(5.0)
         finally:
             self.server.mappings.sessions.clear()
             self.server.mappings.store.delete(row["id"])

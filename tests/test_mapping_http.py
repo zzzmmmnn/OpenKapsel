@@ -134,10 +134,21 @@ class MappingHTTPTests(unittest.TestCase):
             )
 
             endpoint = base + f"/mappings/{row['id']}/rpc/vendor/inspect"
-            status, _, raw = self.request(
-                "POST", endpoint, json.dumps({"args": {"value": 7}}),
-                {"Content-Type": "application/json"},
-            )
+            session.closed = True
+
+            def reconnect_rest(delay):
+                self.assertEqual(5.0, delay)
+                session.closed = False
+
+            with patch(
+                "openkapsel.mapping.mapping_manager.time.sleep",
+                side_effect=reconnect_rest,
+            ) as sleep:
+                status, _, raw = self.request(
+                    "POST", endpoint, json.dumps({"args": {"value": 7}}),
+                    {"Content-Type": "application/json"},
+                )
+            sleep.assert_called_once_with(5.0)
             self.assertEqual(200, status, raw)
             payload = json.loads(raw)
             self.assertEqual(7, payload["result"]["echo"])
@@ -197,10 +208,21 @@ class MappingHTTPTests(unittest.TestCase):
                     "args": {"value": 8},
                 },
             }}
-            _, _, raw = self.request(
-                "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(tool),
-                {"Authorization": "Bearer " + conn["secret"], "Content-Type": "application/json"},
-            )
+            session.closed = True
+
+            def reconnect_mcp(delay):
+                self.assertEqual(5.0, delay)
+                session.closed = False
+
+            with patch(
+                "openkapsel.mapping.mapping_manager.time.sleep",
+                side_effect=reconnect_mcp,
+            ) as sleep:
+                _, _, raw = self.request(
+                    "POST", "/kapsel/mcp-connect/" + conn["id"] + "/mcp", json.dumps(tool),
+                    {"Authorization": "Bearer " + conn["secret"], "Content-Type": "application/json"},
+                )
+            sleep.assert_called_once_with(5.0)
             result = json.loads(raw)["result"]
             self.assertFalse(result["isError"], result)
             self.assertEqual(8, json.loads(result["content"][0]["text"])["result"]["echo"])
@@ -244,5 +266,7 @@ class MappingHTTPTests(unittest.TestCase):
         root = self.server.tokens.scope_root(self.record)
         (root / row["name"]).mkdir()
         base = "/kapsel/w/" + self.record.token
-        self.assertEqual(503, self.request("GET", base + "/fs/query/list?path=offline")[0])
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            self.assertEqual(503, self.request("GET", base + "/fs/query/list?path=offline")[0])
+        sleep.assert_called_once_with(5.0)
         self.assertEqual(200, self.request("GET", base + "/fs/query/list?path=.")[0])

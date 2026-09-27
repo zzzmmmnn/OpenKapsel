@@ -174,6 +174,24 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual("mapping_rpc_unsupported", result["error"]["code"])
         self.assertEqual(before, len(self.calls))
 
+    def test_file_rpc_waits_once_when_provider_initially_offline(self):
+        (self.export / "a.txt").write_text("hello")
+        self.session.closed = True
+
+        def reconnect(delay):
+            self.assertEqual(5.0, delay)
+            self.session.closed = False
+
+        with patch(
+            "openkapsel.mapping.mapping_manager.time.sleep",
+            side_effect=reconnect,
+        ) as sleep:
+            status, body = self.api("/fs/query/stat?path=laptop/a.txt&fields=size")
+        self.assertEqual(200, status, body)
+        self.assertEqual(5, body["size"])
+        self.assertEqual(["api_fs_stat"], [op for op, _ in self.calls])
+        sleep.assert_called_once_with(5.0)
+
     def test_legacy_disabled_file_rpc_offline_and_mapping_disabled_never_fallback(self):
         (self.mount / "fallback").write_text("fuse")
         self.session.capabilities = {
@@ -192,9 +210,11 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual([], self.calls)
 
         self.server.mappings.sessions.pop(self.row["id"])
-        status, body = self.api("/fs/query/list?path=laptop")
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            status, body = self.api("/fs/query/list?path=laptop")
         self.assertEqual(503, status, body)
         self.assertEqual("mapping_offline", body["error"]["code"])
+        sleep.assert_called_once_with(5.0)
 
         self.server.mappings.sessions[self.row["id"]] = self.session
         self.server.mappings.store.update(self.row["id"], enabled=False)

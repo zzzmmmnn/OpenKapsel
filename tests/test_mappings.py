@@ -19,8 +19,25 @@ from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.mapping.mapping_store import MappingStore
-from openkapsel.mapping.mapping_transport import ProviderSession
+from openkapsel.mapping.mapping_transport import MappingSessionDisconnected, ProviderSession
 from openkapsel.mapping.mapping_transfers import FileTransferManager
+
+
+class _FakeMappingSession:
+    def __init__(self, *, generation="fake", capabilities=None, result=None, error=None):
+        self.generation = generation
+        self.capabilities = capabilities or {}
+        self.result = result
+        self.error = error
+        self.closed = False
+        self.ready = True
+        self.calls = 0
+
+    def call(self, operation, arguments):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 @unittest.skipIf(os.name == "nt", "POSIX descriptor tests; see test_client_windows")
@@ -147,9 +164,11 @@ class MappingTests(unittest.TestCase):
         (workspace / "project").mkdir()
         manager = MappingManager(workspace, self.root / "state")
         row, _ = manager.store.create("project", "laptop")
-        with self.assertRaises(OSError) as error:
-            manager.call(row["id"], "stat", {"path": "."})
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            with self.assertRaises(OSError) as error:
+                manager.call(row["id"], "stat", {"path": "."})
         self.assertEqual(error.exception.errno, errno.EHOSTDOWN)
+        sleep.assert_called_once_with(5.0)
         class Session:
             generation = "new"
             closed = False
@@ -158,6 +177,135 @@ class MappingTests(unittest.TestCase):
         with self.assertRaises(OSError) as error:
             manager.call(row["id"], "read", {"handle": "old:1", "size": 1})
         self.assertEqual(error.exception.errno, errno.ESTALE)
+
+    def test_readonly_generic_rpc_retries_after_transport_disconnect(self):
+        workspace = self.root / "workspaces"
+        (workspace / "project").mkdir(parents=True)
+        manager = MappingManager(workspace, self.root / "state")
+        row, _ = manager.store.create("project", "laptop")
+        capabilities = {"rpc": {"vendor": {
+            "state": "available",
+            "version": 1,
+            "operations": ["inspect"],
+            "operation_specs": {"inspect": {"write": False, "execution": "sync"}},
+        }}}
+        first = _FakeMappingSession(
+            capabilities=capabilities,
+            error=MappingSessionDisconnected(
+                errno.EHOSTDOWN,
+                "mapping client disconnected",
+                request_sent=True,
+            ),
+        )
+        second = _FakeMappingSession(
+            generation="reconnected",
+            capabilities=capabilities,
+            result={"status": 200, "body": {"ok": True}},
+        )
+        manager.sessions[row["id"]] = first
+
+        def reconnect(delay):
+            self.assertEqual(5.0, delay)
+            manager.sessions[row["id"]] = second
+
+        with patch("openkapsel.mapping.mapping_manager.time.sleep", side_effect=reconnect) as sleep:
+            result = manager.call(row["id"], "rpc", {
+                "family": "vendor",
+                "operation": "inspect",
+                "args": {},
+            })
+        self.assertEqual({"status": 200, "body": {"ok": True}}, result)
+        self.assertEqual(1, first.calls)
+        self.assertEqual(1, second.calls)
+        sleep.assert_called_once_with(5.0)
+
+    def test_mapping_rpc_disconnect_retries_only_once(self):
+        workspace = self.root / "workspaces"
+        (workspace / "project").mkdir(parents=True)
+        manager = MappingManager(workspace, self.root / "state")
+        row, _ = manager.store.create("project", "laptop")
+        first = _FakeMappingSession(
+            error=MappingSessionDisconnected(
+                errno.EHOSTDOWN,
+                "first disconnect",
+                request_sent=True,
+            ),
+        )
+        second = _FakeMappingSession(
+            generation="reconnected",
+            error=MappingSessionDisconnected(
+                errno.EHOSTDOWN,
+                "second disconnect",
+                request_sent=True,
+            ),
+        )
+        manager.sessions[row["id"]] = first
+
+        def reconnect(delay):
+            self.assertEqual(5.0, delay)
+            manager.sessions[row["id"]] = second
+
+        with patch("openkapsel.mapping.mapping_manager.time.sleep", side_effect=reconnect) as sleep:
+            with self.assertRaises(MappingSessionDisconnected):
+                manager.call(row["id"], "api_fs_stat", {"query": {"path": ["."]}})
+        self.assertEqual(1, first.calls)
+        self.assertEqual(1, second.calls)
+        sleep.assert_called_once_with(5.0)
+
+    def test_mapping_rpc_does_not_retry_client_errors_or_writes(self):
+        workspace = self.root / "workspaces"
+        (workspace / "project").mkdir(parents=True)
+        manager = MappingManager(workspace, self.root / "state")
+        row, _ = manager.store.create("project", "laptop", writable=True)
+
+        client_error = _FakeMappingSession(
+            error=OSError(errno.EHOSTDOWN, "client backend is unavailable"),
+        )
+        manager.sessions[row["id"]] = client_error
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            with self.assertRaises(OSError) as raised:
+                manager.call(row["id"], "api_fs_stat", {"query": {"path": ["."]}})
+        self.assertEqual(errno.EHOSTDOWN, raised.exception.errno)
+        self.assertEqual(1, client_error.calls)
+        sleep.assert_not_called()
+
+        write_disconnect = _FakeMappingSession(
+            error=MappingSessionDisconnected(
+                errno.EHOSTDOWN,
+                "mapping client disconnected",
+                request_sent=True,
+            ),
+        )
+        manager.sessions[row["id"]] = write_disconnect
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            with self.assertRaises(MappingSessionDisconnected):
+                manager.call(row["id"], "api_fs_mutate", {"body": {"items": []}})
+        self.assertEqual(1, write_disconnect.calls)
+        sleep.assert_not_called()
+
+    def test_preoffline_write_waits_once_then_sends_once(self):
+        workspace = self.root / "workspaces"
+        (workspace / "project").mkdir(parents=True)
+        manager = MappingManager(workspace, self.root / "state")
+        row, _ = manager.store.create("project", "laptop", writable=True)
+        reconnected = _FakeMappingSession(
+            generation="reconnected",
+            result={"status": 200, "body": {"updated": True}},
+        )
+
+        def reconnect(delay):
+            self.assertEqual(5.0, delay)
+            manager.sessions[row["id"]] = reconnected
+
+        with patch("openkapsel.mapping.mapping_manager.time.sleep", side_effect=reconnect) as sleep:
+            result = manager.call(
+                row["id"],
+                "api_fs_mutate",
+                {"body": {"items": [{"op": "file.create", "path": "a", "content": "x"}]}},
+            )
+        self.assertEqual({"status": 200, "body": {"updated": True}}, result)
+        self.assertEqual(1, reconnected.calls)
+        sleep.assert_called_once_with(5.0)
 
     def test_rename_preserves_identity_rejects_collisions_and_rolls_back(self):
         workspace = self.root / "workspaces"

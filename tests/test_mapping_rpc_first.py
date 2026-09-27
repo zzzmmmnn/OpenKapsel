@@ -98,9 +98,11 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, result)
         self.assertIn(hashlib.sha256(b"remote needle\r\n").hexdigest(), json.dumps(result))
         self.session.closed = True
-        status, result = self.api("/fs/query/tree?path=.&depth=2")
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+            status, result = self.api("/fs/query/tree?path=.&depth=2")
         self.assertEqual(200, status, result)
         self.assertIn('"unavailable": true', json.dumps(result))
+        sleep.assert_called_once_with(5.0)
 
     def test_download_range_head_static_preview_and_mcp_helpers(self):
         data = bytes(range(256)) * 1200

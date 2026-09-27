@@ -169,14 +169,16 @@ class MappingQueryTests(unittest.TestCase):
                 self.session.capabilities = capabilities
                 self.session.closed = closed
                 self.calls.clear()
-                status, result = self.search()
-                self.assertEqual(200, status, result)
-                self.assertEqual(1, result["match_count"])
-                self.assertTrue(result["truncated"])
-                self.assertEqual(code, result["unavailable_mappings"][0]["error"]["code"])
-                status, result = self.api("/fs/query/tree?path=.&depth=2")
+                with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
+                    status, result = self.search()
+                    self.assertEqual(200, status, result)
+                    self.assertEqual(1, result["match_count"])
+                    self.assertTrue(result["truncated"])
+                    self.assertEqual(code, result["unavailable_mappings"][0]["error"]["code"])
+                    status, result = self.api("/fs/query/tree?path=.&depth=2")
                 self.assertEqual(code, result["tree"]["children"][0]["error"]["code"])
                 self.assertEqual([], self.calls)
+                self.assertEqual(2 if closed else 0, sleep.call_count)
 
     def test_path_filters_require_feature_from_old_clients(self):
         self.session.capabilities.pop("file_stream")

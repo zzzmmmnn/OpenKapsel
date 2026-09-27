@@ -32,6 +32,14 @@ READ_OPERATIONS = frozenset({"fstat", "stat", "list", "read", "open", "close", "
                              "task_get", "task_list"}) | frozenset("api_" + op for op in FILE_API_READ_OPERATIONS)
 
 
+class MappingSessionDisconnected(OSError):
+    """Transport-level mapping disconnect, distinct from client operation errors."""
+
+    def __init__(self, err, message, *, request_sent=False):
+        super().__init__(err, message)
+        self.request_sent = bool(request_sent)
+
+
 def encode(value):
     data = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode()
     if len(data) > MAX_MESSAGE:
@@ -97,12 +105,21 @@ class ProviderSession:
         from wsproto.events import TextMessage
         with self.lock:
             if self.closed:
-                raise OSError(errno.EHOSTDOWN, "mapping client is offline")
-            self.socket.sendall(self.ws.send(TextMessage(data=encode(value).decode())))
+                raise MappingSessionDisconnected(errno.EHOSTDOWN, "mapping client is offline")
+            frame = self.ws.send(TextMessage(data=encode(value).decode()))
+            try:
+                self.socket.sendall(frame)
+            except OSError as exc:
+                self.close()
+                raise MappingSessionDisconnected(
+                    exc.errno or errno.EHOSTDOWN,
+                    "mapping client disconnected",
+                    request_sent=True,
+                ) from exc
 
     def call(self, operation, arguments):
         if not self.ready:
-            raise OSError(errno.EHOSTDOWN, "mapping client handshake is not ready")
+            raise MappingSessionDisconnected(errno.EHOSTDOWN, "mapping client handshake is not ready")
         if not self.slots.acquire(timeout=2):
             raise OSError(errno.EBUSY, "mapping request limit reached")
         rid = secrets.token_hex(12)
@@ -119,6 +136,8 @@ class ProviderSession:
                 # An ambiguous write is never replayed into another session.
                 self.close()
                 raise OSError(errno.ETIMEDOUT, "mapping request timed out; result may be unknown") from None
+            if isinstance(result, MappingSessionDisconnected):
+                raise result
             if "error" in result:
                 error = result["error"]
                 message = error.get("message")
@@ -216,7 +235,13 @@ class ProviderSession:
             self.closed = True
             for waiter in self.pending.values():
                 if waiter.empty():
-                    waiter.put_nowait({"error": {"errno": errno.EHOSTDOWN}})
+                    waiter.put_nowait(
+                        MappingSessionDisconnected(
+                            errno.EHOSTDOWN,
+                            "mapping client disconnected",
+                            request_sent=True,
+                        )
+                    )
             try:
                 self.socket.shutdown(socket.SHUT_RDWR)
             except OSError:
