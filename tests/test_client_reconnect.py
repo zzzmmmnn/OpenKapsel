@@ -145,6 +145,105 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertTrue(task["done"].wait(5))
         self.assertFalse(self.connection("task_get", {"task_id": "offline-deadline"})["result"]["running"])
 
+    def test_heartbeat_ping_failure_aborts_half_open_transport(self):
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+        ])
+        ping_called = threading.Event()
+        shutdown_called = threading.Event()
+        failures = []
+
+        class Socket:
+            def send(self, _data):
+                pass
+
+            def recv(self):
+                try:
+                    return next(messages)
+                except StopIteration:
+                    shutdown_called.wait(2)
+                    return ""
+
+            def ping(self, *_args):
+                ping_called.set()
+                raise OSError("simulated half-open connection")
+
+            def shutdown(self):
+                shutdown_called.set()
+
+            def close(self):
+                shutdown_called.set()
+
+        def provider():
+            try:
+                run_once(self.config, runtime=self.runtime)
+            except Exception as exc:
+                failures.append(exc)
+
+        with (
+            patch("websocket.create_connection", return_value=Socket()),
+            patch("openkapsel.client.HEARTBEAT_SECONDS", 0.01),
+        ):
+            thread = threading.Thread(target=provider, daemon=True)
+            thread.start()
+            self.assertTrue(ping_called.wait(1))
+            thread.join(1)
+
+        self.assertTrue(shutdown_called.is_set())
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(failures, failures)
+
+    def test_heartbeat_reload_check_failure_aborts_transport(self):
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+        ])
+        shutdown_called = threading.Event()
+        failures = []
+
+        class Socket:
+            def send(self, _data):
+                pass
+
+            def recv(self):
+                try:
+                    return next(messages)
+                except StopIteration:
+                    shutdown_called.wait(2)
+                    return ""
+
+            def ping(self, *_args):
+                raise AssertionError("ping should not run after reload check failure")
+
+            def shutdown(self):
+                shutdown_called.set()
+
+            def close(self):
+                shutdown_called.set()
+
+        def provider():
+            try:
+                run_once(self.config, runtime=self.runtime)
+            except Exception as exc:
+                failures.append(exc)
+
+        with (
+            patch("websocket.create_connection", return_value=Socket()),
+            patch("openkapsel.client.HEARTBEAT_SECONDS", 0.01),
+            patch("openkapsel.client._periodic_reload_check", side_effect=OSError("state unavailable")) as check,
+            self.assertLogs("openkapsel.client", level="WARNING") as logs,
+        ):
+            thread = threading.Thread(target=provider, daemon=True)
+            thread.start()
+            thread.join(1)
+
+        self.assertTrue(check.called)
+        self.assertTrue(shutdown_called.is_set())
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(failures, failures)
+        self.assertIn("Mapping heartbeat failed (OSError)", "\n".join(logs.output))
+
     def test_runtime_close_stops_tasks_and_config_cannot_switch(self):
         task = self.start("runtime-close", "import time; time.sleep(60)")
         with self.assertRaises(ValueError):

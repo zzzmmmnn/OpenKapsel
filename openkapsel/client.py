@@ -34,6 +34,7 @@ from openkapsel.client_runtime.client_reload import (
 )
 
 LOG = logging.getLogger("openkapsel.client")
+HEARTBEAT_SECONDS = 10.0
 
 
 class ClientReloadRequired(RuntimeError):
@@ -353,15 +354,25 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
             reload_state.mark_ready(server_fingerprint)
         LOG.info("Mapping provider connected and READY")
         def heartbeat():
-            while not stopped.wait(10):
-                _periodic_reload_check(config, runtime, reload_state, minimum_version)
-                if runtime.pending_reload and not runtime.has_active_tasks():
-                    sock.close()
-                    return
-                try:
+            try:
+                while not stopped.wait(HEARTBEAT_SECONDS):
+                    _periodic_reload_check(config, runtime, reload_state, minimum_version)
+                    if runtime.pending_reload and not runtime.has_active_tasks():
+                        break
                     sock.ping("keepalive")
-                except (OSError, websocket.WebSocketException):
-                    return
+            except Exception as exc:
+                if not stopped.is_set():
+                    LOG.warning("Mapping heartbeat failed (%s)", type(exc).__name__)
+            finally:
+                if not stopped.is_set():
+                    try:
+                        shutdown = getattr(sock, "shutdown", None)
+                        if callable(shutdown):
+                            shutdown()
+                        else:
+                            sock.close()
+                    except (OSError, websocket.WebSocketException):
+                        pass
         threading.Thread(target=heartbeat, daemon=True).start()
         while not stop.is_set():
             data = sock.recv()
