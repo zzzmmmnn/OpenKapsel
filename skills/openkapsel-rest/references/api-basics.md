@@ -83,7 +83,7 @@ python3 scripts/openkapsel_http.py GET discovery/files
 python3 scripts/openkapsel_http.py GET fs/query/stat \
   --query path=src/app.py --query fields=type,size,etag,sha256
 
-python3 scripts/openkapsel_http.py POST fs/mkdir \
+python3 scripts/openkapsel_http.py POST fs/write/mkdir \
   --json '{"path":"build","parents":true,"exist_ok":true}' \
   --plan-id 42 --taskname build --message 'Create the build directory'
 ```
