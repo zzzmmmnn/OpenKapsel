@@ -378,7 +378,11 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
                         pass
         threading.Thread(target=heartbeat, daemon=True).start()
         while not stop.is_set():
-            data = sock.recv()
+            try:
+                data = sock.recv()
+            except websocket.WebSocketTimeoutException:
+                LOG.info("Mapping provider receive timed out")
+                break
             if not data:
                 LOG.info("Mapping provider disconnected")
                 break

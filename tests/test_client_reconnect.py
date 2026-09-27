@@ -147,6 +147,40 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertTrue(task["done"].wait(5))
         self.assertFalse(self.connection("task_get", {"task_id": "offline-deadline"})["result"]["running"])
 
+    def test_ready_recv_timeout_is_clean_disconnect(self):
+        import websocket
+
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+        ])
+
+        class Socket:
+            def send(self, _data):
+                pass
+
+            def recv(self):
+                try:
+                    return next(messages)
+                except StopIteration:
+                    raise websocket.WebSocketTimeoutException("timed out")
+
+            def ping(self, *_args):
+                pass
+
+            def close(self):
+                pass
+
+        with (
+            patch("websocket.create_connection", return_value=Socket()),
+            self.assertLogs("openkapsel.client", level="INFO") as logs,
+        ):
+            run_once(self.config, runtime=self.runtime)
+
+        output = "\n".join(logs.output)
+        self.assertIn("Mapping provider receive timed out", output)
+        self.assertNotIn("Provider connection ended", output)
+
     def test_heartbeat_ping_failure_aborts_half_open_transport(self):
         messages = iter([
             self.server_hello(),
