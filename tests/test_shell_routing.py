@@ -69,7 +69,9 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         body = {"command": "touch forbidden", "cwd": "laptop"}
         self.session.closed = True
         self.assertEqual(503, self.api("/shell/exec", body)[0])
-        self.assertTrue(self.api("/tasks")[1]["unavailable_mappings"])
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as retry_sleep:
+            self.assertTrue(self.api("/tasks")[1]["unavailable_mappings"])
+        retry_sleep.assert_not_called()
         self.session.closed = False
         self.session.capabilities["execution"].pop("shell_command")
         self.assertEqual(409, self.api("/shell/exec", body)[0])
@@ -101,7 +103,9 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.assertEqual(202, status, result)
         tid = result["task_id"]
         self.session.closed = True
-        self.assertEqual(503, self.api("/tasks/" + tid)[0])
+        with patch("openkapsel.mapping.mapping_manager.time.sleep") as retry_sleep:
+            self.assertEqual(503, self.api("/tasks/" + tid)[0])
+        retry_sleep.assert_not_called()
         self.session.closed = False
         self.assertEqual(413, self.api("/tasks/" + tid + "/stdin", {"data": "x" * 16385})[0])
         status, result = self.api("/tasks/" + tid + "/stdin", {"data": "hello\n", "close": True})

@@ -49,7 +49,12 @@ class RemoteTask:
 
     def fetch(self, offset):
         if self.cached_offset != offset or time.monotonic() - self.fetched_at >= .25:
-            self.result = self.handler._mapping_rpc(self.row, "task_get", {"task_id": self.tid, "offset": offset})
+            self.result = self.handler._mapping_rpc(
+                self.row,
+                "task_get",
+                {"task_id": self.tid, "offset": offset},
+                retry=False,
+            )
             self.cached_offset, self.fetched_at = offset, time.monotonic()
         return self.result
 
@@ -179,7 +184,7 @@ class ShellRoutingMixin:
             ):
                 continue
             try:
-                results = self._mapping_rpc(row, "task_list", {})
+                results = self._mapping_rpc(row, "task_list", {}, retry=False)
             except ApiError as exc:
                 unavailable.append({"mapping_id": row["id"], "code": exc.code})
                 continue
