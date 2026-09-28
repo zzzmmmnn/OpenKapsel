@@ -322,6 +322,79 @@ class ClientReconnectTests(unittest.TestCase):
         self.assertIn("Mapping provider disconnected", output)
         self.assertNotIn("WARNING", output)
 
+    def test_heartbeat_raw_shutdown_wakes_blocked_windows_style_recv(self):
+        import websocket
+
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+        ])
+        recv_blocked = threading.Event()
+        raw_shutdown = threading.Event()
+        wrapper_shutdown = threading.Event()
+        failures = []
+
+        class RawSocket:
+            how = None
+
+            def shutdown(self, how):
+                self.how = how
+                raw_shutdown.set()
+
+        raw = RawSocket()
+
+        class Socket:
+            sock = raw
+
+            def send(self, _data):
+                pass
+
+            def recv(self):
+                try:
+                    return next(messages)
+                except StopIteration:
+                    recv_blocked.set()
+                    raw_shutdown.wait(2)
+                    return ""
+
+            def ping(self, *_args):
+                if not recv_blocked.wait(1):
+                    raise AssertionError("receive loop did not block")
+                raise websocket.WebSocketConnectionClosedException("closed")
+
+            def shutdown(self):
+                # websocket-client 1.9.x only closes the raw socket here. On
+                # Windows that does not reliably interrupt another thread's recv.
+                wrapper_shutdown.set()
+
+            def close(self):
+                raw_shutdown.set()
+
+        def provider():
+            try:
+                run_once(self.config, runtime=self.runtime)
+            except Exception as exc:
+                failures.append(exc)
+
+        with (
+            patch("websocket.create_connection", return_value=Socket()),
+            patch("openkapsel.client.HEARTBEAT_SECONDS", 0.01),
+        ):
+            thread = threading.Thread(target=provider, daemon=True)
+            thread.start()
+            self.assertTrue(recv_blocked.wait(1))
+            thread.join(.5)
+            woke_without_help = not thread.is_alive()
+            if thread.is_alive():
+                raw_shutdown.set()
+                thread.join(1)
+
+        self.assertTrue(woke_without_help, "heartbeat did not promptly wake blocked recv")
+        self.assertEqual(client_module.socket.SHUT_RDWR, raw.how)
+        self.assertTrue(wrapper_shutdown.is_set())
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(failures, failures)
+
     def test_main_logs_and_retries_after_clean_disconnect(self):
         class Lock:
             config = {"url": "ws://example/provider", "token": "t", "root": "."}

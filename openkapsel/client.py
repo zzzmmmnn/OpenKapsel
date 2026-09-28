@@ -7,6 +7,7 @@ import errno
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -368,6 +369,16 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
                     LOG.warning("Mapping heartbeat failed (%s)", type(exc).__name__)
             finally:
                 if not stopped.is_set():
+                    # On Windows, closing a socket from another thread does not
+                    # reliably wake a blocking recv(). websocket-client 1.9.x
+                    # WebSocket.shutdown() only closes the raw socket, so abort
+                    # both directions first to force the receive loop to return.
+                    raw_sock = getattr(sock, "sock", None)
+                    if raw_sock is not None:
+                        try:
+                            raw_sock.shutdown(socket.SHUT_RDWR)
+                        except (OSError, AttributeError):
+                            pass
                     try:
                         shutdown = getattr(sock, "shutdown", None)
                         if callable(shutdown):
