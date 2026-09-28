@@ -68,7 +68,6 @@ CLIENT_FILES = (
     "openkapsel/client.py",
     "openkapsel/client_runtime/client_config.py",
     "openkapsel/client_runtime/client_reload.py",
-    "openkapsel/client_runtime/client_proxy.py",
     "openkapsel/client_runtime/client_file_api.py",
     "openkapsel/client_runtime/client_files.py",
     "openkapsel/client_runtime/client_tasks.py",
@@ -79,6 +78,8 @@ CLIENT_FILES = (
     "openkapsel/files/rename_exclusive.py",
     "openkapsel/files/safe_paths.py",
     "openkapsel/files/text_encoding.py",
+    "openkapsel/network/__init__.py",
+    "openkapsel/network/proxy.py",
     "openkapsel/rpc_plugins/__init__.py",
     "openkapsel/rpc_plugins/_data.py",
     "openkapsel/rpc_plugins/registry.py",
@@ -202,6 +203,10 @@ def guarded_source_files(root: str | Path, side: str) -> set[str]:
         result.update(
             path.relative_to(root).as_posix()
             for path in (root / "openkapsel" / "rpc_plugins").rglob("*.py")
+        )
+        result.update(
+            path.relative_to(root).as_posix()
+            for path in (root / "openkapsel" / "network").glob("*.py")
         )
         result.update({
             "openkapsel/files/git_operations.py", "openkapsel/files/git_read.py",

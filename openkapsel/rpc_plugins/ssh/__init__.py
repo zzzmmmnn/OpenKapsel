@@ -13,7 +13,6 @@ import posixpath
 import re
 import secrets
 import socket
-import ssl
 import stat
 import threading
 import time
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from openkapsel.errors import ApiError
+from openkapsel.network.proxy import ProxyConfig, ProxyTunnelError, connect_proxy_tunnel
 from .._data import Snapshot, export_path, fail, object_schema, response, validate
 
 
@@ -42,19 +42,6 @@ _SHA256_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}\Z")
 
 
 @dataclass(frozen=True)
-class SshProxy:
-    type: str
-    host: str
-    port: int
-    username: str | None = None
-    password: str | None = field(default=None, repr=False)
-    remote_dns: bool = True
-    tls_verify: bool = True
-    ca_file: str | None = None
-    tls_server_name: str | None = None
-
-
-@dataclass(frozen=True)
 class SshProfile:
     name: str
     host: str
@@ -68,7 +55,7 @@ class SshProfile:
     host_key_policy: str = "strict"
     host_key_sha256: str | None = None
     known_hosts: str | None = None
-    proxy: SshProxy | None = None
+    proxy: ProxyConfig | None = None
 
 
 @dataclass
@@ -143,7 +130,7 @@ def _profile_host_port(value: dict[str, Any], *, name: str) -> tuple[str, int]:
     return host, port
 
 
-def _parse_proxy(value: Any, *, name: str) -> SshProxy | None:
+def _parse_proxy(value: Any, *, name: str) -> ProxyConfig | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -218,7 +205,7 @@ def _parse_proxy(value: Any, *, name: str) -> SshProxy | None:
         raise ValueError(
             f"ssh.profiles.{name}.proxy TLS settings apply only to HTTPS proxies"
         )
-    return SshProxy(
+    return ProxyConfig(
         type=kind, host=host, port=port, username=username, password=password,
         remote_dns=remote_dns, tls_verify=tls_verify, ca_file=ca_file,
         tls_server_name=tls_server_name,
@@ -326,102 +313,25 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
     }
 
 
-def _proxy_authority(host: str, port: int) -> str:
-    if "\r" in host or "\n" in host:
-        raise ValueError("proxy destination host must not contain line breaks")
-    display = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    return f"{display}:{port}"
-
-
-def _read_http_proxy_response(sock: socket.socket) -> tuple[int, str]:
-    data = bytearray()
-    while not data.endswith(b"\r\n\r\n"):
-        if len(data) >= 65536:
-            raise ValueError("HTTP proxy response headers exceed 64 KiB")
-        chunk = sock.recv(1)
-        if not chunk:
-            raise OSError(errno.ECONNRESET, "HTTP proxy closed during CONNECT response")
-        data.extend(chunk)
-    first = bytes(data).split(b"\r\n", 1)[0].decode("iso-8859-1", "replace")
-    parts = first.split(" ", 2)
-    if len(parts) < 2 or not parts[0].startswith("HTTP/") or not parts[1].isdigit():
-        raise ValueError("HTTP proxy returned an invalid CONNECT response")
-    return int(parts[1]), first[:200]
-
-
-def _open_proxy_socket(profile: SshProfile, timeout: float) -> socket.socket | None:
+def _open_proxy_socket(profile: SshProfile, timeout: float):
     proxy = profile.proxy
     if proxy is None:
         return None
     details = {"profile": profile.name, "proxy_type": proxy.type}
-    if proxy.type in {"socks4", "socks5"}:
-        try:
-            from python_socks import ProxyType
-            from python_socks.sync import Proxy
-        except ImportError as exc:
+    try:
+        return connect_proxy_tunnel(
+            proxy, profile.host, profile.port, timeout=timeout
+        )
+    except ProxyTunnelError as exc:
+        details.update(exc.public_details())
+        if exc.reason == "dependency_missing":
             raise ApiError(503, "ssh_proxy_dependency_missing",
                            "SOCKS SSH proxy requires python-socks", details) from exc
-        proxy_type = ProxyType.SOCKS4 if proxy.type == "socks4" else ProxyType.SOCKS5
-        try:
-            sock = Proxy(
-                proxy_type, proxy.host, proxy.port, username=proxy.username,
-                password=proxy.password, rdns=proxy.remote_dns,
-            ).connect(profile.host, profile.port, timeout=timeout)
-            sock.settimeout(timeout)
-            return sock
-        except Exception as exc:
-            raise ApiError(502, "ssh_proxy_connect_failed",
-                           "SSH SOCKS proxy connection could not be established",
-                           {**details, "error_type": type(exc).__name__}) from exc
-
-    sock = None
-    try:
-        sock = socket.create_connection((proxy.host, proxy.port), timeout=timeout)
-        sock.settimeout(timeout)
-        if proxy.type == "https":
-            cafile = str(Path(proxy.ca_file).expanduser()) if proxy.ca_file else None
-            context = ssl.create_default_context(cafile=cafile)
-            if not proxy.tls_verify:
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-            sock = context.wrap_socket(
-                sock, server_hostname=proxy.tls_server_name or proxy.host
-            )
-            sock.settimeout(timeout)
-        authority = _proxy_authority(profile.host, profile.port)
-        headers = [
-            f"CONNECT {authority} HTTP/1.1",
-            f"Host: {authority}",
-            "Proxy-Connection: Keep-Alive",
-        ]
-        if proxy.username is not None:
-            token = base64.b64encode(
-                f"{proxy.username}:{proxy.password or ''}".encode("utf-8")
-            ).decode("ascii")
-            headers.append("Proxy-Authorization: Basic " + token)
-        sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
-        status, status_line = _read_http_proxy_response(sock)
-        if status == 407:
+        if exc.reason == "authentication_failed":
             raise ApiError(502, "ssh_proxy_authentication_failed",
-                           "SSH HTTP proxy authentication failed", details)
-        if not 200 <= status < 300:
-            raise ApiError(502, "ssh_proxy_connect_failed",
-                           "SSH HTTP proxy rejected CONNECT",
-                           {**details, "proxy_status": status, "status_line": status_line})
-        return sock
-    except ApiError:
-        if sock is not None:
-            with contextlib.suppress(Exception):
-                sock.close()
-        raise
-    except Exception as exc:
-        if sock is not None:
-            with contextlib.suppress(Exception):
-                sock.close()
+                           "SSH proxy authentication failed", details) from exc
         raise ApiError(502, "ssh_proxy_connect_failed",
-                       "SSH proxy connection could not be established",
-                       {**details, "error_type": type(exc).__name__}) from exc
-
+                       "SSH proxy connection could not be established", details) from exc
 
 def _fingerprint(key: Any) -> str:
     digest = hashlib.sha256(key.asbytes()).digest()

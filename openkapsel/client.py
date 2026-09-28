@@ -18,10 +18,10 @@ from . import __version__
 
 from openkapsel.client_runtime.client_config import ClientConfigError, ClientConfigLock
 from openkapsel.client_runtime.client_files import ClientFiles
-from openkapsel.client_runtime.client_proxy import (
-    open_https_proxy_socket,
+from openkapsel.network.proxy import (
+    connect_proxy_tunnel,
     parse_proxy_url,
-    websocket_proxy_options,
+    wrap_tls_stream,
 )
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.rpc_plugins import load_client_rpc_registry
@@ -64,19 +64,39 @@ class ClientProtocolRequired(RuntimeError):
 
 def proxy_options(url, *, target_url=None, timeout=60):
     proxy = parse_proxy_url(url)
-    if proxy is not None and proxy.scheme == "https":
-        if target_url is None:
-            raise ValueError("target_url is required for an HTTPS proxy")
-        return {
-            "socket": open_https_proxy_socket(
-                proxy, target_url, timeout=float(timeout)
-            ),
-            "http_no_proxy": ["*"],
-            # A preconnected HTTPS tunnel cannot be safely reused for an arbitrary
-            # redirect target, and falling back to a direct redirect is forbidden.
-            "redirect_limit": 0,
-        }
-    return websocket_proxy_options(proxy)
+    if proxy is None:
+        return {"http_no_proxy": ["*"]}
+    if target_url is None:
+        raise ValueError("target_url is required when a proxy is configured")
+    target = urlsplit(target_url)
+    if target.scheme not in {"ws", "wss"} or not target.hostname:
+        raise ValueError("target_url must be a ws/wss URL with a host")
+    try:
+        target_port = target.port
+    except ValueError as exc:
+        raise ValueError("target_url has an invalid port") from exc
+    if target_port is None:
+        target_port = 443 if target.scheme == "wss" else 80
+    timeout = float(timeout)
+    tunnel = connect_proxy_tunnel(
+        proxy,
+        target.hostname,
+        target_port,
+        timeout=timeout,
+    )
+    if target.scheme == "wss":
+        tunnel = wrap_tls_stream(
+            tunnel,
+            server_hostname=target.hostname,
+            timeout=timeout,
+        )
+    return {
+        "socket": tunnel,
+        "http_no_proxy": ["*"],
+        # A target-specific preconnected proxy tunnel cannot be reused safely
+        # for an arbitrary redirect target.
+        "redirect_limit": 0,
+    }
 
 
 class ClientRuntime:

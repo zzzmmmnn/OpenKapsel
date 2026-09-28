@@ -16,10 +16,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from openkapsel.client import proxy_options, run_once
-from openkapsel.client_runtime.client_proxy import (
+from openkapsel.network.proxy import (
+    ProxyConfig,
     TLSOverTLSStream,
-    open_https_proxy_socket,
-    parse_proxy_url,
+    connect_proxy_tunnel,
 )
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
@@ -123,30 +123,46 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(self.files.dispatch("recycle_purge", {"recycle_id": record["recycle_id"]})["purged"])
         self.assertEqual(self.files.dispatch("recycle_list", {})["total"], 0)
 
-    def test_proxy_schemes_and_no_credentials_in_options_errors(self):
-        for scheme in ("socks4", "socks5", "http"):
-            options = proxy_options(f"{scheme}://user:secret@127.0.0.1:21080")
-            self.assertEqual(options["proxy_type"], scheme)
-            self.assertEqual(options["http_proxy_port"], 21080)
-        tunnel = object()
-        with patch("openkapsel.client.open_https_proxy_socket", return_value=tunnel) as opened:
-            options = proxy_options(
-                "https://user:secret@proxy.example:443",
-                target_url="wss://server.example/mapping",
-                timeout=17,
-            )
-        self.assertIs(options["socket"], tunnel)
-        self.assertEqual(0, options["redirect_limit"])
-        self.assertNotIn("secret", repr(options))
-        proxy = parse_proxy_url("https://user:secret@proxy.example:443")
-        self.assertNotIn("secret", repr(proxy))
-        opened.assert_called_once_with(
-            proxy, "wss://server.example/mapping", timeout=17.0
+    def test_proxy_schemes_build_preconnected_target_tunnel(self):
+        self.assertEqual({"http_no_proxy": ["*"]}, proxy_options(None))
+        cases = (
+            ("socks4", "socks4", False),
+            ("socks4a", "socks4", True),
+            ("socks5", "socks5", False),
+            ("socks5h", "socks5", True),
+            ("http", "http", False),
+            ("https", "https", False),
         )
+        for scheme, expected_type, remote_dns in cases:
+            with self.subTest(scheme=scheme):
+                tunnel = object()
+                wrapped = object()
+                with patch(
+                    "openkapsel.client.connect_proxy_tunnel", return_value=tunnel
+                ) as connect, patch(
+                    "openkapsel.client.wrap_tls_stream", return_value=wrapped
+                ) as wrap_tls:
+                    options = proxy_options(
+                        f"{scheme}://user:secret@proxy.example:21080",
+                        target_url="wss://server.example/mapping",
+                        timeout=17,
+                    )
+                proxy = connect.call_args.args[0]
+                self.assertEqual(expected_type, proxy.type)
+                self.assertEqual(remote_dns, proxy.remote_dns)
+                self.assertEqual(("server.example", 443), connect.call_args.args[1:])
+                self.assertEqual(17.0, connect.call_args.kwargs["timeout"])
+                wrap_tls.assert_called_once_with(
+                    tunnel, server_hostname="server.example", timeout=17.0
+                )
+                self.assertIs(options["socket"], wrapped)
+                self.assertEqual(0, options["redirect_limit"])
+                self.assertNotIn("secret", repr(proxy))
+                self.assertNotIn("secret", repr(options))
         with self.assertRaises(ValueError):
             proxy_options("ftp://127.0.0.1:1")
 
-    def test_https_proxy_connect_uses_outer_tls_connect_and_inner_target_tls(self):
+    def test_https_proxy_tunnel_handles_outer_tls_and_connect(self):
         class FakeSocket:
             def __init__(self, response=b""):
                 self.response = bytearray(response)
@@ -177,26 +193,26 @@ class MappingTests(unittest.TestCase):
         outer = FakeSocket(b"HTTP/1.1 200 Connection established\r\n\r\n")
         proxy_context = Mock()
         proxy_context.wrap_socket.return_value = outer
-        target_context = Mock()
-        nested = object()
-        proxy = parse_proxy_url("https://proxy-user:proxy-secret@proxy.example:443")
+        proxy = ProxyConfig(
+            type="https", host="proxy.internal", port=8443,
+            username="proxy-user", password="proxy-secret",
+            ca_file="/tmp/proxy-ca.pem", tls_server_name="proxy.example",
+        )
         with patch(
-            "openkapsel.client_runtime.client_proxy.socket.create_connection",
-            return_value=raw,
+            "openkapsel.network.proxy.socket.create_connection", return_value=raw
         ) as create_connection, patch(
-            "openkapsel.client_runtime.client_proxy.ssl.create_default_context",
-            side_effect=[proxy_context, target_context],
-        ), patch(
-            "openkapsel.client_runtime.client_proxy.TLSOverTLSStream",
-            return_value=nested,
-        ) as nested_tls:
-            result = open_https_proxy_socket(
-                proxy, "wss://server.example:8443/mapping", timeout=23
+            "openkapsel.network.proxy.ssl.create_default_context",
+            return_value=proxy_context,
+        ) as create_ctx:
+            result = connect_proxy_tunnel(
+                proxy, "server.example", 8443, timeout=23
             )
-        self.assertIs(result, nested)
-        create_connection.assert_called_once_with(("proxy.example", 443), timeout=23)
-        proxy_context.wrap_socket.assert_called_once_with(raw, server_hostname="proxy.example")
-        nested_tls.assert_called_once_with(outer, target_context, "server.example", 23)
+        self.assertIs(result, outer)
+        create_connection.assert_called_once_with(("proxy.internal", 8443), timeout=23)
+        create_ctx.assert_called_once_with(cafile="/tmp/proxy-ca.pem")
+        proxy_context.wrap_socket.assert_called_once_with(
+            raw, server_hostname="proxy.example"
+        )
         request = bytes(outer.sent).decode("ascii")
         self.assertIn("CONNECT server.example:8443 HTTP/1.1\r\n", request)
         expected_auth = base64.b64encode(b"proxy-user:proxy-secret").decode("ascii")

@@ -458,7 +458,7 @@ class SshRpcTests(unittest.TestCase):
         plugin = SshRpcPlugin(proxy_config, paramiko_module=self.fake)
         proxy_socket = FakeProxySocket()
         try:
-            with patch("openkapsel.rpc_plugins.ssh.socket.create_connection",
+            with patch("openkapsel.network.proxy.socket.create_connection",
                        return_value=proxy_socket) as connect:
                 value = plugin.dispatch(self.files, "stat", {"profile": "box", "path": "/"})
         finally:
@@ -487,8 +487,8 @@ class SshRpcTests(unittest.TestCase):
             return wrapped
         context.wrap_socket = wrap_socket
         try:
-            with patch("openkapsel.rpc_plugins.ssh.socket.create_connection", return_value=raw), \
-                 patch("openkapsel.rpc_plugins.ssh.ssl.create_default_context", return_value=context) as create_ctx:
+            with patch("openkapsel.network.proxy.socket.create_connection", return_value=raw), \
+                 patch("openkapsel.network.proxy.ssl.create_default_context", return_value=context) as create_ctx:
                 value = plugin.dispatch(self.files, "stat", {"profile": "box", "path": "/"})
         finally:
             plugin.close()
@@ -537,7 +537,7 @@ class SshRpcTests(unittest.TestCase):
             b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
         )
         try:
-            with patch("openkapsel.rpc_plugins.ssh.socket.create_connection",
+            with patch("openkapsel.network.proxy.socket.create_connection",
                        return_value=proxy_socket):
                 value = plugin.dispatch(
                     self.files, "stat", {"profile": "box", "path": "/"}
