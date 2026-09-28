@@ -18,6 +18,7 @@ from urllib.parse import quote, unquote
 from openkapsel.execution.api_workers import ApiWorkerError
 from openkapsel.errors import ApiError
 from openkapsel.workspace.workspace_layout import INTERNAL_DIRECTORY
+from openkapsel.web_assets import builtin_favicon, builtin_favicon_asset_etag
 
 
 LOGGER = logging.getLogger("openkapsel")
@@ -35,6 +36,74 @@ class WebApiTarget:
 
 class PreviewHandlersMixin:
     """Preview-domain methods mixed into the main request handler."""
+
+    def _send_preview_builtin_favicon(self, name: str, *, head_only: bool) -> None:
+        data = builtin_favicon(name)
+        size = len(data)
+        etag = builtin_favicon_asset_etag(name)
+        if self.headers.get("If-None-Match") == etag:
+            self._send_empty(
+                HTTPStatus.NOT_MODIFIED,
+                {
+                    "ETag": etag,
+                    "Cache-Control": "no-store",
+                },
+            )
+            return
+
+        range_header = self.headers.get("Range")
+        if range_header:
+            start, end = self._parse_byte_range(range_header, size)
+            status = HTTPStatus.PARTIAL_CONTENT
+        else:
+            start, end = 0, size - 1
+            status = HTTPStatus.OK
+        length = max(0, end - start + 1)
+
+        content_type, content_encoding = mimetypes.guess_type(name)
+        content_type = content_type or "application/octet-stream"
+        if content_type == "image/svg+xml":
+            content_type += "; charset=utf-8"
+
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
+        dedicated_preview_origin = self.server.config.preview_base_url is not None
+        if dedicated_preview_origin:
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        sandbox_flags = "sandbox allow-scripts"
+        if dedicated_preview_origin:
+            sandbox_flags += " allow-same-origin"
+        self.send_header(
+            "Content-Security-Policy",
+            f"{sandbox_flags} allow-forms allow-modals allow-popups allow-downloads; "
+            "default-src 'self' data: blob:; "
+            "script-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' data: 'unsafe-inline'; "
+            "img-src 'self' data: blob: https: http:; "
+            "font-src 'self' data: https: http:; "
+            "media-src 'self' data: blob: https: http:; "
+            "connect-src 'self' https: http: ws: wss:; "
+            "frame-ancestors 'none'",
+        )
+        if content_encoding is not None:
+            self.send_header("Content-Encoding", content_encoding)
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if head_only or length == 0:
+            return
+        self.wfile.write(data[start : end + 1])
+
     def _handle_web_preview(
         self,
         route: str,
@@ -57,6 +126,9 @@ class PreviewHandlersMixin:
         try:
             target = self._resolve_path(relative)
         except ApiError as exc:
+            if exc.code == "path_not_found" and relative in {"favicon.svg", "favicon.ico"}:
+                self._send_preview_builtin_favicon(relative, head_only=head_only)
+                return
             if exc.code == "reserved_path":
                 raise ApiError(
                     HTTPStatus.NOT_FOUND,
@@ -86,6 +158,9 @@ class PreviewHandlersMixin:
                 target = target / "index.html"
             handle = self._open_binary(target)
         except ApiError as exc:
+            if exc.code == "path_not_found" and relative in {"favicon.svg", "favicon.ico"}:
+                self._send_preview_builtin_favicon(relative, head_only=head_only)
+                return
             if exc.code == "path_not_found":
                 raise ApiError(HTTPStatus.NOT_FOUND, "preview_not_found", "preview file does not exist") from None
             raise

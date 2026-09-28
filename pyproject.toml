@@ -49,4 +49,4 @@ openkapsel-client = "openkapsel.client:main"
 include = ["openkapsel*", "openkapsel_runtime*"]
 
 [tool.setuptools.package-data]
-openkapsel = ["static/*.svg"]
+openkapsel = ["static/*.svg", "static/*.ico"]

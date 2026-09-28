@@ -5047,15 +5047,42 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(b"preview root", body)
 
-        status, missing_icon = self.preview_request("GET", "/favicon.svg")
-        self.assertEqual(404, status)
-        self.assertEqual("preview_not_found", missing_icon["error"]["code"])
-        workspace_icon = b'<svg xmlns="http://www.w3.org/2000/svg"><title>workspace</title></svg>'
-        (self.root / "favicon.svg").write_bytes(workspace_icon)
         status, body, headers = self.raw_preview_request("GET", "/favicon.svg")
         self.assertEqual(200, status)
-        self.assertEqual(workspace_icon, body)
+        self.assertTrue(body.lstrip().startswith(b"<svg"))
         self.assertTrue(headers["Content-Type"].startswith("image/svg+xml"))
+        fallback_svg_etag = headers["ETag"]
+        status, cached, cached_headers = self.raw_preview_request(
+            "GET", "/favicon.svg", headers={"If-None-Match": fallback_svg_etag}
+        )
+        self.assertEqual(304, status)
+        self.assertEqual(b"", cached)
+        self.assertEqual(fallback_svg_etag, cached_headers["ETag"])
+
+        status, body, headers = self.raw_preview_request("GET", "/favicon.ico")
+        self.assertEqual(200, status)
+        self.assertEqual(b"\x00\x00\x01\x00", body[:4])
+        self.assertIn("image/", headers["Content-Type"])
+        fallback_ico_size = len(body)
+        status, body, headers = self.raw_preview_request(
+            "GET", "/favicon.ico", headers={"Range": "bytes=0-3"}
+        )
+        self.assertEqual(206, status)
+        self.assertEqual(b"\x00\x00\x01\x00", body)
+        self.assertEqual(f"bytes 0-3/{fallback_ico_size}", headers["Content-Range"])
+
+        workspace_svg = b'<svg xmlns="http://www.w3.org/2000/svg"><title>workspace</title></svg>'
+        workspace_ico = b"workspace ico"
+        (self.root / "favicon.svg").write_bytes(workspace_svg)
+        (self.root / "favicon.ico").write_bytes(workspace_ico)
+        status, body, headers = self.raw_preview_request("GET", "/favicon.svg")
+        self.assertEqual(200, status)
+        self.assertEqual(workspace_svg, body)
+        self.assertTrue(headers["Content-Type"].startswith("image/svg+xml"))
+        status, body, headers = self.raw_preview_request("GET", "/favicon.ico")
+        self.assertEqual(200, status)
+        self.assertEqual(workspace_ico, body)
+        self.assertIn("image/", headers["Content-Type"])
 
         status, body, headers = self.raw_preview_request(
             "GET", "/project/site/index.html"
