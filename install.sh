@@ -334,8 +334,15 @@ fi
 mv -- "$STAGING_DIR" "$INSTALL_DIR"
 STAGING_DIR=
 
-/usr/bin/python3 -m venv "$INSTALL_DIR/venv"
-"$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check --no-cache-dir "$INSTALL_DIR"
+# The service account must be able to traverse and read the root-owned virtualenv.
+# Do not inherit a restrictive invoking-root umask (for example 0077), which
+# makes venv directories mode 0700 and prevents systemd from executing Python
+# as SERVICE_USER. Keep the relaxed umask scoped to the non-secret venv only.
+(
+    umask 0022
+    /usr/bin/python3 -m venv "$INSTALL_DIR/venv"
+    "$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check --no-cache-dir "$INSTALL_DIR"
+)
 
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$DATA_DIR"
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$DATA_DIR/home"

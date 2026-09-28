@@ -1033,6 +1033,19 @@ class InstallerStorageProviderTests(unittest.TestCase):
         replace_at = install.index('mv -- "$STAGING_DIR" "$INSTALL_DIR"')
         self.assertLess(stop_at, replace_at)
 
+    def test_installer_builds_service_venv_with_nonrestrictive_umask(self):
+        install = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+        block = (
+            "(\n"
+            "    umask 0022\n"
+            "    /usr/bin/python3 -m venv \"$INSTALL_DIR/venv\"\n"
+            "    \"$INSTALL_DIR/venv/bin/pip\" install --disable-pip-version-check "
+            "--no-cache-dir \"$INSTALL_DIR\"\n"
+            ")"
+        )
+        self.assertIn(block, install)
+        self.assertIn("Do not inherit a restrictive invoking-root umask", install)
+
     def test_safe_shutdown_script_is_fail_closed_by_default(self):
         root = Path(__file__).resolve().parents[1]
         script = (root / "scripts" / "openkapsel-safe-shutdown").read_text()
