@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from openkapsel.auth.admin_ui import render_discovery, render_http_error
 from openkapsel.auth.tokens import CredentialRenewalNotDue
 from openkapsel.errors import ApiError
+from openkapsel.web_assets import builtin_favicon_etag, builtin_favicon_svg
 from openkapsel.routes import EndpointSpec, match_endpoint
 
 LOGGER = __import__("logging").getLogger("openkapsel")
@@ -20,6 +21,25 @@ class RequestDispatchMixin:
     def version_string(self) -> str:
         """Avoid exposing the Python runtime and stdlib HTTP server versions."""
         return "OpenKapsel"
+
+    def _send_builtin_favicon(self, *, head_only: bool = False) -> None:
+        data = builtin_favicon_svg()
+        etag = builtin_favicon_etag()
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(data)
 
 
     def end_headers(self) -> None:
@@ -78,6 +98,14 @@ class RequestDispatchMixin:
             if self._dispatch_oauth(method, parsed.path, parsed.query):
                 return
             request_path = self._strip_url_base_path(parsed.path)
+            if (
+                self.server.config.admin_enabled
+                and method in {"GET", "HEAD"}
+                and request_path == "/favicon.svg"
+            ):
+                self._discard_request_body()
+                self._send_builtin_favicon(head_only=method == "HEAD")
+                return
             if request_path.startswith("/mapping-connect/"):
                 self._handle_mapping_provider(method, request_path)
                 return

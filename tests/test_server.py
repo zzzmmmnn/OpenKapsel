@@ -4395,6 +4395,34 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(0, fixed["exit_code"])
         self.assertIn("OK", fixed["stderr"])
 
+    def test_admin_pages_use_builtin_favicon(self) -> None:
+        for page_path, icon_path in (
+            ("/kapsel/admin", "/kapsel/favicon.svg"),
+            ("/kapsel/admin/", "/kapsel/admin/favicon.svg"),
+        ):
+            status, page, _ = self.raw_request("GET", page_path)
+            self.assertEqual(200, status)
+            self.assertIn(
+                '<link rel="icon" href="favicon.svg">',
+                page.decode("utf-8"),
+            )
+            status, icon, headers = self.raw_request("GET", icon_path)
+            self.assertEqual(200, status)
+            self.assertTrue(headers["Content-Type"].startswith("image/svg+xml"))
+            self.assertTrue(icon.lstrip().startswith(b"<svg"))
+            etag = headers["ETag"]
+            status, cached, cached_headers = self.raw_request(
+                "GET", icon_path, headers={"If-None-Match": etag}
+            )
+            self.assertEqual(304, status)
+            self.assertEqual(b"", cached)
+            self.assertEqual(etag, cached_headers["ETag"])
+
+        status, body, headers = self.raw_request("HEAD", "/kapsel/favicon.svg")
+        self.assertEqual(200, status)
+        self.assertEqual(b"", body)
+        self.assertGreater(int(headers["Content-Length"]), 0)
+
     def test_admin_login_create_permissions_and_expiration(self) -> None:
         status, body, _ = self.raw_request("GET", "/kapsel/admin")
         self.assertEqual(200, status)
@@ -5018,6 +5046,16 @@ class WorkspaceServerTests(unittest.TestCase):
         status, body, _ = self.raw_preview_request("GET", "/")
         self.assertEqual(200, status)
         self.assertEqual(b"preview root", body)
+
+        status, missing_icon = self.preview_request("GET", "/favicon.svg")
+        self.assertEqual(404, status)
+        self.assertEqual("preview_not_found", missing_icon["error"]["code"])
+        workspace_icon = b'<svg xmlns="http://www.w3.org/2000/svg"><title>workspace</title></svg>'
+        (self.root / "favicon.svg").write_bytes(workspace_icon)
+        status, body, headers = self.raw_preview_request("GET", "/favicon.svg")
+        self.assertEqual(200, status)
+        self.assertEqual(workspace_icon, body)
+        self.assertTrue(headers["Content-Type"].startswith("image/svg+xml"))
 
         status, body, headers = self.raw_preview_request(
             "GET", "/project/site/index.html"

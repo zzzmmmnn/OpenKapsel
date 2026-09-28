@@ -37,8 +37,13 @@ details.token-card{padding:0;overflow:hidden}details.token-card>summary{list-sty
 """
 
 
-def _page(title: str, body: str) -> str:
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title><script>try{{document.documentElement.dataset.theme=localStorage.getItem('openkapsel-admin-theme')==='dark'?'dark':'light'}}catch(_){{document.documentElement.dataset.theme='light'}}</script><style>{STYLE}</style></head><body>{body}<script>function syncAdminTheme(){{const dark=document.documentElement.dataset.theme==='dark';document.querySelectorAll('[data-theme-toggle]').forEach(button=>{{button.setAttribute('aria-label',dark?'Switch to light appearance':'Switch to dark appearance');button.title=dark?'Switch to light appearance':'Switch to dark appearance';button.querySelector('.nav-icon').textContent=dark?'☀️':'🌙';button.querySelector('.nav-label').textContent=dark?'Light appearance':'Dark appearance'}})}}document.querySelectorAll('[data-theme-toggle]').forEach(button=>button.addEventListener('click',()=>{{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{{localStorage.setItem('openkapsel-admin-theme',next)}}catch(_){{}}syncAdminTheme()}}));syncAdminTheme()</script></body></html>"""
+def _page(title: str, body: str, *, favicon_href: str | None = None) -> str:
+    favicon = (
+        f'<link rel="icon" href="{html.escape(favicon_href, quote=True)}">'
+        if favicon_href
+        else ""
+    )
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>{favicon}<script>try{{document.documentElement.dataset.theme=localStorage.getItem('openkapsel-admin-theme')==='dark'?'dark':'light'}}catch(_){{document.documentElement.dataset.theme='light'}}</script><style>{STYLE}</style></head><body>{body}<script>function syncAdminTheme(){{const dark=document.documentElement.dataset.theme==='dark';document.querySelectorAll('[data-theme-toggle]').forEach(button=>{{button.setAttribute('aria-label',dark?'Switch to light appearance':'Switch to dark appearance');button.title=dark?'Switch to light appearance':'Switch to dark appearance';button.querySelector('.nav-icon').textContent=dark?'☀️':'🌙';button.querySelector('.nav-label').textContent=dark?'Light appearance':'Dark appearance'}})}}document.querySelectorAll('[data-theme-toggle]').forEach(button=>button.addEventListener('click',()=>{{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{{localStorage.setItem('openkapsel-admin-theme',next)}}catch(_){{}}syncAdminTheme()}}));syncAdminTheme()</script></body></html>"""
 
 
 def render_discovery(payload: dict) -> str:
@@ -64,6 +69,7 @@ def render_login(admin_path: str, error: str | None = None, oauth_request: str =
     page = _page(
         "Workspace Admin Login",
         f"""<div class="admin-shell"><aside class="admin-sidebar" aria-label="Appearance"><div class="sidebar-spacer"></div><button type="button" class="nav-item theme-button" data-theme-toggle><span class="nav-icon" aria-hidden="true">🌙</span><span class="nav-label">Dark appearance</span></button></aside><main class="login-main"><div class="login"><section class="card"><h1>OpenKapsel</h1><p class="muted">Sign in to administration.</p>{error_html}<form method="post" action="{html.escape(admin_path, quote=True)}/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required><div style="height:12px"></div><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" minlength="8" required><div style="height:18px"></div><button type="submit">Sign in</button></form></section></div></main></div>""",
+        favicon_href="favicon.svg",
     )
     if oauth_request:
         page = page.replace("</form>", f'<input type="hidden" name="oauth_request" value="{html.escape(oauth_request, quote=True)}"></form>', 1)
@@ -411,7 +417,7 @@ def render_dashboard(
         '</button><form method="post"',
         1,
     )
-    return _page("Workspace Administration", body)
+    return _page("Workspace Administration", body, favicon_href="favicon.svg")
 
 
 def _token_card(

@@ -31,6 +31,9 @@ class AdminHandlersMixin:
         if not self.server.config.admin_enabled:
             self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
             return
+        if method in {"GET", "HEAD"} and path.endswith("/favicon.svg"):
+            self._send_builtin_favicon(head_only=method == "HEAD")
+            return
         if path == "/admin/mappings":
             self._handle_admin_mappings(method)
             return

@@ -47,3 +47,6 @@ openkapsel-client = "openkapsel.client:main"
 
 [tool.setuptools.packages.find]
 include = ["openkapsel*", "openkapsel_runtime*"]
+
+[tool.setuptools.package-data]
+openkapsel = ["static/*.svg"]
