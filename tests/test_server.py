@@ -284,6 +284,16 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("schedule_permission_denied", denied["error"]["code"])
 
         self.server.tokens.update("test-token", can_schedule=True)
+        discovery_status, schedule_discovery = self.request(
+            "GET", self.endpoint("/discovery/schedules")
+        )
+        self.assertEqual(HTTPStatus.OK, discovery_status)
+        schedule_update_fields = set(
+            discovery_operation(schedule_discovery, "schedules", "update")["body_fields"]
+        )
+        self.assertIn("overlap_policy", schedule_update_fields)
+        self.assertIn("misfire_policy", schedule_update_fields)
+
         plan_id = self._ensure_test_plan("test-token")
         create_status, created = self.request(
             "POST",
@@ -571,6 +581,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("GET", op("recycle", "list")["method"])
         self.assertEqual("POST", op("recycle", "restore")["method"])
         self.assertEqual("POST", op("tasks", "kill")["method"])
+        self.assertEqual(
+            {"output", "done", "reconnect", "error"},
+            set(op("tasks", "stream")["events"]),
+        )
+        self.assertIn("CTRL_BREAK", op("tasks", "interrupt")["description"])
+        self.assertIn("taskkill /T /F", op("tasks", "kill")["description"])
         self.assertEqual("POST", op("sharing", "create")["method"])
         self.assertEqual("GET", op("sharing", "query")["method"])
         self.assertEqual(86400, payload["limits"]["share_ttl_seconds"])
@@ -850,7 +866,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(30, mapping_handshake["client_hello_timeout_seconds"])
         self.assertEqual(44, len(mapping_handshake["server_fingerprint"]))
         self.assertEqual(
-            ["output", "done", "reconnect"],
+            ["output", "done", "reconnect", "error"],
             op("tasks", "stream")["events"],
         )
         self.assertEqual(64, payload["limits"]["sandbox_max_processes"])
@@ -929,6 +945,12 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertNotIn(
                 b"/admin", bundle.read("openkapsel-rest/references/endpoint-index.md")
             )
+            files_reference = bundle.read("openkapsel-rest/references/files.md")
+            self.assertIn(b"`text.insert_before`", files_reference)
+            self.assertIn(b"`text.insert_after`", files_reference)
+            schedules_reference = bundle.read("openkapsel-rest/references/schedules.md")
+            self.assertIn(b"`overlap_policy`", schedules_reference)
+            self.assertIn(b"`misfire_policy`", schedules_reference)
 
         head_status, head_body, head_headers = self.raw_request(
             "HEAD", "/kapsel/skills/openkapsel-rest/archive.zip", authorize=False

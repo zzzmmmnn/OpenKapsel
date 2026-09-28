@@ -51,7 +51,7 @@ Use `POST /schedules/<id>/run` for an explicit immediate execution. It still obs
 | `GET` | `/schedules/<id>/runs?limit=50` | List dispatch history |
 | `GET` | `/schedule-runs/<run_id>` | Read one dispatch and its linked `task_id` |
 
-All modifying requests carry ordinary mutation Context fields. A schedule update is optimistic: fetch its revision first and send `expected_revision`. Pause before changing intent when another actor may edit it.
+All modifying requests carry ordinary mutation Context fields. A schedule update is optimistic: fetch its revision first and send `expected_revision`. PATCH may replace `name`, `schedule`, `command`, `cwd`, `timeout_seconds`, `overlap_policy`, `misfire_policy`, or the complete future-run `run_context`; the only overlap policy is `skip`, while misfire is `skip` or `coalesce`. Pause before changing intent when another actor may edit it.
 
 An interval or cron occurrence does not queue behind resource pressure: overlap, token/global task capacity, or sandbox PID capacity produces a skipped run record and advances to the next occurrence. `misfire_policy: skip` drops an occurrence that exceeds the published grace period; `coalesce` executes at most one catch-up run. The only overlap policy is `skip`.
 

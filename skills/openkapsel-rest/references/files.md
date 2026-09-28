@@ -52,7 +52,7 @@ These require the matching Bearer token, write permission, and JSON Context fiel
 
 | Method | Path | JSON-specific fields |
 |---|---|---|
-| `POST` | `/fs/write/mutate` | transactional `items` using `file.create`, `file.replace`, `text.replace`, `structured.patch`, or recoverable `path.delete`; every existing path requires exact `expected_etag` |
+| `POST` | `/fs/write/mutate` | transactional `items` using `file.create`, `file.replace`, `text.replace`, `text.insert_before`, `text.insert_after`, `structured.patch`, or recoverable `path.delete`; every existing path requires exact `expected_etag` |
 | `POST` | `/fs/read/large` | large files only (>32 MiB): required byte `offset` and bounded `length`; returns Base64, ETag and range SHA-256 |
 | `POST` | `/fs/write/large` | large files only: exact ETag + range SHA-256 + equal-length Base64 replacement; file size cannot change |
 | `POST` | `/fs/write/mkdir` | `path`, optional `parents`, optional `exist_ok` |

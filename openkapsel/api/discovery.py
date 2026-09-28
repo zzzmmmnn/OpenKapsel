@@ -393,6 +393,7 @@ class DiscoveryMixin:
                     "stream": operation(
                         "task_stream",
                         path="./tasks/<task_id>/stream",
+                        description=endpoints.get("task_stream", {}).get("notes"),
                     ),
                     "stdin": operation(
                         "task_stdin",
@@ -401,10 +402,12 @@ class DiscoveryMixin:
                     "interrupt": operation(
                         "task_interrupt",
                         path="./tasks/<task_id>/interrupt",
+                        description=endpoints.get("task_interrupt", {}).get("notes"),
                     ),
                     "kill": operation(
                         "task_kill",
                         path="./tasks/<task_id>/kill",
+                        description=endpoints.get("task_kill", {}).get("notes"),
                     ),
                 },
             ),
@@ -1822,6 +1825,8 @@ class DiscoveryMixin:
                         "command": "<optional>",
                         "cwd": "<optional>",
                         "timeout_seconds": "<optional number or null>",
+                        "overlap_policy": "<optional; only skip is supported>",
+                        "misfire_policy": "<optional skip or coalesce>",
                         "run_context": "<optional complete plan_id/taskname/message for future runs>",
                         "plan_id": "<required owning plan id for this API mutation>",
                         "taskname": "<required task grouping name>",
@@ -1898,8 +1903,8 @@ class DiscoveryMixin:
                     "method": "GET",
                     "url": f"{base}/tasks/<task_id>/stream?stdout_offset=0&stderr_offset=0",
                     "content_type": "text/event-stream",
-                    "events": ["output", "done", "reconnect"],
-                    "notes": "reconnect closes a duration-limited stream and returns the exact stdout/stderr offsets to use for the next request; concurrent streams are bounded globally and per token",
+                    "events": ["output", "done", "reconnect", "error"],
+                    "notes": "reconnect closes a duration-limited stream and returns the exact stdout/stderr offsets to use for the next request; error ends an already-started stream with a stable code plus byte cursors, including client/provider failures; concurrent streams are bounded globally and per token",
                     "query": {
                         "stdout_offset": 0,
                         "stderr_offset": 0,
@@ -1922,13 +1927,13 @@ class DiscoveryMixin:
                     "method": "POST",
                     "url": f"{base}/tasks/<task_id>/interrupt",
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
-                    "notes": "sends SIGTERM, then SIGKILL after a two-second grace period",
+                    "notes": "server tasks receive SIGTERM then SIGKILL after a two-second grace period; POSIX client tasks receive SIGINT and native Windows client tasks receive CTRL_BREAK",
                 },
                 "task_kill": {
                     "method": "POST",
                     "url": f"{base}/tasks/<task_id>/kill",
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
-                    "notes": "immediately sends SIGKILL to the process group",
+                    "notes": "server and POSIX client tasks are force-killed; native Windows client tasks use taskkill /T /F",
                 },
                 "sandbox_processes": {
                     "method": "GET",
