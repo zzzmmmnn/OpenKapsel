@@ -61,6 +61,51 @@ The supported pool settings are:
 - `max_connections`: 1–32, default 8.
 - `max_channels_per_connection`: 1–64, default 8.
 
+## Proxy transport
+
+Each SSH profile may optionally set a client-local `proxy` object. Supported canonical proxy types are `socks4`, `socks5`, `http`, and `https`; `s4` and `s5` are accepted as configuration aliases and normalized to the canonical names. The proxy is used only for the TCP path from the mapping client to the SSH target. SSH authentication and target host-key verification still run end-to-end through the tunnel.
+
+```json
+{
+  "ssh": {
+    "profiles": {
+      "via-socks5": {
+        "host": "10.0.0.10",
+        "username": "deploy",
+        "key_filename": "/home/me/.ssh/id_ed25519",
+        "proxy": {
+          "type": "socks5",
+          "host": "127.0.0.1",
+          "port": 1080,
+          "username": "proxy-user",
+          "password": "<LOCAL-ONLY-PROXY-PASSWORD>",
+          "remote_dns": true
+        }
+      },
+      "via-https": {
+        "host": "ssh.internal.example",
+        "username": "deploy",
+        "password": "<LOCAL-ONLY-SSH-PASSWORD>",
+        "proxy": {
+          "type": "https",
+          "host": "proxy.example",
+          "port": 443,
+          "username": "proxy-user",
+          "password": "<LOCAL-ONLY-PROXY-PASSWORD>",
+          "tls_verify": true,
+          "ca_file": "/etc/ssl/private/proxy-ca.pem",
+          "tls_server_name": "proxy.example"
+        }
+      }
+    }
+  }
+}
+```
+
+Proxy defaults are port 1080 for SOCKS4/SOCKS5, 8080 for HTTP, and 443 for HTTPS. SOCKS4/SOCKS5 accept `remote_dns` (default `true`); SOCKS4 supports a user ID but no password. HTTP and HTTPS use CONNECT and optional Basic proxy authentication. HTTPS verifies the proxy certificate by default; `ca_file` can add a private CA and `tls_server_name` can override the TLS name. `tls_verify=false` is supported for explicitly trusted environments but disables certificate and hostname verification.
+
+Proxy usernames/passwords, CA paths, and TLS-name overrides remain client-local. `profiles` returns only non-secret proxy metadata. SOCKS proxy profiles require the normal `client` extra (`python-socks`); HTTP/HTTPS proxy transport uses the Python standard library.
+
 ## Host-key policy
 
 The default `host_key_policy` is `strict`. The client loads system host keys and an optional configured `known_hosts` file. A profile may additionally pin an OpenSSH-style `SHA256:...` host-key fingerprint.

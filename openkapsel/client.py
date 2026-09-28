@@ -12,12 +12,17 @@ import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from . import __version__
 
 from openkapsel.client_runtime.client_config import ClientConfigError, ClientConfigLock
 from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_proxy import (
+    open_https_proxy_socket,
+    parse_proxy_url,
+    websocket_proxy_options,
+)
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.rpc_plugins import load_client_rpc_registry
 from openkapsel.mapping.mapping_transport import (
@@ -57,19 +62,21 @@ class ClientProtocolRequired(RuntimeError):
         self.handshake_version = handshake_version
 
 
-def proxy_options(url):
-    if not url:
-        return {"http_no_proxy": ["*"]}
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"socks4", "socks4a", "socks5", "socks5h", "http"} or not parsed.hostname or not parsed.port:
-        raise ValueError("proxy must be an http/socks4/socks5 URL with host and port")
-    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("proxy URL cannot include a path, query, or fragment")
-    options = {"http_proxy_host": parsed.hostname, "http_proxy_port": parsed.port,
-               "proxy_type": parsed.scheme, "http_no_proxy": ["never-bypass-proxy.invalid"]}
-    if parsed.username is not None:
-        options["http_proxy_auth"] = (unquote(parsed.username), unquote(parsed.password or ""))
-    return options
+def proxy_options(url, *, target_url=None, timeout=60):
+    proxy = parse_proxy_url(url)
+    if proxy is not None and proxy.scheme == "https":
+        if target_url is None:
+            raise ValueError("target_url is required for an HTTPS proxy")
+        return {
+            "socket": open_https_proxy_socket(
+                proxy, target_url, timeout=float(timeout)
+            ),
+            "http_no_proxy": ["*"],
+            # A preconnected HTTPS tunnel cannot be safely reused for an arbitrary
+            # redirect target, and falling back to a direct redirect is forbidden.
+            "redirect_limit": 0,
+        }
+    return websocket_proxy_options(proxy)
 
 
 class ClientRuntime:
@@ -322,12 +329,15 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
     sock = None
     stopped = threading.Event()
     try:
+        transport_timeout = float(config.get("transport_timeout_seconds", 60))
         sock = websocket.create_connection(
             url,
             header={"Authorization": "Bearer " + config["token"]},
             suppress_origin=True,
-            timeout=float(config.get("transport_timeout_seconds", 60)),
-            **proxy_options(config.get("proxy")),
+            timeout=transport_timeout,
+            **proxy_options(
+                config.get("proxy"), target_url=url, timeout=transport_timeout
+            ),
         )
         server_handshake_version, server_fingerprint, minimum_version = _server_hello(
             _recv_message(sock)

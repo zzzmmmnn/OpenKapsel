@@ -4,6 +4,14 @@ SSH is a privileged client RPC family. Inspect `GET /mappings` and require `capa
 
 Every SSH operation advertises `write=true`, including remote reads, because the operation consumes client-local SSH credentials. Send the matching control token and normal `plan_id`, `taskname`, and `message`; the mapping must also be writable. SSH passwords, key passphrases and private-key contents are never RPC arguments.
 
+## Proxy profiles
+
+SSH RPC version 2 profiles may route the client-to-target TCP connection through a client-local proxy. Supported canonical types are `socks4`, `socks5`, `http`, and `https`; `s4`/`s5` are accepted aliases. Configure the nested `ssh.profiles.<name>.proxy` object in the mapping client configuration, never in an RPC call.
+
+Common proxy fields are `type`, `host`, optional `port`, `username`, and `password`. SOCKS4/SOCKS5 additionally support `remote_dns` (default `true`). HTTPS additionally supports `tls_verify` (default `true`), `ca_file`, and `tls_server_name`. SOCKS defaults to port 1080, HTTP to 8080, HTTPS to 443. SOCKS4 has no password authentication. HTTP/HTTPS use CONNECT with optional Basic proxy authentication.
+
+`profiles` may expose proxy type/host/port and non-secret flags, but never proxy credentials. SOCKS profiles require `python-socks`; HTTP/HTTPS need no proxy-specific third-party dependency. Proxy failures use `ssh_proxy_connect_failed`, proxy authentication failures use `ssh_proxy_authentication_failed`, and a missing SOCKS dependency uses `ssh_proxy_dependency_missing`.
+
 ## Connection selection
 
 For the first operation, pass a configured profile:

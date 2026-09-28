@@ -271,6 +271,30 @@ class FakeSSHClient:
         self.transport.active = False
 
 
+class FakeProxySocket:
+    def __init__(self, response=b"HTTP/1.1 200 Connection established\r\n\r\n"):
+        self.response = bytearray(response)
+        self.sent = bytearray()
+        self.timeout = None
+        self.closed = False
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def sendall(self, data):
+        self.sent.extend(data)
+
+    def recv(self, size):
+        if not self.response:
+            return b""
+        data = bytes(self.response[:size])
+        del self.response[:size]
+        return data
+
+    def close(self):
+        self.closed = True
+
+
 class FakeParamiko:
     MissingHostKeyPolicy = FakeMissingHostKeyPolicy
     AuthenticationException = FakeAuthenticationException
@@ -380,6 +404,150 @@ class SshRpcTests(unittest.TestCase):
         self.assertEqual(1, body["total"])
         self.assertIn("password", body["profiles"][0]["authentication"])
         self.assertNotIn("secret", encoded)
+
+    def test_proxy_types_aliases_defaults_and_validation(self):
+        base = {"host": "target.internal", "username": "user", "password": "secret"}
+        profiles, _ = _parse_config({"ssh": {"profiles": {
+            "s4": {**base, "proxy": {"type": "s4", "host": "proxy4"}},
+            "s5": {**base, "proxy": {"type": "s5", "host": "proxy5", "remote_dns": False}},
+            "http": {**base, "proxy": {"type": "http", "host": "proxy-http"}},
+            "https": {**base, "proxy": {"type": "https", "host": "proxy-tls"}},
+        }}})
+        self.assertEqual(("socks4", 1080, True),
+                         (profiles["s4"].proxy.type, profiles["s4"].proxy.port,
+                          profiles["s4"].proxy.remote_dns))
+        self.assertEqual(("socks5", 1080, False),
+                         (profiles["s5"].proxy.type, profiles["s5"].proxy.port,
+                          profiles["s5"].proxy.remote_dns))
+        self.assertEqual(("http", 8080),
+                         (profiles["http"].proxy.type, profiles["http"].proxy.port))
+        self.assertEqual(("https", 443, True),
+                         (profiles["https"].proxy.type, profiles["https"].proxy.port,
+                          profiles["https"].proxy.tls_verify))
+        with self.assertRaisesRegex(ValueError, "password is not supported by SOCKS4"):
+            _parse_config({"ssh": {"profiles": {"bad": {
+                **base,
+                "proxy": {"type": "socks4", "host": "proxy4",
+                          "username": "ident", "password": "not-supported"},
+            }}}})
+
+    def test_proxy_credentials_never_return_from_profiles(self):
+        proxy_config = config()
+        proxy_config["ssh"]["profiles"]["box"]["proxy"] = {
+            "type": "socks5", "host": "proxy.internal", "port": 1081,
+            "username": "proxy-user", "password": "proxy-secret",
+        }
+        plugin = SshRpcPlugin(proxy_config, paramiko_module=self.fake)
+        try:
+            value = plugin.dispatch(self.files, "profiles", {})
+        finally:
+            plugin.close()
+        self.assertEqual(200, value["status"], value)
+        body = value["body"]
+        self.assertEqual("socks5", body["profiles"][0]["proxy"]["type"])
+        self.assertTrue(body["profiles"][0]["proxy"]["authenticated"])
+        self.assertNotIn("proxy-user", repr(body))
+        self.assertNotIn("proxy-secret", repr(body))
+
+    def test_http_connect_proxy_passes_tunnel_socket_to_paramiko(self):
+        proxy_config = config()
+        proxy_config["ssh"]["profiles"]["box"]["proxy"] = {
+            "type": "http", "host": "proxy.internal", "port": 3128,
+            "username": "proxy-user", "password": "proxy-secret",
+        }
+        plugin = SshRpcPlugin(proxy_config, paramiko_module=self.fake)
+        proxy_socket = FakeProxySocket()
+        try:
+            with patch("openkapsel.rpc_plugins.ssh.socket.create_connection",
+                       return_value=proxy_socket) as connect:
+                value = plugin.dispatch(self.files, "stat", {"profile": "box", "path": "/"})
+        finally:
+            plugin.close()
+        self.assertEqual(200, value["status"], value)
+        connect.assert_called_once_with(("proxy.internal", 3128), timeout=15)
+        self.assertIs(self.fake.connect_calls[-1]["sock"], proxy_socket)
+        request = bytes(proxy_socket.sent).decode("ascii")
+        self.assertIn("CONNECT host.internal:2222 HTTP/1.1\r\n", request)
+        expected = base64.b64encode(b"proxy-user:proxy-secret").decode("ascii")
+        self.assertIn("Proxy-Authorization: Basic " + expected, request)
+
+    def test_https_connect_proxy_wraps_tls_before_connect(self):
+        proxy_config = config()
+        proxy_config["ssh"]["profiles"]["box"]["proxy"] = {
+            "type": "https", "host": "proxy.internal", "port": 8443,
+            "ca_file": "/tmp/proxy-ca.pem", "tls_server_name": "proxy.example",
+        }
+        plugin = SshRpcPlugin(proxy_config, paramiko_module=self.fake)
+        raw = FakeProxySocket()
+        context = SimpleNamespace()
+        wrapped = raw
+        calls = []
+        def wrap_socket(sock, server_hostname):
+            calls.append((sock, server_hostname))
+            return wrapped
+        context.wrap_socket = wrap_socket
+        try:
+            with patch("openkapsel.rpc_plugins.ssh.socket.create_connection", return_value=raw), \
+                 patch("openkapsel.rpc_plugins.ssh.ssl.create_default_context", return_value=context) as create_ctx:
+                value = plugin.dispatch(self.files, "stat", {"profile": "box", "path": "/"})
+        finally:
+            plugin.close()
+        self.assertEqual(200, value["status"], value)
+        create_ctx.assert_called_once_with(cafile="/tmp/proxy-ca.pem")
+        self.assertEqual([(raw, "proxy.example")], calls)
+        self.assertIs(self.fake.connect_calls[-1]["sock"], wrapped)
+
+    def test_socks4_and_socks5_use_python_socks_tunnel(self):
+        for kind, expected_name in (("socks4", "SOCKS4"), ("socks5", "SOCKS5")):
+            with self.subTest(kind=kind):
+                fake = FakeParamiko()
+                proxy_config = config()
+                proxy_config["ssh"]["profiles"]["box"]["proxy"] = {
+                    "type": kind, "host": "proxy.internal", "port": 1080,
+                    "remote_dns": True,
+                }
+                plugin = SshRpcPlugin(proxy_config, paramiko_module=fake)
+                proxy_socket = FakeProxySocket(response=b"")
+                try:
+                    with patch("python_socks.sync.Proxy") as proxy_cls:
+                        proxy_cls.return_value.connect.return_value = proxy_socket
+                        value = plugin.dispatch(
+                            self.files, "stat", {"profile": "box", "path": "/"}
+                        )
+                    self.assertEqual(200, value["status"], value)
+                    self.assertEqual(expected_name, proxy_cls.call_args.args[0].name)
+                    self.assertEqual("proxy.internal", proxy_cls.call_args.args[1])
+                    self.assertEqual(1080, proxy_cls.call_args.args[2])
+                    self.assertTrue(proxy_cls.call_args.kwargs["rdns"])
+                    proxy_cls.return_value.connect.assert_called_once_with(
+                        "host.internal", 2222, timeout=15
+                    )
+                    self.assertIs(fake.connect_calls[-1]["sock"], proxy_socket)
+                finally:
+                    plugin.close()
+
+    def test_http_proxy_auth_failure_is_specific_and_closes_socket(self):
+        proxy_config = config()
+        proxy_config["ssh"]["profiles"]["box"]["proxy"] = {
+            "type": "http", "host": "proxy.internal",
+            "username": "proxy-user", "password": "proxy-bad",
+        }
+        plugin = SshRpcPlugin(proxy_config, paramiko_module=self.fake)
+        proxy_socket = FakeProxySocket(
+            b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
+        )
+        try:
+            with patch("openkapsel.rpc_plugins.ssh.socket.create_connection",
+                       return_value=proxy_socket):
+                value = plugin.dispatch(
+                    self.files, "stat", {"profile": "box", "path": "/"}
+                )
+        finally:
+            plugin.close()
+        self.assertEqual(502, value["status"], value)
+        self.assertEqual("ssh_proxy_authentication_failed", value["error"]["code"])
+        self.assertTrue(proxy_socket.closed)
+        self.assertNotIn("proxy-bad", repr(value))
 
     def test_client_task_result_exposes_connection_id_for_reuse(self):
         registry = ClientRpcRegistry()

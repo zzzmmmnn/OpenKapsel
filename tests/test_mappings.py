@@ -5,6 +5,7 @@ import errno
 import json
 import os
 import socket
+import ssl
 import sys
 import tempfile
 import threading
@@ -12,9 +13,14 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from openkapsel.client import proxy_options, run_once
+from openkapsel.client_runtime.client_proxy import (
+    TLSOverTLSStream,
+    open_https_proxy_socket,
+    parse_proxy_url,
+)
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
 from openkapsel.mapping.mapping_manager import MappingManager
@@ -122,8 +128,153 @@ class MappingTests(unittest.TestCase):
             options = proxy_options(f"{scheme}://user:secret@127.0.0.1:21080")
             self.assertEqual(options["proxy_type"], scheme)
             self.assertEqual(options["http_proxy_port"], 21080)
+        tunnel = object()
+        with patch("openkapsel.client.open_https_proxy_socket", return_value=tunnel) as opened:
+            options = proxy_options(
+                "https://user:secret@proxy.example:443",
+                target_url="wss://server.example/mapping",
+                timeout=17,
+            )
+        self.assertIs(options["socket"], tunnel)
+        self.assertEqual(0, options["redirect_limit"])
+        self.assertNotIn("secret", repr(options))
+        proxy = parse_proxy_url("https://user:secret@proxy.example:443")
+        self.assertNotIn("secret", repr(proxy))
+        opened.assert_called_once_with(
+            proxy, "wss://server.example/mapping", timeout=17.0
+        )
         with self.assertRaises(ValueError):
             proxy_options("ftp://127.0.0.1:1")
+
+    def test_https_proxy_connect_uses_outer_tls_connect_and_inner_target_tls(self):
+        class FakeSocket:
+            def __init__(self, response=b""):
+                self.response = bytearray(response)
+                self.sent = bytearray()
+                self.timeout = None
+                self.closed = False
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def gettimeout(self):
+                return self.timeout
+
+            def sendall(self, data):
+                self.sent.extend(data)
+
+            def recv(self, size):
+                if not self.response:
+                    return b""
+                data = bytes(self.response[:size])
+                del self.response[:size]
+                return data
+
+            def close(self):
+                self.closed = True
+
+        raw = FakeSocket()
+        outer = FakeSocket(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        proxy_context = Mock()
+        proxy_context.wrap_socket.return_value = outer
+        target_context = Mock()
+        nested = object()
+        proxy = parse_proxy_url("https://proxy-user:proxy-secret@proxy.example:443")
+        with patch(
+            "openkapsel.client_runtime.client_proxy.socket.create_connection",
+            return_value=raw,
+        ) as create_connection, patch(
+            "openkapsel.client_runtime.client_proxy.ssl.create_default_context",
+            side_effect=[proxy_context, target_context],
+        ), patch(
+            "openkapsel.client_runtime.client_proxy.TLSOverTLSStream",
+            return_value=nested,
+        ) as nested_tls:
+            result = open_https_proxy_socket(
+                proxy, "wss://server.example:8443/mapping", timeout=23
+            )
+        self.assertIs(result, nested)
+        create_connection.assert_called_once_with(("proxy.example", 443), timeout=23)
+        proxy_context.wrap_socket.assert_called_once_with(raw, server_hostname="proxy.example")
+        nested_tls.assert_called_once_with(outer, target_context, "server.example", 23)
+        request = bytes(outer.sent).decode("ascii")
+        self.assertIn("CONNECT server.example:8443 HTTP/1.1\r\n", request)
+        expected_auth = base64.b64encode(b"proxy-user:proxy-secret").decode("ascii")
+        self.assertIn("Proxy-Authorization: Basic " + expected_auth, request)
+
+    def test_tls_over_tls_stream_drives_memory_bio_handshake_and_io(self):
+        class OuterSocket:
+            def __init__(self):
+                self.timeout = None
+                self.incoming = bytearray(b"server-handshake")
+                self.sent = bytearray()
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def gettimeout(self):
+                return self.timeout
+
+            def recv(self, size):
+                data = bytes(self.incoming[:size])
+                del self.incoming[:size]
+                return data
+
+            def sendall(self, data):
+                self.sent.extend(data)
+
+            def fileno(self):
+                return 10
+
+            def shutdown(self, how):
+                self.shutdown_how = how
+
+            def close(self):
+                self.closed = True
+
+            def getpeername(self):
+                return ("proxy.example", 443)
+
+            def getsockname(self):
+                return ("127.0.0.1", 50000)
+
+        class FakeSSLObject:
+            def __init__(self, incoming, outgoing):
+                self.incoming = incoming
+                self.outgoing = outgoing
+                self.handshakes = 0
+
+            def do_handshake(self):
+                self.handshakes += 1
+                if self.handshakes == 1:
+                    self.outgoing.write(b"client-handshake")
+                    raise ssl.SSLWantReadError(ssl.SSL_ERROR_WANT_READ, "want read")
+                self.asserted_handshake = self.incoming.read() == b"server-handshake"
+
+            def write(self, data):
+                data = bytes(data)
+                self.outgoing.write(b"tls:" + data)
+                return len(data)
+
+            def read(self, size):
+                return b"plain-data"[:size]
+
+        class FakeContext:
+            def wrap_bio(self, *, incoming, outgoing, server_hostname):
+                self.server_hostname = server_hostname
+                self.sslobj = FakeSSLObject(incoming, outgoing)
+                return self.sslobj
+
+        outer = OuterSocket()
+        context = FakeContext()
+        stream = TLSOverTLSStream(outer, context, "server.example", 19)
+        self.assertEqual("server.example", context.server_hostname)
+        self.assertTrue(context.sslobj.asserted_handshake)
+        self.assertEqual(b"client-handshake", bytes(outer.sent))
+        self.assertEqual(19, stream.gettimeout())
+        self.assertEqual(3, stream.send(b"abc"))
+        self.assertEqual(b"client-handshaketls:abc", bytes(outer.sent))
+        self.assertEqual(b"plain", stream.recv(5))
 
     def test_shell_private_scan_does_not_walk_remote_exports(self):
         from openkapsel.execution.shell_execution import sandbox_hidden_paths

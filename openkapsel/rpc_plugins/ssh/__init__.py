@@ -13,6 +13,7 @@ import posixpath
 import re
 import secrets
 import socket
+import ssl
 import stat
 import threading
 import time
@@ -41,6 +42,19 @@ _SHA256_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}\Z")
 
 
 @dataclass(frozen=True)
+class SshProxy:
+    type: str
+    host: str
+    port: int
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
+    remote_dns: bool = True
+    tls_verify: bool = True
+    ca_file: str | None = None
+    tls_server_name: str | None = None
+
+
+@dataclass(frozen=True)
 class SshProfile:
     name: str
     host: str
@@ -54,6 +68,7 @@ class SshProfile:
     host_key_policy: str = "strict"
     host_key_sha256: str | None = None
     known_hosts: str | None = None
+    proxy: SshProxy | None = None
 
 
 @dataclass
@@ -121,9 +136,93 @@ def _profile_host_port(value: dict[str, Any], *, name: str) -> tuple[str, int]:
             host = candidate
             port_value = int(suffix)
 
+    if "\r" in host or "\n" in host:
+        raise ValueError(f"ssh.profiles.{name}.host must not contain line breaks")
     port = _bounded_number(port_value, name=f"profiles.{name}.port",
                            default=22, minimum=1, maximum=65535)
     return host, port
+
+
+def _parse_proxy(value: Any, *, name: str) -> SshProxy | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"ssh.profiles.{name}.proxy must be an object")
+    allowed = {
+        "type", "host", "port", "username", "password", "remote_dns",
+        "tls_verify", "ca_file", "tls_server_name",
+    }
+    extra = set(value) - allowed
+    if extra:
+        raise ValueError(
+            f"unsupported proxy settings in SSH profile {name}: " + ", ".join(sorted(extra))
+        )
+    kind = value.get("type")
+    if not isinstance(kind, str):
+        raise ValueError(f"ssh.profiles.{name}.proxy.type is required")
+    aliases = {"s4": "socks4", "s5": "socks5"}
+    kind = aliases.get(kind.lower(), kind.lower())
+    if kind not in {"socks4", "socks5", "http", "https"}:
+        raise ValueError(
+            f"ssh.profiles.{name}.proxy.type must be socks4, socks5, http, or https"
+        )
+    host = _text(
+        value.get("host"), label=f"ssh.profiles.{name}.proxy.host", maximum=1024
+    )
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if "\r" in host or "\n" in host:
+        raise ValueError(f"ssh.profiles.{name}.proxy.host must not contain line breaks")
+    default_port = 1080 if kind in {"socks4", "socks5"} else (443 if kind == "https" else 8080)
+    port = _bounded_number(
+        value.get("port"), name=f"profiles.{name}.proxy.port",
+        default=default_port, minimum=1, maximum=65535,
+    )
+    username = value.get("username")
+    if username is not None:
+        username = _text(
+            username, label=f"ssh.profiles.{name}.proxy.username",
+            maximum=4096, allow_empty=True,
+        )
+    password = value.get("password")
+    if password is not None:
+        password = _text(
+            password, label=f"ssh.profiles.{name}.proxy.password",
+            maximum=65536, allow_empty=True,
+        )
+    if password is not None and username is None:
+        raise ValueError(f"ssh.profiles.{name}.proxy.password requires proxy.username")
+    if kind == "socks4" and password is not None:
+        raise ValueError(f"ssh.profiles.{name}.proxy.password is not supported by SOCKS4")
+    remote_dns = value.get("remote_dns", True)
+    if not isinstance(remote_dns, bool):
+        raise ValueError(f"ssh.profiles.{name}.proxy.remote_dns must be boolean")
+    if kind in {"http", "https"} and "remote_dns" in value:
+        raise ValueError(
+            f"ssh.profiles.{name}.proxy.remote_dns applies only to SOCKS4/SOCKS5"
+        )
+    tls_verify = value.get("tls_verify", True)
+    if not isinstance(tls_verify, bool):
+        raise ValueError(f"ssh.profiles.{name}.proxy.tls_verify must be boolean")
+    ca_file = value.get("ca_file")
+    if ca_file is not None:
+        ca_file = _text(ca_file, label=f"ssh.profiles.{name}.proxy.ca_file", maximum=4096)
+    tls_server_name = value.get("tls_server_name")
+    if tls_server_name is not None:
+        tls_server_name = _text(
+            tls_server_name, label=f"ssh.profiles.{name}.proxy.tls_server_name", maximum=1024
+        )
+    if kind != "https" and any(
+        key in value for key in ("tls_verify", "ca_file", "tls_server_name")
+    ):
+        raise ValueError(
+            f"ssh.profiles.{name}.proxy TLS settings apply only to HTTPS proxies"
+        )
+    return SshProxy(
+        type=kind, host=host, port=port, username=username, password=password,
+        remote_dns=remote_dns, tls_verify=tls_verify, ca_file=ca_file,
+        tls_server_name=tls_server_name,
+    )
 
 
 def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[str, Any]]:
@@ -173,7 +272,7 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
         permitted = {
             "host", "port", "username", "password", "key_filename", "passphrase",
             "allow_agent", "look_for_keys", "host_key_policy", "host_key_sha256",
-            "known_hosts",
+            "known_hosts", "proxy",
         }
         extra = set(value) - permitted
         if extra:
@@ -207,6 +306,7 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
         known_hosts = value.get("known_hosts", global_known_hosts)
         if known_hosts is not None:
             known_hosts = _text(known_hosts, label=f"ssh.profiles.{name}.known_hosts", maximum=4096)
+        proxy = _parse_proxy(value.get("proxy"), name=name)
         if password is None and key_filename is None and not allow_agent and not look_for_keys:
             raise ValueError(
                 f"SSH profile {name} needs password, key_filename, allow_agent=true, or look_for_keys=true"
@@ -215,7 +315,7 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
             name=name, host=host, port=port, username=username, password=password,
             key_filename=key_filename, passphrase=passphrase, allow_agent=allow_agent,
             look_for_keys=look_for_keys, host_key_policy=policy,
-            host_key_sha256=fingerprint, known_hosts=known_hosts,
+            host_key_sha256=fingerprint, known_hosts=known_hosts, proxy=proxy,
         )
 
     return profiles, {
@@ -224,6 +324,103 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
         "max_connections": max_connections,
         "max_channels_per_connection": max_channels,
     }
+
+
+def _proxy_authority(host: str, port: int) -> str:
+    if "\r" in host or "\n" in host:
+        raise ValueError("proxy destination host must not contain line breaks")
+    display = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return f"{display}:{port}"
+
+
+def _read_http_proxy_response(sock: socket.socket) -> tuple[int, str]:
+    data = bytearray()
+    while not data.endswith(b"\r\n\r\n"):
+        if len(data) >= 65536:
+            raise ValueError("HTTP proxy response headers exceed 64 KiB")
+        chunk = sock.recv(1)
+        if not chunk:
+            raise OSError(errno.ECONNRESET, "HTTP proxy closed during CONNECT response")
+        data.extend(chunk)
+    first = bytes(data).split(b"\r\n", 1)[0].decode("iso-8859-1", "replace")
+    parts = first.split(" ", 2)
+    if len(parts) < 2 or not parts[0].startswith("HTTP/") or not parts[1].isdigit():
+        raise ValueError("HTTP proxy returned an invalid CONNECT response")
+    return int(parts[1]), first[:200]
+
+
+def _open_proxy_socket(profile: SshProfile, timeout: float) -> socket.socket | None:
+    proxy = profile.proxy
+    if proxy is None:
+        return None
+    details = {"profile": profile.name, "proxy_type": proxy.type}
+    if proxy.type in {"socks4", "socks5"}:
+        try:
+            from python_socks import ProxyType
+            from python_socks.sync import Proxy
+        except ImportError as exc:
+            raise ApiError(503, "ssh_proxy_dependency_missing",
+                           "SOCKS SSH proxy requires python-socks", details) from exc
+        proxy_type = ProxyType.SOCKS4 if proxy.type == "socks4" else ProxyType.SOCKS5
+        try:
+            sock = Proxy(
+                proxy_type, proxy.host, proxy.port, username=proxy.username,
+                password=proxy.password, rdns=proxy.remote_dns,
+            ).connect(profile.host, profile.port, timeout=timeout)
+            sock.settimeout(timeout)
+            return sock
+        except Exception as exc:
+            raise ApiError(502, "ssh_proxy_connect_failed",
+                           "SSH SOCKS proxy connection could not be established",
+                           {**details, "error_type": type(exc).__name__}) from exc
+
+    sock = None
+    try:
+        sock = socket.create_connection((proxy.host, proxy.port), timeout=timeout)
+        sock.settimeout(timeout)
+        if proxy.type == "https":
+            cafile = str(Path(proxy.ca_file).expanduser()) if proxy.ca_file else None
+            context = ssl.create_default_context(cafile=cafile)
+            if not proxy.tls_verify:
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+            sock = context.wrap_socket(
+                sock, server_hostname=proxy.tls_server_name or proxy.host
+            )
+            sock.settimeout(timeout)
+        authority = _proxy_authority(profile.host, profile.port)
+        headers = [
+            f"CONNECT {authority} HTTP/1.1",
+            f"Host: {authority}",
+            "Proxy-Connection: Keep-Alive",
+        ]
+        if proxy.username is not None:
+            token = base64.b64encode(
+                f"{proxy.username}:{proxy.password or ''}".encode("utf-8")
+            ).decode("ascii")
+            headers.append("Proxy-Authorization: Basic " + token)
+        sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
+        status, status_line = _read_http_proxy_response(sock)
+        if status == 407:
+            raise ApiError(502, "ssh_proxy_authentication_failed",
+                           "SSH HTTP proxy authentication failed", details)
+        if not 200 <= status < 300:
+            raise ApiError(502, "ssh_proxy_connect_failed",
+                           "SSH HTTP proxy rejected CONNECT",
+                           {**details, "proxy_status": status, "status_line": status_line})
+        return sock
+    except ApiError:
+        if sock is not None:
+            with contextlib.suppress(Exception):
+                sock.close()
+        raise
+    except Exception as exc:
+        if sock is not None:
+            with contextlib.suppress(Exception):
+                sock.close()
+        raise ApiError(502, "ssh_proxy_connect_failed",
+                       "SSH proxy connection could not be established",
+                       {**details, "error_type": type(exc).__name__}) from exc
 
 
 def _fingerprint(key: Any) -> str:
@@ -423,6 +620,11 @@ class _ConnectionPool:
                          {"profile": profile.name})
                 client.load_host_keys(str(known_hosts))
             client.set_missing_host_key_policy(self._policy(paramiko, profile))
+            try:
+                proxy_sock = _open_proxy_socket(profile, self.connect_timeout)
+            except Exception:
+                self._close_client(client)
+                raise
             kwargs = {
                 "hostname": profile.host,
                 "port": profile.port,
@@ -436,8 +638,12 @@ class _ConnectionPool:
                 "auth_timeout": self.connect_timeout,
                 "banner_timeout": self.connect_timeout,
             }
+            if proxy_sock is not None:
+                kwargs["sock"] = proxy_sock
+            connected = False
             try:
                 client.connect(**kwargs)
+                connected = True
             except ApiError:
                 self._close_client(client)
                 raise
@@ -455,6 +661,10 @@ class _ConnectionPool:
                 raise ApiError(502, "ssh_connect_failed",
                                "SSH connection could not be established",
                                {"profile": profile.name, "error_type": type(exc).__name__}) from exc
+            finally:
+                if not connected and proxy_sock is not None:
+                    with contextlib.suppress(Exception):
+                        proxy_sock.close()
             transport = client.get_transport()
             if transport is None or not transport.is_active():
                 self._close_client(client)
@@ -585,10 +795,11 @@ _LOCAL_PATH = {"type": "string", "minLength": 1, "maxLength": 4096}
 
 class SshRpcPlugin:
     family = "ssh"
-    version = 1
+    version = 2
     description = (
-        "Privileged client-local SSH/SFTP using reusable Paramiko transports. "
-        "Credentials remain in the mapping client configuration; connection IDs are process-scoped."
+        "Privileged client-local SSH/SFTP using reusable Paramiko transports with optional "
+        "SOCKS4, SOCKS5, HTTP CONNECT, or HTTPS CONNECT proxies. Credentials remain in the "
+        "mapping client configuration; connection IDs are process-scoped."
     )
     operations = {
         "profiles": {
@@ -672,10 +883,21 @@ class SshRpcPlugin:
             "max_channels_per_connection": self._settings["max_channels_per_connection"],
             "credentials": "client_config_only",
             "connection_ids": "client_process_scoped",
+            "supported_proxy_types": ["socks4", "socks5", "http", "https"],
+            "configured_proxy_types": sorted({
+                profile.proxy.type for profile in self._profiles.values() if profile.proxy is not None
+            }),
         }
         if not self._profiles:
             return "unsupported", "not_configured", details
         if self._paramiko_override is None and not _installed("paramiko"):
+            details["missing_dependency"] = "paramiko"
+            return "unsupported", "dependency_missing", details
+        if any(
+            profile.proxy is not None and profile.proxy.type in {"socks4", "socks5"}
+            for profile in self._profiles.values()
+        ) and not _installed("python_socks"):
+            details["missing_dependency"] = "python-socks"
             return "unsupported", "dependency_missing", details
         return "available", None, details
 
@@ -725,12 +947,24 @@ class SshRpcPlugin:
                         auth.append("agent")
                     if profile.look_for_keys:
                         auth.append("discover_keys")
-                    entries.append({
+                    entry = {
                         "name": profile.name, "host": profile.host, "port": profile.port,
                         "username": profile.username, "authentication": auth,
                         "host_key_policy": profile.host_key_policy,
                         "host_key_pinned": profile.host_key_sha256 is not None,
-                    })
+                    }
+                    if profile.proxy is not None:
+                        proxy_meta = {
+                            "type": profile.proxy.type, "host": profile.proxy.host,
+                            "port": profile.proxy.port,
+                            "authenticated": profile.proxy.username is not None,
+                        }
+                        if profile.proxy.type in {"socks4", "socks5"}:
+                            proxy_meta["remote_dns"] = profile.proxy.remote_dns
+                        if profile.proxy.type == "https":
+                            proxy_meta["tls_verify"] = profile.proxy.tls_verify
+                        entry["proxy"] = proxy_meta
+                    entries.append(entry)
                 return {"profiles": entries, "total": len(entries)}
             if operation == "status":
                 connection_id = args["connection_id"]
