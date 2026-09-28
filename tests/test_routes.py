@@ -90,6 +90,19 @@ class EndpointContractTests(unittest.TestCase):
         actual = update_plan["inputSchema"]["properties"]["debrief"]["properties"]
         self.assertEqual(memory_actions_schema(), actual["memory_actions"])
 
+        variants = actual["memory_actions"]["items"]["oneOf"]
+        update = next(item for item in variants if item["properties"]["action"]["const"] == "update")
+        self.assertEqual(
+            {"action", "memory_id", "expected_revision"},
+            set(update["required"]),
+        )
+        self.assertEqual(4, update["minProperties"])
+        self.assertNotIn("anyOf", update)
+        self.assertEqual(
+            {"action", "memory_id", "expected_revision", "content", "tags", "path"},
+            set(update["properties"]),
+        )
+
     def test_workspace_info_exposes_discovery_sections(self) -> None:
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "workspace_info")
         section = tool["inputSchema"]["properties"]["section"]

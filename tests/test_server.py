@@ -732,7 +732,12 @@ class WorkspaceServerTests(unittest.TestCase):
             {"action", "memory_id", "expected_revision"},
             set(variants_by_action["update"]["required"]),
         )
-        self.assertIn("anyOf", variants_by_action["update"])
+        self.assertEqual(4, variants_by_action["update"]["minProperties"])
+        self.assertNotIn("anyOf", variants_by_action["update"])
+        self.assertEqual(
+            {"action", "memory_id", "expected_revision", "content", "tags", "path"},
+            set(variants_by_action["update"]["properties"]),
+        )
         self.assertIn("debrief", op("context", "plan_update")["body_fields"])
         self.assertEqual(
             "plan_id",

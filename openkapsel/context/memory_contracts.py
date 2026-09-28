@@ -59,7 +59,11 @@ _UPDATE = _object(
     },
     ["memory_id", "expected_revision"],
     "Conditionally revise content, tags, or path of an existing Memory.",
-    anyOf=[{"required": [field]} for field in _UPDATE_FIELDS],
+    # action + memory_id + expected_revision are always required, so four total
+    # properties means at least one editable field is present. Avoid an object-level
+    # anyOf here: some MCP schema consumers flatten it into partial object variants
+    # and lose the common required fields from the advertised tool signature.
+    minProperties=4,
 )
 
 _ARCHIVE = _object(
