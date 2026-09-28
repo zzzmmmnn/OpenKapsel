@@ -259,9 +259,11 @@ def load_server_rpc_registry() -> ClientRpcRegistry:
     registry = ClientRpcRegistry()
     from .git import plugin as git_plugin
     from .archive import plugin as archive_plugin
+    from .file_search import plugin as file_search_plugin
 
     registry.register(git_plugin, source="openkapsel.rpc_plugins.git:plugin")
     registry.register(archive_plugin, source="openkapsel.rpc_plugins.archive:plugin")
+    registry.register(file_search_plugin, source="openkapsel.rpc_plugins.file_search:plugin")
     return registry
 
 
@@ -269,9 +271,11 @@ def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:
     registry = ClientRpcRegistry()
     from .git import plugin as git_plugin
     from .archive import plugin as archive_plugin
+    from .file_search import plugin as file_search_plugin
 
     registry.register(git_plugin, source="openkapsel.rpc_plugins.git:plugin")
     registry.register(archive_plugin, source="openkapsel.rpc_plugins.archive:plugin")
+    registry.register(file_search_plugin, source="openkapsel.rpc_plugins.file_search:plugin")
     from .structured import plugin as structured_plugin
     from .tabular import plugin as tabular_plugin
     from .ssh import SshRpcPlugin

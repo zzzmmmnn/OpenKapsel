@@ -22,8 +22,11 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         self.assertEqual("available", capabilities["file"]["state"])
         self.assertIn(capabilities["git"]["state"], {"available", "unsupported"})
         self.assertEqual("available", capabilities["archive"]["state"])
+        self.assertIn(capabilities["file_search"]["state"], {"available", "unsupported"})
         self.assertIn("fs_read", capabilities["file"]["operations"])
         self.assertIn("log", capabilities["git"]["operations"])
+        self.assertEqual(["search", "status"], capabilities["file_search"]["operations"])
+        self.assertTrue(capabilities["file_search"]["read_only"])
         self.assertEqual(
             ["create", "extract", "list", "read"],
             capabilities["archive"]["operations"],

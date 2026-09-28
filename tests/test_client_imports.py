@@ -78,6 +78,7 @@ registry = load_client_rpc_registry({})
 try:
     assert "git" in registry.families
     assert "archive" in registry.families
+    assert "file_search" in registry.families
 finally:
     registry.close()
 '''

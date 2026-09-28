@@ -84,7 +84,7 @@ always enabled and reports `available`; its version and supported operations
 are still negotiated. Optional extensions report `available`, `unsupported`, or
 `disabled`; the server derives `offline` when the provider session is absent.
 The client configuration can independently enable or disable extensions with
-`rpc.git`, `rpc.archive`, and registered plugin family names. The removed
+`rpc.git`, `rpc.archive`, `rpc.file_search`, and registered plugin family names. The removed
 `rpc.file` key is rejected: delete it from older client configurations before
 starting the updated client. Read/write restrictions remain controlled by the
 caller token, mapping permissions, and client `writable` setting.
@@ -242,6 +242,10 @@ Podman on macOS/Windows runs Linux workloads, not native platform tests. Linux B
 Local task limits can be set in `limits`: `max_tasks` (1–16), `max_seconds` (1–86400), `memory_mb`, `processes`, and `cpus`. CPU/memory/process limits are container controls; native unsandboxed mode only enforces concurrency, output bounds, and task deadlines. Client execution currently offers Podman or explicit native execution; additional sandbox backends can be added independently of the mapping transport.
 
 `POST /recycle/purge` removes one selected recycle entry permanently. It requires the root selector, entry ID, normal mutation Context, and `confirm: true`.
+
+## Indexed file search RPC
+
+The built-in read-only `file_search` family exposes the same `search` and `status` operations on server workspaces and mapping clients. Windows talks directly to a running Everything instance through local QUERY2 `WM_COPYDATA` IPC; no ETP server, `es.exe`, or Everything SDK DLL is required. macOS uses the system `mdfind` command. Linux requires `plocate`. Searches use literal filename-substring semantics, are restricted to the selected export-relative `path`, and return only export-relative paths after an additional boundary/private-path check. Set `rpc.file_search` to false on a mapping client to disable it.
 
 ## Structured and table RPC
 

@@ -62,6 +62,9 @@ SERVER_FILES = (
     "openkapsel/workspace/workspace_image_helper.py",
     "openkapsel/workspace/workspace_images.py",
     "openkapsel/execution/shell_routing.py",
+    "openkapsel/rpc_plugins/registry.py",
+    "openkapsel/rpc_plugins/file_search/__init__.py",
+    "openkapsel/rpc_plugins/file_search/everything_ipc.py",
 )
 
 CLIENT_FILES = (
@@ -85,6 +88,8 @@ CLIENT_FILES = (
     "openkapsel/rpc_plugins/registry.py",
     "openkapsel/rpc_plugins/archive/__init__.py",
     "openkapsel/rpc_plugins/git/__init__.py",
+    "openkapsel/rpc_plugins/file_search/__init__.py",
+    "openkapsel/rpc_plugins/file_search/everything_ipc.py",
     "openkapsel/rpc_plugins/structured/__init__.py",
     "openkapsel/rpc_plugins/tabular/__init__.py",
     "openkapsel/rpc_plugins/tabular/csv_stream.py",
