@@ -153,7 +153,7 @@ class McpHandlersMixin:
             },
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer edit_text for focused edits. "
-                "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one add_context call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived overview, architecture, conventions, decisions, and known issues. Tags and paths are primary Memory relevance signals. Use add_memory/update_memory during work, or complete a plan with debrief containing summary, outcome, and memory_actions; an empty memory_actions array explicitly retains nothing. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
+                "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one add_context call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use add_memory/update_memory during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
                 "Pass expected_etag to write_file or edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use read_binary_chunk and Base64 upload_chunk for small binary chunks; for large files call prepare_download or use the raw_transfer URLs returned by start_upload. "
                 "Call get_web_preview_url when a workspace page should be opened in a browser. "
@@ -498,9 +498,6 @@ class McpHandlersMixin:
             try:
                 entries, total = self.server.memory_for(self.token_scope_root).query(
                     query=str(arguments.get("query", "")),
-                    category=str(arguments["category"]) if "category" in arguments else None,
-                    status=str(arguments["status"]) if "status" in arguments else None,
-                    severity=str(arguments["severity"]) if "severity" in arguments else None,
                     tag=str(arguments["tag"]) if "tag" in arguments else None,
                     path=str(arguments["path"]) if "path" in arguments else None,
                     include_archived=bool(arguments.get("include_archived", False)),
@@ -542,14 +539,9 @@ class McpHandlersMixin:
             plan_id = self._require_existing_plan(arguments.get("plan_id"))
             try:
                 return self.server.memory_for(self.token_scope_root).create(
-                    category=arguments.get("category"),
-                    key=arguments.get("key"),
-                    title=arguments.get("title"),
                     content=arguments.get("content"),
-                    status=arguments.get("status"),
-                    severity=arguments.get("severity"),
                     tags=arguments.get("tags"),
-                    paths=arguments.get("paths"),
+                    path=arguments.get("path"),
                     plan_id=plan_id,
                     actor_id=self._memory_actor_id(),
                     message=str(arguments["message"]),

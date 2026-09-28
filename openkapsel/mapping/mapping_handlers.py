@@ -261,12 +261,18 @@ class MappingHandlersMixin:
         ):
             raise ApiError(400, "invalid_request", "timeout_seconds must be between 0 and 86400")
         if write:
+            context_request = self._context_request_details(body)
+            context_request.update({
+                "target": "server",
+                "rpc_family": family,
+                "rpc_operation": operation,
+            })
             self._begin_context_operation(
                 "server.rpc",
                 body.get("taskname", self._context_header_taskname()),
                 body.get("message", self._context_header_message()),
                 body.get("plan_id", self._context_header_plan_id()),
-                self._context_request_details(body),
+                context_request,
                 plan_required=True,
             )
 
@@ -380,12 +386,19 @@ class MappingHandlersMixin:
         ):
             raise ApiError(400, "invalid_request", "timeout_seconds must be between 0 and 86400")
         if write:
+            context_request = self._context_request_details(body)
+            context_request.update({
+                "target": "mapping",
+                "mapping_id": mid,
+                "rpc_family": family,
+                "rpc_operation": operation,
+            })
             self._begin_context_operation(
                 "mapping.rpc",
                 body.get("taskname", self._context_header_taskname()),
                 body.get("message", self._context_header_message()),
                 body.get("plan_id", self._context_header_plan_id()),
-                self._context_request_details(body),
+                context_request,
                 plan_required=True,
             )
         rpc_args = self._rpc_args_with_policy(family, operation, body.get("args", {}))

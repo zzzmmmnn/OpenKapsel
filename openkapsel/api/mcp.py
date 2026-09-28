@@ -311,7 +311,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
                 "debrief": {
                     **plan_debrief_schema(),
-                    "description": "Required when completing a plan: summary, outcome, and memory_actions (an empty array means retain no Memory).",
+                    "description": "Required when completing a plan: items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each item directly creates one new long-lived Memory; multiple items create multiple Memories. Each item has 1-256 character content plus tags (prefer 4-16). One path is derived by the server from successful writes owned by the Plan. memory_actions only updates or archives existing Memory.",
                 },
             },
             ("id", "taskname"),
@@ -323,15 +323,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "query_memory",
         "Query project memory",
-        "Query active or archived project-level Memory by text, category, status, severity, exact tag, or overlapping path.",
+        "Query active or archived project-level Memory by content text, exact tag, or overlapping canonical path scope.",
         _object_schema(
             {
                 "query": {"type": "string", "default": ""},
-                "category": {"type": "string"},
-                "status": {"type": "string"},
-                "severity": {"type": "string"},
                 "tag": {"type": "string"},
-                "path": {"type": "string"},
+                "path": {
+                    "type": "string",
+                    "description": "Canonical scope such as server:src, mapping:<id>:C:/repo, storage:<id>:docs, or server:. for global scope.",
+                },
                 "include_archived": {"type": "boolean", "default": False},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 100},
             }
@@ -359,7 +359,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "get_project_memory",
         "Get project memory profile",
-        "Return a bounded project profile containing overview, architecture, conventions, decisions, and open known issues.",
+        "Return a bounded recent/helpful profile of active project Memory entries.",
         _object_schema({}),
         read_only=True,
         idempotent=True,
@@ -368,22 +368,27 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "add_memory",
         "Add project memory",
-        "Create a revisioned project Memory linked to the plan that discovered or decided it.",
+        "Create a revisioned project Memory with short content, exact tags, and one optional canonical path.",
         _object_schema(
             {
-                "category": {"type": "string"},
-                "key": {"type": "string"},
-                "title": {"type": "string", "minLength": 1},
-                "content": {"type": "string", "minLength": 1},
-                "status": {"type": "string"},
-                "severity": {"type": "string"},
-                "tags": {"type": "array", "maxItems": 32},
-                "paths": {"type": "array", "maxItems": 64},
+                "content": {"type": "string", "minLength": 1, "maxLength": 256},
+                "tags": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "description": "At least one tag is required; prefer 4-16 specific reusable exact-match tags.",
+                },
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "Optional canonical scope: server:<path>, mapping:<id>:<path>, storage:<id>:<path>; omitted defaults to server:.",
+                },
                 "plan_id": {"type": "integer", "minimum": 1},
                 "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
                 "message": {"type": "string", "minLength": 1, "maxLength": 200},
             },
-            ("category", "title", "content", "plan_id", "taskname", "message"),
+            ("content", "tags", "plan_id", "taskname", "message"),
         ),
         read_only=False,
         context_message=False,
@@ -391,19 +396,24 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "update_memory",
         "Update project memory",
-        "Update one Memory using its current revision as an optimistic concurrency precondition.",
+        "Update content, tags, or path of one Memory using its current revision as an optimistic concurrency precondition. Legacy content longer than 256 characters may remain unchanged, but replacement content is limited to 256.",
         _object_schema(
             {
                 "memory_id": {"type": "string", "minLength": 1},
                 "expected_revision": {"type": "integer", "minimum": 1},
-                "category": {"type": "string"},
-                "key": {"type": ["string", "null"]},
-                "title": {"type": "string", "minLength": 1},
-                "content": {"type": "string", "minLength": 1},
-                "status": {"type": "string"},
-                "severity": {"type": ["string", "null"]},
-                "tags": {"type": "array", "maxItems": 32},
-                "paths": {"type": "array", "maxItems": 64},
+                "content": {"type": "string", "minLength": 1, "maxLength": 256},
+                "tags": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "description": "At least one tag is required; prefer 4-16 specific reusable exact-match tags.",
+                },
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "Canonical scope: server:<path>, mapping:<id>:<path>, storage:<id>:<path>; server:. is global.",
+                },
                 "plan_id": {"type": "integer", "minimum": 1},
                 "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
                 "message": {"type": "string", "minLength": 1, "maxLength": 200},

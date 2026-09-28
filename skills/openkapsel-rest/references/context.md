@@ -144,14 +144,21 @@ Completing a Plan requires:
   "taskname": "fix-preview",
   "status": "completed",
   "debrief": {
-    "summary": "Corrected asset loading and verified the preview.",
+    "items": [
+      {
+        "content": "Corrected asset loading and verified the preview.",
+        "tags": ["preview", "assets", "loading", "verification"]
+      }
+    ],
     "outcome": "succeeded",
-    "memory_actions": []
+    "memory_actions": [],
+    "memory_feedback": [],
+    "memory_conflicts": []
   }
 }
 ```
 
-`outcome` is `succeeded`, `partial`, or `no_change`. Use `memory_actions: []` when there is no durable project knowledge. Otherwise read [memory.md](memory.md) and use its action shapes. A completed Plan cannot be completed again.
+`items` is the structured debrief: every item directly creates one new long-lived Memory from `content` plus its own `tags`. Content is limited to 1-256 characters; tags are required and 4-16 specific reusable tags are recommended. All items created by one Plan receive the same server-derived canonical path scope from that Plan's successful writes. Use `items: []` when there is no new durable fact. `outcome` is `succeeded`, `partial`, or `no_change`. `memory_actions` only updates or archives existing Memory. `memory_feedback` contains only existing revisions that materially helped. `memory_conflicts` contains verified contradictions and requires a content update or archive for the same Memory revision before completion. See [memory.md](memory.md) for path derivation and action shapes. A completed Plan cannot be completed again. Older stored debriefs may expose `legacy_summary` instead of structured items.
 
 ## Notes
 

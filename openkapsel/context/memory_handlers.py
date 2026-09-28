@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import ntpath
+import os
+import posixpath
 import re
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 from openkapsel.errors import ApiError
-from openkapsel.context.memory_store import MAX_MEMORY_QUERY_LIMIT
+from openkapsel.context.context_store import MAX_CONTEXT_QUERY_LIMIT
+from openkapsel.context.memory_store import (
+    MAX_MEMORY_QUERY_LIMIT,
+    MAX_MEMORY_REVISION_LIMIT,
+    MemoryStore,
+)
 
 
 class MemoryHandlersMixin:
@@ -107,6 +116,141 @@ class MemoryHandlersMixin:
                 str(exc),
             ) from None
 
+    @staticmethod
+    def _common_memory_scope(scopes: list[str]) -> str:
+        return MemoryStore._common_path(scopes)
+
+    @staticmethod
+    def _extract_operation_paths(value: Any) -> list[tuple[str, bool]]:
+        """Return (path, is_directory) candidates from a sanitized Context payload."""
+        found: list[tuple[str, bool]] = []
+        if isinstance(value, dict):
+            item_operation = value.get("operation")
+            for key, item in value.items():
+                if key in {"path", "source", "destination", "cwd"} and isinstance(item, str):
+                    is_directory = key == "cwd" or (key == "path" and item_operation == "mkdir")
+                    found.append((item, is_directory))
+                elif isinstance(item, (dict, list)):
+                    found.extend(MemoryHandlersMixin._extract_operation_paths(item))
+        elif isinstance(value, list):
+            for item in value:
+                found.extend(MemoryHandlersMixin._extract_operation_paths(item))
+        return found
+
+    @staticmethod
+    def _mapping_scope(mapping_id: str, raw: str, *, directory: bool) -> str:
+        normalized = raw.replace("\\", "/") or "."
+        if not directory and normalized != ".":
+            if re.match(r"^[A-Za-z]:/", normalized):
+                parent = ntpath.dirname(normalized.replace("/", "\\")).replace("\\", "/")
+            else:
+                parent = posixpath.dirname(normalized)
+            normalized = parent or "."
+        normalized = posixpath.normpath(normalized).replace("\\", "/")
+        return f"mapping:{mapping_id}:{normalized or '.'}"
+
+    def _virtual_memory_scope(self, raw: str, *, directory: bool) -> str:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.token_scope_root / candidate
+        candidate = Path(os.path.abspath(candidate))
+
+        mapping = self.server.mappings.at_path(candidate)
+        if mapping is None:
+            resolved = candidate.resolve(strict=False)
+            mapping = self.server.mappings.at_path(resolved)
+            if mapping is not None:
+                candidate = resolved
+        if mapping is not None:
+            root = self.server.mappings.mount_path(mapping)
+            try:
+                relative = candidate.relative_to(root).as_posix()
+            except ValueError:
+                return "server:."
+            if not directory:
+                relative = posixpath.dirname(relative) or "."
+            return f"mapping:{mapping['id']}:{relative or '.'}"
+
+        storage = getattr(self.server, "storage_providers", None)
+        storage_mapping = storage.mapping_at_path(candidate) if storage is not None else None
+        if storage_mapping is not None:
+            root = storage.mapping_path(storage_mapping)
+            try:
+                relative = candidate.relative_to(root).as_posix()
+            except ValueError:
+                return "server:."
+            if not directory:
+                relative = posixpath.dirname(relative) or "."
+            return f"storage:{storage_mapping['provider_id']}:{relative or '.'}"
+
+        try:
+            relative = candidate.relative_to(self.token_scope_root).as_posix()
+        except ValueError:
+            return "server:."
+        if not directory:
+            relative = posixpath.dirname(relative) or "."
+        return f"server:{relative or '.'}"
+
+    def _plan_memory_path(self, plan_id: int) -> str:
+        write_operations = {
+            "fs.copy", "fs.content.put", "fs.mutate", "fs.large.replace", "fs.mkdir",
+            "fs.move", "fs.transfer.control", "recycle.restore", "upload.commit",
+            "shell.exec", "schedule.run_now", "server.rpc", "mapping.rpc",
+        }
+        context = self.server.context_for(self.token_scope_root)
+        scopes: list[str] = []
+        before_id: int | None = None
+        while True:
+            entries, _ = context.query(
+                entry_type="operation",
+                entry_status="succeeded",
+                plan_id=plan_id,
+                before_id=before_id,
+                limit=MAX_CONTEXT_QUERY_LIMIT,
+            )
+            for entry in entries:
+                operation = entry.get("operation")
+                if operation not in write_operations:
+                    continue
+                request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+                result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+
+                if operation == "shell.exec":
+                    raw_cwd = request.get("cwd", ".")
+                    candidates = [(raw_cwd if isinstance(raw_cwd, str) else ".", True)]
+                else:
+                    candidates = self._extract_operation_paths(request)
+                    candidates.extend(self._extract_operation_paths(result))
+
+                if operation == "mapping.rpc":
+                    mapping_id = request.get("mapping_id")
+                    if not isinstance(mapping_id, str) or not mapping_id:
+                        scopes.append("server:.")
+                        continue
+                    if not candidates:
+                        scopes.append(f"mapping:{mapping_id}:.")
+                        continue
+                    scopes.extend(
+                        self._mapping_scope(mapping_id, raw, directory=directory)
+                        for raw, directory in candidates
+                    )
+                    continue
+
+                if operation == "server.rpc" and not candidates:
+                    scopes.append("server:.")
+                    continue
+
+                if operation == "shell.exec" and not candidates:
+                    candidates = [(".", True)]
+                for raw, directory in candidates:
+                    scopes.append(self._virtual_memory_scope(raw, directory=directory))
+
+            if len(entries) < MAX_CONTEXT_QUERY_LIMIT:
+                break
+            before_id = int(entries[-1]["id"])
+
+        return self._common_memory_scope(scopes)
+
     def _apply_memory_debrief(
         self,
         plan_id: int,
@@ -119,15 +263,62 @@ class MemoryHandlersMixin:
                 "plan_completion_requires_debrief",
                 "completing a plan requires a debrief object",
             )
-        summary = value.get("summary")
+        items = value.get("items")
         outcome = value.get("outcome")
         actions = value.get("memory_actions")
-        if not isinstance(summary, str) or not summary.strip():
+        feedback = value.get("memory_feedback")
+        conflicts = value.get("memory_conflicts")
+        if not isinstance(items, list):
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
                 "invalid_plan_debrief",
-                "debrief.summary must be a non-empty string",
+                "debrief.items must be an array",
             )
+        if len(items) > 20:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_plan_debrief",
+                "debrief.items cannot contain more than 20 items",
+            )
+        normalized_items: list[dict[str, Any]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"debrief item {index} must be an object",
+                )
+            content = item.get("content")
+            tags = item.get("tags")
+            if not isinstance(content, str) or not content.strip() or len(content.strip()) > 256:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"debrief item {index} content must be 1-256 characters",
+                )
+            if not isinstance(tags, list) or not tags or len(tags) > 32:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"debrief item {index} tags must contain 1-32 tags; prefer 4-16",
+                )
+            normalized_tags: list[str] = []
+            for tag in tags:
+                if not isinstance(tag, str) or not tag.strip() or len(tag.strip()) > 64:
+                    raise ApiError(
+                        HTTPStatus.BAD_REQUEST,
+                        "invalid_plan_debrief",
+                        f"debrief item {index} tags must be non-empty strings up to 64 characters",
+                    )
+                normalized_tag = tag.strip()
+                if normalized_tag in normalized_tags:
+                    raise ApiError(
+                        HTTPStatus.BAD_REQUEST,
+                        "invalid_plan_debrief",
+                        f"debrief item {index} tags must be unique",
+                    )
+                normalized_tags.append(normalized_tag)
+            normalized_items.append({"content": content.strip(), "tags": normalized_tags})
         if outcome not in {"succeeded", "partial", "no_change"}:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
@@ -138,7 +329,7 @@ class MemoryHandlersMixin:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
                 "invalid_plan_debrief",
-                "debrief.memory_actions must be an array; use an empty array when nothing should be retained",
+                "debrief.memory_actions must be an array; use an empty array when no existing Memory needs mutation",
             )
         if len(actions) > 20:
             raise ApiError(
@@ -146,9 +337,146 @@ class MemoryHandlersMixin:
                 "invalid_plan_debrief",
                 "debrief.memory_actions cannot contain more than 20 actions",
             )
+        if not isinstance(feedback, list):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_plan_debrief",
+                "debrief.memory_feedback must be an array; list only Memory that actually helped",
+            )
+        if len(feedback) > 20:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_plan_debrief",
+                "debrief.memory_feedback cannot contain more than 20 items",
+            )
+        if not isinstance(conflicts, list):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_plan_debrief",
+                "debrief.memory_conflicts must be an array",
+            )
+        if len(conflicts) > 20:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_plan_debrief",
+                "debrief.memory_conflicts cannot contain more than 20 items",
+            )
+
         store = self.server.memory_for(self.token_scope_root)
         actor_id = self._memory_actor_id()
+        completion_message = f"Plan {plan_id} completion"
+        try:
+            normalized_feedback = store.validate_helpful_feedback(feedback)
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise self._memory_error(exc) from None
+
+        normalized_conflicts: list[dict[str, Any]] = []
+        conflict_ids: set[str] = set()
+        for index, item in enumerate(conflicts):
+            if not isinstance(item, dict):
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"memory conflict {index} must be an object",
+                )
+            memory_id = item.get("memory_id")
+            revision = item.get("revision")
+            reason = item.get("reason")
+            if not isinstance(memory_id, str) or not memory_id:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"memory conflict {index} requires memory_id",
+                )
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"memory conflict {index} requires a positive revision",
+                )
+            if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 1000:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"memory conflict {index} requires a non-empty reason up to 1000 characters",
+                )
+            if memory_id in conflict_ids:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_plan_debrief",
+                    f"memory_conflicts duplicates {memory_id}",
+                )
+            conflict_ids.add(memory_id)
+            normalized_conflicts.append(
+                {"memory_id": memory_id, "revision": revision, "reason": reason.strip()}
+            )
+
+        feedback_ids = {item["memory_id"] for item in normalized_feedback}
+        overlap = feedback_ids & conflict_ids
+        if overlap:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_plan_debrief",
+                "the same Memory cannot be both helpful and conflicting: "
+                + ", ".join(sorted(overlap)),
+            )
+
+        conflict_handlers: dict[tuple[str, int], dict[str, Any]] = {}
+        for action_value in actions:
+            if not isinstance(action_value, dict):
+                continue
+            action = action_value.get("action")
+            memory_id = action_value.get("memory_id")
+            revision = action_value.get("expected_revision")
+            if (
+                action in {"update", "archive"}
+                and isinstance(memory_id, str)
+                and isinstance(revision, int)
+                and not isinstance(revision, bool)
+            ):
+                conflict_handlers[(memory_id, revision)] = action_value
+
+        for conflict in normalized_conflicts:
+            handler = conflict_handlers.get((conflict["memory_id"], conflict["revision"]))
+            if handler is None or (
+                handler.get("action") == "update" and "content" not in handler
+            ):
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "unresolved_memory_conflict",
+                    f"conflicting Memory {conflict['memory_id']} revision "
+                    f"{conflict['revision']} must have its content updated or be archived",
+                )
+
+        try:
+            store.preflight_actions(actions)
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise self._memory_error(exc) from None
+
+        debrief_path = self._plan_memory_path(plan_id)
         results: list[dict[str, Any]] = []
+        for index, item in enumerate(normalized_items):
+            try:
+                entry = store.create(
+                    content=item["content"],
+                    tags=item["tags"],
+                    path=debrief_path,
+                    plan_id=plan_id,
+                    actor_id=actor_id,
+                    message=f"Plan {plan_id} debrief memory",
+                )
+            except (KeyError, ValueError, RuntimeError) as exc:
+                error = self._memory_error(exc)
+                error.details = {"debrief_item_index": index}
+                raise error from None
+            results.append(
+                {
+                    "action": "create",
+                    "memory_id": entry["memory_id"],
+                    "revision": entry["revision"],
+                }
+            )
+
         for index, action_value in enumerate(actions):
             if not isinstance(action_value, dict):
                 raise ApiError(
@@ -158,39 +486,23 @@ class MemoryHandlersMixin:
                 )
             action = action_value.get("action")
             try:
-                if action == "create":
-                    entry = store.create(
-                        category=action_value.get("category"),
-                        key=action_value.get("key"),
-                        title=action_value.get("title"),
-                        content=action_value.get("content"),
-                        status=action_value.get("status"),
-                        severity=action_value.get("severity"),
-                        tags=action_value.get("tags"),
-                        paths=action_value.get("paths"),
-                        plan_id=plan_id,
-                        actor_id=actor_id,
-                        message=f"Plan {plan_id} completion: {summary.strip()}",
-                    )
-                elif action in {"update", "resolve"}:
+                if action == "update":
                     memory_id = action_value.get("memory_id")
                     if not isinstance(memory_id, str) or not memory_id:
-                        raise ValueError("memory_id is required for update or resolve")
+                        raise ValueError("memory_id is required for update")
                     ignored = {"action", "memory_id", "expected_revision"}
                     changes = {
                         key: item
                         for key, item in action_value.items()
                         if key not in ignored
                     }
-                    if action == "resolve":
-                        changes["status"] = "resolved"
                     entry = store.update(
                         memory_id,
                         changes=changes,
                         expected_revision=action_value.get("expected_revision"),
                         plan_id=plan_id,
                         actor_id=actor_id,
-                        message=f"Plan {plan_id} completion: {summary.strip()}",
+                        message=completion_message,
                     )
                 elif action == "archive":
                     memory_id = action_value.get("memory_id")
@@ -201,10 +513,10 @@ class MemoryHandlersMixin:
                         expected_revision=action_value.get("expected_revision"),
                         plan_id=plan_id,
                         actor_id=actor_id,
-                        message=f"Plan {plan_id} completion: {summary.strip()}",
+                        message=completion_message,
                     )
                 else:
-                    raise ValueError("memory action must be create, update, resolve, or archive")
+                    raise ValueError("memory action must be update or archive")
             except (KeyError, ValueError, RuntimeError) as exc:
                 error = self._memory_error(exc)
                 error.details = {"action_index": index}
@@ -216,10 +528,20 @@ class MemoryHandlersMixin:
                     "revision": entry["revision"],
                 }
             )
+        try:
+            recorded_feedback = store.record_helpful_feedback(
+                plan_id=plan_id,
+                feedback=normalized_feedback,
+                actor_id=actor_id,
+            )
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise self._memory_error(exc) from None
         return {
-            "summary": summary.strip(),
+            "items": normalized_items,
             "outcome": outcome,
             "memory_refs": results,
+            "memory_feedback": recorded_feedback,
+            "memory_conflicts": normalized_conflicts,
         }
 
     @staticmethod
@@ -242,9 +564,6 @@ class MemoryHandlersMixin:
         try:
             entries, total = self.server.memory_for(self.token_scope_root).query(
                 query=self._query_one(query, "query", ""),
-                category=self._query_one(query, "category", "").strip() or None,
-                status=self._query_one(query, "status", "").strip() or None,
-                severity=self._query_one(query, "severity", "").strip() or None,
                 tag=self._query_one(query, "tag", "").strip() or None,
                 path=self._query_one(query, "path", "").strip() or None,
                 include_archived=self._query_bool(query, "include_archived", False),
@@ -274,14 +593,9 @@ class MemoryHandlersMixin:
         plan_id, _taskname, message = self._memory_change_metadata(body)
         try:
             entry = self.server.memory_for(self.token_scope_root).create(
-                category=body.get("category"),
-                key=body.get("key"),
-                title=body.get("title"),
                 content=body.get("content"),
-                status=body.get("status"),
-                severity=body.get("severity"),
                 tags=body.get("tags"),
-                paths=body.get("paths"),
+                path=body.get("path"),
                 plan_id=plan_id,
                 actor_id=self._memory_actor_id(),
                 message=message,
@@ -353,7 +667,7 @@ class MemoryHandlersMixin:
             "limit",
             100,
             minimum=1,
-            maximum=MAX_MEMORY_QUERY_LIMIT,
+            maximum=MAX_MEMORY_REVISION_LIMIT,
         )
         try:
             revisions = self.server.memory_for(self.token_scope_root).revisions(

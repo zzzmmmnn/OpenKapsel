@@ -703,28 +703,36 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(memory_capability["enabled"])
         self.assertEqual("memory", memory_capability["type"])
         self.assertEqual("memory_id", memory_capability["identifier_field"])
+        self.assertTrue(memory_capability["tags_required_on_create"])
+        self.assertEqual([4, 16], memory_capability["recommended_tag_range"])
+        self.assertEqual(200, memory_capability["change_message_max_chars"])
+        self.assertTrue(memory_capability["helpful_feedback_affects_relevance"])
         self.assertEqual(
-            {"create", "update", "resolve", "archive"},
+            {"items", "outcome", "memory_actions", "memory_feedback", "memory_conflicts"},
+            set(memory_capability["plan_debrief_schema"]["required"]),
+        )
+        self.assertEqual(["path", "content", "tags"], memory_capability["semantic_fields"])
+        self.assertEqual(256, memory_capability["content_max_characters"])
+        self.assertEqual(200, memory_capability["max_query_entries"])
+        self.assertEqual(200, memory_capability["max_revision_entries"])
+        self.assertEqual(2000, memory_capability["related_candidate_entries"])
+        self.assertTrue(memory_capability["legacy_long_content_preserved_until_rewritten"])
+        self.assertTrue(memory_capability["debrief_path_server_derived"])
+        self.assertEqual("server:.", memory_capability["global_path_scope"])
+        self.assertEqual(
+            {"update", "archive"},
             set(memory_capability["memory_action_enum"]),
         )
         action_variants = memory_capability["memory_actions_schema"]["items"]["oneOf"]
         variants_by_action = {
             item["properties"]["action"]["const"]: item for item in action_variants
         }
-        self.assertEqual(
-            {"create", "update", "resolve", "archive"},
-            set(variants_by_action),
-        )
-        self.assertEqual(
-            {"action", "category", "title", "content"},
-            set(variants_by_action["create"]["required"]),
-        )
+        self.assertEqual({"update", "archive"}, set(variants_by_action))
         self.assertEqual(
             {"action", "memory_id", "expected_revision"},
             set(variants_by_action["update"]["required"]),
         )
         self.assertIn("anyOf", variants_by_action["update"])
-        self.assertNotIn("status", variants_by_action["resolve"]["properties"])
         self.assertIn("debrief", op("context", "plan_update")["body_fields"])
         self.assertEqual(
             "plan_id",
@@ -3462,9 +3470,11 @@ class WorkspaceServerTests(unittest.TestCase):
                     "taskname": "release-checks",
                     "status": "completed",
                     "debrief": {
-                        "summary": "Final checks completed without reusable project knowledge.",
+                        "items": [],
                         "outcome": "succeeded",
                         "memory_actions": [],
+                        "memory_feedback": [],
+                        "memory_conflicts": [],
                     },
                 },
             },
@@ -5877,13 +5887,9 @@ class WorkspaceServerTests(unittest.TestCase):
             "POST",
             endpoint("/memory"),
             {
-                "category": "known_issue",
-                "key": "auth/form-reset",
-                "title": "Login form reset race",
                 "content": "Wait for the async request before resetting the form.",
-                "severity": "high",
-                "tags": ["auth", "frontend"],
-                "paths": ["frontend/auth"],
+                "tags": ["auth", "frontend", "login", "lifecycle"],
+                "path": "server:frontend/auth",
                 "plan_id": source_plan["id"],
                 "taskname": "auth-memory",
                 "message": "Record the reusable login failure",
@@ -5960,6 +5966,123 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual([2, 1], [item["revision"] for item in history["revisions"]])
 
+        status, invalid_long = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{next_plan['id']}"),
+            {
+                "taskname": "auth-followup",
+                "status": "completed",
+                "debrief": {
+                    "items": [{"content": "x" * 257, "tags": ["memory"]}],
+                    "outcome": "partial",
+                    "memory_actions": [],
+                    "memory_feedback": [],
+                    "memory_conflicts": [],
+                },
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_plan_debrief", invalid_long["error"]["code"])
+
+        status, invalid_tags = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{next_plan['id']}"),
+            {
+                "taskname": "auth-followup",
+                "status": "completed",
+                "debrief": {
+                    "items": [{"content": "Validated a concise fact.", "tags": []}],
+                    "outcome": "partial",
+                    "memory_actions": [],
+                    "memory_feedback": [],
+                    "memory_conflicts": [],
+                },
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_plan_debrief", invalid_tags["error"]["code"])
+
+        status, unresolved = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{next_plan['id']}"),
+            {
+                "taskname": "auth-followup",
+                "status": "completed",
+                "debrief": {
+                    "items": [
+                        {
+                            "content": "Detected a contradictory Memory without repairing it.",
+                            "tags": ["memory", "conflict", "validation", "repair"],
+                        }
+                    ],
+                    "outcome": "partial",
+                    "memory_actions": [],
+                    "memory_feedback": [],
+                    "memory_conflicts": [
+                        {
+                            "memory_id": memory["memory_id"],
+                            "revision": 2,
+                            "reason": "Verified state contradicts the retained lesson.",
+                        }
+                    ],
+                },
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("unresolved_memory_conflict", unresolved["error"]["code"])
+
+        status, stale_action = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{next_plan['id']}"),
+            {
+                "taskname": "auth-followup",
+                "status": "completed",
+                "debrief": {
+                    "items": [
+                        {
+                            "content": "This item must not survive a stale action.",
+                            "tags": ["memory", "preflight", "atomicity", "revision"],
+                        }
+                    ],
+                    "outcome": "partial",
+                    "memory_actions": [
+                        {
+                            "action": "update",
+                            "memory_id": memory["memory_id"],
+                            "expected_revision": 1,
+                            "content": "Stale update must be rejected before creation.",
+                        }
+                    ],
+                    "memory_feedback": [],
+                    "memory_conflicts": [],
+                },
+            },
+        )
+        self.assertEqual(412, status)
+        self.assertEqual("memory_revision_conflict", stale_action["error"]["code"])
+        status, after_stale = self.request("GET", endpoint("/memory"))
+        self.assertEqual(200, status)
+        self.assertEqual(1, after_stale["total"])
+
+        context_store = self.server.context_for(self.root / "memory-workspace")
+        for changed_path in ("frontend/auth/login.js", "frontend/auth/session.js"):
+            operation_id = context_store.add(
+                "operation",
+                f"Write {changed_path}",
+                taskname="auth-followup",
+                actor_id=record.actor_id,
+                operation="fs.content.put",
+                status="running",
+                plan_id=next_plan["id"],
+                request={"path": changed_path},
+            )
+            context_store.finish_operation(
+                operation_id,
+                succeeded=True,
+                result_summary=f"Wrote {changed_path}",
+                result={"path": changed_path},
+            )
+
         status, completed = self.request(
             "PATCH",
             endpoint(f"/context/plans/{next_plan['id']}"),
@@ -5967,24 +6090,87 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "status": "completed",
                 "debrief": {
-                    "summary": "Verified the login lifecycle fix.",
+                    "items": [
+                        {
+                            "content": "Verified the login lifecycle fix.",
+                            "tags": ["login", "lifecycle", "fix", "verification"],
+                        },
+                        {
+                            "content": "Login reset must wait for request completion.",
+                            "tags": ["login", "async", "reset", "form"],
+                        },
+                    ],
                     "outcome": "succeeded",
                     "memory_actions": [
                         {
-                            "action": "resolve",
+                            "action": "update",
                             "memory_id": memory["memory_id"],
                             "expected_revision": 2,
                             "content": "Always await login completion before resetting the form.",
                         }
                     ],
+                    "memory_feedback": [
+                        {"memory_id": memory["memory_id"], "revision": 2}
+                    ],
+                    "memory_conflicts": [],
                 },
             },
         )
         self.assertEqual(200, status)
         self.assertEqual("completed", completed["status"])
+        refs = completed["debrief"]["memory_refs"]
+        self.assertEqual(3, len(refs))
+        self.assertEqual(["create", "create", "update"], [item["action"] for item in refs])
+        self.assertNotEqual(refs[0]["memory_id"], refs[1]["memory_id"])
+        self.assertEqual(1, refs[0]["revision"])
+        self.assertEqual(1, refs[1]["revision"])
+        self.assertEqual(memory["memory_id"], refs[2]["memory_id"])
+        self.assertEqual(3, refs[2]["revision"])
         self.assertEqual(
             memory["memory_id"],
-            completed["debrief"]["memory_refs"][0]["memory_id"],
+            completed["debrief"]["memory_feedback"][0]["memory_id"],
+        )
+        self.assertEqual(2, completed["debrief"]["memory_feedback"][0]["revision"])
+        self.assertEqual([], completed["debrief"]["memory_conflicts"])
+        self.assertEqual(
+            "Verified the login lifecycle fix.",
+            completed["debrief"]["items"][0]["content"],
+        )
+        self.assertEqual(
+            ["login", "lifecycle", "fix", "verification"],
+            completed["debrief"]["items"][0]["tags"],
+        )
+
+        expected_created = [
+            (
+                refs[0]["memory_id"],
+                "Verified the login lifecycle fix.",
+                ["login", "lifecycle", "fix", "verification"],
+            ),
+            (
+                refs[1]["memory_id"],
+                "Login reset must wait for request completion.",
+                ["login", "async", "reset", "form"],
+            ),
+        ]
+        for created_id, expected_content, expected_tags in expected_created:
+            status, created_memory = self.request("GET", endpoint(f"/memory/{created_id}"))
+            self.assertEqual(200, status)
+            self.assertEqual(expected_content, created_memory["content"])
+            self.assertEqual(expected_tags, created_memory["tags"])
+            self.assertEqual("server:frontend/auth", created_memory["path"])
+            self.assertNotIn("category", created_memory)
+            self.assertNotIn("title", created_memory)
+
+        status, completed_history = self.request(
+            "GET",
+            endpoint(f"/memory/{memory['memory_id']}/revisions"),
+        )
+        self.assertEqual(200, status)
+        self.assertEqual([3, 2, 1], [item["revision"] for item in completed_history["revisions"]])
+        self.assertEqual(
+            f"Plan {next_plan['id']} completion",
+            completed_history["revisions"][0]["message"],
         )
 
         status, mcp_payload, _ = self.mcp_request(
@@ -5999,6 +6185,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(
             memory["memory_id"],
             mcp_payload["result"]["structuredContent"]["memories"][0]["memory_id"],
+        )
+        self.assertEqual(
+            1,
+            mcp_payload["result"]["structuredContent"]["memories"][0]["helpful_count"],
+        )
+        self.assertIsNotNone(
+            mcp_payload["result"]["structuredContent"]["memories"][0]["last_helpful_at"]
         )
 
         status, raw, _ = self.raw_request(

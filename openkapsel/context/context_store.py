@@ -156,11 +156,33 @@ class ContextStore:
                             created_at TEXT NOT NULL,
                             actor_id TEXT,
                             summary TEXT NOT NULL,
+                            items_json TEXT NOT NULL DEFAULT '{"items":[]}',
                             outcome TEXT NOT NULL,
-                            memory_refs_json TEXT NOT NULL
+                            memory_refs_json TEXT NOT NULL,
+                            memory_feedback_json TEXT NOT NULL DEFAULT '{"items":[]}',
+                            memory_conflicts_json TEXT NOT NULL DEFAULT '{"items":[]}'
                         )
                         """
                     )
+                    debrief_columns = {
+                        row["name"]
+                        for row in connection.execute("PRAGMA table_info(plan_debriefs)").fetchall()
+                    }
+                    if "items_json" not in debrief_columns:
+                        connection.execute(
+                            "ALTER TABLE plan_debriefs ADD COLUMN items_json "
+                            "TEXT NOT NULL DEFAULT '{\"items\":[]}'"
+                        )
+                    if "memory_feedback_json" not in debrief_columns:
+                        connection.execute(
+                            "ALTER TABLE plan_debriefs ADD COLUMN memory_feedback_json "
+                            "TEXT NOT NULL DEFAULT '{\"items\":[]}'"
+                        )
+                    if "memory_conflicts_json" not in debrief_columns:
+                        connection.execute(
+                            "ALTER TABLE plan_debriefs ADD COLUMN memory_conflicts_json "
+                            "TEXT NOT NULL DEFAULT '{\"items\":[]}'"
+                        )
                     # Keep retry receipts independent of Context pruning. A pruned
                     # plan must not make a previously used request ID reusable.
                     connection.execute(
@@ -187,6 +209,37 @@ class ContextStore:
                 f"context content exceeds {MAX_CONTEXT_CONTENT_CHARS} characters"
             )
         return value
+
+    @staticmethod
+    def _validate_debrief_items(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            raise ValueError("plan debrief items must be an array")
+        if len(value) > 20:
+            raise ValueError("plan debrief items cannot contain more than 20 items")
+        normalized: list[dict[str, Any]] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise ValueError(f"plan debrief item {index} must be an object")
+            content = item.get("content")
+            tags = item.get("tags")
+            if not isinstance(content, str) or not content.strip() or len(content.strip()) > 256:
+                raise ValueError(f"plan debrief item {index} content must be 1-256 characters")
+            if not isinstance(tags, list) or not tags or len(tags) > 32:
+                raise ValueError(
+                    f"plan debrief item {index} tags must contain 1-32 tags; prefer 4-16"
+                )
+            normalized_tags: list[str] = []
+            for tag in tags:
+                if not isinstance(tag, str) or not tag.strip() or len(tag.strip()) > 64:
+                    raise ValueError(
+                        f"plan debrief item {index} tags must be non-empty strings up to 64 characters"
+                    )
+                normalized_tag = tag.strip()
+                if normalized_tag in normalized_tags:
+                    raise ValueError(f"plan debrief item {index} tags must be unique")
+                normalized_tags.append(normalized_tag)
+            normalized.append({"content": content.strip(), "tags": normalized_tags})
+        return normalized
 
     @staticmethod
     def _validate_taskname(taskname: str) -> str:
@@ -480,13 +533,19 @@ class ContextStore:
                 raise ValueError("plan debrief is only valid when status is completed")
             if not isinstance(debrief, dict):
                 raise ValueError("plan debrief must be an object")
-            summary = self._validate_content(debrief.get("summary"))
+            items = self._validate_debrief_items(debrief.get("items"))
             outcome = debrief.get("outcome")
             if outcome not in {"succeeded", "partial", "no_change"}:
                 raise ValueError("plan debrief outcome must be succeeded, partial, or no_change")
             memory_refs = debrief.get("memory_refs", [])
             if not isinstance(memory_refs, list):
                 raise ValueError("plan debrief memory_refs must be an array")
+            memory_feedback = debrief.get("memory_feedback", [])
+            if not isinstance(memory_feedback, list):
+                raise ValueError("plan debrief memory_feedback must be an array")
+            memory_conflicts = debrief.get("memory_conflicts", [])
+            if not isinstance(memory_conflicts, list):
+                raise ValueError("plan debrief memory_conflicts must be an array")
             if actor_id is not None:
                 actor_id = self._validate_actor_id(actor_id)
         with self._lock:
@@ -542,14 +601,22 @@ class ContextStore:
                 )
                 if debrief is not None:
                     connection.execute(
-                        "INSERT INTO plan_debriefs VALUES (?, ?, ?, ?, ?, ?)",
+                        """
+                        INSERT INTO plan_debriefs (
+                            plan_id, created_at, actor_id, summary, items_json, outcome,
+                            memory_refs_json, memory_feedback_json, memory_conflicts_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
                         (
                             entry_id,
                             _utc_now(),
                             actor_id,
-                            summary,
+                            items[0]["content"] if items else "",
+                            self._encode_json({"items": items}) or "{}",
                             outcome,
                             self._encode_json({"items": memory_refs}) or "{}",
+                            self._encode_json({"items": memory_feedback}) or "{}",
+                            self._encode_json({"items": memory_conflicts}) or "{}",
                         ),
                     )
                 updated = connection.execute(
@@ -914,14 +981,22 @@ class ContextStore:
 
     @staticmethod
     def _serialize_debrief(row: sqlite3.Row) -> dict[str, Any]:
+        encoded_items = json.loads(row["items_json"])
         encoded_refs = json.loads(row["memory_refs_json"])
-        return {
+        encoded_feedback = json.loads(row["memory_feedback_json"])
+        encoded_conflicts = json.loads(row["memory_conflicts_json"])
+        payload = {
             "created_at": row["created_at"],
             "actor_id": row["actor_id"],
-            "summary": row["summary"],
+            "items": encoded_items.get("items", []),
             "outcome": row["outcome"],
             "memory_refs": encoded_refs.get("items", []),
+            "memory_feedback": encoded_feedback.get("items", []),
+            "memory_conflicts": encoded_conflicts.get("items", []),
         }
+        if not payload["items"] and row["summary"]:
+            payload["legacy_summary"] = row["summary"]
+        return payload
 
     @staticmethod
     def _serialize(row: sqlite3.Row) -> dict[str, Any]:

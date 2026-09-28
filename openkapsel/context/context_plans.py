@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 from contextlib import closing
 from typing import Any
 
 from openkapsel.context.context_store import ContextStore, MAX_CONTEXT_CONTENT_CHARS, PLAN_STATUSES, _utc_now
-from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_PATHS, MAX_MEMORY_TAGS
+from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_SCOPE_PATHS, MAX_MEMORY_TAGS
 
 MAX_SUBPLANS = 64
 MAX_PLAN_REQUEST_BYTES = 256 * 1024
@@ -43,7 +44,7 @@ def creation_properties() -> dict[str, Any]:
                     "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONTEXT_CONTENT_CHARS},
                     "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
                     "status": {"type": "string", "enum": sorted(PLAN_STATUSES), "default": "in_progress"},
-                    "scope_paths": {"type": "array", "maxItems": MAX_MEMORY_PATHS,
+                    "scope_paths": {"type": "array", "maxItems": MAX_MEMORY_SCOPE_PATHS,
                                     "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
                     "memory_tags": {"type": "array", "maxItems": MAX_MEMORY_TAGS,
                                     "items": {"type": "string", "minLength": 1, "maxLength": 64}},
@@ -65,6 +66,28 @@ def _text(value: Any, validator: Any) -> str:
     return text
 
 
+def _plan_scope_paths(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_MEMORY_SCOPE_PATHS:
+        raise ValueError(f"scope_paths must be an array of at most {MAX_MEMORY_SCOPE_PATHS} paths")
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("scope_paths entries must be non-empty strings")
+        raw = item.strip().replace("\\", "/")
+        if raw.startswith("/"):
+            raise ValueError("scope_paths must be workspace-relative")
+        path = posixpath.normpath(raw)
+        if path == ".." or path.startswith("../"):
+            raise ValueError("scope_paths must stay inside the workspace")
+        if len(path) > 4096:
+            raise ValueError("scope_paths entry exceeds 4096 characters")
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
 def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict) or body.get("type", "plan") != "plan":
         raise ValueError("batch creation requires type=plan")
@@ -80,7 +103,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             status = "in_progress"  # Existing REST singleton behavior.
         if not isinstance(status, str) or status not in PLAN_STATUSES:
             raise ValueError("plan status must be in_progress, completed, or cancelled")
-        paths = MemoryStore._validate_paths(raw.get("scope_paths"))
+        paths = _plan_scope_paths(raw.get("scope_paths"))
         tags = MemoryStore._validate_tags(raw.get("memory_tags"))
         for value in paths + tags:
             _text(value, lambda item: item)
@@ -125,7 +148,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     # repeated hint payloads. Validate the union before inserting any plan.
     paths = list(dict.fromkeys(p for item in [root, *normalized] for p in item["scope_paths"]))
     tags = list(dict.fromkeys(t for item in [root, *normalized] for t in item["memory_tags"]))
-    MemoryStore._validate_paths(paths)
+    MemoryStore._validate_scope_paths(paths)
     MemoryStore._validate_tags(tags)
     request_id = body.get("request_id")
     if "request_id" in body and (not isinstance(request_id, str) or not re.fullmatch(REQUEST_ID_PATTERN, request_id)):

@@ -114,9 +114,9 @@ SECTION_WORKFLOWS = {
         "Reads are not recorded unless taskname and message are supplied; plan completion requires a debrief.",
     ],
     "memory": [
-        "Read project Memory when starting work that depends on durable architecture, conventions, decisions, or known issues.",
-        "Use indexed tags and overlapping paths for retrieval; revisions require the current expected revision.",
-        "On plan completion, create, update, resolve, archive, or explicitly retain no Memory through memory_actions.",
+        "Read project Memory when starting work that depends on durable cross-task facts.",
+        "Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable. New Memory requires at least one indexed tag; prefer 4-16 specific reusable tags.",
+        "On plan completion, every debrief.items entry directly creates one new Memory from content plus tags; multiple entries create multiple Memories. The server derives one common path from successful writes directly owned by the Plan; server, mapping IDs, and storage-provider IDs are separate namespaces and mixed targets collapse to server:.; Shell contributes only cwd. memory_actions only updates or archives existing Memory. memory_feedback records only Memory that materially helped; conflicts require content update or archive.",
     ],
     "shell": [
         "Use generic RPC family=git for Git reads and mutations on the server or a mapping. Read operations are synchronous and bounded; write operations run as tasks and require mutation Context.",

@@ -54,7 +54,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         previous = self.store.add("plan", "Earlier unfinished root", taskname="earlier")
         self.store.add("plan", "Earlier child", taskname="earlier", plan_id=previous)
         memory = self.server.memory_for(self.server.config.root / "project")
-        related = memory.create(category="convention", title="Relevant source tests", content="Test source changes", tags=["tests"], paths=["src"], plan_id=previous)
+        related = memory.create(content="Test source changes", tags=["tests", "source", "plan", "relevance"], path="server:src", plan_id=previous)
         with patch.object(memory, "related", wraps=memory.related) as lookup:
             status, created = self.rest("POST", "/context", self.body)
         self.assertEqual(201, status, created)

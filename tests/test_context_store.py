@@ -52,7 +52,7 @@ class ContextStoreTests(unittest.TestCase):
                 taskname="completed-root",
                 plan_status="completed",
                 debrief={
-                    "summary": "Completed without retained Memory.",
+                    "items": [],
                     "outcome": "succeeded",
                     "memory_refs": [],
                 },
@@ -142,9 +142,22 @@ class ContextStoreTests(unittest.TestCase):
                 content="Implement and verify context history",
                 plan_status="completed",
                 debrief={
-                    "summary": "Context history was implemented and verified.",
+                    "items": [
+                        {
+                            "content": "Context history was implemented and verified.",
+                            "tags": ["context", "history", "implementation", "verification"],
+                        }
+                    ],
                     "outcome": "succeeded",
                     "memory_refs": [{"memory_id": "mem_example", "revision": 1}],
+                    "memory_feedback": [{"memory_id": "mem_helpful", "revision": 2}],
+                    "memory_conflicts": [
+                        {
+                            "memory_id": "mem_old",
+                            "revision": 3,
+                            "reason": "The verified implementation changed.",
+                        }
+                    ],
                 },
                 actor_id="actor",
             )
@@ -161,7 +174,17 @@ class ContextStoreTests(unittest.TestCase):
             debrief = store.plan_debrief(plan_id)
             self.assertIsNotNone(debrief)
             self.assertEqual("succeeded", debrief["outcome"])
+            self.assertEqual(
+                "Context history was implemented and verified.",
+                debrief["items"][0]["content"],
+            )
+            self.assertEqual(
+                ["context", "history", "implementation", "verification"],
+                debrief["items"][0]["tags"],
+            )
             self.assertEqual("mem_example", debrief["memory_refs"][0]["memory_id"])
+            self.assertEqual("mem_helpful", debrief["memory_feedback"][0]["memory_id"])
+            self.assertEqual("mem_old", debrief["memory_conflicts"][0]["memory_id"])
             note_id = store.add(
                 "note",
                 "Initial finding",
