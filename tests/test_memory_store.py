@@ -427,6 +427,73 @@ class MemoryStoreTests(unittest.TestCase):
                     "2026-01-03T00:00:00+00:00",
                 ),
             )
+            prune_cases = [
+                ("mem_outdated", "outdated", None),
+                ("mem_superseded", "superseded", None),
+                ("mem_resolved", "resolved", None),
+                ("mem_wontfix", "wontfix", None),
+                ("mem_archived", "current", "2026-01-04T00:00:00+00:00"),
+                ("mem_suspected", "suspected_stale", None),
+            ]
+            for index, (memory_id, status, archived_at) in enumerate(prune_cases, 20):
+                case_tags = ["legacy", "migration", status, "prune"]
+                case_paths = [f"server:legacy/{status}/a", f"server:legacy/{status}/b"]
+                connection.execute(
+                    """
+                    INSERT INTO memories (
+                        id, created_at, updated_at, category, memory_key, title,
+                        content, status, severity, tags_json, paths_json, revision,
+                        source_plan_id, last_updated_plan_id, resolution_plan_id,
+                        helpful_count, last_helpful_at, actor_id, archived_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        memory_id, "2026-01-01T00:00:00+00:00",
+                        "2026-01-02T00:00:00+00:00", "known_issue", memory_id,
+                        f"Legacy {status}", f"Legacy {status} content.", status, "low",
+                        MemoryStore._encode(case_tags), MemoryStore._encode(case_paths),
+                        1, 7, 7, None, 1, "2026-01-03T00:00:00+00:00",
+                        "actor", archived_at,
+                    ),
+                )
+                connection.executemany(
+                    "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
+                    ((memory_id, tag) for tag in case_tags),
+                )
+                connection.executemany(
+                    "INSERT INTO memory_paths(memory_id, path) VALUES (?, ?)",
+                    ((memory_id, path) for path in case_paths),
+                )
+                case_snapshot = {
+                    "id": memory_id,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-02T00:00:00+00:00",
+                    "category": "known_issue",
+                    "title": f"Legacy {status}",
+                    "content": f"Legacy {status} content.",
+                    "status": status,
+                    "tags": case_tags,
+                    "paths": case_paths,
+                    "revision": 1,
+                    "source_plan_id": 7,
+                    "last_updated_plan_id": 7,
+                    "actor_id": "actor",
+                    "archived_at": archived_at,
+                }
+                connection.execute(
+                    "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        memory_id, 1, "2026-01-02T00:00:00+00:00", "actor", 7,
+                        "Legacy revision", MemoryStore._encode(case_snapshot),
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO memory_feedback VALUES (?, ?, ?, ?, ?)",
+                    (
+                        index, memory_id, 1, "actor",
+                        "2026-01-03T00:00:00+00:00",
+                    ),
+                )
             connection.commit()
             connection.close()
 
@@ -435,6 +502,17 @@ class MemoryStoreTests(unittest.TestCase):
             self.assertEqual("server:src", migrated["path"])
             self.assertEqual(tags, migrated["tags"])
             self.assertEqual(2, migrated["helpful_count"])
+            suspected = store.get("mem_suspected")
+            self.assertEqual("server:legacy/suspected_stale", suspected["path"])
+            for memory_id in (
+                "mem_outdated",
+                "mem_superseded",
+                "mem_resolved",
+                "mem_wontfix",
+                "mem_archived",
+            ):
+                with self.assertRaises(KeyError):
+                    store.get(memory_id)
 
             connection = sqlite3.connect(store.database)
             columns = {
@@ -461,6 +539,24 @@ class MemoryStoreTests(unittest.TestCase):
                 "WHERE plan_id = 9 AND memory_id = 'mem_legacy'"
             ).fetchone()
             self.assertEqual((1, "actor"), feedback)
+            retained_ids = {"mem_legacy", "mem_suspected"}
+            self.assertEqual(
+                retained_ids,
+                {
+                    row[0]
+                    for row in connection.execute("SELECT id FROM memories")
+                },
+            )
+            for table in ("memory_tags", "memory_revisions", "memory_feedback"):
+                self.assertEqual(
+                    retained_ids,
+                    {
+                        row[0]
+                        for row in connection.execute(
+                            f"SELECT DISTINCT memory_id FROM {table}"
+                        )
+                    },
+                )
             self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
             connection.close()
 

@@ -28,6 +28,7 @@ MAX_MEMORY_TAG_CHARS = 64
 MAX_MEMORY_PATH_CHARS = 4_096
 MAX_MEMORY_CHANGE_MESSAGE_CHARS = 200
 MAX_MEMORY_FEEDBACK_REFS = 20
+LEGACY_DISCARDED_STATUSES = frozenset({"outdated", "superseded", "resolved", "wontfix"})
 
 
 def _utc_now() -> str:
@@ -246,7 +247,19 @@ class MemoryStore:
         connection: sqlite3.Connection,
         columns: set[str],
     ) -> None:
-        rows = connection.execute("SELECT * FROM memories ORDER BY id").fetchall()
+        legacy_rows = connection.execute(
+            "SELECT * FROM memories ORDER BY id"
+        ).fetchall()
+
+        def retain(row: sqlite3.Row) -> bool:
+            if "archived_at" in columns and row["archived_at"] is not None:
+                return False
+            if "status" not in columns or row["status"] is None:
+                return True
+            status = str(row["status"]).strip().lower()
+            return status not in LEGACY_DISCARDED_STATUSES
+
+        rows = [row for row in legacy_rows if retain(row)]
         migrated_paths = {
             row["id"]: cls._common_path(cls._legacy_paths_for(connection, row, columns))
             for row in rows
@@ -287,6 +300,10 @@ class MemoryStore:
                 )
 
             if cls._table_exists(connection, "memory_revisions"):
+                connection.execute(
+                    "DELETE FROM memory_revisions "
+                    "WHERE memory_id NOT IN (SELECT id FROM memories_new)"
+                )
                 revisions = connection.execute(
                     "SELECT memory_id, revision, snapshot_json FROM memory_revisions"
                 ).fetchall()
@@ -305,6 +322,12 @@ class MemoryStore:
                             revision["revision"],
                         ),
                     )
+
+            if cls._table_exists(connection, "memory_feedback"):
+                connection.execute(
+                    "DELETE FROM memory_feedback "
+                    "WHERE memory_id NOT IN (SELECT id FROM memories_new)"
+                )
 
             connection.execute("DROP TABLE IF EXISTS memory_paths")
             connection.execute("DROP TABLE memories")

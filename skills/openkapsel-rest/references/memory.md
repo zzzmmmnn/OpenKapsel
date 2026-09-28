@@ -21,7 +21,7 @@ Canonical path forms are:
 - `storage:<provider_id>:<path>`
 - `server:.` for Workspace-global scope
 
-Path matching uses ancestor/descendant overlap only within one target namespace/id. `server:.` is global. Mapping paths normalize Windows separators and compare case-insensitively. Target-machine absolute roots such as `/home/...` and `C:/...` are preserved. Older Memory databases are upgraded on first open: each multi-path row is permanently collapsed to one conservative common `path`, and obsolete legacy columns/path tables are removed.
+Path matching uses ancestor/descendant overlap only within one target namespace/id. `server:.` is global. Mapping paths normalize Windows separators and compare case-insensitively. Target-machine absolute roots such as `/home/...` and `C:/...` are preserved. Older Memory databases are upgraded on first open: archived rows and legacy `outdated`/`superseded`/`resolved`/`wontfix` rows are discarded with their tags, revisions, and feedback; retained multi-path rows are collapsed to one conservative common `path`, and obsolete legacy columns/path tables are removed.
 
 ## Read and retrieve
 
