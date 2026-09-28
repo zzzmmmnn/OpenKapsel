@@ -310,52 +310,177 @@ class MemoryStoreTests(unittest.TestCase):
             handler.token_scope_root = workspace
             self.assertEqual("server:.", handler._plan_memory_path(7))
 
-    def test_legacy_multi_paths_expose_one_common_path_until_rewritten(self) -> None:
+    def test_legacy_database_is_migrated_to_singular_path_schema(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            store = MemoryStore(Path(raw))
-            created = store.create(
-                content="Legacy path compatibility.",
-                tags=["memory", "legacy", "path", "compatibility"],
-                path="server:src/a",
-                plan_id=1,
-                message="Create seed Memory",
+            workspace = Path(raw)
+            context = workspace / ".openkapsel" / "context"
+            context.mkdir(parents=True)
+            database = context / "memory.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE memories (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    memory_key TEXT,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    severity TEXT,
+                    tags_json TEXT NOT NULL,
+                    paths_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    source_plan_id INTEGER,
+                    last_updated_plan_id INTEGER,
+                    resolution_plan_id INTEGER,
+                    helpful_count INTEGER NOT NULL DEFAULT 0,
+                    last_helpful_at TEXT,
+                    actor_id TEXT,
+                    archived_at TEXT
+                );
+                CREATE TABLE memory_tags (
+                    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    tag TEXT NOT NULL,
+                    PRIMARY KEY (memory_id, tag)
+                );
+                CREATE TABLE memory_paths (
+                    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    path TEXT NOT NULL,
+                    PRIMARY KEY (memory_id, path)
+                );
+                CREATE TABLE memory_revisions (
+                    memory_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    actor_id TEXT,
+                    plan_id INTEGER,
+                    message TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    PRIMARY KEY (memory_id, revision)
+                );
+                CREATE TABLE memory_feedback (
+                    plan_id INTEGER NOT NULL,
+                    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    memory_revision INTEGER NOT NULL,
+                    actor_id TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (plan_id, memory_id)
+                );
+                """
             )
             legacy_paths = ["server:src/a", "server:src/b"]
-            connection = sqlite3.connect(store.database)
+            tags = ["memory", "legacy", "path", "migration"]
             connection.execute(
-                "UPDATE memories SET paths_json = ? WHERE id = ?",
-                (MemoryStore._encode(legacy_paths), created["memory_id"]),
+                """
+                INSERT INTO memories (
+                    id, created_at, updated_at, category, memory_key, title,
+                    content, status, severity, tags_json, paths_json, revision,
+                    source_plan_id, last_updated_plan_id, resolution_plan_id,
+                    helpful_count, last_helpful_at, actor_id, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "mem_legacy", "2026-01-01T00:00:00+00:00",
+                    "2026-01-02T00:00:00+00:00", "architecture", "old/key",
+                    "Old title", "Legacy path migration.", "current", "high",
+                    MemoryStore._encode(tags), MemoryStore._encode(legacy_paths),
+                    1, 7, 7, None, 2, "2026-01-03T00:00:00+00:00",
+                    "actor", None,
+                ),
+            )
+            connection.executemany(
+                "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
+                (("mem_legacy", tag) for tag in tags),
+            )
+            connection.executemany(
+                "INSERT INTO memory_paths(memory_id, path) VALUES (?, ?)",
+                (("mem_legacy", path) for path in legacy_paths),
+            )
+            legacy_snapshot = {
+                "id": "mem_legacy",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-02T00:00:00+00:00",
+                "category": "architecture",
+                "title": "Old title",
+                "content": "Legacy path migration.",
+                "tags": tags,
+                "paths": legacy_paths,
+                "revision": 1,
+                "source_plan_id": 7,
+                "last_updated_plan_id": 7,
+                "actor_id": "actor",
+                "archived_at": None,
+            }
+            connection.execute(
+                "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "mem_legacy", 1, "2026-01-02T00:00:00+00:00", "actor", 7,
+                    "Legacy revision", MemoryStore._encode(legacy_snapshot),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO memory_feedback VALUES (?, ?, ?, ?, ?)",
+                (
+                    9, "mem_legacy", 1, "actor",
+                    "2026-01-03T00:00:00+00:00",
+                ),
             )
             connection.commit()
             connection.close()
 
-            self.assertEqual("server:src", store.get(created["memory_id"])["path"])
-            updated = store.update(
-                created["memory_id"],
-                changes={"tags": ["memory", "legacy", "path", "preserved"]},
-                expected_revision=1,
-                plan_id=2,
-                actor_id="actor",
-                message="Retag legacy paths",
-            )
-            self.assertEqual("server:src", updated["path"])
-            connection = sqlite3.connect(store.database)
-            stored = connection.execute(
-                "SELECT paths_json FROM memories WHERE id = ?",
-                (created["memory_id"],),
-            ).fetchone()[0]
-            connection.close()
-            self.assertEqual(legacy_paths, MemoryStore._decode(stored))
+            store = MemoryStore(workspace)
+            migrated = store.get("mem_legacy")
+            self.assertEqual("server:src", migrated["path"])
+            self.assertEqual(tags, migrated["tags"])
+            self.assertEqual(2, migrated["helpful_count"])
 
-            rewritten = store.update(
-                created["memory_id"],
-                changes={"path": "server:src/new"},
-                expected_revision=2,
-                plan_id=3,
-                actor_id="actor",
-                message="Rewrite to singular path",
+            connection = sqlite3.connect(store.database)
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(memories)")
+            }
+            self.assertEqual(
+                {
+                    "id", "created_at", "updated_at", "content", "tags_json",
+                    "path", "revision", "source_plan_id", "last_updated_plan_id",
+                    "helpful_count", "last_helpful_at", "actor_id", "archived_at",
+                },
+                columns,
             )
-            self.assertEqual("server:src/new", rewritten["path"])
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            self.assertNotIn("memory_paths", tables)
+            self.assertEqual(2, connection.execute("PRAGMA user_version").fetchone()[0])
+            feedback = connection.execute(
+                "SELECT memory_revision, actor_id FROM memory_feedback "
+                "WHERE plan_id = 9 AND memory_id = 'mem_legacy'"
+            ).fetchone()
+            self.assertEqual((1, "actor"), feedback)
+            self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
+            connection.close()
+
+            history = store.revisions("mem_legacy")
+            snapshot = history[0]["snapshot"]
+            self.assertEqual("server:src", snapshot["path"])
+            self.assertEqual("mem_legacy", snapshot["memory_id"])
+            self.assertNotIn("paths", snapshot)
+            self.assertNotIn("category", snapshot)
+            self.assertNotIn("title", snapshot)
+
+            updated = store.update(
+                "mem_legacy",
+                changes={"path": "server:src/new"},
+                expected_revision=1,
+                plan_id=8,
+                actor_id="actor",
+                message="Use migrated singular path",
+            )
+            self.assertEqual("server:src/new", updated["path"])
 
     def test_preflight_actions_simulates_ordered_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -413,8 +538,8 @@ class MemoryStoreTests(unittest.TestCase):
             legacy_content = "L" * 600
             connection = sqlite3.connect(store.database)
             connection.execute(
-                "UPDATE memories SET content = ?, title = ? WHERE id = ?",
-                (legacy_content, legacy_content[:256], created["memory_id"]),
+                "UPDATE memories SET content = ? WHERE id = ?",
+                (legacy_content, created["memory_id"]),
             )
             connection.commit()
             connection.close()

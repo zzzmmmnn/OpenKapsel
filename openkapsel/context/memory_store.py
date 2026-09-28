@@ -22,7 +22,6 @@ MAX_MEMORY_QUERY_LIMIT = 200
 MAX_MEMORY_REVISION_LIMIT = 200
 MAX_MEMORY_RELATED_CANDIDATES = 2_000
 MAX_MEMORY_CONTENT_CHARS = 256
-MAX_MEMORY_TITLE_CHARS = 256
 MAX_MEMORY_TAGS = 32
 MAX_MEMORY_SCOPE_PATHS = 64
 MAX_MEMORY_TAG_CHARS = 64
@@ -57,115 +56,302 @@ class MemoryStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _memory_columns(connection: sqlite3.Connection) -> set[str]:
+        return {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(memories)").fetchall()
+        }
+
+    @staticmethod
+    def _create_memories_table(
+        connection: sqlite3.Connection,
+        table: str = "memories",
+    ) -> None:
+        if table not in {"memories", "memories_new"}:
+            raise ValueError("invalid Memory table name")
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                path TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                source_plan_id INTEGER,
+                last_updated_plan_id INTEGER,
+                helpful_count INTEGER NOT NULL DEFAULT 0,
+                last_helpful_at TEXT,
+                actor_id TEXT,
+                archived_at TEXT
+            )
+            """
+        )
+
+    @classmethod
+    def _create_auxiliary_schema(cls, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS memories_updated "
+            "ON memories(updated_at DESC)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_tags (
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (memory_id, tag)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS memory_tags_tag_memory "
+            "ON memory_tags(tag, memory_id)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_revisions (
+                memory_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                changed_at TEXT NOT NULL,
+                actor_id TEXT,
+                plan_id INTEGER,
+                message TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                PRIMARY KEY (memory_id, revision)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_feedback (
+                plan_id INTEGER NOT NULL,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                memory_revision INTEGER NOT NULL,
+                actor_id TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (plan_id, memory_id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS memory_feedback_memory_created "
+            "ON memory_feedback(memory_id, created_at DESC)"
+        )
+
+    @classmethod
+    def _legacy_paths_for(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        columns: set[str],
+    ) -> list[str]:
+        raw_paths: list[Any] = []
+        if "paths_json" in columns:
+            try:
+                decoded = cls._decode(row["paths_json"])
+            except (TypeError, json.JSONDecodeError):
+                decoded = []
+            if isinstance(decoded, list):
+                raw_paths.extend(decoded)
+        if cls._table_exists(connection, "memory_paths"):
+            raw_paths.extend(
+                item["path"]
+                for item in connection.execute(
+                    "SELECT path FROM memory_paths WHERE memory_id = ? ORDER BY path",
+                    (row["id"],),
+                ).fetchall()
+            )
+        normalized: list[str] = []
+        for item in raw_paths:
+            try:
+                path = cls._normalize_path(item)
+            except ValueError:
+                continue
+            if path not in normalized:
+                normalized.append(path)
+        return normalized
+
+    @classmethod
+    def _migrate_snapshot(
+        cls,
+        snapshot_json: str,
+        *,
+        memory_id: str,
+        fallback_path: str,
+    ) -> str:
+        try:
+            source = cls._decode(snapshot_json)
+        except (TypeError, json.JSONDecodeError):
+            source = {}
+        if not isinstance(source, dict):
+            source = {}
+        raw_path = source.get("path")
+        if raw_path is not None:
+            try:
+                path = cls._normalize_path(raw_path)
+            except ValueError:
+                path = fallback_path
+        elif isinstance(source.get("paths"), list):
+            valid_paths: list[str] = []
+            for item in source["paths"]:
+                try:
+                    valid_paths.append(cls._normalize_path(item))
+                except ValueError:
+                    continue
+            path = cls._common_path(valid_paths) if valid_paths else fallback_path
+        else:
+            path = fallback_path
+        migrated = {
+            "memory_id": source.get("memory_id") or source.get("id") or memory_id,
+            "created_at": source.get("created_at"),
+            "updated_at": source.get("updated_at"),
+            "content": source.get("content", ""),
+            "tags": source.get("tags", []),
+            "path": path,
+            "revision": source.get("revision"),
+            "source_plan_id": source.get("source_plan_id"),
+            "last_updated_plan_id": source.get("last_updated_plan_id"),
+            "actor_id": source.get("actor_id"),
+            "archived_at": source.get("archived_at"),
+        }
+        return cls._encode(migrated)
+
+    @classmethod
+    def _backfill_tags(cls, connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM memory_tags")
+        rows = connection.execute("SELECT id, tags_json FROM memories").fetchall()
+        for row in rows:
+            try:
+                tags = cls._decode(row["tags_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(tags, list):
+                connection.executemany(
+                    "INSERT OR IGNORE INTO memory_tags(memory_id, tag) VALUES (?, ?)",
+                    ((row["id"], tag) for tag in tags if isinstance(tag, str)),
+                )
+
+    @classmethod
+    def _migrate_legacy_schema(
+        cls,
+        connection: sqlite3.Connection,
+        columns: set[str],
+    ) -> None:
+        rows = connection.execute("SELECT * FROM memories ORDER BY id").fetchall()
+        migrated_paths = {
+            row["id"]: cls._common_path(cls._legacy_paths_for(connection, row, columns))
+            for row in rows
+        }
+
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE IF EXISTS memories_new")
+            cls._create_memories_table(connection, "memories_new")
+            for row in rows:
+                helpful_count = int(row["helpful_count"]) if "helpful_count" in columns else 0
+                last_helpful_at = row["last_helpful_at"] if "last_helpful_at" in columns else None
+                connection.execute(
+                    """
+                    INSERT INTO memories_new (
+                        id, created_at, updated_at, content, tags_json, path,
+                        revision, source_plan_id, last_updated_plan_id,
+                        helpful_count, last_helpful_at, actor_id, archived_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        row["created_at"],
+                        row["updated_at"],
+                        row["content"],
+                        row["tags_json"],
+                        migrated_paths[row["id"]],
+                        row["revision"],
+                        row["source_plan_id"] if "source_plan_id" in columns else None,
+                        row["last_updated_plan_id"] if "last_updated_plan_id" in columns else None,
+                        helpful_count,
+                        last_helpful_at,
+                        row["actor_id"] if "actor_id" in columns else None,
+                        row["archived_at"] if "archived_at" in columns else None,
+                    ),
+                )
+
+            if cls._table_exists(connection, "memory_revisions"):
+                revisions = connection.execute(
+                    "SELECT memory_id, revision, snapshot_json FROM memory_revisions"
+                ).fetchall()
+                for revision in revisions:
+                    fallback_path = migrated_paths.get(revision["memory_id"], "server:.")
+                    connection.execute(
+                        "UPDATE memory_revisions SET snapshot_json = ? "
+                        "WHERE memory_id = ? AND revision = ?",
+                        (
+                            cls._migrate_snapshot(
+                                revision["snapshot_json"],
+                                memory_id=revision["memory_id"],
+                                fallback_path=fallback_path,
+                            ),
+                            revision["memory_id"],
+                            revision["revision"],
+                        ),
+                    )
+
+            connection.execute("DROP TABLE IF EXISTS memory_paths")
+            connection.execute("DROP TABLE memories")
+            connection.execute("ALTER TABLE memories_new RENAME TO memories")
+            cls._create_auxiliary_schema(connection)
+            cls._backfill_tags(connection)
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError("Memory database migration left invalid foreign keys")
+
     def _initialize(self) -> None:
         with self._lock:
             self._prepare_storage()
             with closing(self._connect()) as connection:
-                with connection:
-                    connection.execute("PRAGMA journal_mode = WAL")
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memories (
-                            id TEXT PRIMARY KEY,
-                            created_at TEXT NOT NULL,
-                            updated_at TEXT NOT NULL,
-                            category TEXT NOT NULL,
-                            memory_key TEXT,
-                            title TEXT NOT NULL,
-                            content TEXT NOT NULL,
-                            status TEXT NOT NULL,
-                            severity TEXT,
-                            tags_json TEXT NOT NULL,
-                            paths_json TEXT NOT NULL,
-                            revision INTEGER NOT NULL,
-                            source_plan_id INTEGER,
-                            last_updated_plan_id INTEGER,
-                            resolution_plan_id INTEGER,
-                            helpful_count INTEGER NOT NULL DEFAULT 0,
-                            last_helpful_at TEXT,
-                            actor_id TEXT,
-                            archived_at TEXT
-                        )
-                        """
-                    )
-                    memory_columns = {
-                        row["name"]
-                        for row in connection.execute("PRAGMA table_info(memories)").fetchall()
+                connection.execute("PRAGMA journal_mode = WAL")
+                if not self._table_exists(connection, "memories"):
+                    with connection:
+                        self._create_memories_table(connection)
+                        self._create_auxiliary_schema(connection)
+                        connection.execute("PRAGMA user_version = 2")
+                        self._backfill_tags(connection)
+                else:
+                    columns = self._memory_columns(connection)
+                    legacy_columns = {
+                        "category",
+                        "memory_key",
+                        "title",
+                        "status",
+                        "severity",
+                        "paths_json",
+                        "resolution_plan_id",
                     }
-                    if "helpful_count" not in memory_columns:
-                        connection.execute(
-                            "ALTER TABLE memories ADD COLUMN helpful_count INTEGER NOT NULL DEFAULT 0"
-                        )
-                    if "last_helpful_at" not in memory_columns:
-                        connection.execute(
-                            "ALTER TABLE memories ADD COLUMN last_helpful_at TEXT"
-                        )
-                    connection.execute(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS memories_active_key "
-                        "ON memories(category, memory_key) "
-                        "WHERE memory_key IS NOT NULL AND archived_at IS NULL"
-                    )
-                    connection.execute(
-                        "CREATE INDEX IF NOT EXISTS memories_category_status_updated "
-                        "ON memories(category, status, updated_at DESC)"
-                    )
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_tags (
-                            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                            tag TEXT NOT NULL,
-                            PRIMARY KEY (memory_id, tag)
-                        )
-                        """
-                    )
-                    connection.execute(
-                        "CREATE INDEX IF NOT EXISTS memory_tags_tag_memory "
-                        "ON memory_tags(tag, memory_id)"
-                    )
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_paths (
-                            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                            path TEXT NOT NULL,
-                            PRIMARY KEY (memory_id, path)
-                        )
-                        """
-                    )
-                    connection.execute(
-                        "CREATE INDEX IF NOT EXISTS memory_paths_path_memory "
-                        "ON memory_paths(path, memory_id)"
-                    )
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_revisions (
-                            memory_id TEXT NOT NULL,
-                            revision INTEGER NOT NULL,
-                            changed_at TEXT NOT NULL,
-                            actor_id TEXT,
-                            plan_id INTEGER,
-                            message TEXT NOT NULL,
-                            snapshot_json TEXT NOT NULL,
-                            PRIMARY KEY (memory_id, revision)
-                        )
-                        """
-                    )
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS memory_feedback (
-                            plan_id INTEGER NOT NULL,
-                            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                            memory_revision INTEGER NOT NULL,
-                            actor_id TEXT,
-                            created_at TEXT NOT NULL,
-                            PRIMARY KEY (plan_id, memory_id)
-                        )
-                        """
-                    )
-                    connection.execute(
-                        "CREATE INDEX IF NOT EXISTS memory_feedback_memory_created "
-                        "ON memory_feedback(memory_id, created_at DESC)"
-                    )
-                    self._backfill_indexes(connection)
+                    if "path" not in columns or columns.intersection(legacy_columns):
+                        self._migrate_legacy_schema(connection, columns)
+                    else:
+                        with connection:
+                            self._create_auxiliary_schema(connection)
+                            connection.execute("DROP TABLE IF EXISTS memory_paths")
+                            connection.execute("PRAGMA user_version = 2")
+                            self._backfill_tags(connection)
             os.chmod(self.database, 0o600)
 
     def _ensure_available(self) -> None:
@@ -341,46 +527,6 @@ class MemoryStore:
         return json.loads(value)
 
     @classmethod
-    def _backfill_indexes(cls, connection: sqlite3.Connection) -> None:
-        rows = connection.execute(
-            "SELECT id, tags_json, paths_json FROM memories"
-        ).fetchall()
-        for row in rows:
-            try:
-                tags = cls._decode(row["tags_json"])
-                paths = cls._decode(row["paths_json"])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if isinstance(tags, list):
-                connection.executemany(
-                    "INSERT OR IGNORE INTO memory_tags(memory_id, tag) VALUES (?, ?)",
-                    ((row["id"], tag) for tag in tags if isinstance(tag, str)),
-                )
-            if isinstance(paths, list):
-                connection.executemany(
-                    "INSERT OR IGNORE INTO memory_paths(memory_id, path) VALUES (?, ?)",
-                    ((row["id"], path) for path in paths if isinstance(path, str)),
-                )
-
-    @classmethod
-    def _stored_paths(cls, row: sqlite3.Row) -> list[str]:
-        try:
-            raw = cls._decode(row["paths_json"])
-        except (TypeError, json.JSONDecodeError):
-            return []
-        if not isinstance(raw, list):
-            return []
-        paths: list[str] = []
-        for item in raw:
-            try:
-                path = cls._normalize_path(item)
-            except ValueError:
-                continue
-            if path not in paths:
-                paths.append(path)
-        return paths
-
-    @classmethod
     def _serialize(cls, row: sqlite3.Row, *, excerpt: bool = False) -> dict[str, Any]:
         content = str(row["content"])
         if excerpt and len(content) > 500:
@@ -391,7 +537,7 @@ class MemoryStore:
             "updated_at": row["updated_at"],
             "content" if not excerpt else "excerpt": content,
             "tags": cls._decode(row["tags_json"]),
-            "path": cls._common_path(cls._stored_paths(row)),
+            "path": cls._normalize_path(row["path"]),
             "revision": int(row["revision"]),
             "source_plan_id": row["source_plan_id"],
             "last_updated_plan_id": row["last_updated_plan_id"],
@@ -411,20 +557,11 @@ class MemoryStore:
     @classmethod
     def _deserialize_snapshot(cls, value: str) -> dict[str, Any]:
         snapshot = cls._decode(value)
-        if not isinstance(snapshot, dict):
+        if not isinstance(snapshot, dict) or "path" not in snapshot:
             return {}
-        if "memory_id" not in snapshot and "id" in snapshot:
-            snapshot["memory_id"] = snapshot.pop("id")
-        if "path" not in snapshot and isinstance(snapshot.get("paths"), list):
-            snapshot["path"] = cls._common_path(snapshot["paths"])
-        allowed = {
-            "memory_id", "created_at", "updated_at", "content", "tags", "path",
-            "revision", "source_plan_id", "last_updated_plan_id", "actor_id", "archived_at",
-        }
-        result = {key: item for key, item in snapshot.items() if key in allowed}
-        if "path" in result:
-            result["path"] = cls._normalize_path(result["path"])
-        return result
+        snapshot = dict(snapshot)
+        snapshot["path"] = cls._normalize_path(snapshot["path"])
+        return snapshot
 
     def create(
         self,
@@ -439,7 +576,6 @@ class MemoryStore:
         content = self._required_text(content, "content", MAX_MEMORY_CONTENT_CHARS)
         tags = self._validate_tags(tags, required=True)
         path = self._normalize_path("server:." if path is None else path)
-        paths = [path]
         plan_id = self._validate_plan_id(plan_id, required=False)
         message = self._required_text(
             message,
@@ -457,15 +593,13 @@ class MemoryStore:
                         connection.execute(
                             """
                             INSERT INTO memories (
-                                id, created_at, updated_at, category, memory_key,
-                                title, content, status, severity, tags_json,
-                                paths_json, revision, source_plan_id,
-                                last_updated_plan_id, resolution_plan_id, actor_id
-                            ) VALUES (?, ?, ?, 'overview', NULL, ?, ?, 'current', NULL, ?, ?, 1, ?, ?, NULL, ?)
+                                id, created_at, updated_at, content, tags_json, path,
+                                revision, source_plan_id, last_updated_plan_id, actor_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                             """,
                             (
-                                memory_id, now, now, content, content,
-                                self._encode(tags), self._encode(paths),
+                                memory_id, now, now, content,
+                                self._encode(tags), path,
                                 plan_id, plan_id, actor_id,
                             ),
                         )
@@ -477,15 +611,13 @@ class MemoryStore:
                 else:
                     connection.rollback()
                     raise RuntimeError("unable to allocate memory id")
-                row = connection.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
                 assert row is not None
                 connection.executemany(
                     "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
                     ((memory_id, tag) for tag in tags),
-                )
-                connection.executemany(
-                    "INSERT INTO memory_paths(memory_id, path) VALUES (?, ?)",
-                    ((memory_id, path) for path in paths),
                 )
                 connection.execute(
                     "INSERT INTO memory_revisions VALUES (?, 1, ?, ?, ?, ?, ?)",
@@ -595,54 +727,63 @@ class MemoryStore:
             self._ensure_available()
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                row = connection.execute(
+                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
                 if row is None or row["archived_at"] is not None:
                     connection.rollback()
                     raise KeyError("memory does not exist")
                 if int(row["revision"]) != expected_revision:
                     connection.rollback()
-                    raise RuntimeError(f"memory revision is {row['revision']}, not {expected_revision}")
+                    raise RuntimeError(
+                        f"memory revision is {row['revision']}, not {expected_revision}"
+                    )
                 content = (
-                    self._required_text(changes["content"], "content", MAX_MEMORY_CONTENT_CHARS)
+                    self._required_text(
+                        changes["content"], "content", MAX_MEMORY_CONTENT_CHARS
+                    )
                     if "content" in changes
                     else str(row["content"])
                 )
                 tags = self._validate_tags(
-                    changes.get("tags", self._decode(row["tags_json"])), required=True
+                    changes.get("tags", self._decode(row["tags_json"])),
+                    required=True,
                 )
-                stored_paths = self._decode(row["paths_json"])
-                paths = stored_paths if isinstance(stored_paths, list) else []
-                if "path" in changes:
-                    paths = [self._normalize_path(changes["path"])]
+                path = (
+                    self._normalize_path(changes["path"])
+                    if "path" in changes
+                    else self._normalize_path(row["path"])
+                )
                 revision = expected_revision + 1
                 now = _utc_now()
                 connection.execute(
                     """
-                    UPDATE memories SET updated_at = ?, title = ?, content = ?, tags_json = ?,
-                        paths_json = ?, revision = ?, last_updated_plan_id = ?, actor_id = ?
+                    UPDATE memories SET updated_at = ?, content = ?, tags_json = ?, path = ?,
+                        revision = ?, last_updated_plan_id = ?, actor_id = ?
                     WHERE id = ?
                     """,
                     (
-                        now, content[:MAX_MEMORY_TITLE_CHARS], content,
-                        self._encode(tags), self._encode(paths), revision, plan_id,
-                        actor_id, memory_id,
+                        now, content, self._encode(tags), path,
+                        revision, plan_id, actor_id, memory_id,
                     ),
                 )
-                updated = connection.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                updated = connection.execute(
+                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
                 assert updated is not None
-                connection.execute("DELETE FROM memory_tags WHERE memory_id = ?", (memory_id,))
-                connection.execute("DELETE FROM memory_paths WHERE memory_id = ?", (memory_id,))
+                connection.execute(
+                    "DELETE FROM memory_tags WHERE memory_id = ?", (memory_id,)
+                )
                 connection.executemany(
                     "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
                     ((memory_id, tag) for tag in tags),
                 )
-                connection.executemany(
-                    "INSERT INTO memory_paths(memory_id, path) VALUES (?, ?)",
-                    ((memory_id, path) for path in paths),
-                )
                 connection.execute(
                     "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (memory_id, revision, now, actor_id, plan_id, message, self._snapshot(updated)),
+                    (
+                        memory_id, revision, now, actor_id, plan_id,
+                        message, self._snapshot(updated),
+                    ),
                 )
                 connection.commit()
         return self._serialize(updated)
