@@ -127,7 +127,7 @@ transport response limit.
 - `POST /fs/write/copy`: JSON `source`, `destination`, `plan_id`, `taskname`, `message`. The destination parent must exist. Overwrite is not supported.
 - `POST /fs/write/move`: moving between different storage roots returns an asynchronous transfer, not an immediate rename.
 - Both return HTTP 202 with an `id`. Poll `GET /fs/transfer/<id>`.
-- `POST /fs/transfer/<id>/cancel` or `/resume`: supply normal mutation Context. Resume validates the source and partial destination before continuing. Do not start a second transfer to resume the first one.
+- `POST /fs/transfer/cancel/<id>` or `/fs/transfer/resume/<id>`: supply normal mutation Context. Resume validates the source and partial destination before continuing. Do not start a second transfer to resume the first one.
 - `completed` is success. `copied_source_retained` means a move copied the destination but could not safely recycle the source. Do not delete the source blindly.
 - Partial data is staged on the destination storage, not buffered as an entire file on the server. Cancel preserves partial data for resumption.
 

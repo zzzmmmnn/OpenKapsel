@@ -82,6 +82,18 @@ class EndpointContractTests(unittest.TestCase):
                 "schedule_run_get",
                 {"run_id": "run_abc"},
             ),
+            ("GET", "/fs/transfer/abcdefghijklmnopqrstuvwx"): (
+                "file_transfer",
+                {"target": "abcdefghijklmnopqrstuvwx"},
+            ),
+            ("POST", "/fs/transfer/cancel/abcdefghijklmnopqrstuvwx"): (
+                "file_transfer",
+                {"target": "cancel/abcdefghijklmnopqrstuvwx"},
+            ),
+            ("POST", "/fs/transfer/resume/abcdefghijklmnopqrstuvwx"): (
+                "file_transfer",
+                {"target": "resume/abcdefghijklmnopqrstuvwx"},
+            ),
         }
         for request, expected in cases.items():
             with self.subTest(request=request):
@@ -98,6 +110,8 @@ class EndpointContractTests(unittest.TestCase):
         self.assertIsNone(match_endpoint("POST", "/schedule/schedule_abc/pause"))
         self.assertIsNone(match_endpoint("POST", "/schedule/schedule_abc/resume"))
         self.assertIsNone(match_endpoint("GET", "/schedule/schedule_abc/runs"))
+        self.assertIsNone(match_endpoint("POST", "/fs/transfer/abcdefghijklmnopqrstuvwx/cancel"))
+        self.assertIsNone(match_endpoint("POST", "/fs/transfer/abcdefghijklmnopqrstuvwx/resume"))
         self.assertIsNone(match_endpoint("GET", "/uploads/a"))
         self.assertIsNone(match_endpoint("GET", "/mapping/abcdefghijklmnopqrstuvwx/tasks"))
         self.assertIsNone(match_endpoint("POST", "/mapping/abcdefghijklmnopqrstuvwx/tasks/task_abc/kill"))

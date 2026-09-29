@@ -58,7 +58,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     _exact("fs_copy", ("POST",), "/fs/write/copy", "_handle_file_copy", control_required=True,
         request_body=True, context_mode="deferred", context_operations=(("POST", "fs.copy"),), discovery_key="fs_write"),
     EndpointSpec("file_transfer", frozenset(("GET", "POST")),
-        re.compile(r"/fs/transfer/(?P<target>[A-Za-z0-9_-]{24}(?:/(?:cancel|resume))?)"),
+        re.compile(r"/fs/transfer/(?P<target>(?:[A-Za-z0-9_-]{24}|(?:cancel|resume)/[A-Za-z0-9_-]{24}))"),
         "_handle_file_transfer", invocation="param", parameter="target", control_required=True,
         request_body=True, context_mode="deferred", context_operations=(("POST", "fs.transfer.control"), ("GET", "fs.transfer.get")), discovery_key="transfer"),
     EndpointSpec("server_rpc", frozenset(("POST",)),

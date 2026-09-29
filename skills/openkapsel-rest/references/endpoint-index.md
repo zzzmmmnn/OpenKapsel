@@ -123,7 +123,7 @@ There is intentionally no MCP route in this skill.
 - For mapped archives use `/mapping/<mapping_name>/rpc/archive/<operation>`.
 - `POST /fs/write/copy`: start an asynchronous copy.
 - `GET /fs/transfer/<id>`: inspect transfer progress.
-- `POST /fs/transfer/<id>/cancel` and `/resume`: control transfers.
+- `POST /fs/transfer/cancel/<id>` and `/fs/transfer/resume/<id>`: control transfers.
 
 See [mappings.md](mappings.md) for permissions, request fields, and root-scoped recycling.
 

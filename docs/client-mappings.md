@@ -221,7 +221,7 @@ are added.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 
-`POST /fs/write/copy` starts a verified, resumable copy. `fs/move` between different roots uses verified copy followed by source recycling. Both return 202 with a transfer ID; poll `/fs/transfer/<id>` and use POST `/cancel` or `/resume` with mutation Context. A move is not atomic. `copied_source_retained` means the destination exists but the source still needs attention. Publication never silently overwrites an existing destination. Cancellation retains partial data on the destination for resumption, so it still consumes client/destination space.
+`POST /fs/write/copy` starts a verified, resumable copy. `fs/move` between different roots uses verified copy followed by source recycling. Both return 202 with a transfer ID; poll `/fs/transfer/<id>` and use POST `/fs/transfer/cancel/<id>` or `/fs/transfer/resume/<id>` with mutation Context. A move is not atomic. `copied_source_retained` means the destination exists but the source still needs attention. Publication never silently overwrites an existing destination. Cancellation retains partial data on the destination for resumption, so it still consumes client/destination space.
 
 ## Client execution policy
 

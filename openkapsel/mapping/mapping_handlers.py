@@ -518,26 +518,34 @@ class MappingHandlersMixin:
         self._start_file_transfer(source, destination)
 
     def _handle_file_transfer(self, target):
-        tid, *actions = target.split("/")
+        parts = target.split("/")
+        if len(parts) == 1:
+            action, tid = None, parts[0]
+        elif len(parts) == 2 and parts[0] in ("cancel", "resume"):
+            action, tid = parts
+        else:
+            raise ApiError(404, "not_found", "unknown transfer action")
         try:
             job = self.server.file_transfers.get(tid, self.token_scope_root)
         except KeyError:
             raise ApiError(404, "transfer_not_found", "transfer does not exist") from None
         if self.command == "POST":
+            if action is None:
+                raise ApiError(404, "not_found", "unknown transfer action")
             self._read_json()
             self._require_permission(self.token_record.can_read and self.token_record.can_write, "read and write permissions are required")
             # Re-authorize current paths on every explicit resume.
             self._resolve_path(job["source"], write=job["move"])
             self._resolve_path(job["destination"], write=True)
-            if actions == ["cancel"]:
+            if action == "cancel":
                 job["cancel"].set()
-            elif actions == ["resume"]:
+            else:
                 try:
                     self.server.file_transfers.resume(job)
                 except ValueError as exc:
                     raise ApiError(409, "transfer_busy", str(exc)) from None
-            else:
-                raise ApiError(404, "not_found", "unknown transfer action")
+        elif action is not None:
+            raise ApiError(404, "not_found", "unknown transfer action")
         self._send_json(200, self.server.file_transfers.public(job))
 
     def _mapping_for_caller(self, mapping_ref):

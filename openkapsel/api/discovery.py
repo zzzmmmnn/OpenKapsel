@@ -312,12 +312,12 @@ class DiscoveryMixin:
                     "cancel": operation(
                         "file_transfer",
                         method="POST",
-                        path="./fs/transfer/<transfer_id>/cancel",
+                        path="./fs/transfer/cancel/<transfer_id>",
                     ),
                     "resume": operation(
                         "file_transfer",
                         method="POST",
-                        path="./fs/transfer/<transfer_id>/resume",
+                        path="./fs/transfer/resume/<transfer_id>",
                     ),
                 },
             ),
@@ -2039,7 +2039,7 @@ class DiscoveryMixin:
             "recycle_purge": {"method": "POST", "url": "./recycle/purge", "body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
             "fs_copy": {"method": "POST", "url": "./fs/write/copy", "body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
                 "description": "Start a bounded, resumable file/directory copy. Destination parent must exist. No overwrite; return 202 and transfer id. Staging remains on destination storage."},
-            "file_transfer": {"method": "GET/POST", "url": "./fs/transfer/<id>", "description": "GET returns progress/state. POST /cancel or /resume requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
+            "file_transfer": {"method": "GET/POST", "url": "./fs/transfer/<id>", "description": "GET returns progress/state. POST ./fs/transfer/cancel/<id> or ./fs/transfer/resume/<id> requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
             "server_rpc": {"method": "POST", "url": "./rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
                 "description": "Invoke one server RPC family operation against the token workspace. Built-in server families include Git and Archive. execution=sync returns directly; execution=task returns 202 plus a normal server task_id. write=false requires read permission; write=true requires control authorization, write permission, and Plan Context. Git fetch/pull/clone also obey the token network policy."},
