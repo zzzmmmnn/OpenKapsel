@@ -39,11 +39,11 @@ class MappingHandlersMixin:
         body = copy.deepcopy(original)
         write = operation in FILE_API_WRITE_OPERATIONS
         targets = []
-        if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search", "fs_find"}:
+        if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_grep", "fs_search", "fs_find"}:
             value = self._query_one(
                 query,
                 "path",
-                "." if operation in {"fs_list", "fs_tree", "fs_search", "fs_find"} else "",
+                "." if operation in {"fs_list", "fs_tree", "fs_grep", "fs_search", "fs_find"} else "",
             )
             if not value:
                 return False
@@ -113,7 +113,7 @@ class MappingHandlersMixin:
             selected = row
         min_version = 2 if (operation == "fs_read_many" or
                             operation == "fs_manifest" and body.get("recursive") is True or
-                            operation == "fs_search" and ("include" in query or "exclude" in query)) else 1
+                            operation in {"fs_grep", "fs_search"} and ("include" in query or "exclude" in query)) else 1
         if operation in {"fs_read", "fs_read_many"}:
             min_version = 3  # Explicit codecs and literal newline preservation.
         if operation in {"fs_read_large", "fs_replace_large", "fs_mutate"}:
@@ -147,6 +147,23 @@ class MappingHandlersMixin:
             min_version=min_version,
             max_version=4,
         )
+        # New servers call fs_grep. Older mapping clients advertised only the
+        # legacy fs_search operation, so use that alias only when necessary.
+        if (
+            not capability.available
+            and operation == "fs_grep"
+            and capability.reason == "operation_not_supported"
+        ):
+            legacy = self.server.mappings.rpc_capability(
+                selected["id"],
+                "file",
+                operation="fs_search",
+                min_version=min_version,
+                max_version=4,
+            )
+            if legacy.available:
+                operation = "fs_search"
+                capability = legacy
         if not capability.available:
             self._raise_mapping_rpc_unavailable(capability)
         limits = {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}

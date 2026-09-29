@@ -420,7 +420,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
         return any(fnmatch.fnmatchcase(relative.rsplit("/", 1)[-1] if "/" not in pattern else relative, pattern)
                    for pattern in patterns)
 
-    def _search_files(self, root: Path, depth: int, *, includes=(), excludes=()):
+    def _grep_files(self, root: Path, depth: int, *, includes=(), excludes=()):
         root_stat = self._file_stat(root)
         if stat.S_ISREG(root_stat.st_mode):
             if not self._matches_glob(root.name, excludes) and (not includes or self._matches_glob(root.name, includes)):

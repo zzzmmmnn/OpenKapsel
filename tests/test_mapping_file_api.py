@@ -61,12 +61,12 @@ class MappingFileHTTPTests(unittest.TestCase):
                                        json.dumps(body) if body is not None else None, self.headers)
         return status, json.loads(raw)
 
-    def test_list_stat_hash_search_and_tree_each_use_one_rpc(self):
+    def test_list_stat_hash_grep_and_tree_each_use_one_rpc(self):
         (self.export / "folder").mkdir()
         data = b"needle\n" * 200000
         (self.export / "folder/large.txt").write_bytes(data)
         for endpoint in ("/fs/query/list?path=laptop", "/fs/query/stat?path=laptop/folder/large.txt&fields=sha256,size,etag",
-                         "/fs/query/search?path=laptop&query=needle&max_results=2", "/fs/query/tree?path=laptop&depth=2",
+                         "/fs/query/grep?path=laptop&query=needle&max_results=2", "/fs/query/tree?path=laptop&depth=2",
                          "/fs/read/text?path=laptop/folder/large.txt&limit=10"):
             before = len(self.calls)
             status, body = self.api(endpoint)
@@ -157,7 +157,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.headers = {"Content-Type": "application/json"}
         for endpoint, body in (("/fs/read/many", {"paths": ["laptop/a.py"]}),
                                ("/fs/query/manifest", {"recursive": True, "path": "laptop", "include_sha256": True}),
-                               ("/fs/query/search?path=laptop&query=needle&include=*.py", None)):
+                               ("/fs/query/grep?path=laptop&query=needle&include=*.py", None)):
             before = len(self.calls)
             status, result = self.api(endpoint, body)
             self.assertEqual(200, status, result)
@@ -169,7 +169,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         (self.mount / "a.py").write_text("needle")
         (self.mount / "b.txt").write_text("needle")
         before = len(self.calls)
-        status, result = self.api("/fs/query/search?path=laptop&query=needle&include=*.py")
+        status, result = self.api("/fs/query/grep?path=laptop&query=needle&include=*.py")
         self.assertEqual(409, status, result)
         self.assertEqual("mapping_rpc_unsupported", result["error"]["code"])
         self.assertEqual(before, len(self.calls))

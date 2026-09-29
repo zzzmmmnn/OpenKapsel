@@ -76,10 +76,11 @@ class ClientFileAPI(FileHandlersMixin):
             raise OSError(errno.ENOSYS, "unsupported file API operation")
         if operation in FILE_API_WRITE_OPERATIONS and not files.writable:
             raise OSError(errno.EROFS, "client export is read-only")
+        operation = {"fs_search": "fs_grep"}.get(operation, operation)
         handler = cls(files, arguments)
         try:
             method = getattr(handler, "_handle_" + operation)
-            if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search", "fs_find"}:
+            if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_grep", "fs_find"}:
                 method(handler.query)
             else:
                 method()

@@ -78,7 +78,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         self.extra.append((row, provider))
         return export
 
-    def test_root_listing_tree_manifest_search_and_mixed_reads(self):
+    def test_root_listing_tree_manifest_grep_and_mixed_reads(self):
         (self.export / "remote.txt").write_text("remote needle\r\n")
         (self.scope / "local.txt").write_text("local needle")
         status, listing = self.api("/fs/query/list?path=.")
@@ -88,7 +88,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         status, result = self.api("/fs/query/tree?path=.&depth=2")
         self.assertEqual(200, status, result)
         self.assertIn("remote.txt", json.dumps(result))
-        status, result = self.api("/fs/query/search?path=.&query=needle")
+        status, result = self.api("/fs/query/grep?path=.&query=needle")
         self.assertEqual(200, status, result)
         self.assertEqual(2, result["match_count"])
         status, result = self.api("/fs/read/many", {"paths": ["local.txt", "laptop/remote.txt"], "max_total_chars": 100})

@@ -270,10 +270,10 @@ class TransactionalMutationTests(unittest.TestCase):
         self.assertIn('"port":9000', config)
         self.assertNotIn('"enabled"', config)
 
-    def test_search_returns_etag_for_direct_mutation(self):
+    def test_grep_returns_etag_for_direct_mutation(self):
         (self.root / "a.py").write_text("needle\n", encoding="utf-8")
         result = self.call(
-            "fs_search",
+            "fs_grep",
             query={"path": ["."], "query": ["needle"]},
         )
         self.assertEqual(200, result["status"], result)

@@ -22,8 +22,8 @@ class MappingQueryTests(unittest.TestCase):
         (self.scope / "hello.txt").unlink()  # Remove the HTTP fixture's sample.
         self.session.capabilities["file_stream"] = {"version": 1, "search_prefix": True}
 
-    def search(self, **query):
-        return self.api("/fs/query/search?" + urlencode(dict(path=".", query="needle", **query), doseq=True))
+    def grep(self, **query):
+        return self.api("/fs/query/grep?" + urlencode(dict(path=".", query="needle", **query), doseq=True))
 
     def find(self, **query):
         return self.api(
@@ -42,7 +42,7 @@ class MappingQueryTests(unittest.TestCase):
         self.assertTrue(result["entries"][0]["is_mapping"])
         self.assertEqual([], self.calls)
 
-    def test_root_search_sends_one_rpc_per_mapping(self):
+    def test_root_grep_sends_one_rpc_per_mapping(self):
         for index in range(10):
             (self.export / f"{index}.txt").write_text("needle\n" + "x" * 10000)
         (self.scope / "local.txt").write_text("needle")
@@ -50,14 +50,26 @@ class MappingQueryTests(unittest.TestCase):
         (second / "remote.txt").write_text("needle")
         second_session = self.server.mappings.sessions[self.extra[0][0]["id"]]
         with patch.object(second_session, "call", wraps=second_session.call) as remote:
-            status, result = self.search()
+            status, result = self.grep()
         self.assertEqual(200, status, result)
         self.assertEqual(12, result["match_count"])
         self.assertEqual(12, result["files_searched"])
-        self.assertEqual(["api_fs_search"], [op for op, _ in self.calls])
+        self.assertEqual(["api_fs_grep"], [op for op, _ in self.calls])
         self.assertEqual(1, remote.call_count)
-        self.assertEqual("api_fs_search", remote.call_args.args[0])
+        self.assertEqual("api_fs_grep", remote.call_args.args[0])
         self.assertNotIn(str(self.export), str(result))
+
+    def test_mapping_grep_falls_back_to_legacy_fs_search(self):
+        (self.export / "legacy.txt").write_text("needle")
+        file_rpc = self.session.capabilities["rpc"]["file"]
+        file_rpc["operations"] = [
+            operation for operation in file_rpc["operations"] if operation != "fs_grep"
+        ]
+        status, result = self.api("/fs/query/grep?path=laptop&query=needle")
+        self.assertEqual(200, status, result)
+        self.assertEqual(1, result["match_count"])
+        self.assertEqual("api_fs_search", self.calls[-1][0])
+
 
     def test_mapping_find_prefers_indexed_file_search(self):
         nested = self.export / "nested"
@@ -98,16 +110,16 @@ class MappingQueryTests(unittest.TestCase):
         self.assertFalse(result["timed_out"])
         self.assertEqual(["api_fs_find"], [op for op, _ in self.calls])
 
-    def test_search_depth_filters_regex_and_limits(self):
+    def test_grep_depth_filters_regex_and_limits(self):
         (self.export / "nested").mkdir()
         (self.export / "a.py").write_text("Needle")
         (self.export / "skip.txt").write_text("needle")
         (self.export / "nested/b.py").write_text("needle")
-        status, result = self.search(depth=0)
+        status, result = self.grep(depth=0)
         self.assertEqual(200, status, result)
         self.assertEqual(0, result["match_count"])
         self.assertEqual([], self.calls)
-        status, result = self.search(depth=1, case_sensitive="false", include="*.py")
+        status, result = self.grep(depth=1, case_sensitive="false", include="*.py")
         self.assertEqual(1, result["match_count"], result)
         self.assertTrue(result["matches"][0]["path"].endswith("/laptop/a.py"))
         for include, exclude, count in (("laptop/*.py", [], 2),
@@ -115,17 +127,17 @@ class MappingQueryTests(unittest.TestCase):
                                          ("*/nested/*.py", [], 1),
                                          ("*.py", ["laptop/*"], 0)):
             with self.subTest(include=include, exclude=exclude):
-                status, result = self.search(depth=2, case_sensitive="false", regex="true",
+                status, result = self.grep(depth=2, case_sensitive="false", regex="true",
                                              include=include, exclude=exclude)
                 self.assertEqual(200, status, result)
                 self.assertEqual(count, result["match_count"], result)
                 self.assertNotIn("unavailable_mappings", result)
         self.calls.clear()
-        status, result = self.search(exclude="laptop")
+        status, result = self.grep(exclude="laptop")
         self.assertEqual(0, result["match_count"], result)
         self.assertEqual([], self.calls)
         (self.scope / "first.txt").write_text("needle")
-        status, result = self.search(case_sensitive="false", max_results=2)
+        status, result = self.grep(case_sensitive="false", max_results=2)
         self.assertEqual(2, result["match_count"], result)
         self.assertTrue(result["truncated"])
         self.assertEqual(["1"], self.calls[-1][1]["query"]["max_results"])
@@ -216,7 +228,7 @@ class MappingQueryTests(unittest.TestCase):
                 self.session.closed = closed
                 self.calls.clear()
                 with patch("openkapsel.mapping.mapping_manager.time.sleep") as sleep:
-                    status, result = self.search()
+                    status, result = self.grep()
                     self.assertEqual(200, status, result)
                     self.assertEqual(1, result["match_count"])
                     self.assertTrue(result["truncated"])
@@ -228,7 +240,7 @@ class MappingQueryTests(unittest.TestCase):
 
     def test_path_filters_require_feature_from_old_clients(self):
         self.session.capabilities.pop("file_stream")
-        status, result = self.search(include="laptop/*.py")
+        status, result = self.grep(include="laptop/*.py")
         self.assertEqual(200, status, result)
         self.assertEqual("mapping_client_upgrade_required", result["unavailable_mappings"][0]["error"]["code"])
         self.assertEqual([], self.calls)

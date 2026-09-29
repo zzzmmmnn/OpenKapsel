@@ -484,9 +484,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
             },
         )
 
-    def _handle_fs_search(self, query: dict[str, list[str]]) -> None:
+    def _handle_fs_grep(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
-        if self._try_mapping_file_api("fs_search", query=query):
+        if self._try_mapping_file_api("fs_grep", query=query):
             return
         needle = self._required_query(query, "query")
         root = self._resolve_path(self._query_one(query, "path", "."))
@@ -519,11 +519,11 @@ class FileHandlersMixin(FileOperationSupportMixin):
         unavailable_mappings = []
         includes = self._glob_patterns(query.get("include", []))
         excludes = self._glob_patterns(query.get("exclude", []))
-        for file_path in self._search_files(root, depth, includes=includes, excludes=excludes):
+        for file_path in self._grep_files(root, depth, includes=includes, excludes=excludes):
             mapping = self._mapping_root(file_path)
             if mapping is not None:
                 try:
-                    result = self._mapping_search(mapping, file_path, root, query,
+                    result = self._mapping_grep(mapping, file_path, root, query,
                         depth - len(file_path.relative_to(root).parts), max_results - len(matches),
                         includes, excludes)
                 except ApiError as exc:

@@ -15,7 +15,7 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `PATCH` | `/context/plans/<id>` | Update Plan content, status, parent, and debrief |
 | `GET/POST` | `/memory`, `/memory/project` | Query, create, or read project Memory |
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
-| `GET` | `/fs/query/list`, `/fs/query/tree`, `/fs/query/search` | List, recursively inspect, or search files |
+| `GET` | `/fs/query/list`, `/fs/query/tree`, `/fs/query/find`, `/fs/query/grep` | List, recursively inspect, find by name, or grep file contents |
 | `GET` | `/fs/read/text`, `/fs/query/stat` | Read explicitly encoded text or selected metadata |
 | `POST` | `/rpc/git/<operation>` | Generic Git reads/writes for the server workspace; use mapping RPC for mapped repositories |
 | `POST` | `/fs/query/manifest` | Batch synchronization preflight or recursive metadata manifest |
@@ -64,7 +64,7 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the body. Raw-byte 
 - `OpenKapsel-Taskname`
 - `OpenKapsel-Message`
 
-## Metadata, search, and trees
+## Metadata, find, grep, and trees
 
 `POST /fs/read/many` accepts `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}`.
 `limit` caps characters per file; `max_total_chars` caps their combined content.
@@ -75,10 +75,10 @@ When the shared budget is exhausted, remaining items report `read_budget_exhaust
 Use `/fs/read/text?path=...&offset=<next_offset>` to continue a truncated file.
 This endpoint is read-only despite using POST; it needs no control token or Plan.
 
-Search accepts repeated `include` and `exclude` glob query parameters, for example
-`/fs/query/search?path=src&query=TODO&include=*.py&include=*.js&exclude=node_modules`.
+Content grep accepts repeated `include` and `exclude` glob query parameters, for example
+`/fs/query/grep?path=src&query=TODO&include=*.py&include=*.js&exclude=node_modules`.
 Patterns without `/` match basenames; others match POSIX paths relative to the
-search root. Matching is case-sensitive regardless of the content-search flag;
+grep root. Glob matching is case-sensitive regardless of the content-grep flag;
 `*` spans `/` (Python fnmatch semantics). Exclude wins, and matching directories
 are pruned. Include only filters files, allowing traversal to matching descendants.
 Each group accepts at most 64 patterns, each at most 512 characters.

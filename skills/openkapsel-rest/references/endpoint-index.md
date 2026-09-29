@@ -18,7 +18,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `POST` | `<workspace_url>/rpc/archive/<operation>` |
 | `POST` | `<workspace_url>/mappings/<mapping_name>/rpc/<family>/<operation>` |
 | `GET` | `<workspace_url>/fs/query/find` |
-| `GET` | `<workspace_url>/fs/query/search` |
+| `GET` | `<workspace_url>/fs/query/grep` |
 | `GET` | `<workspace_url>/fs/query/tree` |
 | `GET|HEAD|PUT` | `<workspace_url>/fs/content` |
 | `POST` | `<workspace_url>/fs/write/mutate` |

@@ -205,14 +205,20 @@ class ClientFileAPITests(unittest.TestCase):
         for body in ({"paths": []}, {"paths": [1]}, {"paths": ["a"], "limit": True}):
             self.assertEqual(400, self.call("fs_read_many", body)["status"])
 
-    def test_search_globs_and_recursive_manifest(self):
+    def test_grep_globs_and_recursive_manifest(self):
         (self.root / "src").mkdir()
         (self.root / "node_modules").mkdir()
         for name in ("src/a.py", "src/a.txt", "node_modules/b.py"):
             (self.root / name).write_text("needle", encoding="utf-8")
-        result = self.call("fs_search", query={"path": ["."], "query": ["needle"], "include": ["*.py"], "exclude": ["node_modules"]})
+        result = self.call("fs_grep", query={"path": ["."], "query": ["needle"], "include": ["*.py"], "exclude": ["node_modules"]})
         self.assertEqual(1, result["body"]["match_count"], result)
         self.assertTrue(result["body"]["matches"][0]["path"].endswith("src/a.py"))
+        legacy = self.call(
+            "fs_search",
+            query={"path": ["src"], "query": ["needle"], "include": ["*.py"]},
+        )
+        self.assertEqual(200, legacy["status"], legacy)
+        self.assertEqual(1, legacy["body"]["match_count"])
         result = self.call("fs_manifest", {"recursive": True, "path": "src", "depth": 1, "include_sha256": True})
         self.assertEqual(200, result["status"], result)
         self.assertEqual(3, result["body"]["total"])
@@ -222,8 +228,8 @@ class ClientFileAPITests(unittest.TestCase):
         result = self.files.dispatch("api_fs_manifest", {"body": {"recursive": True}, "limits": {"max_tree_nodes": 2}})
         self.assertEqual(2, result["body"]["total"])
         self.assertTrue(result["body"]["truncated"])
-        self.assertEqual(400, self.call("fs_search", query={"query": ["x"], "include": [""]})["status"])
-        result = self.call("fs_search", query={"query": ["NEEDLE"], "case_sensitive": ["false"],
+        self.assertEqual(400, self.call("fs_grep", query={"query": ["x"], "include": [""]})["status"])
+        result = self.call("fs_grep", query={"query": ["NEEDLE"], "case_sensitive": ["false"],
                                                "regex": ["true"], "include": ["src/*.py"]})
         self.assertEqual(1, result["body"]["match_count"])
 

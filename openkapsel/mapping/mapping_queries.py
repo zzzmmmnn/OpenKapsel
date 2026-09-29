@@ -58,21 +58,26 @@ class MappingQueryMixin:
             state["count"] += 1
             return self._unavailable_mapping(row, path, exc)
 
-    def _mapping_search(self, row, path, root, query, depth, remaining, includes, excludes):
+    def _mapping_grep(self, row, path, root, query, depth, remaining, includes, excludes):
         forwarded = {key: list(value) for key, value in query.items()}
         forwarded.update(path=["."], depth=[str(depth)], max_results=[str(remaining)])
         # Slash-free globs are basename filters and need no translation. Other
         # globs must be evaluated against the original request root, even when
         # a wildcard spans the mapping boundary or excludes an entire subtree.
         prefix = path.relative_to(root).as_posix() if any("/" in p for p in (*includes, *excludes)) else None
-        _, result = self._call_mapping_file_api(row, "fs_search", query=forwarded,
-                                                min_version=2, search_prefix=prefix)
+        _, result = self._call_mapping_file_api(
+            row,
+            "fs_grep",
+            query=forwarded,
+            min_version=2,
+            search_prefix=prefix,
+        )
         matches = result.get("matches")
         if not isinstance(matches, list) or len(matches) > remaining:
-            raise ApiError(502, "invalid_mapping_response", "invalid mapping search results")
+            raise ApiError(502, "invalid_mapping_response", "invalid mapping grep results")
         for field in ("files_searched", "skipped_binary", "skipped_large"):
             if type(result.get(field)) is not int or result[field] < 0:
-                raise ApiError(502, "invalid_mapping_response", "invalid mapping search counters")
+                raise ApiError(502, "invalid_mapping_response", "invalid mapping grep counters")
         return result
 
     def _mapping_find(self, row, query, remaining, timeout_seconds):

@@ -147,9 +147,14 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         context_operations=(("GET", "fs.find"),), discovery_key="fs_query",
     ),
     _exact(
-        "fs_search", ("GET",), "/fs/query/search", "_handle_fs_search",
+        "fs_grep", ("GET",), "/fs/query/grep", "_handle_fs_grep",
         invocation="query", transfer_slot=True, context_mode="optional_query",
-        context_operations=(("GET", "fs.search"),), discovery_key="fs_query",
+        context_operations=(("GET", "fs.grep"),), discovery_key="fs_query",
+    ),
+    _exact(
+        "fs_search", ("GET",), "/fs/query/search", "_handle_fs_grep",
+        invocation="query", transfer_slot=True, context_mode="optional_query",
+        context_operations=(("GET", "fs.grep"),), discovery_key="fs_query",
     ),
     _exact(
         "fs_tree", ("GET",), "/fs/query/tree", "_handle_fs_tree",

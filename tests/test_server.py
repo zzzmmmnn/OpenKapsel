@@ -957,11 +957,14 @@ class WorkspaceServerTests(unittest.TestCase):
                 endpoint_reference,
             )
             self.assertIn(b"/fs/query/find", endpoint_reference)
+            self.assertIn(b"/fs/query/grep", endpoint_reference)
+            self.assertNotIn(b"/fs/query/search", endpoint_reference)
             files_reference = bundle.read("openkapsel-rest/references/files.md")
             self.assertIn(b"`text.insert_before`", files_reference)
             self.assertIn(b"`text.insert_after`", files_reference)
             self.assertIn(b"`files_grep`", files_reference)
             self.assertIn(b"/fs/query/find", files_reference)
+            self.assertIn(b"/fs/query/grep", files_reference)
             self.assertIn(b"timeout_seconds=5", files_reference)
             schedules_reference = bundle.read("openkapsel-rest/references/schedules.md")
             self.assertIn(b"`overlap_policy`", schedules_reference)
@@ -1941,10 +1944,16 @@ class WorkspaceServerTests(unittest.TestCase):
                 "case_sensitive": "false",
             }
         )
-        status, searched = self.request("GET", self.endpoint(f"/fs/query/search?{query}"))
+        status, searched = self.request("GET", self.endpoint(f"/fs/query/grep?{query}"))
         self.assertEqual(200, status)
         self.assertEqual(2, searched["match_count"])
         self.assertFalse(any(item["path"].endswith("two.py") for item in searched["matches"]))
+        legacy_status, legacy_search = self.request(
+            "GET",
+            self.endpoint(f"/fs/query/search?{query}"),
+        )
+        self.assertEqual(200, legacy_status)
+        self.assertEqual(searched["match_count"], legacy_search["match_count"])
 
         query = urlencode(
             {
@@ -1955,7 +1964,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "case_sensitive": "false",
             }
         )
-        status, searched = self.request("GET", self.endpoint(f"/fs/query/search?{query}"))
+        status, searched = self.request("GET", self.endpoint(f"/fs/query/grep?{query}"))
         self.assertEqual(200, status)
         self.assertEqual(1, searched["match_count"])
         self.assertGreaterEqual(searched["skipped_binary"], 1)

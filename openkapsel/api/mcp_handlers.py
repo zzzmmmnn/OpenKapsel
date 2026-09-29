@@ -585,7 +585,7 @@ class McpHandlersMixin:
             "read_file": self._handle_fs_read,
             "stat_file": self._handle_fs_stat,
             "find_files": self._handle_fs_find,
-            "files_grep": self._handle_fs_search,
+            "files_grep": self._handle_fs_grep,
             "list_tree": self._handle_fs_tree,
             "list_recycle": self._handle_recycle_list,
         }

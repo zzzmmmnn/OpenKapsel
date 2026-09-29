@@ -221,12 +221,12 @@ class ProtectedClientConfigTests(unittest.TestCase):
                 self.assertEqual(200, tree["status"])
                 self.assertNotIn("client.json", repr(tree))
 
-                search = files.dispatch(
-                    "api_fs_search",
+                grep = files.dispatch(
+                    "api_fs_grep",
                     {"query": {"path": ["."], "query": ["secret-value"]}},
                 )
-                self.assertEqual(200, search["status"])
-                self.assertEqual([], search["body"]["matches"])
+                self.assertEqual(200, grep["status"])
+                self.assertEqual([], grep["body"]["matches"])
 
                 self.assertEqual('{"token":"secret-value"}', config.read_text())
             finally:

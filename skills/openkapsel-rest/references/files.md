@@ -16,7 +16,7 @@ All paths are workspace-relative unless they are absolute paths inside the works
 | `POST` | `/fs/query/manifest` | bounded `items` with `path` plus optional expected `size`/`sha256`; returns per-file synchronization status |
 | `POST` | `/fs/read/many` | read several small text files with optional `encoding`, per-file errors and bounded total content |
 | `GET` | `/fs/query/find` | recursive filename/directory search: `path=.`, required literal `query`, `max_results`, `case_sensitive=false`, `timeout_seconds=5` |
-| `GET` | `/fs/query/search` | content grep: `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
+| `GET` | `/fs/query/grep` | content grep: `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
 | `GET` | `/fs/query/tree` | `path=.`, `depth=2`; nested tree bounded by published node/depth limits |
 | `GET|HEAD` | `/fs/content` | required `path`; raw bytes, ETag, Last-Modified, single HTTP Range support |
 
@@ -30,7 +30,7 @@ Prefer `POST /fs/read/many` with `{"paths":["src/main.py","README.md"],"limit":6
 
 `/fs/query/find` recursively matches a literal substring against each file or directory basename. It does not follow symlinks. The default search deadline is 5 seconds; a deadline returns the matches found so far with `timed_out=true` and `truncated=true`. Inside mappings, current clients automatically use the advertised `file_search` index (Everything IPC, mdfind, or plocate) when available and otherwise recursively traverse the export.
 
-Content grep at `/fs/query/search` supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters. Its MCP tool is `files_grep`; legacy MCP callers may still use `search_files`.
+Content grep at `/fs/query/grep` supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters. Its MCP tool is `files_grep`. Legacy `/fs/query/search`, core `fs_search`, and MCP `search_files` remain accepted only for compatibility.
 
 For a single mapping, these operations run client-locally in one RPC with an
 updated client. RPC-first servers do not fall back to FUSE. Reduce batch size,
