@@ -290,27 +290,32 @@ class TransactionalMutationTests(unittest.TestCase):
 
     def test_large_file_rejected_by_ordinary_content_apis(self):
         self.make_large()
-        for operation, body, query in (
-            ("fs_read", None, {"path": ["large.bin"], "limit": ["16"]}),
-            (
-                "fs_mutate",
-                {
-                    "items": [
-                        {
-                            "op": "file.replace",
-                            "path": "large.bin",
-                            "expected_etag": self.etag("large.bin"),
-                            "content": "small",
-                        }
-                    ]
-                },
-                None,
-            ),
-        ):
-            with self.subTest(operation=operation):
-                result = self.call(operation, body, query)
-                self.assertEqual(413, result["status"], result)
-                self.assertEqual("large_file_api_required", result["error"]["code"])
+        read = self.call(
+            "fs_read_files",
+            {"paths": ["large.bin"], "limit": 16},
+            None,
+        )
+        self.assertEqual(207, read["status"], read)
+        item = read["body"]["items"][0]
+        self.assertEqual(413, item["status"])
+        self.assertEqual("large_file_api_required", item["error"]["code"])
+
+        mutation = self.call(
+            "fs_mutate",
+            {
+                "items": [
+                    {
+                        "op": "file.replace",
+                        "path": "large.bin",
+                        "expected_etag": self.etag("large.bin"),
+                        "content": "small",
+                    }
+                ]
+            },
+            None,
+        )
+        self.assertEqual(413, mutation["status"], mutation)
+        self.assertEqual("large_file_api_required", mutation["error"]["code"])
 
     def test_delete_is_transactional_recoverable_and_allows_large_paths(self):
         (self.root / "victim.txt").write_text("remove me", encoding="utf-8")

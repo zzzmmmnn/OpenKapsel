@@ -39,11 +39,11 @@ class MappingHandlersMixin:
         body = copy.deepcopy(original)
         write = operation in FILE_API_WRITE_OPERATIONS
         targets = []
-        if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_grep", "fs_search", "fs_find"}:
+        if operation in {"fs_list", "fs_stat", "fs_tree", "fs_grep", "fs_find"}:
             value = self._query_one(
                 query,
                 "path",
-                "." if operation in {"fs_list", "fs_tree", "fs_grep", "fs_search", "fs_find"} else "",
+                "." if operation in {"fs_list", "fs_tree", "fs_grep", "fs_find"} else "",
             )
             if not value:
                 return False
@@ -64,7 +64,7 @@ class MappingHandlersMixin:
             if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) for item in items):
                 return False
             targets.extend((item, "path", item["path"], False) for item in items)
-        elif operation == "fs_read_many":
+        elif operation == "fs_read_files":
             paths = body.get("paths")
             if not isinstance(paths, list) or not paths or len(paths) > self.server.config.max_batch_file_operations:
                 return False
@@ -111,10 +111,10 @@ class MappingHandlersMixin:
                 raise ApiError(403, "reserved_path", "workspace internal paths are not available")
             container[key] = [relative.as_posix()] if is_query else relative.as_posix()
             selected = row
-        min_version = 2 if (operation == "fs_read_many" or
+        min_version = 2 if (operation == "fs_read_files" or
                             operation == "fs_manifest" and body.get("recursive") is True or
-                            operation in {"fs_grep", "fs_search"} and ("include" in query or "exclude" in query)) else 1
-        if operation in {"fs_read", "fs_read_many"}:
+                            operation in {"fs_grep"} and ("include" in query or "exclude" in query)) else 1
+        if operation in {"fs_read_files"}:
             min_version = 3  # Explicit codecs and literal newline preservation.
         if operation in {"fs_read_large", "fs_replace_large", "fs_mutate"}:
             min_version = 4
@@ -122,8 +122,8 @@ class MappingHandlersMixin:
             return False
         status, payload = self._call_mapping_file_api(
             selected, operation, query=query, body=body, min_version=min_version)
-        if operation in {"fs_manifest", "fs_mutate", "fs_read_many"} and not original.get("recursive"):
-            originals = original.get("paths") if operation == "fs_read_many" else [item["path"] for item in original["items"]]
+        if operation in {"fs_manifest", "fs_mutate", "fs_read_files"} and not original.get("recursive"):
+            originals = original.get("paths") if operation == "fs_read_files" else [item["path"] for item in original["items"]]
             for item in payload.get("items", []):
                 index = item.get("index")
                 if isinstance(index, int) and 0 <= index < len(originals):
@@ -147,23 +147,6 @@ class MappingHandlersMixin:
             min_version=min_version,
             max_version=4,
         )
-        # New servers call fs_grep. Older mapping clients advertised only the
-        # legacy fs_search operation, so use that alias only when necessary.
-        if (
-            not capability.available
-            and operation == "fs_grep"
-            and capability.reason == "operation_not_supported"
-        ):
-            legacy = self.server.mappings.rpc_capability(
-                selected["id"],
-                "file",
-                operation="fs_search",
-                min_version=min_version,
-                max_version=4,
-            )
-            if legacy.available:
-                operation = "fs_search"
-                capability = legacy
         if not capability.available:
             self._raise_mapping_rpc_unavailable(capability)
         limits = {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}
@@ -326,7 +309,7 @@ class MappingHandlersMixin:
                 "family": family,
                 "operation": operation,
                 "execution": "task",
-                "status_url": f"{self._base_path()}/tasks/{task.id}",
+                "status_url": f"{self._base_path()}/task/get/{task.id}",
             })
             return
 
@@ -472,7 +455,7 @@ class MappingHandlersMixin:
                 family=family,
                 operation=operation,
                 execution="task",
-                status_url=f"{self._base_path()}/tasks/{task['task_id']}",
+                status_url=f"{self._base_path()}/task/get/{task['task_id']}",
             )
             self._send_json(202, task)
             return

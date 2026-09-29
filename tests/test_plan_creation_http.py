@@ -80,7 +80,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         status, replay = self.rest("POST", "/context", body)
         self.assertEqual(200, status, replay)
         self.assertTrue(replay["replayed"])
-        status, rpc = self.mcp_call("tools/call", {"name": "add_context", "arguments": body}, request_number=99)
+        status, rpc = self.mcp_call("tools/call", {"name": "context_add", "arguments": body}, request_number=99)
         self.assertEqual(200, status, rpc)
         self.assertFalse(rpc["result"]["isError"], rpc)
         result = rpc["result"]["structuredContent"]
@@ -91,7 +91,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         status, bad = self.rest("POST", "/context", dict(body, content="Different"))
         self.assertEqual(409, status, bad)
         self.assertEqual("context_request_conflict", bad["error"]["code"])
-        status, rpc = self.mcp_call("tools/call", {"name": "add_context", "arguments": dict(body, content="Different")})
+        status, rpc = self.mcp_call("tools/call", {"name": "context_add", "arguments": dict(body, content="Different")})
         self.assertTrue(rpc["result"]["isError"], rpc)
         self.assertEqual("context_request_conflict", rpc["result"]["structuredContent"]["error"]["code"])
         self.assertEqual(3, self.count())
@@ -133,14 +133,14 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(3, self.count())
 
     def test_mcp_creation_and_nested_item_validation(self):
-        status, reply = self.mcp_call("tools/call", {"name": "add_context", "arguments": self.body})
+        status, reply = self.mcp_call("tools/call", {"name": "context_add", "arguments": self.body})
         self.assertEqual(200, status, reply)
         result = reply["result"]["structuredContent"]
         self.assertEqual(["code", "tests"], [c["ref"] for c in result["subplans"]])
         self.assertEqual(["feature", "feature"], [c["taskname"] for c in result["subplans"]])
         count = self.count()
         for child in ("not-an-object", {"content": "x", "plan_id": result["id"]}, {"content": "x", "subplans": []}, {"content": " "}):
-            status, reply = self.mcp_call("tools/call", {"name": "add_context", "arguments": dict(self.body, subplans=[child])})
+            status, reply = self.mcp_call("tools/call", {"name": "context_add", "arguments": dict(self.body, subplans=[child])})
             self.assertTrue(reply["result"]["isError"], reply)
             self.assertEqual(count, self.count())
 
@@ -186,7 +186,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(64, creation["max_direct_subplans"])
         status, listed = self.mcp_call("tools/list")
         self.assertEqual(200, status, listed)
-        tool = next(t for t in listed["result"]["tools"] if t["name"] == "add_context")
+        tool = next(t for t in listed["result"]["tools"] if t["name"] == "context_add")
         schema = tool["inputSchema"]["properties"]
         for name, extension in discovery["endpoints"]["context"]["operations"]["add"]["plan_extension_schema"].items():
             self.assertEqual(extension, schema[name])

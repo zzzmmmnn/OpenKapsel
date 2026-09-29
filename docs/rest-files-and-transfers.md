@@ -16,26 +16,27 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `GET/POST` | `/memory`, `/memory/project` | Query, create, or read project Memory |
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
 | `GET` | `/fs/query/list`, `/fs/query/tree`, `/fs/query/find`, `/fs/query/grep` | List, recursively inspect, find by name, or grep file contents |
-| `GET` | `/fs/read/text`, `/fs/query/stat` | Read explicitly encoded text or selected metadata |
+| `GET` | `/fs/query/stat` | Read selected metadata |
 | `POST` | `/rpc/git/<operation>` | Generic Git reads/writes for the server workspace; use mapping RPC for mapped repositories |
 | `POST` | `/fs/query/manifest` | Batch synchronization preflight or recursive metadata manifest |
-| `POST` | `/fs/read/many` | Read multiple small text files in one request |
+| `POST` | `/fs/read/files` | Read one or more text files in one request |
 | `GET/HEAD/PUT` | `/fs/content` | Stream or atomically upload raw bytes |
 | `POST` | `/fs/write/mutate` | Transactionally create, replace, exact-edit, structured-edit, or recycle one or more paths |
-| `POST` | `/fs/read/large`, `/fs/write/large` | Bounded large-file inspection and equal-length guarded replacement |
+| `POST` | `/fs/read/large`, `/fs/write/replace_large` | Bounded large-file inspection and equal-length guarded replacement |
 | `POST` | `/fs/write/mkdir`, `/fs/write/move` | Create directories or move/rename paths |
 | `GET/POST` | `/recycle/list`, `/recycle/restore` | List and restore recycled paths |
-| `POST` | `/uploads` | Start a resumable upload |
-| `GET/HEAD/PATCH` | `/uploads/<id>` | Inspect or append upload bytes |
-| `POST/DELETE` | `/uploads/<id>/commit`, `/uploads/<id>` | Commit or cancel an upload |
+| `POST` | `/upload/create` | Start a resumable upload |
+| `GET/HEAD` | `/upload/status/<id>` | Inspect upload status |
+| `PATCH` | `/upload/chunk/<id>` | Append upload bytes |
+| `POST/DELETE` | `/upload/commit/<id>`, `/upload/cancel/<id>` | Commit or cancel an upload |
 | `POST` | `/shell/exec` | Start an asynchronous Shell task |
-| `GET` | `/tasks`, `/tasks/<id>` | List tasks or inspect task state |
-| `GET` | `/tasks/<id>/output`, `/tasks/<id>/stream` | Incremental or SSE output |
-| `POST` | `/tasks/<id>/stdin` | Write or close interactive stdin |
-| `POST` | `/tasks/<id>/interrupt`, `/tasks/<id>/kill` | Graceful or forced termination |
+| `GET` | `/task/list`, `/task/get/<id>` | List tasks or inspect task state |
+| `GET` | `/task/output/<id>`, `/task/stream/<id>` | Incremental or SSE output |
+| `POST` | `/task/stdin/<id>` | Write or close interactive stdin |
+| `POST` | `/task/interrupt/<id>`, `/task/kill/<id>` | Graceful or forced termination |
 | `GET` | `/sandbox/processes` | List token cgroup processes and usage |
-| `POST/GET/DELETE` | `/shares`, `/shares/<id>` | Create, inspect, or delete a share |
-| `POST` | `/shares/<id>/import` | Import a share into the Workspace |
+| `POST/GET/DELETE` | `/share/create`, `/share/query/<id>`, `/share/delete/<id>` | Create, inspect, or delete a share |
+| `POST` | `/share/import/<id>` | Import a share into the Workspace |
 | `POST` | `/mcp` | Stateless Streamable HTTP MCP |
 
 Discovery contains the complete request schemas, permissions, configured size limits, and stable error codes.
@@ -66,13 +67,13 @@ JSON mutations carry `plan_id`, `taskname`, and `message` in the body. Raw-byte 
 
 ## Metadata, find, grep, and trees
 
-`POST /fs/read/many` accepts `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}`.
+`POST /fs/read/files` accepts `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}`.
 `limit` caps characters per file; `max_total_chars` caps their combined content.
 Both are bounded by `max_read_chars`, and paths by `max_batch_file_operations`.
 Results preserve input order with per-item `status`, `content`, `etag`, `length`,
 `truncated`, and `next_offset`, or an `error`. Partial failures return HTTP 207.
 When the shared budget is exhausted, remaining items report `read_budget_exhausted`.
-Use `/fs/read/text?path=...&offset=<next_offset>` to continue a truncated file.
+Use `POST /fs/read/files` again with the same one-item `paths` array and `offset=<next_offset>` to continue a truncated file.
 This endpoint is read-only despite using POST; it needs no control token or Plan.
 
 Content grep accepts repeated `include` and `exclude` glob query parameters, for example

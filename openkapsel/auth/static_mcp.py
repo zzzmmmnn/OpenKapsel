@@ -77,7 +77,7 @@ class StaticMcpStore(OAuthStore):
 class StaticMcpHandlersMixin:
     def _static_mcp_authenticated_route(self, path):
         import re
-        match = re.fullmatch(r"/mcp-connect/([A-Za-z0-9_-]{32})/(mcp|transfer/(?:fs/content|uploads/[^/]+(?:/commit)?))", path)
+        match = re.fullmatch(r"/mcp-connect/([A-Za-z0-9_-]{32})/(mcp|transfer/(?:fs/content|upload/(?:status|chunk|commit|cancel)/[^/]+))", path)
         if not match:
             raise ApiError(404, "not_found", "endpoint does not exist")
         cid, route = match.groups()

@@ -103,7 +103,7 @@ SECTION_WORKFLOWS = {
         "Use /fs/query/<operation> for list/stat/tree/search/manifest inspection.",
         "Use /fs/read/<operation> for text, multi-file, or bounded large-file reads; keep /fs/content for raw Range streaming.",
         "Use /fs/write/<operation> for mutate, guarded large-range replace, mkdir, move, and asynchronous copy.",
-        "Binary uploads remain resource-oriented under /uploads because chunking and resume state are stream/session semantics.",
+        "Resumable uploads use explicit operation routes under /upload: create, status, chunk, commit, and cancel.",
         "Use generic RPC family=archive for archive list/read; archive-specific REST wrappers are not exposed.",
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],

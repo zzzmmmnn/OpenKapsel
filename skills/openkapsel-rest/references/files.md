@@ -11,10 +11,9 @@ All paths are workspace-relative unless they are absolute paths inside the works
 | Method | Path | Inputs and result |
 |---|---|---|
 | `GET` | `/fs/query/list` | `path=.` plus `offset=0`, `limit=1000`; immediate children |
-| `GET` | `/fs/read/text` | required `path`; `offset` or UTF-8-only `byte_offset`; `limit`; optional `encoding`, default UTF-8 |
 | `GET` | `/fs/query/stat` | required `path`; optional comma-separated `fields` |
 | `POST` | `/fs/query/manifest` | bounded `items` with `path` plus optional expected `size`/`sha256`; returns per-file synchronization status |
-| `POST` | `/fs/read/many` | read several small text files with optional `encoding`, per-file errors and bounded total content |
+| `POST` | `/fs/read/files` | read one or more text files with `paths`, shared character `offset`, optional `encoding`, per-file errors, and bounded total content |
 | `GET` | `/fs/query/find` | recursive filename/directory search: `path=.`, required literal `query`, `max_results`, `case_sensitive=false`, `timeout_seconds=5` |
 | `GET` | `/fs/query/grep` | content grep: `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
 | `GET` | `/fs/query/tree` | `path=.`, `depth=2`; nested tree bounded by published node/depth limits |
@@ -26,11 +25,11 @@ All paths are workspace-relative unless they are absolute paths inside the works
 
 For a recursive inventory, use `{"recursive":true,"path":"src","depth":8,"include_sha256":true}` instead of `items`. The flat response includes the root, file/directory metadata and optional hashes, bounded by `max_tree_nodes`. Depth 0 includes only root; check `truncated` for the node cap. It is not a transactional snapshot.
 
-Prefer `POST /fs/read/many` with `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}` when reading several small source files. Limits count characters (per-file and aggregate), bounded by `max_read_chars`; paths are bounded by `max_batch_file_operations`. Check each item's `status` (HTTP 207 means partial errors). Continue truncated content with `/fs/read/text` using `offset=next_offset`; retry remaining paths separately on `read_budget_exhausted`. It is read-only and requires no mutation context.
+Prefer `POST /fs/read/files` with `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}` when reading several small source files. Limits count characters (per-file and aggregate), bounded by `max_read_chars`; paths are bounded by `max_batch_file_operations`. Check each item's `status` (HTTP 207 means partial errors). Continue truncated content by calling `/fs/read/files` again with the same one-item `paths` array and `offset=next_offset`; retry remaining paths separately on `read_budget_exhausted`. It is read-only and requires no mutation context.
 
 `/fs/query/find` recursively matches a literal substring against each file or directory basename. It does not follow symlinks. The default search deadline is 5 seconds; a deadline returns the matches found so far with `timed_out=true` and `truncated=true`. Inside mappings, current clients automatically use the advertised `file_search` index (Everything IPC, mdfind, or plocate) when available and otherwise recursively traverse the export.
 
-Content grep at `/fs/query/grep` supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters. Its MCP tool is `files_grep`. Legacy `/fs/query/search`, core `fs_search`, and MCP `search_files` remain accepted only for compatibility.
+Content grep at `/fs/query/grep` supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters. Its MCP tool is `fs_grep`.
 
 For a single mapping, these operations run client-locally in one RPC with an
 updated client. RPC-first servers do not fall back to FUSE. Reduce batch size,
@@ -47,7 +46,7 @@ and mixed-root access need current client `file_stream` metadata; see
 
 Search skips binary, non-UTF-8, oversized, private, and symlinked content. Depth `0` means only the named root; consult Discovery for the maximum.
 
-Text reads and transactional content mutations default to UTF-8 regardless of OS locale. Pass `encoding` in the `/fs/read/text` or `/fs/read/many` request or on each relevant `fs/write/mutate` item for other codecs: utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No automatic detection or lossy conversion: decode errors are 415, unrepresentable output is 400 and leaves files unchanged. UTF-16 uses explicit endian; its BOM remains U+FEFF. utf-8-sig consumes/emits the BOM. LF/CRLF/CR are preserved literally; exact replacement must include the original line endings, and new text controls its own endings. Character offsets count both CRLF characters. byte_offset is UTF-8-only; use binary APIs for byte-exact arbitrary formats. Client-local text reads need file API v3; transactional mutation needs file API v4.
+Text reads and transactional content mutations default to UTF-8 regardless of OS locale. Pass `encoding` in the `/fs/read/files` request or on each relevant `fs/write/mutate` item for other codecs: utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No automatic detection or lossy conversion: decode errors are 415, unrepresentable output is 400 and leaves files unchanged. UTF-16 uses explicit endian; its BOM remains U+FEFF. utf-8-sig consumes/emits the BOM. LF/CRLF/CR are preserved literally; exact replacement must include the original line endings, and new text controls its own endings. Character offsets count both CRLF characters. Use binary APIs for byte-exact arbitrary formats. Client-local text reads need file API v3; transactional mutation needs file API v4.
 
 ## Text and path mutations
 
@@ -57,7 +56,7 @@ These require the matching Bearer token, write permission, and JSON Context fiel
 |---|---|---|
 | `POST` | `/fs/write/mutate` | transactional `items` using `file.create`, `file.replace`, `text.replace`, `text.insert_before`, `text.insert_after`, `structured.patch`, or recoverable `path.delete`; every existing path requires exact `expected_etag` |
 | `POST` | `/fs/read/large` | large files only (>32 MiB): required byte `offset` and bounded `length`; returns Base64, ETag and range SHA-256 |
-| `POST` | `/fs/write/large` | large files only: exact ETag + range SHA-256 + equal-length Base64 replacement; file size cannot change |
+| `POST` | `/fs/write/replace_large` | large files only: exact ETag + range SHA-256 + equal-length Base64 replacement; file size cannot change |
 | `POST` | `/fs/write/mkdir` | `path`, optional `parents`, optional `exist_ok` |
 | `POST` | `/fs/write/move` | `source`, `destination`, optional `overwrite=false`, optional `create_parents=false` |
 | `POST` | `/recycle/restore` | `recycle_id`; restores only when the original destination is absent |
@@ -68,7 +67,7 @@ For one logical AI edit, put all affected paths in one request. All items are pa
 
 `path.delete` rejects duplicate/overlapping targets and parent-child overlap with other mutation items. It is recoverable only inside the token workspace; use the returned `recycle_id` with `/recycle/restore`. The workspace root and Storage Provider mapping roots are protected.
 
-Ordinary content inspection and mutation are capped at **32 MiB per file**. Search also skips larger content, and whole-file SHA-256 metadata operations reject it. Files above 32 MiB must use `/fs/read/large`: provide an explicit byte `offset` and `length` (maximum 256 KiB). The response binds the range to an exact file ETag and `range_sha256`. To change that range, call `/fs/write/large` with those two preconditions and exactly `length` replacement bytes in Base64. The server rechecks both before writing and rejects any request that would change total file size. Raw download/upload endpoints remain transfer mechanisms for opaque files; do not use them as a substitute for AI content inspection/mutation.
+Ordinary content inspection and mutation are capped at **32 MiB per file**. Search also skips larger content, and whole-file SHA-256 metadata operations reject it. Files above 32 MiB must use `/fs/read/large`: provide an explicit byte `offset` and `length` (maximum 256 KiB). The response binds the range to an exact file ETag and `range_sha256`. To change that range, call `/fs/write/replace_large` with those two preconditions and exactly `length` replacement bytes in Base64. The server rechecks both before writing and rejects any request that would change total file size. Raw download/upload endpoints remain transfer mechanisms for opaque files; do not use them as a substitute for AI content inspection/mutation.
 
 Deletion is recoverable and recreates private recycle storage safely if a full Shell command removed it. The workspace root cannot be deleted. Full Shell deletion does not use the recycle mechanism.
 
@@ -88,11 +87,11 @@ It is atomic and create-only. It never overwrites. If the destination exists, st
 
 ## Resumable upload
 
-1. `POST /uploads` with `path`, `size`, optional `sha256`, optional `create_parents`, and JSON Context fields. Save `upload_id` and current `offset`.
-2. `GET|HEAD /uploads/<upload_id>` to recover status/offset after interruption.
-3. `PATCH /uploads/<upload_id>` with raw bytes, `Upload-Offset`, `Content-Type: application/octet-stream`, and all three `OpenKapsel-*` Context headers.
-4. `POST /uploads/<upload_id>/commit` with the three Context headers.
-5. `DELETE /uploads/<upload_id>` with the three Context headers to cancel.
+1. `POST /upload/create` with `path`, `size`, optional `sha256`, optional `create_parents`, and JSON Context fields. Save `upload_id` and current `offset`.
+2. `GET|HEAD /upload/status/<upload_id>` to recover status/offset after interruption.
+3. `PATCH /upload/chunk/<upload_id>` with raw bytes, `Upload-Offset`, `Content-Type: application/octet-stream`, and all three `OpenKapsel-*` Context headers.
+4. `POST /upload/commit/<upload_id>` with the three Context headers.
+5. `DELETE /upload/cancel/<upload_id>` with the three Context headers to cancel.
 
 Chunks are strictly ordered. Use `limits.recommended_upload_chunk_bytes`; do not exceed the server request-body limit. Commit rechecks permission, destination absence, final size, and optional SHA-256 before atomic publication.
 

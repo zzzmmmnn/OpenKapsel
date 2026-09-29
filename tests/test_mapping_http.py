@@ -68,7 +68,7 @@ class MappingHTTPTests(unittest.TestCase):
         # Provider credentials cannot grant REST control or unified task access.
         for credential in (None, config["token"]):
             headers = {} if credential is None else {"Authorization": "Bearer " + credential}
-            self.assertEqual(401, self.request("GET", base + "/tasks?target=client", headers=headers)[0])
+            self.assertEqual(401, self.request("GET", base + "/task/list?target=client", headers=headers)[0])
 
     def test_generic_readonly_rpc_plugin_rest_and_mcp(self):
         from types import SimpleNamespace
@@ -200,7 +200,7 @@ class MappingHTTPTests(unittest.TestCase):
 
             conn = self.server.static_mcp.create(self.record.app_id, self.record.path_prefix, "Plugin reads")
             tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-                "name": "rpc",
+                "name": "rpc_call",
                 "arguments": {
                     "mapping_id": row["name"],
                     "family": "vendor",
@@ -228,7 +228,7 @@ class MappingHTTPTests(unittest.TestCase):
             self.assertEqual(8, json.loads(result["content"][0]["text"])["result"]["echo"])
 
             write_tool = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-                "name": "rpc",
+                "name": "rpc_call",
                 "arguments": {
                     "mapping_id": row["name"],
                     "family": "vendor",

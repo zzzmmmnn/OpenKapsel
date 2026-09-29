@@ -117,12 +117,12 @@ class RequestDispatchMixin:
                     self._discard_request_body()
                 self._dispatch_admin(method, request_path, parsed.query)
                 return
-            if request_path.startswith("/shares/") and method == "GET":
+            if request_path.startswith("/share/query/") and method == "GET":
                 parts = request_path.split("/")
-                if len(parts) != 3 or not parts[2]:
+                if len(parts) != 4 or not parts[3]:
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
                 self._discard_request_body()
-                self._handle_share_query(parts[2], parse_qs(parsed.query, keep_blank_values=True))
+                self._handle_share_query(parts[3], parse_qs(parsed.query, keep_blank_values=True))
                 return
             if request_path.startswith("/connect/"):
                 route = self._oauth_authenticated_route(request_path)
@@ -281,7 +281,7 @@ class RequestDispatchMixin:
 
     def _control_authenticated_transfer_route(self, path: str) -> str:
         route = path.removeprefix("/transfer")
-        if route != "/fs/content" and not route.startswith("/uploads/"):
+        if route != "/fs/content" and not route.startswith("/upload/"):
             raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
         authorization_values = self.headers.get_all("Authorization") or []
         if len(authorization_values) != 1:

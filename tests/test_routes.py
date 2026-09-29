@@ -30,14 +30,14 @@ class EndpointContractTests(unittest.TestCase):
                 "discovery_section",
                 {"section": "files"},
             ),
-            ("GET", "/fs/read/text"): ("fs_read", {}),
+            ("POST", "/fs/read/files"): ("fs_read_files", {}),
             ("PUT", "/env"): ("environment_replace", {}),
             ("PUT", "/fs/content"): ("fs_content_put", {}),
-            ("PATCH", "/uploads/upload_123"): (
+            ("PATCH", "/upload/chunk/upload_123"): (
                 "upload_chunk",
                 {"upload_id": "upload_123"},
             ),
-            ("POST", "/uploads/upload_123/commit"): (
+            ("POST", "/upload/commit/upload_123"): (
                 "upload_commit",
                 {"upload_id": "upload_123"},
             ),
@@ -54,7 +54,7 @@ class EndpointContractTests(unittest.TestCase):
                 "memory_item_mutate",
                 {"memory_id": "mem_abc"},
             ),
-            ("POST", "/tasks/task_abc/kill"): (
+            ("POST", "/task/kill/task_abc"): (
                 "task_kill",
                 {"task_id": "task_abc"},
             ),
@@ -74,8 +74,8 @@ class EndpointContractTests(unittest.TestCase):
                 endpoint, route_match = matched
                 self.assertEqual(expected[0], endpoint.name)
                 self.assertEqual(expected[1], route_match.groupdict())
-        self.assertIsNone(match_endpoint("POST", "/fs/read/text"))
-        self.assertIsNone(match_endpoint("GET", "/uploads/a/extra"))
+        self.assertIsNone(match_endpoint("GET", "/fs/read/text"))
+        self.assertIsNone(match_endpoint("GET", "/uploads/a"))
         self.assertIsNone(match_endpoint("GET", "/mappings/abcdefghijklmnopqrstuvwx/tasks"))
         self.assertIsNone(match_endpoint("POST", "/mappings/abcdefghijklmnopqrstuvwx/tasks/task_abc/kill"))
 
@@ -86,7 +86,7 @@ class EndpointContractTests(unittest.TestCase):
         )
 
     def test_mcp_update_plan_uses_shared_memory_action_contract(self) -> None:
-        update_plan = next(tool for tool in ALL_TOOLS if tool["name"] == "update_plan")
+        update_plan = next(tool for tool in ALL_TOOLS if tool["name"] == "context_plan_update")
         actual = update_plan["inputSchema"]["properties"]["debrief"]["properties"]
         self.assertEqual(memory_actions_schema(), actual["memory_actions"])
 

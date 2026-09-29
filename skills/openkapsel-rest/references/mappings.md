@@ -67,7 +67,7 @@ Use `POST /mappings/<mapping_name>/rpc/<family>/<operation>`. Resolve
 server for compatibility, but new calls should use the name. A `sync`
 operation returns its result directly. A `task` operation returns HTTP 202 and
 a unified `client.<mapping>.<task>` id immediately; query it through the
-ordinary `/tasks/<id>` and `/tasks/<id>/output` routes and use ordinary
+ordinary `/task/get/<id>` and `/task/output/<id>` routes and use ordinary
 interrupt/kill task controls. RPC tasks live in the client runtime, continue
 across provider WebSocket disconnect/reconnect while that client process stays
 alive, and retain bounded output/results. Do not automatically replay an
@@ -118,7 +118,7 @@ deep row-offset scans. Inspect `details.formats` for optional parser dependencie
 See [data-rpc.md](data-rpc.md) for argument examples, budgets and failure handling.
 
 RPC task listings are summaries: completed tasks advertise `result_available`
-without duplicating large result objects. Fetch `/tasks/<id>` or its output
+without duplicating large result objects. Fetch `/task/get/<id>` or its output
 endpoint for the result. This keeps a list of several table scans within the
 transport response limit.
 
@@ -131,7 +131,7 @@ transport response limit.
 - `completed` is success. `copied_source_retained` means a move copied the destination but could not safely recycle the source. Do not delete the source blindly.
 - Partial data is staged on the destination storage, not buffered as an entire file on the server. Cancel preserves partial data for resumption.
 
-Binary downloads/uploads, static preview, shares and cross-root transfers use
+Binary downloads/upload/create, static preview, shares and cross-root transfers use
 RPC without FUSE. Transfer staging is on the destination filesystem. Resumable
 uploads retain a bounded server spool until publication; shares remain immutable
 server-owned snapshots and consume share quota. In-progress handles are provider-
@@ -147,16 +147,16 @@ Client execution is separate from server Shell. Only use it when requested or ap
 Use the unified `POST /shell/exec` with `target=auto` and a workspace-relative
 mapped `cwd` (see [shell.md](shell.md#start-and-inspect-tasks)). A mapped cwd
 routes execution to that mapping's client; `target=client` can require this
-explicitly. Use the returned unified client task ID with ordinary `/tasks`
+explicitly. Use the returned unified client task ID with ordinary `/task/*`
 status, output, stream, stdin, interrupt, and kill endpoints. Mapping-specific
-`/mappings/<mapping_id>/tasks*` REST endpoints are not exposed.
+Mapping-specific task lifecycle routes are not exposed.
 
 Shell/client-execution tasks require the control credential and enabled Shell
 permission. Starting a Shell task additionally requires write permission, a
 writable execution-enabled mapping, and client-local execution opt-in. RPC tasks
 are separate: they do not require Shell or `allow_exec`; access follows the
 selected operation's read/write metadata and mapping writable policy. Both task
-kinds use the same client task store and unified `/tasks` query/output/control
+kinds use the same client task store and unified `/task/*` query/output/control
 routes. RPC tasks reject stdin.
 
 Client tasks preserve execution across network reconnects, including results

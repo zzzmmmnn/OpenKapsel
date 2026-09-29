@@ -105,7 +105,7 @@ requires its exact current ETag. Publication uses a same-filesystem temporary
 file and atomic replacement. ETags detect ordinary concurrent edits but do not
 provide a distributed compare-and-swap against uncooperative OS-level writers.
 
-Writes return HTTP 202 with a unified client task ID. Read `/tasks/<id>` until
+Writes return HTTP 202 with a unified client task ID. Read `/task/get/<id>` until
 finished and inspect `result` or `error`. Do not replay an uncertain task start.
 The existing 1 MiB RPC message limit still applies, even though files being read
 or patched may be up to 2 MiB. Use a small patch rather than transferring a large
@@ -204,7 +204,7 @@ combining consecutive results.
 Send to `POST /mappings/<mapping_name>/rpc/tabular/scan`; no mutation Context is required.
 `mode: "count"` with only `path` counts logical data records. `where` filters may
 be used in either mode. The endpoint returns HTTP 202 immediately. Poll the
-unified task through `/tasks/<id>` or `/tasks/<id>/output`; scan progress is
+unified task through `/task/get/<id>` or `/task/output/<id>`; scan progress is
 bounded diagnostic output. Interrupt/kill requests use the usual authorized
 task-control interfaces. The task's outer `timeout_seconds` must fit the client's
 configured `limits.max_seconds`; choose it above the cooperative segment budget.

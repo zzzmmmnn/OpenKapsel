@@ -36,7 +36,7 @@ class UnifiedShellHTTPTests(unittest.TestCase):
     def finished(self, tid):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            status, result = self.api("/tasks/" + tid)
+            status, result = self.api("/task/get/" + tid)
             self.assertEqual(200, status, result)
             if result["status"] == "finished":
                 return result
@@ -60,17 +60,17 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         status, root = self.api("/shell/exec", {"command": "printf root"})
         self.assertEqual("server", root["location"])
         self.finished(root["task_id"])
-        status, listing = self.api("/tasks")
+        status, listing = self.api("/task/list")
         self.assertEqual(200, status, listing)
         self.assertEqual({remote["task_id"], local["task_id"], root["task_id"]}, {t["task_id"] for t in listing["tasks"]})
-        self.assertEqual(1, self.api("/tasks?target=client")[1]["total"])
+        self.assertEqual(1, self.api("/task/list?target=client")[1]["total"])
 
     def test_no_fallback_and_workspace_authorization(self):
         body = {"command": "touch forbidden", "cwd": "laptop"}
         self.session.closed = True
         self.assertEqual(503, self.api("/shell/exec", body)[0])
         with patch("openkapsel.mapping.mapping_manager.time.sleep") as retry_sleep:
-            self.assertTrue(self.api("/tasks")[1]["unavailable_mappings"])
+            self.assertTrue(self.api("/task/list")[1]["unavailable_mappings"])
         retry_sleep.assert_not_called()
         self.session.closed = False
         self.session.capabilities["execution"].pop("shell_command")
@@ -94,7 +94,7 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.server.tokens.update(self.record.token, shell_mode="full")
         other, _ = self.server.mappings.store.create("other", "foreign", writable=True)
         try:
-            self.assertEqual(404, self.api("/tasks/client." + other["id"] + ".abcdefgh")[0])
+            self.assertEqual(404, self.api("/task/get/client." + other["id"] + ".abcdefgh")[0])
         finally:
             self.server.mappings.store.delete(other["id"])
 
@@ -104,23 +104,23 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         tid = result["task_id"]
         self.session.closed = True
         with patch("openkapsel.mapping.mapping_manager.time.sleep") as retry_sleep:
-            self.assertEqual(503, self.api("/tasks/" + tid)[0])
+            self.assertEqual(503, self.api("/task/get/" + tid)[0])
         retry_sleep.assert_not_called()
         self.session.closed = False
-        self.assertEqual(413, self.api("/tasks/" + tid + "/stdin", {"data": "x" * 16385})[0])
-        status, result = self.api("/tasks/" + tid + "/stdin", {"data": "hello\n", "close": True})
+        self.assertEqual(413, self.api("/task/stdin/" + tid, {"data": "x" * 16385})[0])
+        status, result = self.api("/task/stdin/" + tid, {"data": "hello\n", "close": True})
         self.assertEqual(200, status, result)
         self.assertEqual(6, result["bytes_written"])
         self.assertEqual("hello\n", self.finished(tid)["stdout"])
-        status, result = self.api("/tasks/" + tid + "/output?limit=3")
+        status, result = self.api("/task/output/" + tid + "?limit=3")
         self.assertEqual("hel", result["stdout"]["data"])
         self.assertTrue(result["output_combined"])
-        self.assertEqual("lo\n", self.api("/tasks/" + tid + "/output?stdout_offset=3")[1]["stdout"]["data"])
+        self.assertEqual("lo\n", self.api("/task/output/" + tid + "?stdout_offset=3")[1]["stdout"]["data"])
         for action in ("interrupt", "kill"):
             status, task = self.api("/shell/exec", {"command": "sleep 30", "cwd": "laptop"})
             self.assertEqual(202, status, task)
             headers = dict(self.headers, **{"OpenKapsel-Plan-Id": str(self.plan), "OpenKapsel-Taskname": "rpc", "OpenKapsel-Message": "Stop task"})
-            status, _, raw = self.request("POST", self.base + "/tasks/" + task["task_id"] + "/" + action, None, headers)
+            status, _, raw = self.request("POST", self.base + "/task/" + action + "/" + task["task_id"], None, headers)
             self.assertEqual(200, status, raw)
             self.finished(task["task_id"])
 
@@ -128,7 +128,7 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         status, task = self.api("/shell/exec", {"command": "head -c 150000 /dev/zero", "cwd": "laptop"})
         self.assertEqual(202, status, task)
         self.finished(task["task_id"])
-        status, _, raw = self.request("GET", self.base + "/tasks/" + task["task_id"] + "/stream", None, self.headers)
+        status, _, raw = self.request("GET", self.base + "/task/stream/" + task["task_id"], None, self.headers)
         self.assertEqual(200, status, raw[:500])
         chunks = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: ")]
         self.assertEqual(150000, sum(len(base64.b64decode(c["stdout"]["data_base64"])) for c in chunks if "stdout" in c))
@@ -138,16 +138,16 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         credentials, _, _ = self.authorize()
         status, listing = self.rpc(credentials["access_token"], "tools/list")
         self.assertEqual(200, status, listing)
-        run = next(tool for tool in listing["result"]["tools"] if tool["name"] == "run_shell")
+        run = next(tool for tool in listing["result"]["tools"] if tool["name"] == "shell_exec")
         self.assertEqual(["auto", "server", "client"], run["inputSchema"]["properties"]["target"]["enum"])
         status, response = self.rpc(credentials["access_token"], "tools/call", {
-            "name": "run_shell", "arguments": {"command": "printf mcp-client", "cwd": "laptop", "target": "auto",
+            "name": "shell_exec", "arguments": {"command": "printf mcp-client", "cwd": "laptop", "target": "auto",
                                                "plan_id": self.plan, "taskname": "rpc", "message": "Test MCP routing"}})
         self.assertEqual(200, status, response)
         result = response["result"]["structuredContent"]
         self.assertEqual("client", result["location"])
         self.finished(result["task_id"])
-        status, response = self.rpc(credentials["access_token"], "tools/call", {"name": "get_task", "arguments": {"task_id": result["task_id"]}})
+        status, response = self.rpc(credentials["access_token"], "tools/call", {"name": "task_get", "arguments": {"task_id": result["task_id"]}})
         self.assertEqual("mcp-client", response["result"]["structuredContent"]["stdout"])
 
 

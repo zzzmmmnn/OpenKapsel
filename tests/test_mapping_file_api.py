@@ -65,11 +65,15 @@ class MappingFileHTTPTests(unittest.TestCase):
         (self.export / "folder").mkdir()
         data = b"needle\n" * 200000
         (self.export / "folder/large.txt").write_bytes(data)
-        for endpoint in ("/fs/query/list?path=laptop", "/fs/query/stat?path=laptop/folder/large.txt&fields=sha256,size,etag",
-                         "/fs/query/grep?path=laptop&query=needle&max_results=2", "/fs/query/tree?path=laptop&depth=2",
-                         "/fs/read/text?path=laptop/folder/large.txt&limit=10"):
+        for endpoint, request_body in (
+            ("/fs/query/list?path=laptop", None),
+            ("/fs/query/stat?path=laptop/folder/large.txt&fields=sha256,size,etag", None),
+            ("/fs/query/grep?path=laptop&query=needle&max_results=2", None),
+            ("/fs/query/tree?path=laptop&depth=2", None),
+            ("/fs/read/files", {"paths": ["laptop/folder/large.txt"], "limit": 10}),
+        ):
             before = len(self.calls)
-            status, body = self.api(endpoint)
+            status, body = self.api(endpoint, request_body)
             self.assertEqual(200, status, body)
             self.assertEqual(before + 1, len(self.calls))
             self.assertTrue(self.calls[-1][0].startswith("api_"))
@@ -139,7 +143,7 @@ class MappingFileHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, read)
         self.assertEqual(before + 1, len(self.calls))
         self.assertEqual("api_fs_read_large", self.calls[-1][0])
-        status, replaced = self.api("/fs/write/large", {
+        status, replaced = self.api("/fs/write/replace_large", {
             "path": "laptop/large.bin",
             "offset": 4,
             "length": 6,
@@ -155,7 +159,7 @@ class MappingFileHTTPTests(unittest.TestCase):
     def test_new_read_operations_are_single_rpc_and_read_token_accessible(self):
         (self.export / "a.py").write_text("needle")
         self.headers = {"Content-Type": "application/json"}
-        for endpoint, body in (("/fs/read/many", {"paths": ["laptop/a.py"]}),
+        for endpoint, body in (("/fs/read/files", {"paths": ["laptop/a.py"]}),
                                ("/fs/query/manifest", {"recursive": True, "path": "laptop", "include_sha256": True}),
                                ("/fs/query/grep?path=laptop&query=needle&include=*.py", None)):
             before = len(self.calls)

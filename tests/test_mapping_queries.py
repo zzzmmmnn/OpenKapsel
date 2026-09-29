@@ -59,16 +59,17 @@ class MappingQueryTests(unittest.TestCase):
         self.assertEqual("api_fs_grep", remote.call_args.args[0])
         self.assertNotIn(str(self.export), str(result))
 
-    def test_mapping_grep_falls_back_to_legacy_fs_search(self):
+    def test_mapping_grep_requires_canonical_fs_grep(self):
         (self.export / "legacy.txt").write_text("needle")
         file_rpc = self.session.capabilities["rpc"]["file"]
         file_rpc["operations"] = [
             operation for operation in file_rpc["operations"] if operation != "fs_grep"
         ]
+        before = len(self.calls)
         status, result = self.api("/fs/query/grep?path=laptop&query=needle")
-        self.assertEqual(200, status, result)
-        self.assertEqual(1, result["match_count"])
-        self.assertEqual("api_fs_search", self.calls[-1][0])
+        self.assertEqual(409, status, result)
+        self.assertEqual("mapping_rpc_unsupported", result["error"]["code"])
+        self.assertEqual(before, len(self.calls))
 
 
     def test_mapping_find_prefers_indexed_file_search(self):

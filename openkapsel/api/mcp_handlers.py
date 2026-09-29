@@ -108,8 +108,8 @@ class McpHandlersMixin:
                 redact_linked_secrets=not (
                     method == "tools/call"
                     and params.get("name") in {
-                        "get_workspace_credentials",
-                        "renew_workspace_credentials",
+                        "workspace_credentials_get",
+                        "workspace_credentials_renew",
                     }
                 ),
             )
@@ -152,18 +152,18 @@ class McpHandlersMixin:
                 "description": "Token-scoped filesystem, recycle bin, and asynchronous shell tools",
             },
             "instructions": (
-                "Paths are relative to this token's child workspace. Prefer edit_text for focused edits. "
-                "Before modifying the workspace, use query_context with type=plan and root_plans=true to find an active root, or use add_context to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one add_context call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use get_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use get_project_memory and query_memory for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use add_memory/update_memory during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Use update_plan for parent/content/status changes and replace_note with an owning plan_id. "
-                "Pass expected_etag to write_file or edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
-                "Use read_binary_chunk and Base64 upload_chunk for small binary chunks; for large files call prepare_download or use the raw_transfer URLs returned by start_upload. "
-                "Call get_web_preview_url when a workspace page should be opened in a browser. "
-                "delete_path is recoverable through list_recycle and restore_recycle. "
-                "run_shell defaults to target=auto: a mapped cwd runs on that client, otherwise on the server. Set target=server or client explicitly when needed. Client execution follows its own sandbox and platform policy. The returned task_id works with get_task, read_task_output, send_task_input, interrupt_task, and kill_task. Client stdout and stderr are combined in stdout, and client stdin is limited to 16 KiB per call. "
+                "Paths are relative to this token's child workspace. Prefer fs_edit_text for focused edits. "
+                "Before modifying the workspace, use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Use context_plan_update for parent/content/status changes and context_note_replace with an owning plan_id. "
+                "Pass expected_etag to fs_write or fs_edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
+                "Use fs_read_binary and Base64 upload_chunk for small binary chunks; for large files call fs_download or use the raw_transfer URLs returned by upload_create. "
+                "Call web_preview_url when a workspace page should be opened in a browser. "
+                "fs_delete is recoverable through recycle_list and recycle_restore. "
+                "shell_exec defaults to target=auto: a mapped cwd runs on that client, otherwise on the server. Set target=server or client explicitly when needed. Client execution follows its own sandbox and platform policy. The returned task_id works with task_get, task_output, task_stdin, task_interrupt, and task_kill. Client stdout and stderr are combined in stdout, and client stdin is limited to 16 KiB per call. "
                 "When schedule tools are available, use schedule_write for persistent once, interval, or strict six-field cron Shell work; use schedule_control operation=run for explicit immediate execution. "
-                "Use interrupt_task for normal termination and kill_task only for immediate forced termination. "
+                "Use task_interrupt for normal termination and task_kill only for immediate forced termination. "
                 "When connected through OAuth or Static MCP, use MCP tools by default. "
-                "Use get_workspace_credentials only when portable REST access is needed on another platform; "
-                "renew_workspace_credentials rotates the linked REST URL/control token only inside the normal renewal window and invalidates the previous REST pair. "
+                "Use workspace_credentials_get only when portable REST access is needed on another platform; "
+                "workspace_credentials_renew rotates the linked REST URL/control token only inside the normal renewal window and invalidates the previous REST pair. "
                 "The MCP connection credential has its own lifetime and remains separate."
             ),
         }
@@ -176,9 +176,6 @@ class McpHandlersMixin:
         mirrored_name = self.headers.get("Mcp-Name")
         if mirrored_name is not None and mirrored_name != name:
             raise McpError(-32600, "Mcp-Name header does not match the tool name")
-        # search_files was the historical MCP name for content grep. Keep
-        # accepting it without advertising the ambiguous name to new clients.
-        name = {"search_files": "files_grep"}.get(name, name)
         available = {
             tool["name"]: tool
             for tool in tools_for(
@@ -200,9 +197,9 @@ class McpHandlersMixin:
             ("schedule_read", "get_run"): ("run_id",),
             ("schedule_write", "create"): ("name", "schedule", "command"),
             ("schedule_write", "update"): ("schedule_id", "expected_revision"),
-            ("edit_text", "replace"): ("old", "new"),
-            ("edit_text", "insert_before"): ("match", "content"),
-            ("edit_text", "insert_after"): ("match", "content"),
+            ("fs_edit_text", "replace"): ("old", "new"),
+            ("fs_edit_text", "insert_before"): ("match", "content"),
+            ("fs_edit_text", "insert_after"): ("match", "content"),
         }
         required = operation_requirements.get((name, arguments.get("operation")), ())
         missing = [key for key in required if key not in arguments]
@@ -215,21 +212,21 @@ class McpHandlersMixin:
             )
 
         context_tools = {
-            "query_context",
-            "get_plan_tree",
-            "add_context",
-            "update_plan",
-            "replace_note",
-            "query_memory",
-            "get_memory",
-            "get_project_memory",
-            "add_memory",
-            "update_memory",
-            "archive_memory",
-            "get_workspace_credentials",
-            "renew_workspace_credentials",
+            "context_query",
+            "context_plan_tree",
+            "context_add",
+            "context_plan_update",
+            "context_note_replace",
+            "memory_query",
+            "memory_get",
+            "memory_project",
+            "memory_add",
+            "memory_update",
+            "memory_archive",
+            "workspace_credentials_get",
+            "workspace_credentials_renew",
         }
-        track_operation = name not in context_tools and name != "rpc" and (
+        track_operation = name not in context_tools and name != "rpc_call" and (
             not tool["annotations"]["readOnlyHint"]
             or bool(str(arguments.get("message", "")).strip())
             or bool(str(arguments.get("taskname", "")).strip())
@@ -319,10 +316,10 @@ class McpHandlersMixin:
         }
 
     def _execute_mcp_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if name == "get_workspace_credentials":
+        if name == "workspace_credentials_get":
             _, record = self._mcp_workspace_credential_binding()
             return self._mcp_workspace_credentials(record, rotated=False)
-        if name == "renew_workspace_credentials":
+        if name == "workspace_credentials_renew":
             connection, _ = self._mcp_workspace_credential_binding()
             try:
                 record = self.server.tokens.renew_credentials_for_app_if_due(
@@ -351,7 +348,7 @@ class McpHandlersMixin:
             return self._mcp_workspace_credentials(record, rotated=True)
         if name == "workspace_info":
             return self._mcp_workspace_info(str(arguments.get("section", "main")))
-        if name == "query_context":
+        if name == "context_query":
             self._require_permission(
                 self.token_record.can_read,
                 "read permission is not granted",
@@ -391,7 +388,7 @@ class McpHandlersMixin:
                 "truncated": len(entries) < total,
                 "next_before_id": entries[-1]["id"] if len(entries) < total else None,
             }
-        if name == "get_plan_tree":
+        if name == "context_plan_tree":
             self._require_permission(
                 self.token_record.can_read,
                 "read permission is not granted",
@@ -416,9 +413,9 @@ class McpHandlersMixin:
                     else "invalid_context_plan",
                     message,
                 ) from None
-        if name == "add_context":
+        if name == "context_add":
             return self._create_context_entry(arguments)
-        if name == "update_plan":
+        if name == "context_plan_update":
             try:
                 changes: dict[str, Any] = {
                     "taskname": str(arguments["taskname"]),
@@ -472,7 +469,7 @@ class McpHandlersMixin:
                     "invalid_context_entry",
                     str(exc),
                 ) from None
-        if name == "replace_note":
+        if name == "context_note_replace":
             try:
                 return self.server.context_for(self.token_scope_root).replace_note(
                     int(arguments["id"]),
@@ -493,7 +490,7 @@ class McpHandlersMixin:
                     "invalid_context_entry",
                     str(exc),
                 ) from None
-        if name == "query_memory":
+        if name == "memory_query":
             self._require_permission(
                 self.token_record.can_read,
                 "read permission is not granted",
@@ -514,7 +511,7 @@ class McpHandlersMixin:
                 "total": total,
                 "truncated": len(entries) < total,
             }
-        if name == "get_memory":
+        if name == "memory_get":
             self._require_permission(
                 self.token_record.can_read,
                 "read permission is not granted",
@@ -532,13 +529,13 @@ class McpHandlersMixin:
                 raise ApiError(HTTPStatus.NOT_FOUND, "memory_not_found", str(exc.args[0])) from None
             except ValueError as exc:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_memory_query", str(exc)) from None
-        if name == "get_project_memory":
+        if name == "memory_project":
             self._require_permission(
                 self.token_record.can_read,
                 "read permission is not granted",
             )
             return self.server.memory_for(self.token_scope_root).project()
-        if name == "add_memory":
+        if name == "memory_add":
             plan_id = self._require_existing_plan(arguments.get("plan_id"))
             try:
                 return self.server.memory_for(self.token_scope_root).create(
@@ -551,7 +548,7 @@ class McpHandlersMixin:
                 )
             except (ValueError, RuntimeError) as exc:
                 raise self._memory_error(exc) from None
-        if name == "update_memory":
+        if name == "memory_update":
             plan_id = self._require_existing_plan(arguments.get("plan_id"))
             ignored = {
                 "memory_id", "expected_revision", "plan_id", "taskname", "message"
@@ -568,7 +565,7 @@ class McpHandlersMixin:
                 )
             except (KeyError, ValueError, RuntimeError) as exc:
                 raise self._memory_error(exc) from None
-        if name == "archive_memory":
+        if name == "memory_archive":
             plan_id = self._require_existing_plan(arguments.get("plan_id"))
             try:
                 return self.server.memory_for(self.token_scope_root).archive(
@@ -581,31 +578,30 @@ class McpHandlersMixin:
             except (KeyError, ValueError, RuntimeError) as exc:
                 raise self._memory_error(exc) from None
         query_tools = {
-            "list_files": self._handle_fs_list,
-            "read_file": self._handle_fs_read,
-            "stat_file": self._handle_fs_stat,
-            "find_files": self._handle_fs_find,
-            "files_grep": self._handle_fs_grep,
-            "list_tree": self._handle_fs_tree,
-            "list_recycle": self._handle_recycle_list,
+            "fs_list": self._handle_fs_list,
+            "fs_stat": self._handle_fs_stat,
+            "fs_find": self._handle_fs_find,
+            "fs_grep": self._handle_fs_grep,
+            "fs_tree": self._handle_fs_tree,
+            "recycle_list": self._handle_recycle_list,
         }
         body_tools = {
-            "read_files": self._handle_fs_read_many,
-            "file_manifest": self._handle_fs_manifest,
-            "mutate_files": self._handle_fs_mutate,
-            "read_large_file": self._handle_fs_read_large,
-            "replace_large_file_range": self._handle_fs_replace_large,
-            "create_directory": self._handle_fs_mkdir,
-            "move_path": self._handle_fs_move,
-            "restore_recycle": self._handle_recycle_restore,
-            "run_shell": self._handle_shell_exec,
-            "start_upload": self._handle_upload_create,
-            "create_share": self._handle_share_create,
+            "fs_read_files": self._handle_fs_read_files,
+            "fs_manifest": self._handle_fs_manifest,
+            "fs_mutate": self._handle_fs_mutate,
+            "fs_read_large": self._handle_fs_read_large,
+            "fs_replace_large": self._handle_fs_replace_large,
+            "fs_mkdir": self._handle_fs_mkdir,
+            "fs_move": self._handle_fs_move,
+            "recycle_restore": self._handle_recycle_restore,
+            "shell_exec": self._handle_shell_exec,
+            "upload_create": self._handle_upload_create,
+            "share_create": self._handle_share_create,
         }
         self._capturing_mcp_tool = True
         self._mcp_tool_response: tuple[int, dict[str, Any]] | None = None
         try:
-            if name == "rpc":
+            if name == "rpc_call":
                 self._mcp_tool_arguments = {
                     key: value
                     for key, value in arguments.items()
@@ -620,13 +616,13 @@ class McpHandlersMixin:
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
                 query_tools[name](query)
-            elif name in {"write_file", "edit_text", "delete_path"}:
+            elif name in {"fs_write", "fs_edit_text", "fs_delete"}:
                 context = {
                     key: arguments[key]
                     for key in ("plan_id", "taskname", "message")
                     if key in arguments
                 }
-                if name == "write_file":
+                if name == "fs_write":
                     expected_etag = arguments.get("expected_etag")
                     item = {
                         "op": "file.replace" if expected_etag is not None else "file.create",
@@ -636,7 +632,7 @@ class McpHandlersMixin:
                     }
                     if expected_etag is not None:
                         item["expected_etag"] = expected_etag
-                elif name == "edit_text":
+                elif name == "fs_edit_text":
                     operation = str(arguments["operation"])
                     if operation == "replace":
                         item = {
@@ -679,35 +675,35 @@ class McpHandlersMixin:
             elif name in body_tools:
                 self._mcp_tool_arguments = arguments
                 body_tools[name]()
-            elif name == "read_binary_chunk":
+            elif name == "fs_read_binary":
                 return self._mcp_read_binary_chunk(arguments)
-            elif name == "prepare_download":
+            elif name == "fs_download":
                 return self._mcp_prepare_download(arguments)
-            elif name == "get_web_preview_url":
+            elif name == "web_preview_url":
                 return self._mcp_web_preview_url(arguments)
-            elif name == "inspect_share":
+            elif name == "share_query":
                 query = {
                     key: [str(value)]
                     for key, value in arguments.items()
                     if key not in {"share_id", "plan_id", "taskname", "message"}
                 }
                 self._handle_share_query(str(arguments["share_id"]), query)
-            elif name == "import_share":
+            elif name == "share_import":
                 self._mcp_tool_arguments = arguments
                 self._handle_share_import(str(arguments["share_id"]))
-            elif name == "delete_share":
+            elif name == "share_delete":
                 self._handle_share_delete(str(arguments["share_id"]))
             elif name == "upload_chunk":
                 return self._mcp_upload_chunk(arguments)
-            elif name == "get_upload":
+            elif name == "upload_status":
                 return self._mcp_upload_transfer(
                     self._upload_record(str(arguments["upload_id"])).public(
                         self._upload_chunk_recommendation()
                     )
                 )
-            elif name == "finish_upload":
+            elif name == "upload_commit":
                 self._handle_upload_commit(str(arguments["upload_id"]))
-            elif name == "abort_upload":
+            elif name == "upload_cancel":
                 upload_id = str(arguments["upload_id"])
                 try:
                     self.server.uploads.cancel(upload_id, self.token_record.token)
@@ -747,13 +743,13 @@ class McpHandlersMixin:
                     self._handle_schedule_pause(schedule_id)
                 else:
                     self._handle_schedule_resume(schedule_id)
-            elif name == "list_tasks":
+            elif name == "task_list":
                 query = {key: [str(value)] for key, value in arguments.items()}
                 self._handle_task_list(query)
-            elif name == "list_sandbox_processes":
+            elif name == "sandbox_processes":
                 query = {key: [str(value)] for key, value in arguments.items()}
                 self._handle_sandbox_processes(query)
-            elif name == "read_task_output":
+            elif name == "task_output":
                 task_id = str(arguments["task_id"])
                 query = {
                     key: [str(value)]
@@ -761,14 +757,14 @@ class McpHandlersMixin:
                     if key != "task_id"
                 }
                 self._handle_task_output(task_id, query)
-            elif name == "send_task_input":
+            elif name == "task_stdin":
                 self._mcp_tool_arguments = arguments
                 self._handle_task_stdin(str(arguments["task_id"]))
-            elif name == "interrupt_task":
+            elif name == "task_interrupt":
                 self._handle_task_interrupt(str(arguments["task_id"]))
-            elif name == "kill_task":
+            elif name == "task_kill":
                 self._handle_task_kill(str(arguments["task_id"]))
-            elif name == "get_task":
+            elif name == "task_get":
                 self._handle_task(str(arguments["task_id"]))
             else:
                 raise McpError(-32602, "Unknown tool", {"name": name})
@@ -776,7 +772,7 @@ class McpHandlersMixin:
                 raise RuntimeError("tool did not produce a response")
             status, payload = self._mcp_tool_response
             self._mcp_context_status = status
-            if name == "start_upload":
+            if name == "upload_create":
                 payload = self._mcp_upload_transfer(payload)
             return payload
         finally:
@@ -801,7 +797,7 @@ class McpHandlersMixin:
             if not stat.S_ISREG(file_stat.st_mode):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
             from openkapsel.files.mutation import require_standard_file_size
-            require_standard_file_size(file_stat, operation="read_binary_chunk")
+            require_standard_file_size(file_stat, operation="fs_read_binary")
             size = file_stat.st_size
             if offset > size:
                 raise ApiError(
@@ -902,23 +898,26 @@ class McpHandlersMixin:
 
     def _mcp_upload_transfer(self, payload: dict[str, Any]) -> dict[str, Any]:
         upload_id = str(payload["upload_id"])
-        transfer_base = f"{self._mcp_transfer_base()}/uploads/{quote(upload_id, safe='')}"
+        transfer_base = self._mcp_transfer_base()
+        encoded_id = quote(upload_id, safe="")
         result = dict(payload)
         result["raw_transfer"] = {
-            "url": transfer_base,
+            "status_url": f"{transfer_base}/upload/status/{encoded_id}",
             "status_methods": ["GET", "HEAD"],
-            "append_method": "PATCH",
-            "append_content_type": "application/octet-stream",
-            "append_headers": {
+            "chunk_url": f"{transfer_base}/upload/chunk/{encoded_id}",
+            "chunk_method": "PATCH",
+            "chunk_content_type": "application/octet-stream",
+            "chunk_headers": {
                 "Upload-Offset": "<current offset>",
                 "OpenKapsel-Plan-Id": "<required owning plan id>",
                 "OpenKapsel-Taskname": "<required task grouping name>",
                 "OpenKapsel-Message": "<required brief operation summary>",
             },
-            "commit_url": transfer_base + "/commit",
+            "commit_url": f"{transfer_base}/upload/commit/{encoded_id}",
             "commit_method": "POST",
-            "abort_method": "DELETE",
-            "commit_and_abort_headers": {
+            "cancel_url": f"{transfer_base}/upload/cancel/{encoded_id}",
+            "cancel_method": "DELETE",
+            "commit_and_cancel_headers": {
                 "OpenKapsel-Plan-Id": "<required owning plan id>",
                 "OpenKapsel-Taskname": "<required task grouping name>",
                 "OpenKapsel-Message": "<required brief operation summary>"

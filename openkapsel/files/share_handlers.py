@@ -135,7 +135,7 @@ class ShareHandlersMixin:
     def _share_query_url(self, share_id: str) -> str:
         return (
             f"{self._public_base_url().rstrip('/')}"
-            f"/shares/{share_id}"
+            f"/share/query/{share_id}"
         )
 
     @staticmethod

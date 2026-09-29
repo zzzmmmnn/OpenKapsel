@@ -33,7 +33,7 @@ Plans are hierarchical but not global locks. Independent agents may use differen
 
 First check `capabilities.context.plan_creation.atomic_subplans` in runtime
 Discovery. Older REST servers may ignore unknown fields; do not assume an older
-server accepted a batch. MCP `add_context` and REST `POST /context` use the same
+server accepted a batch. MCP `context_add` and REST `POST /context` use the same
 fields and creation logic:
 
 ```json

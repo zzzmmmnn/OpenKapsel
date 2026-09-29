@@ -53,7 +53,7 @@ class SkillUploadScriptTests(unittest.TestCase):
                         {"Content-Type": "application/json"},
                         json.dumps({"created": True}).encode(),
                     )
-                if method == "POST" and endpoint == "uploads":
+                if method == "POST" and endpoint == "upload/create":
                     body = json.loads(data)
                     self.assertEqual(len(large.read_bytes()), body["size"])
                     self.assertEqual(expected_digest, body["sha256"])
@@ -69,14 +69,14 @@ class SkillUploadScriptTests(unittest.TestCase):
                             }
                         ).encode(),
                     )
-                if method == "PATCH" and endpoint == "uploads/upload_test":
+                if method == "PATCH" and endpoint == "upload/chunk/upload_test":
                     offset = int(kwargs["headers"]["Upload-Offset"])
                     return HttpResult(
                         200,
                         {"Content-Type": "application/json"},
                         json.dumps({"offset": offset + len(data)}).encode(),
                     )
-                if method == "POST" and endpoint == "uploads/upload_test/commit":
+                if method == "POST" and endpoint == "upload/commit/upload_test":
                     return HttpResult(
                         201,
                         {"Content-Type": "application/json"},
@@ -104,9 +104,9 @@ class SkillUploadScriptTests(unittest.TestCase):
 
             self.assertEqual(("PUT", "fs/content", 4), calls[0])
             large_calls = calls[1:]
-            self.assertEqual(("POST", "uploads"), large_calls[0][:2])
+            self.assertEqual(("POST", "upload/create"), large_calls[0][:2])
             self.assertEqual([3, 3, 1], [size for method, _path, size in large_calls if method == "PATCH"])
-            self.assertEqual(("POST", "uploads/upload_test/commit"), large_calls[-1][:2])
+            self.assertEqual(("POST", "upload/commit/upload_test"), large_calls[-1][:2])
 
     def test_endpoint_available_resolves_discovery_inheritance(self) -> None:
         payload = {

@@ -91,7 +91,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         status, result = self.api("/fs/query/grep?path=.&query=needle")
         self.assertEqual(200, status, result)
         self.assertEqual(2, result["match_count"])
-        status, result = self.api("/fs/read/many", {"paths": ["local.txt", "laptop/remote.txt"], "max_total_chars": 100})
+        status, result = self.api("/fs/read/files", {"paths": ["local.txt", "laptop/remote.txt"], "max_total_chars": 100})
         self.assertEqual(200, status, result)
         self.assertEqual(["local needle", "remote needle\r\n"], [i["content"] for i in result["items"]])
         status, result = self.api("/fs/query/manifest", {"recursive": True, "path": ".", "include_sha256": True})
@@ -138,12 +138,12 @@ class RpcOnlyHTTPTests(unittest.TestCase):
                                    {"Content-Type": "application/octet-stream", "X-Content-SHA256": digest})
         self.assertEqual(201, status, body)
         self.assertEqual(data, (self.export / "direct.bin").read_bytes())
-        status, result = self.api("/uploads", {"path": "laptop/resumed.bin", "size": len(data), "sha256": digest})
+        status, result = self.api("/upload/create", {"path": "laptop/resumed.bin", "size": len(data), "sha256": digest})
         self.assertEqual(201, status, result)
         upload = result["upload_id"]
         self.server.uploads.append(upload, self.record.token, 0, io.BytesIO(data), len(data))
         spool = Path(self.server.uploads.get(upload, self.record.token).temp_path)
-        status, _, raw = self.raw("POST", "/uploads/" + upload + "/commit")
+        status, _, raw = self.raw("POST", "/upload/commit/" + upload)
         result = json.loads(raw)
         self.assertEqual(201, status, result)
         self.assertEqual(data, (self.export / "resumed.bin").read_bytes())
@@ -158,12 +158,12 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         self.assertEqual(422, status, body)
         self.assertFalse((self.export / "bad").exists())
         self.assertFalse(list(self.export.glob("*.openkapsel-put-*")))
-        status, result = self.api("/uploads", {"path": "laptop/later", "size": 1})
+        status, result = self.api("/upload/create", {"path": "laptop/later", "size": 1})
         self.assertEqual(201, status, result)
         upload = result["upload_id"]
         self.server.uploads.append(upload, self.record.token, 0, io.BytesIO(b"x"), 1)
         self.server.mappings.store.update(self.row["id"], name="renamed")
-        status, _, raw = self.raw("POST", "/uploads/" + upload + "/commit")
+        status, _, raw = self.raw("POST", "/upload/commit/" + upload)
         result = json.loads(raw)
         self.assertEqual(409, status, result)
         self.assertEqual("upload_mapping_changed", result["error"]["code"])
@@ -255,7 +255,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         status, _, body = self.raw("PUT", "/fs/content?path=laptop/x", b"x", {"Content-Type": "application/octet-stream"})
         self.assertEqual(403, status, body)
         self.session.capabilities = {}
-        self.assertEqual(409, self.api("/fs/read/text?path=laptop/a")[0])
+        self.assertEqual(409, self.api("/fs/read/files", {"paths": ["laptop/a"]})[0])
         self.assertTrue((self.export / "a").exists())
 
     def test_api_resolution_and_private_state_do_not_mount(self):

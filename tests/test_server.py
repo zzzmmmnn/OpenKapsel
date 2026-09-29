@@ -252,6 +252,26 @@ class WorkspaceServerTests(unittest.TestCase):
             {"items": items, **context},
         )
 
+    def read_one(
+        self,
+        path: str,
+        *,
+        token: str = "test-token",
+        offset: int = 0,
+        limit: int | None = None,
+        encoding: str | None = None,
+        query: str = "",
+    ):
+        body = {"paths": [path], "offset": offset}
+        if limit is not None:
+            body["limit"] = limit
+        if encoding is not None:
+            body["encoding"] = encoding
+        suffix = "/fs/read/files" + (f"?{query}" if query else "")
+        status, payload = self.request("POST", f"/kapsel/w/{token}{suffix}", body)
+        item = payload.get("items", [{}])[0] if isinstance(payload, dict) else {}
+        return status, payload, item
+
     def preview_endpoint(self, suffix: str = "", token: str = "test-token") -> str:
         preview_token = self.server.tokens.get(token).preview_token
         return f"/{preview_token}{suffix}"
@@ -468,27 +488,27 @@ class WorkspaceServerTests(unittest.TestCase):
             if method == "tools/call" and isinstance(params.get("arguments"), dict):
                 name = params.get("name")
                 modifying_tools = {
-                    "write_file",
-                    "edit_text",
-                    "mutate_files",
-                    "replace_large_file_range",
-                    "create_directory",
-                    "move_path",
-                    "delete_path",
-                    "restore_recycle",
-                    "start_upload",
+                    "fs_write",
+                    "fs_edit_text",
+                    "fs_mutate",
+                    "fs_replace_large",
+                    "fs_mkdir",
+                    "fs_move",
+                    "fs_delete",
+                    "recycle_restore",
+                    "upload_create",
                     "upload_chunk",
-                    "finish_upload",
-                    "abort_upload",
-                    "run_shell",
-                    "send_task_input",
-                    "interrupt_task",
-                    "kill_task",
+                    "upload_commit",
+                    "upload_cancel",
+                    "shell_exec",
+                    "task_stdin",
+                    "task_interrupt",
+                    "task_kill",
                     "schedule_write",
                     "schedule_control",
-                    "create_share",
-                    "import_share",
-                    "delete_share",
+                    "share_create",
+                    "share_import",
+                    "share_delete",
                 }
                 if name in modifying_tools:
                     arguments = dict(params["arguments"])
@@ -608,7 +628,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual("POST", op("fs_write", "mutate")["method"])
         self.assertEqual("POST", op("fs_read", "large")["method"])
-        self.assertEqual("POST", op("fs_write", "large")["method"])
+        self.assertEqual("POST", op("fs_write", "replace_large")["method"])
         self.assertTrue(op("web", "preview")["available"])
         self.assertEqual(
             "files.read + web_preview",
@@ -765,7 +785,7 @@ class WorkspaceServerTests(unittest.TestCase):
         workflow_text = "\n".join(payload["workflow"])
         self.assertIn("root_plans=true", workflow_text)
         self.assertIn("Every modifying REST operation must provide plan_id", workflow_text)
-        self.assertIn("get_plan_tree", workflow_text)
+        self.assertIn("context_plan_tree", workflow_text)
         self.assertIn("Uploads never overwrite", workflow_text)
         upload_fields = op("uploads", "create")["body_fields"]
         self.assertNotIn("overwrite", upload_fields)
@@ -780,7 +800,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(payload["capabilities"]["context"]["unmessaged_reads_recorded"])
         for endpoint in (
             op("fs_query", "list"),
-            op("fs_read", "text"),
+            op("fs_read", "files"),
             op("fs_query", "stat"),
             op("fs_query", "find"),
             op("fs_query", "grep"),
@@ -883,9 +903,9 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("fs_mkdir", workflow)
         self.assertIn("fs_move", workflow)
         self.assertIn("recycle_list", workflow)
-        self.assertIn("restore_recycle", workflow)
+        self.assertIn("recycle_restore", workflow)
         self.assertIn("share_id", workflow)
-        self.assertIn("kill_task", workflow)
+        self.assertIn("task_kill", workflow)
         self.assertIn("web_preview endpoint", workflow)
         self.assertIn("openkapsel_runtime.database", workflow)
         self.assertIn("portable SQLAlchemy APIs", workflow)
@@ -962,7 +982,7 @@ class WorkspaceServerTests(unittest.TestCase):
             files_reference = bundle.read("openkapsel-rest/references/files.md")
             self.assertIn(b"`text.insert_before`", files_reference)
             self.assertIn(b"`text.insert_after`", files_reference)
-            self.assertIn(b"`files_grep`", files_reference)
+            self.assertIn(b"`fs_grep`", files_reference)
             self.assertIn(b"/fs/query/find", files_reference)
             self.assertIn(b"/fs/query/grep", files_reference)
             self.assertIn(b"timeout_seconds=5", files_reference)
@@ -1048,25 +1068,28 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         file_discovery = json.loads(raw)
         self.assertTrue(
-            discovery_operation(file_discovery, "fs_read", "text")["available"]
+            discovery_operation(file_discovery, "fs_read", "files")["available"]
         )
         file_mutate = discovery_operation(file_discovery, "fs_write", "mutate")
         self.assertFalse(file_mutate["available"])
         self.assertIn("redacted", file_mutate["details"])
 
+        read_body = json.dumps({"paths": ["project/hello.txt"]}).encode()
         status, raw, _ = self.raw_request(
-            "GET",
-            self.endpoint("/fs/read/text?path=project/hello.txt"),
+            "POST",
+            self.endpoint("/fs/read/files"),
+            read_body,
+            {"Content-Type": "application/json"},
             authorize=False,
         )
         self.assertEqual(200, status)
-        self.assertIn("hello world", json.loads(raw)["content"])
+        self.assertIn("hello world", json.loads(raw)["items"][0]["content"])
 
         status, raw, _ = self.raw_request(
-            "GET",
-            self.endpoint(
-                "/fs/read/text?path=project/hello.txt&taskname=anonymous-read&message=record"
-            ),
+            "POST",
+            self.endpoint("/fs/read/files?taskname=anonymous-read&message=record"),
+            read_body,
+            {"Content-Type": "application/json"},
             authorize=False,
         )
         self.assertEqual(401, status)
@@ -1087,9 +1110,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse((self.root / "project" / "no-auth.txt").exists())
 
         status, raw, headers = self.raw_request(
-            "GET",
-            self.endpoint("/fs/read/text?path=project/hello.txt"),
-            headers={"Authorization": "Bearer invalid-control-token"},
+            "POST",
+            self.endpoint("/fs/read/files"),
+            read_body,
+            {"Authorization": "Bearer invalid-control-token", "Content-Type": "application/json"},
             authorize=False,
         )
         self.assertEqual(401, status)
@@ -1105,9 +1129,10 @@ class WorkspaceServerTests(unittest.TestCase):
             shell_mode="none",
         )
         status, raw, _ = self.raw_request(
-            "GET",
-            self.endpoint("/fs/read/text?path=project/hello.txt"),
-            headers={"Authorization": f"Bearer {other.control_token}"},
+            "POST",
+            self.endpoint("/fs/read/files"),
+            read_body,
+            {"Authorization": f"Bearer {other.control_token}", "Content-Type": "application/json"},
             authorize=False,
         )
         self.assertEqual(403, status)
@@ -1388,22 +1413,22 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, upload = self.request(
             "POST",
-            self.endpoint("/uploads"),
+            self.endpoint("/upload/create"),
             {"path": "project/empty.bin", "size": 0},
         )
         self.assertEqual(201, status)
         request_then_discovery(
-            "POST", self.endpoint(f"/uploads/{upload['upload_id']}/commit"), 201
+            "POST", self.endpoint(f"/upload/commit/{upload['upload_id']}"), 201
         )
 
         status, upload = self.request(
             "POST",
-            self.endpoint("/uploads"),
+            self.endpoint("/upload/create"),
             {"path": "project/cancelled.bin", "size": 1},
         )
         self.assertEqual(201, status)
         request_then_discovery(
-            "DELETE", self.endpoint(f"/uploads/{upload['upload_id']}"), 204
+            "DELETE", self.endpoint(f"/upload/cancel/{upload['upload_id']}"), 204
         )
 
         for action in ("interrupt", "kill"):
@@ -1412,7 +1437,7 @@ class WorkspaceServerTests(unittest.TestCase):
             )
             self.assertEqual(202, status)
             request_then_discovery(
-                "POST", self.endpoint(f"/tasks/{task['task_id']}/{action}"), 200
+                "POST", self.endpoint(f"/task/{action}/{task['task_id']}"), 200
             )
             self.wait_for_task(task["task_id"])
 
@@ -1539,7 +1564,7 @@ class WorkspaceServerTests(unittest.TestCase):
         digest = hashlib.sha256(content).hexdigest()
         status, upload = self.request(
             "POST",
-            self.endpoint("/uploads"),
+            self.endpoint("/upload/create"),
             {
                 "path": "project/resumable.bin",
                 "size": len(content),
@@ -1552,17 +1577,17 @@ class WorkspaceServerTests(unittest.TestCase):
         first = content[:5000]
         status, raw, _ = self.raw_request(
             "PATCH",
-            self.endpoint(f"/uploads/{upload_id}"),
+            self.endpoint(f"/upload/chunk/{upload_id}"),
             first,
             {"Content-Type": "application/octet-stream", "Upload-Offset": "0"},
         )
         self.assertEqual(200, status)
         self.assertEqual(len(first), json.loads(raw)["offset"])
 
-        status, payload = self.request("GET", self.endpoint(f"/uploads/{upload_id}"))
+        status, payload = self.request("GET", self.endpoint(f"/upload/status/{upload_id}"))
         self.assertEqual(200, status)
         self.assertEqual(len(first), payload["offset"])
-        status, _, headers = self.raw_request("HEAD", self.endpoint(f"/uploads/{upload_id}"))
+        status, _, headers = self.raw_request("HEAD", self.endpoint(f"/upload/status/{upload_id}"))
         self.assertEqual(200, status)
         self.assertEqual(str(len(first)), headers["Upload-Offset"])
 
@@ -1575,7 +1600,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         status, wrong, _ = self.raw_request(
             "PATCH",
-            self.endpoint(f"/uploads/{upload_id}"),
+            self.endpoint(f"/upload/chunk/{upload_id}"),
             b"wrong",
             {"Content-Type": "application/octet-stream", "Upload-Offset": "0"},
         )
@@ -1584,49 +1609,49 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, raw, _ = self.raw_request(
             "PATCH",
-            self.endpoint(f"/uploads/{upload_id}"),
+            self.endpoint(f"/upload/chunk/{upload_id}"),
             content[len(first) :],
             {"Content-Type": "application/octet-stream", "Upload-Offset": str(len(first))},
         )
         self.assertEqual(200, status)
         self.assertTrue(json.loads(raw)["complete"])
-        status, committed = self.request("POST", self.endpoint(f"/uploads/{upload_id}/commit"), {})
+        status, committed = self.request("POST", self.endpoint(f"/upload/commit/{upload_id}"), {})
         self.assertEqual(201, status)
         self.assertEqual(digest, committed["sha256"])
         self.assertEqual(content, (self.root / "project" / "resumable.bin").read_bytes())
-        status, missing = self.request("GET", self.endpoint(f"/uploads/{upload_id}"))
+        status, missing = self.request("GET", self.endpoint(f"/upload/status/{upload_id}"))
         self.assertEqual(404, status)
         self.assertEqual("upload_not_found", missing["error"]["code"])
 
         status, duplicate = self.request(
             "POST",
-            self.endpoint("/uploads"),
+            self.endpoint("/upload/create"),
             {"path": "project/resumable.bin", "size": 1},
         )
         self.assertEqual(409, status)
         self.assertEqual("path_exists", duplicate["error"]["code"])
         status, forbidden_overwrite = self.request(
             "POST",
-            self.endpoint("/uploads"),
+            self.endpoint("/upload/create"),
             {"path": "project/resumable.bin", "size": 1, "overwrite": True},
         )
         self.assertEqual(400, status)
         self.assertEqual("overwrite_not_supported", forbidden_overwrite["error"]["code"])
 
         status, pending = self.request(
-            "POST", self.endpoint("/uploads"), {"path": "project/race.bin", "size": 4}
+            "POST", self.endpoint("/upload/create"), {"path": "project/race.bin", "size": 4}
         )
         self.assertEqual(201, status)
         status, _, _ = self.raw_request(
             "PATCH",
-            self.endpoint(f"/uploads/{pending['upload_id']}"),
+            self.endpoint(f"/upload/chunk/{pending['upload_id']}"),
             b"new!",
             {"Content-Type": "application/octet-stream", "Upload-Offset": "0"},
         )
         self.assertEqual(200, status)
         (self.root / "project" / "race.bin").write_bytes(b"keep")
         status, conflict = self.request(
-            "POST", self.endpoint(f"/uploads/{pending['upload_id']}/commit"), {}
+            "POST", self.endpoint(f"/upload/commit/{pending['upload_id']}"), {}
         )
         self.assertEqual(409, status)
         self.assertEqual("path_exists", conflict["error"]["code"])
@@ -1636,7 +1661,7 @@ class WorkspaceServerTests(unittest.TestCase):
         outside.write_bytes(b"untouched")
         status, attacked = self.request(
             "POST",
-            self.endpoint("/uploads"),
+            self.endpoint("/upload/create"),
             {"path": "project/attacked.bin", "size": 4},
         )
         self.assertEqual(201, status)
@@ -1646,7 +1671,7 @@ class WorkspaceServerTests(unittest.TestCase):
         Path(attacked_record.temp_path).symlink_to(outside)
         status, raw, _ = self.raw_request(
             "PATCH",
-            self.endpoint(f"/uploads/{attacked_id}"),
+            self.endpoint(f"/upload/chunk/{attacked_id}"),
             b"evil",
             {"Content-Type": "application/octet-stream", "Upload-Offset": "0"},
         )
@@ -1704,7 +1729,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         def interrupt_second_chunk(*args, **kwargs):
             nonlocal patch_calls
-            if args[0] == "PATCH" and "uploads/" in args[1]:
+            if args[0] == "PATCH" and "upload/chunk/" in args[1]:
                 patch_calls += 1
                 if patch_calls == 2:
                     raise KeyboardInterrupt
@@ -1813,27 +1838,25 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, result.status)
         self.assertEqual([0.25, 0.5], sleeps)
 
-    def test_large_text_byte_cursor_preserves_utf8_boundaries(self) -> None:
+    def test_text_character_cursor_continuation(self) -> None:
         path = self.root / "project" / "unicode.txt"
         content = "áé🙂çø\n" * 100
         path.write_text(content, encoding="utf-8")
         collected = []
         offset = 0
         while True:
-            query = urlencode({"path": "project/unicode.txt", "byte_offset": offset, "limit": 7})
-            status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
+            status, _, item = self.read_one(
+                "project/unicode.txt",
+                offset=offset,
+                limit=7,
+            )
             self.assertEqual(200, status)
-            collected.append(payload["content"])
-            if not payload["truncated"]:
+            collected.append(item["content"])
+            if not item["truncated"]:
                 break
-            self.assertGreater(payload["next_byte_offset"], offset)
-            offset = payload["next_byte_offset"]
+            self.assertGreater(item["next_offset"], offset)
+            offset = item["next_offset"]
         self.assertEqual(content, "".join(collected))
-
-        query = urlencode({"path": "project/unicode.txt", "byte_offset": 1, "limit": 10})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
-        self.assertEqual(400, status)
-        self.assertEqual("invalid_utf8_boundary", payload["error"]["code"])
 
     def test_file_manifest_and_batch_recycle_delete(self) -> None:
         record = self.server.tokens.create(
@@ -1948,12 +1971,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(2, searched["match_count"])
         self.assertFalse(any(item["path"].endswith("two.py") for item in searched["matches"]))
-        legacy_status, legacy_search = self.request(
+        legacy_status, _ = self.request(
             "GET",
             self.endpoint(f"/fs/query/search?{query}"),
         )
-        self.assertEqual(200, legacy_status)
-        self.assertEqual(searched["match_count"], legacy_search["match_count"])
+        self.assertEqual(404, legacy_status)
 
         query = urlencode(
             {
@@ -1993,7 +2015,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(202, status)
         task_id = started["task_id"]
         query = urlencode({"stdout_offset": 0, "stderr_offset": 0, "wait_seconds": 3})
-        status, output = self.request("GET", self.endpoint(f"/tasks/{task_id}/output?{query}"))
+        status, output = self.request("GET", self.endpoint(f"/task/output/{task_id}?{query}"))
         self.assertEqual(200, status)
         self.assertIn("ready", output["stdout"]["data"], output)
         next_stdout = output["stdout"]["next_offset"]
@@ -2002,7 +2024,7 @@ class WorkspaceServerTests(unittest.TestCase):
         while True:
             status, input_result = self.request(
                 "POST",
-                self.endpoint(f"/tasks/{task_id}/stdin"),
+                self.endpoint(f"/task/stdin/{task_id}"),
                 {"data": "hello stream\n", "close": True},
             )
             if status == 200:
@@ -2014,14 +2036,14 @@ class WorkspaceServerTests(unittest.TestCase):
         query = urlencode(
             {"stdout_offset": next_stdout, "stderr_offset": 0, "wait_seconds": 3}
         )
-        status, output = self.request("GET", self.endpoint(f"/tasks/{task_id}/output?{query}"))
+        status, output = self.request("GET", self.endpoint(f"/task/output/{task_id}?{query}"))
         self.assertEqual(200, status)
         self.assertIn("got:hello stream", output["stdout"]["data"])
         finished = self.wait_for_task(task_id)
         self.assertEqual(0, finished["exit_code"])
         self.assertTrue(finished["interactive"])
 
-        status, listed = self.request("GET", self.endpoint("/tasks?limit=10"))
+        status, listed = self.request("GET", self.endpoint("/task/list?limit=10"))
         self.assertEqual(200, status)
         listed_task = next(item for item in listed["tasks"] if item["task_id"] == task_id)
         self.assertNotIn("stdout", listed_task)
@@ -2035,7 +2057,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(202, status)
         sleeping_id = sleeping["task_id"]
         status, interrupted = self.request(
-            "POST", self.endpoint(f"/tasks/{sleeping_id}/interrupt"), {}
+            "POST", self.endpoint(f"/task/interrupt/{sleeping_id}"), {}
         )
         self.assertEqual(200, status)
         self.assertTrue(interrupted["interrupted"])
@@ -2051,7 +2073,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(202, status)
         status, killed = self.request(
-            "POST", self.endpoint(f"/tasks/{killable['task_id']}/kill"), {}
+            "POST", self.endpoint(f"/task/kill/{killable['task_id']}"), {}
         )
         self.assertEqual(200, status)
         self.assertTrue(killed["interrupted"])
@@ -2064,7 +2086,7 @@ class WorkspaceServerTests(unittest.TestCase):
             "POST", self.endpoint("/shell/exec"), {"command": "printf sse-ok"}
         )
         status, body, headers = self.raw_request(
-            "GET", self.endpoint(f"/tasks/{sse_task['task_id']}/stream")
+            "GET", self.endpoint(f"/task/stream/{sse_task['task_id']}")
         )
         self.assertEqual(200, status)
         self.assertTrue(headers["Content-Type"].startswith("text/event-stream"))
@@ -2085,7 +2107,7 @@ class WorkspaceServerTests(unittest.TestCase):
         first = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         first.request(
             "GET",
-            self.endpoint(f"/tasks/{task_id}/stream"),
+            self.endpoint(f"/task/stream/{task_id}"),
             headers={"Authorization": f"Bearer {record.control_token}"},
         )
         first_response = first.getresponse()
@@ -2093,7 +2115,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, raw, headers = self.raw_request(
             "GET",
-            self.endpoint(f"/tasks/{task_id}/stream"),
+            self.endpoint(f"/task/stream/{task_id}"),
         )
         self.assertEqual(429, status)
         self.assertEqual("1", headers["Retry-After"])
@@ -2109,7 +2131,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, _killed = self.request(
             "POST",
-            self.endpoint(f"/tasks/{task_id}/kill"),
+            self.endpoint(f"/task/kill/{task_id}"),
             {},
         )
         self.assertEqual(200, status)
@@ -2249,7 +2271,7 @@ class WorkspaceServerTests(unittest.TestCase):
             first_token, first_task = task_ids.pop(0)
             status, _ = self.request(
                 "POST",
-                f"/kapsel/w/{first_token}/tasks/{first_task}/interrupt",
+                f"/kapsel/w/{first_token}/task/interrupt/{first_task}",
                 {},
             )
             self.assertEqual(200, status)
@@ -2266,7 +2288,7 @@ class WorkspaceServerTests(unittest.TestCase):
             for token, task_id in task_ids:
                 self.request(
                     "POST",
-                    f"/kapsel/w/{token}/tasks/{task_id}/interrupt",
+                    f"/kapsel/w/{token}/task/interrupt/{task_id}",
                     {},
                 )
             for token, task_id in task_ids:
@@ -2293,12 +2315,12 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         names = {item["name"] for item in tools["result"]["tools"]}
-        self.assertIn("list_sandbox_processes", names)
+        self.assertIn("sandbox_processes", names)
         status, listed, _ = self.mcp_request(
             record.token,
             42,
             "tools/call",
-            {"name": "list_sandbox_processes", "arguments": {"limit": 10}},
+            {"name": "sandbox_processes", "arguments": {"limit": 10}},
         )
         self.assertEqual(200, status)
         self.assertFalse(listed["result"]["structuredContent"]["available"])
@@ -2353,20 +2375,20 @@ class WorkspaceServerTests(unittest.TestCase):
         status, listed, _ = self.mcp_request(token, 2, "tools/list", {})
         self.assertEqual(200, status)
         binary_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "read_binary_chunk"
+            tool for tool in listed["result"]["tools"] if tool["name"] == "fs_read_binary"
         )
         length_schema = binary_tool["inputSchema"]["properties"]["length"]
         self.assertEqual(self.server.config.mcp_binary_chunk_bytes, length_schema["maximum"])
         self.assertEqual(self.server.config.mcp_binary_chunk_bytes, length_schema["default"])
         large_read_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "read_large_file"
+            tool for tool in listed["result"]["tools"] if tool["name"] == "fs_read_large"
         )
         self.assertEqual(
             256 * 1024,
             large_read_tool["inputSchema"]["properties"]["length"]["maximum"],
         )
         mutate_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "mutate_files"
+            tool for tool in listed["result"]["tools"] if tool["name"] == "fs_mutate"
         )
         self.assertTrue(mutate_tool["annotations"]["destructiveHint"])
         item_schema = mutate_tool["inputSchema"]["properties"]["items"]["items"]
@@ -2381,7 +2403,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotIn("allOf", item_schema)
 
         edit_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "edit_text"
+            tool for tool in listed["result"]["tools"] if tool["name"] == "fs_edit_text"
         )
         self.assertEqual(
             ["operation", "path", "expected_etag", "plan_id", "taskname", "message"],
@@ -2415,7 +2437,7 @@ class WorkspaceServerTests(unittest.TestCase):
             210,
             "tools/call",
             {
-                "name": "edit_text",
+                "name": "fs_edit_text",
                 "arguments": {
                     "operation": "replace",
                     "path": "hello.txt",
@@ -2430,7 +2452,7 @@ class WorkspaceServerTests(unittest.TestCase):
             201,
             "tools/call",
             {
-                "name": "read_binary_chunk",
+                "name": "fs_read_binary",
                 "arguments": {
                     "path": "hello.txt",
                     "length": self.server.config.mcp_binary_chunk_bytes + 1,
@@ -2442,42 +2464,42 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(
             {
                 "workspace_info",
-                "list_files",
-                "read_file",
-                "stat_file",
-                "read_binary_chunk",
-                "read_large_file",
-                "find_files",
-                "files_grep",
-                "list_tree",
-                "write_file",
-                "edit_text",
-                "mutate_files",
-                "replace_large_file_range",
-                "create_directory",
-                "move_path",
-                "delete_path",
-                "list_recycle",
-                "restore_recycle",
-                "start_upload",
+                "fs_list",
+                "fs_read_files",
+                "fs_stat",
+                "fs_read_binary",
+                "fs_read_large",
+                "fs_find",
+                "fs_grep",
+                "fs_tree",
+                "fs_write",
+                "fs_edit_text",
+                "fs_mutate",
+                "fs_replace_large",
+                "fs_mkdir",
+                "fs_move",
+                "fs_delete",
+                "recycle_list",
+                "recycle_restore",
+                "upload_create",
                 "upload_chunk",
-                "get_upload",
-                "finish_upload",
-                "abort_upload",
-                "run_shell",
-                "get_task",
-                "list_tasks",
-                "read_task_output",
-                "send_task_input",
-                "interrupt_task",
-                "kill_task",
+                "upload_status",
+                "upload_commit",
+                "upload_cancel",
+                "shell_exec",
+                "task_get",
+                "task_list",
+                "task_output",
+                "task_stdin",
+                "task_interrupt",
+                "task_kill",
             }.issubset(names)
         )
         self.assertTrue(
             {"replace_text", "insert_before", "insert_after"}.isdisjoint(names)
         )
         self.assertNotIn("search_files", names)
-        delete_tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "delete_path")
+        delete_tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "fs_delete")
         self.assertTrue(delete_tool["annotations"]["destructiveHint"])
 
         status, workspace_info, _ = self.mcp_request(
@@ -2543,7 +2565,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             3,
             "tools/call",
-            {"name": "list_files", "arguments": {"path": "."}},
+            {"name": "fs_list", "arguments": {"path": "."}},
         )
         self.assertEqual(200, status)
         self.assertFalse(called["result"]["isError"])
@@ -2553,7 +2575,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             39,
             "tools/call",
-            {"name": "create_directory", "arguments": {"path": "generated"}},
+            {"name": "fs_mkdir", "arguments": {"path": "generated"}},
         )
         self.assertEqual(200, status)
         self.assertFalse(made_dir["result"]["isError"])
@@ -2562,7 +2584,7 @@ class WorkspaceServerTests(unittest.TestCase):
             4,
             "tools/call",
             {
-                "name": "write_file",
+                "name": "fs_write",
                 "arguments": {"path": "generated/data.txt", "content": "same\ncreated by MCP\nsame"},
             },
         )
@@ -2574,7 +2596,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             204,
             "tools/call",
-            {"name": "stat_file", "arguments": {"path": "generated/data.txt", "fields": "etag,size"}},
+            {"name": "fs_stat", "arguments": {"path": "generated/data.txt", "fields": "etag,size"}},
         )
         generated_etag = generated_stat["result"]["structuredContent"]["etag"]
         status, mutated, _ = self.mcp_request(
@@ -2582,7 +2604,7 @@ class WorkspaceServerTests(unittest.TestCase):
             205,
             "tools/call",
             {
-                "name": "mutate_files",
+                "name": "fs_mutate",
                 "arguments": {
                     "items": [
                         {
@@ -2614,7 +2636,7 @@ class WorkspaceServerTests(unittest.TestCase):
             207,
             "tools/call",
             {
-                "name": "edit_text",
+                "name": "fs_edit_text",
                 "arguments": {
                     "operation": "replace",
                     "path": "generated/data.txt",
@@ -2636,7 +2658,7 @@ class WorkspaceServerTests(unittest.TestCase):
             208,
             "tools/call",
             {
-                "name": "edit_text",
+                "name": "fs_edit_text",
                 "arguments": {
                     "operation": "insert_before",
                     "path": "generated/data.txt",
@@ -2658,7 +2680,7 @@ class WorkspaceServerTests(unittest.TestCase):
             209,
             "tools/call",
             {
-                "name": "edit_text",
+                "name": "fs_edit_text",
                 "arguments": {
                     "operation": "insert_after",
                     "path": "generated/data.txt",
@@ -2678,14 +2700,14 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             206,
             "tools/call",
-            {"name": "stat_file", "arguments": {"path": "generated", "fields": "etag"}},
+            {"name": "fs_stat", "arguments": {"path": "generated", "fields": "etag"}},
         )
         generated_dir_etag = generated_dir_stat["result"]["structuredContent"]["etag"]
         status, deleted, _ = self.mcp_request(
             token,
             5,
             "tools/call",
-            {"name": "delete_path", "arguments": {"path": "generated", "expected_etag": generated_dir_etag}},
+            {"name": "fs_delete", "arguments": {"path": "generated", "expected_etag": generated_dir_etag}},
         )
         self.assertEqual(200, status)
         self.assertFalse(deleted["result"]["isError"])
@@ -2696,7 +2718,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             6,
             "tools/call",
-            {"name": "list_recycle", "arguments": {}},
+            {"name": "recycle_list", "arguments": {}},
         )
         self.assertEqual(200, status)
         self.assertEqual(recycle_id, recycle_listing["result"]["structuredContent"]["entries"][0]["recycle_id"])
@@ -2705,7 +2727,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             7,
             "tools/call",
-            {"name": "restore_recycle", "arguments": {"recycle_id": recycle_id}},
+            {"name": "recycle_restore", "arguments": {"recycle_id": recycle_id}},
         )
         self.assertEqual(200, status)
         self.assertTrue(restored["result"]["structuredContent"]["restored"])
@@ -2718,7 +2740,7 @@ class WorkspaceServerTests(unittest.TestCase):
             70,
             "tools/call",
             {
-                "name": "start_upload",
+                "name": "upload_create",
                 "arguments": {
                     "path": "generated/data.bin",
                     "size": len(binary),
@@ -2761,7 +2783,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             73,
             "tools/call",
-            {"name": "get_upload", "arguments": {"upload_id": binary_upload_id}},
+            {"name": "upload_status", "arguments": {"upload_id": binary_upload_id}},
         )
         upload_status_content = upload_status["result"]["structuredContent"]
         self.assertTrue(upload_status_content["complete"])
@@ -2773,7 +2795,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             74,
             "tools/call",
-            {"name": "finish_upload", "arguments": {"upload_id": binary_upload_id}},
+            {"name": "upload_commit", "arguments": {"upload_id": binary_upload_id}},
         )
         self.assertEqual(binary_digest, finished["result"]["structuredContent"]["sha256"])
 
@@ -2781,7 +2803,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             75,
             "tools/call",
-            {"name": "stat_file", "arguments": {"path": "generated/data.bin"}},
+            {"name": "fs_stat", "arguments": {"path": "generated/data.bin"}},
         )
         self.assertEqual(len(binary), binary_stat["result"]["structuredContent"]["size"])
         _, binary_read, _ = self.mcp_request(
@@ -2789,7 +2811,7 @@ class WorkspaceServerTests(unittest.TestCase):
             76,
             "tools/call",
             {
-                "name": "read_binary_chunk",
+                "name": "fs_read_binary",
                 "arguments": {"path": "generated/data.bin", "offset": 0, "length": len(binary)},
             },
         )
@@ -2806,7 +2828,7 @@ class WorkspaceServerTests(unittest.TestCase):
             206,
             "tools/call",
             {
-                "name": "read_large_file",
+                "name": "fs_read_large",
                 "arguments": {"path": "generated/large.bin", "offset": 4, "length": 6},
             },
         )
@@ -2818,7 +2840,7 @@ class WorkspaceServerTests(unittest.TestCase):
             207,
             "tools/call",
             {
-                "name": "replace_large_file_range",
+                "name": "fs_replace_large",
                 "arguments": {
                     "path": "generated/large.bin",
                     "offset": 4,
@@ -2839,7 +2861,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             8,
             "tools/call",
-            {"name": "run_shell", "arguments": {"command": "printf mcp-ok"}},
+            {"name": "shell_exec", "arguments": {"command": "printf mcp-ok"}},
         )
         self.assertEqual(200, status)
         task_id = shell["result"]["structuredContent"]["task_id"]
@@ -2849,7 +2871,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 token,
                 request_id,
                 "tools/call",
-                {"name": "get_task", "arguments": {"task_id": task_id}},
+                {"name": "task_get", "arguments": {"task_id": task_id}},
             )
             task_payload = polled["result"]["structuredContent"]
             if task_payload["status"] == "finished":
@@ -2862,7 +2884,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             90,
             "tools/call",
-            {"name": "list_tasks", "arguments": {"limit": 10}},
+            {"name": "task_list", "arguments": {"limit": 10}},
         )
         self.assertTrue(
             any(item["task_id"] == task_id for item in task_listing["result"]["structuredContent"]["tasks"])
@@ -2872,7 +2894,7 @@ class WorkspaceServerTests(unittest.TestCase):
             91,
             "tools/call",
             {
-                "name": "read_task_output",
+                "name": "task_output",
                 "arguments": {"task_id": task_id, "stdout_offset": 0, "stderr_offset": 0},
             },
         )
@@ -2882,14 +2904,14 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             95,
             "tools/call",
-            {"name": "run_shell", "arguments": {"command": "sleep 30"}},
+            {"name": "shell_exec", "arguments": {"command": "sleep 30"}},
         )
         force_task_id = long_running["result"]["structuredContent"]["task_id"]
         _, killed, _ = self.mcp_request(
             token,
             96,
             "tools/call",
-            {"name": "kill_task", "arguments": {"task_id": force_task_id}},
+            {"name": "task_kill", "arguments": {"task_id": force_task_id}},
         )
         self.assertTrue(killed["result"]["structuredContent"]["force_killed"])
         self.assertTrue(self.wait_for_task(force_task_id, token=token)["force_killed"])
@@ -2899,7 +2921,7 @@ class WorkspaceServerTests(unittest.TestCase):
             92,
             "tools/call",
             {
-                "name": "stat_file",
+                "name": "fs_stat",
                 "arguments": {"path": "hello.txt", "fields": "size,sha256"},
             },
         )
@@ -2911,7 +2933,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             93,
             "tools/call",
-            {"name": "files_grep", "arguments": {"query": "hello", "depth": 2}},
+            {"name": "fs_grep", "arguments": {"query": "hello", "depth": 2}},
         )
         self.assertGreaterEqual(searched["result"]["structuredContent"]["match_count"], 1)
         _, legacy_searched, _ = self.mcp_request(
@@ -2920,14 +2942,12 @@ class WorkspaceServerTests(unittest.TestCase):
             "tools/call",
             {"name": "search_files", "arguments": {"query": "hello", "depth": 2}},
         )
-        self.assertGreaterEqual(
-            legacy_searched["result"]["structuredContent"]["match_count"], 1
-        )
+        self.assertEqual(-32602, legacy_searched["error"]["code"])
         _, found, _ = self.mcp_request(
             token,
             932,
             "tools/call",
-            {"name": "find_files", "arguments": {"query": "hello"}},
+            {"name": "fs_find", "arguments": {"query": "hello"}},
         )
         self.assertIn(
             "hello.txt",
@@ -2938,7 +2958,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             94,
             "tools/call",
-            {"name": "list_tree", "arguments": {"path": ".", "depth": 2}},
+            {"name": "fs_tree", "arguments": {"path": ".", "depth": 2}},
         )
         self.assertEqual("directory", tree["result"]["structuredContent"]["tree"]["type"])
 
@@ -2946,11 +2966,12 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             101,
             "tools/call",
-            {"name": "read_file", "arguments": {"path": "missing.txt"}},
+            {"name": "fs_read_files", "arguments": {"paths": ["missing.txt"]}},
         )
         self.assertEqual(200, status)
-        self.assertTrue(missing["result"]["isError"])
-        self.assertEqual("path_not_found", missing["result"]["structuredContent"]["error"]["code"])
+        missing_item = missing["result"]["structuredContent"]["items"][0]
+        self.assertEqual(404, missing_item["status"])
+        self.assertEqual("path_not_found", missing_item["error"]["code"])
 
         status, unknown, _ = self.mcp_request(
             token,
@@ -2996,16 +3017,16 @@ class WorkspaceServerTests(unittest.TestCase):
         status, read_tools, _ = self.mcp_request(read_only.token, 104, "tools/list", {})
         self.assertEqual(200, status)
         read_names = {tool["name"] for tool in read_tools["result"]["tools"]}
-        self.assertTrue({"workspace_info", "list_files", "read_file", "list_recycle"}.issubset(read_names))
+        self.assertTrue({"workspace_info", "fs_list", "fs_read_files", "recycle_list"}.issubset(read_names))
         self.assertTrue(
-            {"write_file", "delete_path", "restore_recycle", "run_shell"}.isdisjoint(read_names)
+            {"fs_write", "fs_delete", "recycle_restore", "shell_exec"}.isdisjoint(read_names)
         )
         status, read_discovery = self.request(
             "GET", f"/kapsel/w/{read_only.token}/discovery/full"
         )
         self.assertEqual(200, status)
         self.assertTrue(
-            discovery_operation(read_discovery, "fs_read", "text")["available"]
+            discovery_operation(read_discovery, "fs_read", "files")["available"]
         )
         self.assertFalse(
             discovery_operation(read_discovery, "fs_write", "mutate")["available"]
@@ -3035,18 +3056,18 @@ class WorkspaceServerTests(unittest.TestCase):
 
         _, listed, _ = self.mcp_request(token, 300, "tools/list", {})
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
-        self.assertIn("prepare_download", tools)
-        self.assertIn("get_web_preview_url", tools)
-        self.assertIn("expected_etag", tools["write_file"]["inputSchema"]["properties"])
-        self.assertNotIn("expected_etag", tools["start_upload"]["inputSchema"]["properties"])
-        self.assertNotIn("overwrite", tools["start_upload"]["inputSchema"]["properties"])
+        self.assertIn("fs_download", tools)
+        self.assertIn("web_preview_url", tools)
+        self.assertIn("expected_etag", tools["fs_write"]["inputSchema"]["properties"])
+        self.assertNotIn("expected_etag", tools["upload_create"]["inputSchema"]["properties"])
+        self.assertNotIn("overwrite", tools["upload_create"]["inputSchema"]["properties"])
 
         _, metadata, _ = self.mcp_request(
             token,
             301,
             "tools/call",
             {
-                "name": "stat_file",
+                "name": "fs_stat",
                 "arguments": {"path": "conditional.txt", "fields": "etag,size"},
             },
         )
@@ -3056,7 +3077,7 @@ class WorkspaceServerTests(unittest.TestCase):
             302,
             "tools/call",
             {
-                "name": "write_file",
+                "name": "fs_write",
                 "arguments": {
                     "path": "conditional.txt",
                     "content": "must not replace",
@@ -3243,7 +3264,9 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(unicode_message, unicode_result["entries"][0]["content"])
         self.assertEqual(unicode_taskname, unicode_result["entries"][0]["taskname"])
 
-        status, _ = self.request("GET", endpoint("/fs/read/text?path=tracked.txt"))
+        status, _ = self.request(
+            "POST", endpoint("/fs/read/files"), {"paths": ["tracked.txt"]}
+        )
         self.assertEqual(200, status)
         status, initial = self.request(
             "GET",
@@ -3252,8 +3275,9 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(2, initial["total"])
 
         status, named_read = self.request(
-            "GET",
-            endpoint("/fs/read/text?path=tracked.txt&taskname=context-integration&message=Verify%20the%20tracked%20file"),
+            "POST",
+            endpoint("/fs/read/files?taskname=context-integration&message=Verify%20the%20tracked%20file"),
+            {"paths": ["tracked.txt"]},
         )
         self.assertEqual(200, status)
         self.assertIn("context_id", named_read)
@@ -3389,10 +3413,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("invalid_request", too_many["error"]["code"])
 
         status, blocked = self.request(
-            "GET", endpoint("/fs/read/text?path=.openkapsel/context/context.sqlite3")
+            "POST",
+            endpoint("/fs/read/files"),
+            {"paths": [".openkapsel/context/context.sqlite3"]},
         )
-        self.assertEqual(403, status)
-        self.assertEqual("reserved_path", blocked["error"]["code"])
+        self.assertEqual(207, status)
+        self.assertEqual(403, blocked["items"][0]["status"])
+        self.assertEqual("reserved_path", blocked["items"][0]["error"]["code"])
         status, listing = self.request("GET", endpoint("/fs/query/list?path=."))
         self.assertNotIn(".openkapsel", {entry["name"] for entry in listing["entries"]})
         status, preview = self.preview_request(
@@ -3405,39 +3432,39 @@ class WorkspaceServerTests(unittest.TestCase):
         status, listed, _ = self.mcp_request(record.token, 801, "tools/list", {})
         self.assertEqual(200, status)
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
-        self.assertIn("query_context", tools)
-        self.assertIn("add_context", tools)
-        self.assertIn("update_plan", tools)
-        self.assertIn("replace_note", tools)
-        self.assertIn("get_plan_tree", tools)
+        self.assertIn("context_query", tools)
+        self.assertIn("context_add", tools)
+        self.assertIn("context_plan_update", tools)
+        self.assertIn("context_note_replace", tools)
+        self.assertIn("context_plan_tree", tools)
         self.assertIn(
             "actor_id",
-            tools["query_context"]["inputSchema"]["properties"],
+            tools["context_query"]["inputSchema"]["properties"],
         )
         self.assertIn(
             "path",
-            tools["query_context"]["inputSchema"]["properties"],
+            tools["context_query"]["inputSchema"]["properties"],
         )
-        self.assertTrue(tools["update_plan"]["annotations"]["idempotentHint"])
-        self.assertTrue(tools["replace_note"]["annotations"]["destructiveHint"])
+        self.assertTrue(tools["context_plan_update"]["annotations"]["idempotentHint"])
+        self.assertTrue(tools["context_note_replace"]["annotations"]["destructiveHint"])
         self.assertIn(
             "taskname",
-            tools["write_file"]["inputSchema"]["required"],
+            tools["fs_write"]["inputSchema"]["required"],
         )
         self.assertIn(
             "message",
-            tools["write_file"]["inputSchema"]["required"],
+            tools["fs_write"]["inputSchema"]["required"],
         )
         self.assertIn(
             "plan_id",
-            tools["write_file"]["inputSchema"]["required"],
+            tools["fs_write"]["inputSchema"]["required"],
         )
         for tool_name, tool in tools.items():
             if tool["annotations"]["readOnlyHint"] or tool_name in {
-                "add_context",
-                "update_plan",
-                "renew_workspace_credentials",
-                "rpc",
+                "context_add",
+                "context_plan_update",
+                "workspace_credentials_renew",
+                "rpc_call",
             }:
                 continue
             self.assertIn(
@@ -3445,20 +3472,20 @@ class WorkspaceServerTests(unittest.TestCase):
                 tool["inputSchema"].get("required", []),
                 tool_name,
             )
-        self.assertIn("plan_id", tools["rpc"]["inputSchema"]["properties"])
-        self.assertNotIn("plan_id", tools["rpc"]["inputSchema"].get("required", []))
+        self.assertIn("plan_id", tools["rpc_call"]["inputSchema"]["properties"])
+        self.assertNotIn("plan_id", tools["rpc_call"]["inputSchema"].get("required", []))
         self.assertNotIn(
             "message",
-            tools["read_file"]["inputSchema"].get("required", []),
+            tools["fs_read_files"]["inputSchema"].get("required", []),
         )
-        self.assertIn("message", tools["read_file"]["inputSchema"]["properties"])
+        self.assertIn("message", tools["fs_read_files"]["inputSchema"]["properties"])
 
         status, mcp_written, _ = self.mcp_request(
             record.token,
             804,
             "tools/call",
             {
-                "name": "write_file",
+                "name": "fs_write",
                 "arguments": {
                     "path": "mcp-context.txt",
                     "content": "created through MCP",
@@ -3479,7 +3506,7 @@ class WorkspaceServerTests(unittest.TestCase):
             806,
             "tools/call",
             {
-                "name": "query_context",
+                "name": "context_query",
                 "arguments": {
                     "actor_id": actor_id,
                     "path": "mcp-context.txt",
@@ -3494,7 +3521,7 @@ class WorkspaceServerTests(unittest.TestCase):
             807,
             "tools/call",
             {
-                "name": "get_plan_tree",
+                "name": "context_plan_tree",
                 "arguments": {"plan_id": root_plan["id"], "limit": 200},
             },
         )
@@ -3509,7 +3536,7 @@ class WorkspaceServerTests(unittest.TestCase):
             802,
             "tools/call",
             {
-                "name": "add_context",
+                "name": "context_add",
                 "arguments": {
                     "type": "plan",
                     "taskname": "release-checks",
@@ -3537,7 +3564,7 @@ class WorkspaceServerTests(unittest.TestCase):
             805,
             "tools/call",
             {
-                "name": "update_plan",
+                "name": "context_plan_update",
                 "arguments": {
                     "id": plan_id,
                     "taskname": "release-checks",
@@ -3562,7 +3589,7 @@ class WorkspaceServerTests(unittest.TestCase):
             803,
             "tools/call",
             {
-                "name": "query_context",
+                "name": "context_query",
                 "arguments": {
                     "query": "final checks",
                     "taskname": "release-checks",
@@ -3597,7 +3624,7 @@ class WorkspaceServerTests(unittest.TestCase):
             800,
             "tools/call",
             {
-                "name": "stat_file",
+                "name": "fs_stat",
                 "arguments": {"path": "conditional.txt", "fields": "etag,size"},
             },
         )
@@ -3607,7 +3634,7 @@ class WorkspaceServerTests(unittest.TestCase):
             303,
             "tools/call",
             {
-                "name": "write_file",
+                "name": "fs_write",
                 "arguments": {
                     "path": "conditional.txt",
                     "content": "updated",
@@ -3625,7 +3652,7 @@ class WorkspaceServerTests(unittest.TestCase):
             307,
             "tools/call",
             {
-                "name": "start_upload",
+                "name": "upload_create",
                 "arguments": {
                     "path": "conditional.txt",
                     "size": 1,
@@ -3642,7 +3669,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             304,
             "tools/call",
-            {"name": "get_web_preview_url", "arguments": {"path": "site"}},
+            {"name": "web_preview_url", "arguments": {"path": "site"}},
         )
         preview_payload = preview["result"]["structuredContent"]
         self.assertEqual(
@@ -3658,7 +3685,7 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             305,
             "tools/call",
-            {"name": "prepare_download", "arguments": {"path": "conditional.txt"}},
+            {"name": "fs_download", "arguments": {"path": "conditional.txt"}},
         )
         download = prepared["result"]["structuredContent"]
         self.assertEqual(
@@ -3688,7 +3715,7 @@ class WorkspaceServerTests(unittest.TestCase):
             306,
             "tools/call",
             {
-                "name": "start_upload",
+                "name": "upload_create",
                 "arguments": {
                     "path": "large.bin",
                     "size": len(binary),
@@ -3703,7 +3730,8 @@ class WorkspaceServerTests(unittest.TestCase):
             self.server.config.upload_chunk_bytes,
             raw_transfer["recommended_chunk_size"],
         )
-        upload_path = f"/kapsel/transfer/uploads/{upload['upload_id']}"
+        upload_path = f"/kapsel/transfer/upload/chunk/{upload['upload_id']}"
+        commit_path = f"/kapsel/transfer/upload/commit/{upload['upload_id']}"
         status, raw, _ = self.raw_request(
             "PATCH",
             upload_path,
@@ -3719,7 +3747,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(len(binary), json.loads(raw)["offset"])
         status, raw, _ = self.raw_request(
             "POST",
-            upload_path + "/commit",
+            commit_path,
             headers={"Authorization": f"Bearer {record.control_token}"},
             authorize=False,
         )
@@ -3736,34 +3764,33 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(401, status)
         self.assertEqual("control_token_required", json.loads(unauthorized)["error"]["code"])
 
-    def test_recorded_html_read_error_finishes_context_operation(self) -> None:
+    def test_recorded_read_files_item_error_finishes_context_operation(self) -> None:
         plan_id = self._ensure_test_plan("test-token")
         query = urlencode(
             {
-                "path": "missing-html-read.txt",
                 "plan_id": plan_id,
-                "taskname": "html-read-error",
-                "message": "Read a missing file from a browser-like client",
+                "taskname": "read-files-item-error",
+                "message": "Read a missing file",
             }
         )
-        status, body, headers = self.raw_request(
-            "GET",
-            self.endpoint(f"/fs/read/text?{query}"),
-            headers={"Accept": "text/html"},
-        )
-        self.assertEqual(404, status)
-        self.assertIn("text/html", headers["Content-Type"])
-        self.assertIn(b"404", body)
-
         status, payload = self.request(
+            "POST",
+            self.endpoint(f"/fs/read/files?{query}"),
+            {"paths": ["missing-read.txt"]},
+        )
+        self.assertEqual(207, status)
+        self.assertEqual(404, payload["items"][0]["status"])
+        self.assertEqual("path_not_found", payload["items"][0]["error"]["code"])
+
+        status, context = self.request(
             "GET",
-            self.endpoint("/context?taskname=html-read-error&limit=10"),
+            self.endpoint("/context?taskname=read-files-item-error&limit=10"),
         )
         self.assertEqual(200, status)
-        self.assertEqual(1, payload["total"])
-        operation = payload["entries"][0]
-        self.assertEqual("fs.read", operation["operation"])
-        self.assertEqual("failed", operation["status"])
+        self.assertEqual(1, context["total"])
+        operation = context["entries"][0]
+        self.assertEqual("fs.read_files", operation["operation"])
+        self.assertEqual("succeeded", operation["status"])
         self.assertEqual(plan_id, operation["plan_id"])
 
     def test_main_responses_hide_runtime_version_and_disable_referrers(self) -> None:
@@ -3793,12 +3820,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("hello.txt", payload["entries"][0]["name"])
         self.assertEqual("file", payload["entries"][0]["type"])
 
-        query = urlencode({"path": "project/hello.txt", "offset": 6, "limit": 5})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
+        status, _, item = self.read_one("project/hello.txt", offset=6, limit=5)
         self.assertEqual(200, status)
-        self.assertEqual("world", payload["content"])
-        self.assertTrue(payload["truncated"])
-        self.assertEqual(11, payload["next_offset"])
+        self.assertEqual("world", item["content"])
+        self.assertTrue(item["truncated"])
+        self.assertEqual(11, item["next_offset"])
 
     def test_write_create_and_safe_replace(self) -> None:
         status, made = self.request(
@@ -3906,10 +3932,10 @@ class WorkspaceServerTests(unittest.TestCase):
 
         try:
             with patch.object(WorkspaceRequestHandler, "_resolve_path", swapped_resolve):
-                query = urlencode({"path": "race/secret.txt"})
-                status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
-                self.assertEqual(409, status)
-                self.assertEqual("path_changed", payload["error"]["code"])
+                status, _, item = self.read_one("race/secret.txt")
+                self.assertEqual(207, status)
+                self.assertEqual(409, item["status"])
+                self.assertEqual("path_changed", item["error"]["code"])
             race.unlink()
             (self.root / "race-original").rename(race)
             with patch.object(WorkspaceRequestHandler, "_resolve_path", swapped_resolve):
@@ -3942,7 +3968,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, created = self.request(
             "POST",
-            self.endpoint("/shares"),
+            self.endpoint("/share/create"),
             {"path": "project/handoff"},
         )
         self.assertEqual(201, status)
@@ -3951,13 +3977,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("directory", created["type"])
         self.assertNotIn("test-token", created["query_url"])
         self.assertEqual(
-            f"https://ws.example.test/kapsel/shares/{share_id}",
+            f"https://ws.example.test/kapsel/share/query/{share_id}",
             created["query_url"],
         )
 
         status, listing = self.request(
             "GET",
-            f"/kapsel/shares/{share_id}?depth=2",
+            f"/kapsel/share/query/{share_id}?depth=2",
         )
         self.assertEqual(200, status)
         self.assertEqual(
@@ -3965,7 +3991,7 @@ class WorkspaceServerTests(unittest.TestCase):
             [item["path"] for item in listing["entries"]],
         )
 
-        destination = f"/kapsel/w/{destination_token.token}/shares/{share_id}/import"
+        destination = f"/kapsel/w/{destination_token.token}/share/import/{share_id}"
         status, imported = self.request(
             "POST",
             destination,
@@ -3989,7 +4015,7 @@ class WorkspaceServerTests(unittest.TestCase):
             destination_token.token,
             70,
             "tools/call",
-            {"name": "inspect_share", "arguments": {"share_id": share_id, "depth": 0}},
+            {"name": "share_query", "arguments": {"share_id": share_id, "depth": 0}},
         )
         self.assertEqual(200, status)
         self.assertFalse(mcp_listing["result"]["isError"])
@@ -4000,12 +4026,12 @@ class WorkspaceServerTests(unittest.TestCase):
         }
         status, raw, _ = self.raw_request(
             "DELETE",
-            self.endpoint(f"/shares/{share_id}"),
+            self.endpoint(f"/share/delete/{share_id}"),
             headers=headers,
         )
         self.assertEqual(204, status)
         self.assertEqual(b"", raw)
-        status, missing = self.request("GET", f"/kapsel/shares/{share_id}")
+        status, missing = self.request("GET", f"/kapsel/share/query/{share_id}")
         self.assertEqual(404, status)
         self.assertEqual("share_not_found", missing["error"]["code"])
 
@@ -4181,29 +4207,27 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("path_outside_root", payload["error"]["code"])
 
     def test_parent_and_symlink_escape_are_rejected(self) -> None:
-        query = urlencode({"path": "../outside.txt"})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
-        self.assertEqual(403, status)
-        self.assertEqual("path_outside_root", payload["error"]["code"])
+        status, _, item = self.read_one("../outside.txt")
+        self.assertEqual(207, status)
+        self.assertEqual(403, item["status"])
+        self.assertEqual("path_outside_root", item["error"]["code"])
 
         outside = Path(self.temp.name).parent / f"outside-{os.getpid()}.txt"
         outside.write_text("secret", encoding="utf-8")
         try:
             (self.root / "escape").symlink_to(outside)
-            query = urlencode({"path": "escape"})
-            status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
-            self.assertEqual(403, status)
-            self.assertEqual("path_outside_root", payload["error"]["code"])
+            status, _, item = self.read_one("escape")
+            self.assertEqual(207, status)
+            self.assertEqual(403, item["status"])
+            self.assertEqual("path_outside_root", item["error"]["code"])
         finally:
             outside.unlink(missing_ok=True)
 
     def test_nul_paths_return_client_errors_instead_of_internal_errors(self) -> None:
-        status, payload = self.request(
-            "GET",
-            self.endpoint("/fs/read/text?path=%00"),
-        )
-        self.assertEqual(400, status)
-        self.assertEqual("invalid_path", payload["error"]["code"])
+        status, _, item = self.read_one("\x00")
+        self.assertEqual(207, status)
+        self.assertEqual(400, item["status"])
+        self.assertEqual("invalid_path", item["error"]["code"])
 
         record = self.server.tokens.update("test-token", can_preview=True)
         status, raw, _ = self.raw_request(
@@ -4241,11 +4265,10 @@ class WorkspaceServerTests(unittest.TestCase):
         logs.mkdir()
         log_file = logs / "app.log"
         log_file.write_text("log", encoding="utf-8")
-        query = urlencode({"path": str(page)})
-
-        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
-        self.assertEqual(403, status)
-        self.assertEqual("path_outside_root", payload["error"]["code"])
+        status, _, item = self.read_one(str(page))
+        self.assertEqual(207, status)
+        self.assertEqual(403, item["status"])
+        self.assertEqual("path_outside_root", item["error"]["code"])
 
         self.server.tokens.update(
             "test-token",
@@ -4254,22 +4277,21 @@ class WorkspaceServerTests(unittest.TestCase):
                 PathGrant(path=str(logs), read_only=True),
             ),
         )
-        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
+        status, _, item = self.read_one(str(page))
         self.assertEqual(200, status)
-        self.assertEqual("old", payload["content"])
+        self.assertEqual("old", item["content"])
 
-        page_etag = payload["etag"]
+        page_etag = item["etag"]
         status, payload = self.mutate([
             {"op": "file.replace", "path": str(page), "content": "published", "expected_etag": page_etag},
         ])
         self.assertEqual(200, status)
         self.assertEqual("published", page.read_text(encoding="utf-8"))
 
-        log_query = urlencode({"path": str(log_file)})
-        status, payload = self.request("GET", self.endpoint(f"/fs/read/text?{log_query}"))
+        status, _, item = self.read_one(str(log_file))
         self.assertEqual(200, status)
-        self.assertEqual("log", payload["content"])
-        log_etag = payload["etag"]
+        self.assertEqual("log", item["content"])
+        log_etag = item["etag"]
         status, payload = self.mutate([
             {"op": "file.replace", "path": str(log_file), "content": "blocked", "expected_etag": log_etag},
         ])
@@ -4353,13 +4375,13 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertEqual(0o600, (directory / "stdout.bin").stat().st_mode & 0o777)
             self.assertEqual(0o600, (directory / "stderr.bin").stat().st_mode & 0o777)
 
-        status, missing = self.request("GET", self.endpoint(f"/tasks/{task_ids[0]}"))
+        status, missing = self.request("GET", self.endpoint(f"/task/get/{task_ids[0]}"))
         self.assertEqual(404, status)
         self.assertEqual("task_not_found", missing["error"]["code"])
-        status, newest = self.request("GET", self.endpoint(f"/tasks/{task_ids[-1]}"))
+        status, newest = self.request("GET", self.endpoint(f"/task/get/{task_ids[-1]}"))
         self.assertEqual(200, status)
         self.assertEqual("archived-4", newest["stdout"])
-        status, listing = self.request("GET", self.endpoint("/tasks?status=finished"))
+        status, listing = self.request("GET", self.endpoint("/task/list?status=finished"))
         self.assertEqual(200, status)
         self.assertEqual(4, listing["total"])
 
@@ -4419,8 +4441,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotEqual(0, failed["exit_code"])
         self.assertIn("FAILED", failed["stderr"])
 
-        query = urlencode({"path": "demo/calculator.py"})
-        status, source = self.request("GET", self.endpoint(f"/fs/read/text?{query}"))
+        status, _, source = self.read_one("demo/calculator.py")
         self.assertEqual(200, status)
         self.assertIn("left - right", source["content"])
 
@@ -5347,18 +5368,14 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(404, status)
         self.assertEqual("preview_not_found", payload["error"]["code"])
-        status, payload = self.request(
-            "GET",
-            self.endpoint("/fs/read/text?path=project/site-a/.openkapsel/sql/secret.txt"),
-        )
-        self.assertEqual(403, status)
-        self.assertEqual("reserved_path", payload["error"]["code"])
-        status, payload = self.request(
-            "GET",
-            self.endpoint("/fs/read/text?path=project/site-a/database-alias/secret.txt"),
-        )
-        self.assertEqual(403, status)
-        self.assertEqual("reserved_path", payload["error"]["code"])
+        status, _, item = self.read_one("project/site-a/.openkapsel/sql/secret.txt")
+        self.assertEqual(207, status)
+        self.assertEqual(403, item["status"])
+        self.assertEqual("reserved_path", item["error"]["code"])
+        status, _, item = self.read_one("project/site-a/database-alias/secret.txt")
+        self.assertEqual(207, status)
+        self.assertEqual(403, item["status"])
+        self.assertEqual("reserved_path", item["error"]["code"])
         status, listing = self.request(
             "GET", self.endpoint("/fs/query/list?path=project/site-a")
         )
@@ -6315,7 +6332,7 @@ class WorkspaceServerTests(unittest.TestCase):
             record.token,
             990,
             "tools/call",
-            {"name": "query_memory", "arguments": {"tag": "auth"}},
+            {"name": "memory_query", "arguments": {"tag": "auth"}},
         )
         self.assertEqual(200, status)
         self.assertFalse(mcp_payload["result"]["isError"])
@@ -6374,7 +6391,7 @@ class WorkspaceServerTests(unittest.TestCase):
     def wait_for_task(self, task_id: str, timeout: float = 5, token: str = "test-token") -> dict:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            status, payload = self.request("GET", f"/kapsel/w/{token}/tasks/{task_id}")
+            status, payload = self.request("GET", f"/kapsel/w/{token}/task/get/{task_id}")
             self.assertEqual(200, status)
             if payload["status"] == "finished":
                 return payload

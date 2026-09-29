@@ -198,11 +198,13 @@ class ProtectedClientConfigTests(unittest.TestCase):
                 self.assertEqual(["other.txt"], listing["names"])
 
                 response = files.dispatch(
-                    "api_fs_read",
-                    {"query": {"path": ["client.json"]}},
+                    "api_fs_read_files",
+                    {"body": {"paths": ["client.json"]}},
                 )
-                self.assertEqual(404, response["status"])
-                self.assertEqual("path_not_found", response["error"]["code"])
+                self.assertEqual(207, response["status"])
+                item = response["body"]["items"][0]
+                self.assertEqual(404, item["status"])
+                self.assertEqual("path_not_found", item["error"]["code"])
 
                 api_listing = files.dispatch(
                     "api_fs_list",

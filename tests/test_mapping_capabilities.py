@@ -33,7 +33,7 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         self.assertEqual("available", capabilities["structured"]["state"])
         self.assertEqual("available", capabilities["tabular"]["state"])
         self.assertNotIn("ssh", capabilities)
-        self.assertIn("fs_read", capabilities["file"]["operations"])
+        self.assertIn("fs_read_files", capabilities["file"]["operations"])
         self.assertIn("log", capabilities["git"]["operations"])
         self.assertEqual(["search", "status"], capabilities["file_search"]["operations"])
         self.assertTrue(capabilities["file_search"]["read_only"])
@@ -86,9 +86,9 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                     files = ClientFiles(directory, writable=writable,
                                         rpc_capabilities=capabilities, rpc_registry=registry)
                     try:
-                        response = files.dispatch("api_fs_read", {"query": {"path": ["sample.txt"]}})
+                        response = files.dispatch("api_fs_read_files", {"body": {"paths": ["sample.txt"]}})
                         self.assertEqual(200, response["status"])
-                        self.assertEqual("sample", response["body"]["content"])
+                        self.assertEqual("sample", response["body"]["items"][0]["content"])
                         arguments = {"body": {"items": [{
                             "op": "file.create", "path": "new.txt", "content": "new",
                         }]}}

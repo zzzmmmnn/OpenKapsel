@@ -136,7 +136,7 @@ class OAuthHandlersMixin(OAuthConsentMixin):
         return True
 
     def _oauth_authenticated_route(self, path: str) -> str:
-        match = re.fullmatch(r"/connect/(" + CONNECTION_ID + r")/(mcp|transfer/(?:fs/content|uploads/[^/]+(?:/commit)?))", path)
+        match = re.fullmatch(r"/connect/(" + CONNECTION_ID + r")/(mcp|transfer/(?:fs/content|upload/(?:status|chunk|commit|cancel)/[^/]+))", path)
         if not match:
             raise ApiError(404, "not_found", "endpoint does not exist")
         cid, route = match.groups()

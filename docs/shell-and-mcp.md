@@ -6,7 +6,7 @@
 
 ### Execution placement
 
-`POST /shell/exec` and MCP `run_shell` accept `target: "auto"` (default),
+`POST /shell/exec` and MCP `shell_exec` accept `target: "auto"` (default),
 `"server"`, or `"client"`. Auto routes a `cwd` inside a mapping to that client
 through RPC; other working directories run on the server. Use workspace-relative
 paths such as `laptop/project`. Client requires a mapped cwd; explicit server
@@ -24,7 +24,7 @@ Choose commands for the advertised platform. The client argv limit (32768 total
 characters, including the interpreter) still applies.
 
 Responses include `location` and a unified `task_id`. Use this ID with ordinary
-`/tasks/<id>` status/output/SSE/stdin/interrupt/kill APIs (or MCP task tools).
+`/task/get/<id>` status/output/SSE/stdin/interrupt/kill APIs (or MCP task tools).
 Client stdout and stderr are combined in `stdout`, marked `output_combined`;
 status includes up to 64 KiB and `stdout_next_offset`. Continue with output
 cursors for more data. SSE drains all retained bytes before `done`; a client
@@ -34,7 +34,7 @@ chunks are at most 16 KiB; `interactive: true` is required. Client interrupt sen
 SIGINT on POSIX/Podman or CTRL_BREAK on native Windows; force-kill terminates the
 process group/tree. Server interruption retains its existing behavior.
 
-`GET /tasks?target=auto` and MCP `list_tasks` list both the current token's server
+`GET /task/list?target=auto` and MCP `task_list` list both the current token's server
 tasks and the workspace's accessible client tasks. `target=server|client`
 filters location; normal status/pagination still apply. `unavailable_mappings`
 reports clients whose tasks could not be listed, not that their tasks stopped.
@@ -42,7 +42,7 @@ Client task IDs remain routable after reconnect/server restart. Retention and
 client process-exit limitations are described in [client mappings](client-mappings.md).
 Never replay an uncertain start automatically: reconnect and list tasks first.
 Schedules still execute on the server. Client execution is exposed through the
-unified `/shell/exec` and `/tasks/*` APIs; there are no mapping-specific public
+unified `/shell/exec` and `/task/*` APIs; there are no mapping-specific public
 task or argv REST routes.
 
 ### Git inspection
@@ -50,7 +50,7 @@ task or argv REST routes.
 Git inspection is a read-only RPC capability, not Shell execution. REST uses
 `POST /rpc/git/<operation>` for the server workspace or
 `POST /mappings/<mapping_name>/rpc/git/<operation>` for a mapped repository. Legacy mapping IDs remain accepted by the route for compatibility.
-MCP uses the same `git` family through the generic `rpc` tool. Reads work
+MCP uses the same `git` family through the generic `rpc_call` tool. Reads work
 with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
 Supported read operations are `status`, `diff`, `diff_stat`, `log`,
@@ -82,7 +82,7 @@ Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
 task ID or polling. Narrow queries when output is truncated. Errors use 413 for
 snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
 422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
-MCP uses the generic `rpc` tool for both Git reads and mutations. Use
+MCP uses the generic `rpc_call` tool for both Git reads and mutations. Use
 `family=git`; provide `mapping_id` for a mapped repository or omit it for the
 server workspace. `add`, `commit`, `restore`, `checkout`, `fetch`, `pull`,
 and `clone` run as RPC tasks and use the normal task APIs; they do not require
@@ -151,8 +151,8 @@ The negotiated protocol is `2025-11-25`, with compatibility for `2025-03-26` and
 The current tool surface includes:
 
 - Discovery: `workspace_info`
-- portable REST delegation: `get_workspace_credentials` and `renew_workspace_credentials`
-- generic RPC: `rpc` for advertised server or mapping RPC families such as Git and Archive
+- portable REST delegation: `workspace_credentials_get` and `workspace_credentials_renew`
+- generic RPC: `rpc_call` for advertised server or mapping RPC families such as Git and Archive
 - Context: query, create, Plan tree, Plan update, and Note replacement
 - Memory: query, get project Memory, add, revise, and archive
 - files and transfer: bounded reads/queries, transactional edits, binary transfer, recycle, and resumable uploads
@@ -166,9 +166,9 @@ MCP binary chunks are bounded and Base64-encoded. Large transfers return complet
 `workspace_info` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `schedules`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
 
 The Shell tools in `tools/list` use the same unified task IDs as REST:
-`run_shell` and `list_tasks` accept `target=auto|server|client`; `get_task` and
-`read_task_output` report combined stdout and empty stderr for client tasks;
-`send_task_input` accepts at most 16 KiB per client call and 256 KiB per server
-call. `interrupt_task` and `kill_task` dispatch to the task's actual location.
+`shell_exec` and `task_list` accept `target=auto|server|client`; `task_get` and
+`task_output` report combined stdout and empty stderr for client tasks;
+`task_stdin` accepts at most 16 KiB per client call and 256 KiB per server
+call. `task_interrupt` and `task_kill` dispatch to the task's actual location.
 Client execution requires a writable mapping with `allow_exec` and a connected
 client advertising `execution.shell_command`.

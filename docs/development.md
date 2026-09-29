@@ -45,7 +45,7 @@ openkapsel/
   client_runtime/          mapping-client filesystem, tasks, reload and Windows support
   context/                 Context plans and Memory storage/handlers
   execution/               Shell/tasks, schedules, sandboxing, cgroups and network policy
-  files/                   file APIs, safe paths, recycle, uploads/shares and Git primitives
+  files/                   file APIs, safe paths, recycle, uploads/share/create and Git primitives
   mapping/                 provider transport, registry, RPC/native views and transfers
   rpc_plugins/             Git, Archive and extensible client RPC families
   server_runtime/          server configuration, lifecycle, dispatch and shared HTTP support

@@ -180,11 +180,11 @@ class ArchiveHTTPTests(unittest.TestCase):
         status, payload = self.rpc(conn["secret"], "tools/list")
         self.assertEqual(200, status, payload)
         names = {tool["name"] for tool in payload["result"]["tools"]}
-        self.assertIn("rpc", names)
-        self.assertFalse({name for name in names if name.startswith("archive_")} - {"archive_memory"})
+        self.assertIn("rpc_call", names)
+        self.assertFalse({name for name in names if name.startswith("archive_")} - {"memory_archive"})
 
         status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
+            "name": "rpc_call",
             "arguments": {
                 "family": "archive", "operation": "list",
                 "args": {"path": "local.zip", "limit": 100},
@@ -199,7 +199,7 @@ class ArchiveHTTPTests(unittest.TestCase):
         })
 
         status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
+            "name": "rpc_call",
             "arguments": {
                 "family": "archive", "operation": "read",
                 "args": {"path": "local.zip", "member": "docs/readme.txt"},

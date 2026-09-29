@@ -59,7 +59,7 @@ Content-Type: application/json
 }
 ```
 
-Use the generic MCP `rpc` tool equivalently with family `ssh` and the advertised operation schema.
+Use the generic MCP `rpc_call` tool equivalently with family `ssh` and the advertised operation schema.
 
 ## Critical errors
 

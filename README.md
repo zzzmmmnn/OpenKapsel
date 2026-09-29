@@ -129,7 +129,7 @@ The Python package is grouped by functional domain rather than kept as one flat 
 - `openkapsel/client_runtime/`: mapping-client filesystem, task, reload, and Windows runtime support.
 - `openkapsel/context/`: Context plans and Memory storage/handlers.
 - `openkapsel/execution/`: sandboxing, cgroups, Shell/tasks, schedules, environment, and network proxying.
-- `openkapsel/files/`: file APIs, safe paths, recycle, uploads/shares, and Git snapshot/mutation primitives.
+- `openkapsel/files/`: file APIs, safe paths, recycle, uploads/share/create, and Git snapshot/mutation primitives.
 - `openkapsel/mapping/`: provider transport, registry, RPC/native mapping, transfers, and mapping administration.
 - `openkapsel/rpc_plugins/`: shared Git/Archive and extensible client RPC families.
 - `openkapsel/server_runtime/`: server configuration, listener lifecycle, dispatch, Context/task HTTP, and shared HTTP support.

@@ -121,7 +121,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
 
         status, _, raw = self.request(
             "GET",
-            self.base + "/tasks?target=client",
+            self.base + "/task/list?target=client",
             headers={"Authorization": "Bearer " + self.record.control_token},
         )
         self.assertEqual(200, status, raw)
@@ -133,7 +133,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
         while time.monotonic() < deadline:
             status, _, raw = self.request(
                 "GET",
-                self.base + "/tasks/" + started["task_id"],
+                self.base + "/task/get/" + started["task_id"],
                 headers={"Authorization": "Bearer " + self.record.control_token},
             )
             self.assertEqual(200, status, raw)
@@ -148,7 +148,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
 
         status, _, raw = self.request(
             "GET",
-            self.base + "/tasks/" + started["task_id"] + "/output",
+            self.base + "/task/output/" + started["task_id"],
             headers={"Authorization": "Bearer " + self.record.control_token},
         )
         self.assertEqual(200, status, raw)

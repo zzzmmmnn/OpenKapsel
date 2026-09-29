@@ -783,17 +783,18 @@ class FileHandlersMixin(FileOperationSupportMixin):
             raise ApiError(400, "invalid_request", f"{key} must be an integer between {minimum} and {maximum}")
         return value
 
-    def _handle_fs_read_many(self) -> None:
+    def _handle_fs_read_files(self) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         body = self._read_json()
         encoding = text_encoding(body.get("encoding", "utf-8"))
-        if self._try_mapping_file_api("fs_read_many", body=body):
+        if self._try_mapping_file_api("fs_read_files", body=body):
             return
         paths = body.get("paths")
         if not isinstance(paths, list) or not paths or len(paths) > self.server.config.max_batch_file_operations:
             raise ApiError(400, "invalid_request", "paths must be a non-empty array within the batch operation limit")
         if any(not isinstance(path, str) or not path for path in paths):
             raise ApiError(400, "invalid_request", "paths must contain non-empty strings")
+        offset = self._body_read_limit(body, "offset", 0, self.server.config.max_read_chars, minimum=0)
         limit = self._body_read_limit(body, "limit", min(65536, self.server.config.max_read_chars), self.server.config.max_read_chars)
         remaining = self._body_read_limit(body, "max_total_chars", min(262144, self.server.config.max_read_chars), self.server.config.max_read_chars)
         items = []
@@ -809,6 +810,12 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     if not stat.S_ISREG(details.st_mode):
                         raise ApiError(400, "not_a_file", "path is not a regular file")
                     require_standard_file_size(details, operation="ordinary text read")
+                    skipped = offset
+                    while skipped:
+                        chunk = handle.read(min(skipped, 64 * 1024))
+                        if not chunk:
+                            break
+                        skipped -= len(chunk)
                     count = min(limit, remaining)
                     window = handle.read(count + 1)
                     after = self._stream_stat(handle)
@@ -816,8 +823,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
                         raise ApiError(409, "path_changed", "file changed during read")
                 content = window[:count]
                 truncated = len(window) > count
-                item.update(status=200, content=content, length=len(content), encoding=encoding,
-                            truncated=truncated, next_offset=len(content) if truncated else None,
+                next_offset = offset + len(content)
+                item.update(status=200, content=content, offset=offset, length=len(content), encoding=encoding,
+                            truncated=truncated, next_offset=next_offset if truncated else None,
                             etag=self._path_etag(path, details))
                 remaining -= len(content)
                 total += len(content)
@@ -834,144 +842,6 @@ class FileHandlersMixin(FileOperationSupportMixin):
             items.append(item)
         self._send_json(207 if any(item["status"] != 200 for item in items) else 200,
                         {"items": items, "total": len(items), "total_chars": total})
-
-    def _handle_fs_read(self, query: dict[str, list[str]]) -> None:
-        self._require_permission(self.token_record.can_read, "read permission is not granted")
-        if self._try_mapping_file_api("fs_read", query=query):
-            return
-        requested = self._required_query(query, "path")
-        path = self._resolve_path(requested)
-        encoding = text_encoding(self._query_one(query, "encoding", "utf-8"))
-        if "byte_offset" in query:
-            if encoding != "utf-8":
-                raise ApiError(400, "invalid_encoding", "byte_offset requires utf-8; use character offsets or binary download")
-            self._handle_fs_read_bytes(path, query)
-            return
-        offset = self._query_int(query, "offset", 0, minimum=0)
-        limit = self._query_int(
-            query,
-            "limit",
-            self.server.config.default_read_chars,
-            minimum=1,
-            maximum=self.server.config.max_read_chars,
-        )
-        try:
-            with self._open_binary(path) as binary, io.TextIOWrapper(binary, encoding=encoding, newline="") as handle:
-                details = self._stream_stat(handle)
-                if not stat.S_ISREG(details.st_mode):
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
-                require_standard_file_size(details, operation="ordinary text read")
-                remaining = offset
-                while remaining:
-                    skipped = handle.read(min(remaining, 64 * 1024))
-                    if not skipped:
-                        break
-                    remaining -= len(skipped)
-                # Read one extra character to determine truncation without loading
-                # the entire file into memory.
-                window = handle.read(limit + 1)
-                after = self._stream_stat(handle)
-                if self._path_etag(path, details) != self._path_etag(path, after):
-                    raise ApiError(409, "path_changed", "file changed during read")
-        except UnicodeDecodeError:
-            raise decode_error(encoding) from None
-        content = window[:limit]
-        next_offset = offset + len(content)
-        truncated = len(window) > limit
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "path": str(path),
-                "content": content,
-                "offset": offset,
-                "length": len(content),
-                "truncated": truncated,
-                "next_offset": next_offset if truncated else None,
-                "encoding": encoding,
-                "etag": self._path_etag(path, details),
-                "size": details.st_size,
-            },
-        )
-
-    def _handle_fs_read_bytes(self, path: Path, query: dict[str, list[str]]) -> None:
-        byte_offset = self._query_int(query, "byte_offset", 0, minimum=0)
-        limit = self._query_int(
-            query,
-            "limit",
-            self.server.config.default_read_chars,
-            minimum=1,
-            maximum=self.server.config.max_read_chars,
-        )
-        handle = self._open_binary(path)
-        with handle:
-            file_stat = self._stream_stat(handle)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
-            require_standard_file_size(file_stat, operation="ordinary byte-offset text read")
-            size = file_stat.st_size
-            if byte_offset > size:
-                raise ApiError(
-                    HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
-                    "invalid_offset",
-                    "byte_offset is beyond the end of the file",
-                    {"size": size},
-                )
-            handle.seek(byte_offset)
-            raw = handle.read(limit + 4)
-        if byte_offset < size and raw and raw[0] & 0xC0 == 0x80:
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_utf8_boundary",
-                "byte_offset points into the middle of a UTF-8 character",
-            )
-        decoded = None
-        complete_raw = b""
-        for trim in range(0, min(4, len(raw)) + 1):
-            candidate = raw if trim == 0 else raw[:-trim]
-            try:
-                decoded = candidate.decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-            complete_raw = candidate
-            break
-        if decoded is None:
-            raise ApiError(
-                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-                "not_utf8_text",
-                "file is not valid UTF-8 text",
-            )
-        if raw and not complete_raw:
-            raise ApiError(
-                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-                "not_utf8_text",
-                "file is not valid UTF-8 text",
-            )
-        selected: list[str] = []
-        consumed = 0
-        for character in decoded:
-            encoded_length = len(character.encode("utf-8"))
-            if selected and consumed + encoded_length > limit:
-                break
-            selected.append(character)
-            consumed += encoded_length
-            if consumed >= limit:
-                break
-        content = "".join(selected)
-        next_offset = byte_offset + consumed
-        truncated = next_offset < size
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "path": str(path),
-                "content": content,
-                "byte_offset": byte_offset,
-                "bytes_read": consumed,
-                "length": len(content),
-                "truncated": truncated,
-                "next_byte_offset": next_offset if truncated else None,
-                "encoding": "utf-8",
-            },
-        )
 
     def _handle_fs_read_large(self) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")

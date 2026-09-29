@@ -322,7 +322,7 @@ class UploadClient:
         size: int,
         digest: str,
     ) -> int | None:
-        result = self.request("GET", f"uploads/{upload_id}")
+        result = self.request("GET", f"upload/status/{upload_id}")
         if result.status == 404 and _error_code(result) == "upload_not_found":
             return None
         require_success(result)
@@ -353,7 +353,7 @@ class UploadClient:
         try:
             result = self.request(
                 "PATCH",
-                f"uploads/{upload_id}",
+                f"upload/chunk/{upload_id}",
                 headers=headers,
                 data=chunk,
             )
@@ -475,7 +475,7 @@ class UploadClient:
                 self.recycle_existing(destination)
             _result, created = self.json_request(
                 "POST",
-                "uploads",
+                "upload/create",
                 {
                     "path": destination,
                     "size": file_size,
@@ -517,7 +517,7 @@ class UploadClient:
         try:
             _result, committed = self.json_request(
                 "POST",
-                f"uploads/{upload_id}/commit",
+                f"upload/commit/{upload_id}",
                 None,
                 mutation=True,
             )

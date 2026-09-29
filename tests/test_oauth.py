@@ -236,7 +236,7 @@ class OAuthHTTPTests(unittest.TestCase):
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         for secret in (current.token, current.control_token, current.preview_token):
             self.assertNotIn(secret, text)
-        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "prepare_download", "arguments": {"path": "hello.txt"}})
+        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "fs_download", "arguments": {"path": "hello.txt"}})
         transfer = payload["result"]["structuredContent"]["transfer"]["url"]
         self.assertIn("/connect/" + self.cid + "/transfer/", transfer)
         parsed = urlsplit(transfer)
@@ -251,7 +251,7 @@ class OAuthHTTPTests(unittest.TestCase):
         self.server.oauth.update(
             self.cid, "Client reassigned", app_id=reassigned.app_id, workspace="oauth-reassigned"
         )
-        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "list_files", "arguments": {"path": "."}})
+        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "fs_list", "arguments": {"path": "."}})
         self.assertEqual(200, status)
         self.assertEqual(["new.txt"], [item["name"] for item in payload["result"]["structuredContent"]["entries"]])
         self.assertEqual("Client reassigned", self.server.oauth.get(self.cid)["comment"])

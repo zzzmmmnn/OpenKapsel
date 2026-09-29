@@ -157,7 +157,7 @@ class ShellRoutingMixin:
         if body.get("timeout_seconds") is not None:
             args["timeout_seconds"] = body["timeout_seconds"]
         result = client_summary(row["id"], self._mapping_rpc(row, "task_start", args))
-        result["status_url"] = f"{self._base_path()}/tasks/{result['task_id']}"
+        result["status_url"] = f"{self._base_path()}/task/get/{result['task_id']}"
         self._send_json(202, result)
         return True
 

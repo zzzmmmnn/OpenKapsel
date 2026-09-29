@@ -27,6 +27,12 @@ class ClientFileAPITests(unittest.TestCase):
     def call(self, operation, body=None, query=None):
         return self.files.dispatch("api_" + operation, {"body": body or {}, "query": query or {}, "display_root": "/workspace/laptop"})
 
+    def read_one(self, path, **options):
+        body = {"paths": [path], **options}
+        result = self.call("fs_read_files", body)
+        item = result.get("body", {}).get("items", [{}])[0]
+        return {"status": item.get("status", result["status"]), "body": item}
+
     def etag(self, path):
         result = self.call("fs_stat", query={"path": [path], "fields": ["type,size,etag"]})
         self.assertEqual(200, result["status"], result)
@@ -40,9 +46,9 @@ class ClientFileAPITests(unittest.TestCase):
         }]})
         self.assertEqual(200, result["status"], result)
         etag = result["body"]["items"][0]["etag"]
-        result = self.call("fs_read", query={"path": ["sub/test.txt"]})
+        result = self.read_one("sub/test.txt")
         self.assertEqual(content, result["body"]["content"])
-        self.assertEqual("/workspace/laptop/sub/test.txt", result["body"]["path"])
+        self.assertEqual("sub/test.txt", result["body"]["path"])
         wrong = self.call("fs_mutate", {"items": [{
             "op": "text.replace", "path": "sub/test.txt", "expected_etag": '"wrong"',
             "replacements": [{"old": "héllo", "new": "bye", "expected_count": 1}],
@@ -107,9 +113,9 @@ class ClientFileAPITests(unittest.TestCase):
                 self.assertEqual(200, result["status"], result)
                 raw = content.encode(encoding)
                 self.assertEqual(raw, path.read_bytes())
-                read = self.call("fs_read", query={"path": ["encoded.txt"], "encoding": [encoding]})
+                read = self.read_one("encoded.txt", encoding=encoding)
                 self.assertEqual(content, read["body"]["content"], read)
-                batch = self.call("fs_read_many", {"paths": ["encoded.txt"], "encoding": encoding})
+                batch = self.call("fs_read_files", {"paths": ["encoded.txt"], "encoding": encoding})
                 self.assertEqual(content, batch["body"]["items"][0]["content"], batch)
                 replaced = self.call("fs_mutate", {"items": [{
                     "op": "text.replace", "path": "encoded.txt", "encoding": encoding,
@@ -129,7 +135,7 @@ class ClientFileAPITests(unittest.TestCase):
     def test_invalid_encoding_is_strict_and_does_not_modify_files(self):
         path = self.root / "legacy.txt"
         path.write_bytes(b"caf\xe9\r\n")
-        self.assertEqual(415, self.call("fs_read", query={"path": ["legacy.txt"]})["status"])
+        self.assertEqual(415, self.read_one("legacy.txt")["status"])
         etag = self.etag("legacy.txt")
         self.assertEqual(415, self.call("fs_mutate", {"items": [{
             "op": "text.replace", "path": "legacy.txt", "expected_etag": etag,
@@ -149,14 +155,13 @@ class ClientFileAPITests(unittest.TestCase):
             "replacements": [{"old": "caf", "new": "😀"}],
         }]})["status"])
         self.assertEqual(b"caf\xe9\r\n", path.read_bytes())
-        self.assertEqual(400, self.call("fs_read", query={"path": ["legacy.txt"], "encoding": ["cp1252"], "byte_offset": ["0"]})["status"])
 
     def test_crlf_character_cursors_and_batch_encode_preflight(self):
         path = self.root / "crlf.txt"
         path.write_bytes("甲\r\n乙\n".encode("utf-8"))
-        first = self.call("fs_read", query={"path": ["crlf.txt"], "limit": ["2"]})["body"]
+        first = self.read_one("crlf.txt", limit=2)["body"]
         self.assertEqual("甲\r", first["content"])
-        second = self.call("fs_read", query={"path": ["crlf.txt"], "offset": [str(first["next_offset"])]})["body"]
+        second = self.read_one("crlf.txt", offset=first["next_offset"])["body"]
         self.assertEqual("\n乙\n", second["content"])
         self.assertEqual("甲\r\n乙\n", first["content"] + second["content"])
         (self.root / "ascii.txt").write_bytes(b"old\r\n")
@@ -173,7 +178,7 @@ class ClientFileAPITests(unittest.TestCase):
 
     def test_export_confinement_and_readonly_apply_to_high_level_operations(self):
         for value in ("../outside", "/etc/passwd", ".openkapsel/context/db", "a\x00b", "C:\\file"):
-            result = self.call("fs_read", query={"path": [value]})
+            result = self.read_one(value)
             self.assertGreaterEqual(result["status"], 400, result)
         self.files.writable = False
         with self.assertRaises(OSError) as error:
@@ -181,29 +186,31 @@ class ClientFileAPITests(unittest.TestCase):
         self.assertEqual(errno.EROFS, error.exception.errno)
         self.assertEqual(200, self.call("fs_list", query={"path": ["."]})["status"])
 
-    def test_response_limit_is_structured_and_does_not_break_subsequent_calls(self):
+    def test_read_files_budget_bounds_large_text_and_supports_continuation(self):
         (self.root / "large").write_bytes(b"x" * (1024 * 1024))
-        result = self.call("fs_read", query={"path": ["large"], "limit": [str(1024 * 1024)]})
-        self.assertEqual(413, result["status"])
-        self.assertEqual("mapping_response_too_large", result["error"]["code"])
-        self.assertFalse(result["error"]["details"]["mutation_may_have_completed"])
-        self.assertEqual(200, self.call("fs_read", query={"path": ["large"], "limit": ["10"]})["status"])
+        result = self.read_one("large", limit=1024 * 1024)
+        self.assertEqual(200, result["status"])
+        self.assertTrue(result["body"]["truncated"])
+        self.assertEqual(262144, result["body"]["next_offset"])
+        continued = self.read_one("large", offset=result["body"]["next_offset"], limit=10)
+        self.assertEqual(200, continued["status"])
+        self.assertEqual(10, continued["body"]["length"])
 
     def test_read_many_limits_errors_and_confinement(self):
         (self.root / "a").write_text("abcdef", encoding="utf-8")
         (self.root / "binary").write_bytes(b"\xff")
-        result = self.call("fs_read_many", {"paths": ["a", "missing", "binary", "../secret"], "limit": 3})
+        result = self.call("fs_read_files", {"paths": ["a", "missing", "binary", "../secret"], "limit": 3})
         self.assertEqual(207, result["status"], result)
         items = result["body"]["items"]
         self.assertEqual("abc", items[0]["content"])
         self.assertEqual(3, items[0]["next_offset"])
         self.assertEqual([200, 404, 415], [item["status"] for item in items[:3]])
         self.assertGreaterEqual(items[3]["status"], 400)
-        result = self.call("fs_read_many", {"paths": ["a", "a"], "max_total_chars": 2})
+        result = self.call("fs_read_files", {"paths": ["a", "a"], "max_total_chars": 2})
         self.assertEqual(2, result["body"]["total_chars"])
         self.assertEqual("read_budget_exhausted", result["body"]["items"][1]["error"]["code"])
         for body in ({"paths": []}, {"paths": [1]}, {"paths": ["a"], "limit": True}):
-            self.assertEqual(400, self.call("fs_read_many", body)["status"])
+            self.assertEqual(400, self.call("fs_read_files", body)["status"])
 
     def test_grep_globs_and_recursive_manifest(self):
         (self.root / "src").mkdir()
@@ -213,12 +220,12 @@ class ClientFileAPITests(unittest.TestCase):
         result = self.call("fs_grep", query={"path": ["."], "query": ["needle"], "include": ["*.py"], "exclude": ["node_modules"]})
         self.assertEqual(1, result["body"]["match_count"], result)
         self.assertTrue(result["body"]["matches"][0]["path"].endswith("src/a.py"))
-        legacy = self.call(
-            "fs_search",
-            query={"path": ["src"], "query": ["needle"], "include": ["*.py"]},
-        )
-        self.assertEqual(200, legacy["status"], legacy)
-        self.assertEqual(1, legacy["body"]["match_count"])
+        with self.assertRaises(OSError) as legacy:
+            self.call(
+                "fs_search",
+                query={"path": ["src"], "query": ["needle"], "include": ["*.py"]},
+            )
+        self.assertEqual(errno.ENOSYS, legacy.exception.errno)
         result = self.call("fs_manifest", {"recursive": True, "path": "src", "depth": 1, "include_sha256": True})
         self.assertEqual(200, result["status"], result)
         self.assertEqual(3, result["body"]["total"])
@@ -240,4 +247,4 @@ class ClientFileAPITests(unittest.TestCase):
         (self.root / ".openkapsel/secret").write_text("secret")
         result = self.call("fs_tree", query={"path": ["."], "depth": ["2"]})
         self.assertEqual([], result["body"]["tree"]["children"])
-        self.assertIn(self.call("fs_read", query={"path": ["link/private"]})["status"], {403, 409})
+        self.assertIn(self.read_one("link/private")["status"], {403, 409})

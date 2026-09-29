@@ -36,7 +36,7 @@ class GitHTTPTests(unittest.TestCase):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             status, payload = self.rpc(secret, "tools/call", {
-                "name": "get_task", "arguments": {"task_id": task_id},
+                "name": "task_get", "arguments": {"task_id": task_id},
             })
             self.assertEqual(200, status, payload)
             result = payload["result"]["structuredContent"]
@@ -56,9 +56,9 @@ class GitHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, listed)
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
         self.assertNotIn("git", tools)
-        self.assertIn("rpc", tools)
-        self.assertNotIn("mapping_id", tools["rpc"]["inputSchema"].get("required", []))
-        mapping_target = tools["rpc"]["inputSchema"]["properties"]["mapping_id"]
+        self.assertIn("rpc_call", tools)
+        self.assertNotIn("mapping_id", tools["rpc_call"]["inputSchema"].get("required", []))
+        mapping_target = tools["rpc_call"]["inputSchema"]["properties"]["mapping_id"]
         self.assertRegex("rpc-laptop", mapping_target["pattern"])
         self.assertRegex("x" * 64, mapping_target["pattern"])
         self.assertIn("mapping name", mapping_target["description"].lower())
@@ -68,7 +68,7 @@ class GitHTTPTests(unittest.TestCase):
 
         for op in operations:
             status, payload = self.rpc(conn["secret"], "tools/call", {
-                "name": "rpc",
+                "name": "rpc_call",
                 "arguments": {
                     "family": "git",
                     "operation": op,
@@ -82,9 +82,9 @@ class GitHTTPTests(unittest.TestCase):
             self.assertEqual("git", result["family"])
             self.assertEqual(op, result["operation"])
 
-        for name, args in (("read_files", {"paths": ["source.txt"]}),
-                           ("file_manifest", {"recursive": True, "depth": 1}),
-                           ("files_grep", {"query": "original", "include": ["*.txt"], "exclude": [".git"]})):
+        for name, args in (("fs_read_files", {"paths": ["source.txt"]}),
+                           ("fs_manifest", {"recursive": True, "depth": 1}),
+                           ("fs_grep", {"query": "original", "include": ["*.txt"], "exclude": [".git"]})):
             status, payload = self.rpc(conn["secret"], "tools/call", {"name": name, "arguments": args})
             self.assertEqual(200, status, payload)
             self.assertFalse(payload["result"]["isError"], payload)
@@ -103,7 +103,7 @@ class GitHTTPTests(unittest.TestCase):
         (self.root / "source.txt").write_text("changed through rpc\n", encoding="utf-8")
 
         status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
+            "name": "rpc_call",
             "arguments": {
                 "family": "git", "operation": "add",
                 "args": {"cwd": ".", "paths": ["source.txt"]}, **context,
@@ -120,7 +120,7 @@ class GitHTTPTests(unittest.TestCase):
         self.assertEqual("add", staged["rpc_operation"])
 
         status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
+            "name": "rpc_call",
             "arguments": {
                 "family": "git", "operation": "commit",
                 "args": {"cwd": ".", "message": "Server RPC commit"}, **context,
@@ -134,14 +134,14 @@ class GitHTTPTests(unittest.TestCase):
         self.assertEqual(0, committed["exit_code"], committed)
         self.assertEqual("commit", committed["result"]["operation"])
         status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
+            "name": "rpc_call",
             "arguments": {"family": "git", "operation": "log", "args": {"cwd": ".", "limit": 1}},
         })
         self.assertEqual(200, status, payload)
         self.assertIn("Server RPC commit", payload["result"]["structuredContent"]["result"]["output"])
 
         status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc",
+            "name": "rpc_call",
             "arguments": {
                 "family": "git", "operation": "fetch", "args": {"cwd": "."}, **context,
             },
@@ -174,7 +174,7 @@ class GitHTTPTests(unittest.TestCase):
         try:
             conn = self.connection("Mapped Git RPC")
             status, payload = self.rpc(conn["secret"], "tools/call", {
-                "name": "rpc",
+                "name": "rpc_call",
                 "arguments": {
                     "mapping_id": row["id"], "family": "git", "operation": "status",
                     "args": {"cwd": "."},

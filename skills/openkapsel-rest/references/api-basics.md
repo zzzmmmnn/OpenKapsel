@@ -10,7 +10,7 @@ Normalize `workspace_url` by removing its trailing slash. Workspace endpoints ar
 - A preview token is independent. Never substitute it for either workspace credential.
 - `GET <workspace_url>/` never echoes the control token.
 
-Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, public share URL, or workspace application's own route. When operating through an authenticated OAuth or Static MCP connection, use `get_workspace_credentials` to obtain the current portable REST workspace URL/control token and `renew_workspace_credentials` to rotate that pair inside the normal renewal window; ordinary MCP Discovery does not expose the secret values.
+Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, public share URL, or workspace application's own route. When operating through an authenticated OAuth or Static MCP connection, use `workspace_credentials_get` to obtain the current portable REST workspace URL/control token and `workspace_credentials_renew` to rotate that pair inside the normal renewal window; ordinary MCP Discovery does not expose the secret values.
 
 Control tokens do not sign in to administration. Interactive browser consent on the configured OpenKapsel service origin is a separate user-driven workflow; these REST helpers do not submit credentials to browser forms or follow client callback redirects. Never place a control token in a URL or request log.
 
@@ -97,10 +97,10 @@ Use `--output FILE` for binary downloads, `--include-headers` to inspect respons
 The server also accepts these routes under the service base, without a URL token:
 
 - `GET|HEAD|PUT <service-base>/transfer/fs/content?...`
-- `GET|HEAD|PATCH|DELETE <service-base>/transfer/uploads/<upload_id>`
-- `POST <service-base>/transfer/uploads/<upload_id>/commit`
+- `GET|HEAD|PATCH|DELETE <service-base>/transfer/upload/status/<upload_id>`
+- `POST <service-base>/transfer/upload/commit/<upload_id>`
 
-They require the Bearer control token, which selects the token record. There is no control-only alias for creating an upload session; create it through `<workspace_url>/uploads` first. Prefer the canonical workspace routes unless a returned transfer URL specifically uses `/transfer`.
+They require the Bearer control token, which selects the token record. There is no control-only alias for creating an upload session; create it through `<workspace_url>/upload/create` first. Prefer the canonical workspace routes unless a returned transfer URL specifically uses `/transfer`.
 
 ## Errors and retries
 
@@ -115,5 +115,5 @@ Errors are JSON and use non-2xx status codes:
 - On upload offset conflict, use the returned current offset rather than restarting blindly.
 - On ETag or revision conflict, re-read the resource, reconcile, and retry with the new validator.
 - Treat an ambiguous network failure after a mutation as unknown outcome; inspect state before repeating it.
-- Never automatically replay a Shell or RPC task start after timeout, cancellation or lost response; inspect `/tasks` and reuse the original task ID.
+- Never automatically replay a Shell or RPC task start after timeout, cancellation or lost response; inspect `/task/list` and reuse the original task ID.
 - On RPC-first servers, 413 requires smaller file/RPC budgets or binary transfer, not FUSE fallback. Inspect `unavailable_mappings` and `truncated` before treating a query result as complete.

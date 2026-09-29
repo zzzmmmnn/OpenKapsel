@@ -279,10 +279,9 @@ class DiscoveryMixin:
             ),
             "fs_read": family(
                 "./fs/read/<operation>",
-                "Text, multi-file, and bounded large-file reads.",
+                "Text-file batches and bounded large-file reads.",
                 {
-                    "text": operation("fs_read"),
-                    "many": operation("fs_read_many"),
+                    "files": operation("fs_read_files"),
                     "large": operation("fs_read_large"),
                 },
             ),
@@ -299,7 +298,7 @@ class DiscoveryMixin:
                 "Guarded file mutations and path changes.",
                 {
                     "mutate": operation("fs_mutate"),
-                    "large": operation("fs_replace_large"),
+                    "replace_large": operation("fs_replace_large"),
                     "mkdir": operation("fs_mkdir"),
                     "move": operation("fs_move"),
                     "copy": operation("fs_copy"),
@@ -332,33 +331,27 @@ class DiscoveryMixin:
                 },
             ),
             "uploads": family(
-                "./uploads[/<upload_id>]",
+                "./upload/<operation>[/<upload_id>]",
                 "Resumable create-only upload sessions.",
                 {
                     "create": operation("upload_create"),
-                    "status": operation("upload_status"),
-                    "chunk": operation("upload_chunk"),
-                    "commit": operation(
-                        "upload_commit",
-                        path="./uploads/<upload_id>/commit",
-                    ),
-                    "cancel": operation("upload_cancel"),
+                    "status": operation("upload_status", path="./upload/status/<upload_id>"),
+                    "chunk": operation("upload_chunk", path="./upload/chunk/<upload_id>"),
+                    "commit": operation("upload_commit", path="./upload/commit/<upload_id>"),
+                    "cancel": operation("upload_cancel", path="./upload/cancel/<upload_id>"),
                 },
             ),
             "sharing": family(
-                "./shares[/<share_id>]",
+                "./share/<operation>[/<share_id>]",
                 "Temporary cross-workspace file/directory sharing.",
                 {
-                    "create": operation("share_create"),
+                    "create": operation("share_create", path="./share/create"),
                     "query": operation(
                         "share_query",
                         path=endpoints["share_query"].get("url"),
                     ),
-                    "import": operation(
-                        "share_import",
-                        path="./shares/<share_id>/import",
-                    ),
-                    "delete": operation("share_delete"),
+                    "import": operation("share_import", path="./share/import/<share_id>"),
+                    "delete": operation("share_delete", path="./share/delete/<share_id>"),
                 },
             ),
             "environment": family(
@@ -382,32 +375,26 @@ class DiscoveryMixin:
                 },
             ),
             "tasks": family(
-                "./tasks[/<task_id>]",
+                "./task/<operation>[/<task_id>]",
                 "Server/unified task listing, output, streaming, and control.",
                 {
-                    "list": operation("task_list"),
-                    "get": operation("task_status"),
-                    "output": operation(
-                        "task_output",
-                        path="./tasks/<task_id>/output",
-                    ),
+                    "list": operation("task_list", path="./task/list"),
+                    "get": operation("task_get", path="./task/get/<task_id>"),
+                    "output": operation("task_output", path="./task/output/<task_id>"),
                     "stream": operation(
                         "task_stream",
-                        path="./tasks/<task_id>/stream",
+                        path="./task/stream/<task_id>",
                         description=endpoints.get("task_stream", {}).get("notes"),
                     ),
-                    "stdin": operation(
-                        "task_stdin",
-                        path="./tasks/<task_id>/stdin",
-                    ),
+                    "stdin": operation("task_stdin", path="./task/stdin/<task_id>"),
                     "interrupt": operation(
                         "task_interrupt",
-                        path="./tasks/<task_id>/interrupt",
+                        path="./task/interrupt/<task_id>",
                         description=endpoints.get("task_interrupt", {}).get("notes"),
                     ),
                     "kill": operation(
                         "task_kill",
-                        path="./tasks/<task_id>/kill",
+                        path="./task/kill/<task_id>",
                         description=endpoints.get("task_kill", {}).get("notes"),
                     ),
                 },
@@ -679,7 +666,7 @@ class DiscoveryMixin:
         base = self._base_path()
         share_public_base = (
             f"{self._public_base_url().rstrip('/')}"
-            f"/shares"
+            f"/share/query"
         )
         if self.server.config.preview_base_url:
             preview_base = (
@@ -1473,24 +1460,12 @@ class DiscoveryMixin:
                         **optional_read_context_query,
                     },
                 },
-                "fs_read": {
-                    "method": "GET",
-                    "url": f"{base}/fs/read/text?path=<path>&offset=0&limit=65536",
-                    "notes": "Explicit encoding, UTF-8 by default; strict decoding, literal LF/CRLF/CR preservation. byte_offset only supports UTF-8; other encodings use character offset. Supported: utf-8, utf-8-sig, utf-16-le, utf-16-be, ascii, iso8859-1, cp1252, gbk, gb18030, big5, shift_jis. No auto-detection; UTF-16 BOM remains U+FEFF.",
-                    "query": {
-                        "path": "<required>",
-                        "offset": 0,
-                        "byte_offset": "alternative to offset",
-                        "encoding": "utf-8",
-                        "limit": self.server.config.default_read_chars,
-                        **optional_read_context_query,
-                    },
-                },
-                "fs_read_many": {
-                    "method": "POST", "url": f"{base}/fs/read/many",
+                "fs_read_files": {
+                    "method": "POST", "url": f"{base}/fs/read/files",
                     "authentication": "read-only URL token; Bearer token is not required",
-                    "json": {"paths": ["src/main.py", "README.md"], "encoding": "utf-8", "limit": 65536, "max_total_chars": 262144},
-                    "notes": "Explicit encoding as in fs_read, UTF-8 by default; literal newlines. paths bounded by max_batch_file_operations; limit is per-file characters, max_total_chars is shared, both bounded by max_read_chars. Items contain status, content, etag, truncated and next_offset; errors are per-item (HTTP 207). An exhausted budget reports read_budget_exhausted for remaining items. Continue truncated files using fs_read offset=next_offset with the same encoding. Same-mapping batches execute in one client RPC.",
+                    "query": dict(optional_read_context_query),
+                    "json": {"paths": ["src/main.py", "README.md"], "encoding": "utf-8", "offset": 0, "limit": 65536, "max_total_chars": 262144},
+                    "notes": "Explicit encoding, UTF-8 by default; literal newlines. paths is bounded by max_batch_file_operations; use one path for a single-file read. offset is a shared character offset; limit is per-file characters and max_total_chars is shared. Items contain status, content, offset, etag, truncated and next_offset; errors are per-item (HTTP 207). Continue truncated files by calling fs_read_files again with offset=next_offset and the same encoding. Same-mapping batches execute in one client RPC.",
                 },
                 "fs_stat": {
                     "method": "GET",
@@ -1547,7 +1522,7 @@ class DiscoveryMixin:
                 "fs_grep": {
                     "method": "GET",
                     "url": f"{base}/fs/query/grep?path=.&query=<text>&depth=8&max_results=100",
-                    "notes": "greps UTF-8 file contents; MCP name is files_grep. Legacy MCP search_files, REST /fs/query/search, and mapping fs_search remain accepted only as compatibility aliases. Supports regex and case_sensitive flags. Repeated include/exclude globs: slash-free patterns match basenames, others match root-relative POSIX paths; case-sensitive fnmatch semantics (* spans /). Exclude wins and prunes matching directories. Up to 64 patterns per group, 512 characters each. Each visited mapping subtree is grepped on its client, preserving the original glob root and remaining depth/result budget. unavailable_mappings plus truncated=true report incomplete results; never assume an unavailable mapping has no matches.",
+                    "notes": "greps UTF-8 file contents; MCP name is fs_grep. Supports regex and case_sensitive flags. Repeated include/exclude globs: slash-free patterns match basenames, others match root-relative POSIX paths; case-sensitive fnmatch semantics (* spans /). Exclude wins and prunes matching directories. Up to 64 patterns per group, 512 characters each. Each visited mapping subtree is grepped on its client, preserving the original glob root and remaining depth/result budget. unavailable_mappings plus truncated=true report incomplete results; never assume an unavailable mapping has no matches.",
                     "query": {
                         "path": ".",
                         "query": "<required text or regex>",
@@ -1640,7 +1615,7 @@ class DiscoveryMixin:
                 },
                 "fs_replace_large": {
                     "method": "POST",
-                    "url": f"{base}/fs/write/large",
+                    "url": f"{base}/fs/write/replace_large",
                     "json": {
                         "path": "<file>",
                         "offset": 0,
@@ -1695,7 +1670,7 @@ class DiscoveryMixin:
                 },
                 "share_create": {
                     "method": "POST",
-                    "url": f"{base}/shares",
+                    "url": f"{base}/share/create",
                     "authentication": "Bearer control token",
                     "json": {
                         "path": "<one file or directory inside this token workspace>",
@@ -1718,7 +1693,7 @@ class DiscoveryMixin:
                 },
                 "share_import": {
                     "method": "POST",
-                    "url": f"{base}/shares/<share_id>/import",
+                    "url": f"{base}/share/import/<share_id>",
                     "authentication": "destination Bearer control token",
                     "json": {
                         "destination": "<new path inside this token workspace>",
@@ -1731,7 +1706,7 @@ class DiscoveryMixin:
                 },
                 "share_delete": {
                     "method": "DELETE",
-                    "url": f"{base}/shares/<share_id>",
+                    "url": f"{base}/share/delete/<share_id>",
                     "authentication": "creator Bearer control token",
                     "request_headers": {
                         "OpenKapsel-Plan-Id": "<required owning plan id>",
@@ -1742,7 +1717,7 @@ class DiscoveryMixin:
                 },
                 "upload_create": {
                     "method": "POST",
-                    "url": f"{base}/uploads",
+                    "url": f"{base}/upload/create",
                     "json": {
                         "path": "<path>",
                         "size": 0,
@@ -1756,17 +1731,17 @@ class DiscoveryMixin:
                 },
                 "upload_status": {
                     "method": "GET or HEAD",
-                    "url": f"{base}/uploads/<upload_id>",
+                    "url": f"{base}/upload/status/<upload_id>",
                     "query": {**optional_read_context_query},
                 },
                 "upload_chunk": {
                     "method": "PATCH",
-                    "url": f"{base}/uploads/<upload_id>",
+                    "url": f"{base}/upload/chunk/<upload_id>",
                     "content_type": "application/octet-stream",
                     "headers": {"Upload-Offset": "<current offset>", "OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
                 },
-                "upload_commit": {"method": "POST", "url": f"{base}/uploads/<upload_id>/commit", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
-                "upload_cancel": {"method": "DELETE", "url": f"{base}/uploads/<upload_id>", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
+                "upload_commit": {"method": "POST", "url": f"{base}/upload/commit/<upload_id>", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
+                "upload_cancel": {"method": "DELETE", "url": f"{base}/upload/cancel/<upload_id>", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
                 "mcp": {
                     "method": "POST",
                     "url": f"{base}/mcp",
@@ -1778,7 +1753,7 @@ class DiscoveryMixin:
                     "target_values": ["auto", "server", "client"],
                     "native_dependencies": "Server tasks acquire the cwd mapping automatically. Declare other workspace mapping names/IDs with mount_mappings; command text is not inspected. FastAPI uses api/mappings.json with the same field. Native mounts are leased for the process lifetime, not per HTTP request.",
                     "routing": "Default auto uses client RPC when cwd is inside a mapping; otherwise server. Explicit server executes on server even for a mapped cwd; client requires a mapped cwd. Command text is never inspected for cd. Offline/denied/old clients fail closed, never fall back.",
-                    "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /tasks get/output/stream/stdin/interrupt/kill; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
+                    "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /task/get, /task/output, /task/stream, /task/stdin, /task/interrupt, and /task/kill; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
                     "json": {
                         "command": "<shell command>",
                         "target": "auto",
@@ -1887,7 +1862,7 @@ class DiscoveryMixin:
                 },
                 "task_list": {
                     "method": "GET",
-                    "url": f"{base}/tasks?offset=0&limit=100&status=running",
+                    "url": f"{base}/task/list?offset=0&limit=100&status=running",
                     "notes": "auto lists server token tasks and workspace client tasks. unavailable_mappings reports offline/denied clients; missing entries do not mean stopped tasks.",
                     "query": {
                         "target": "auto | server | client (default auto)",
@@ -1897,14 +1872,14 @@ class DiscoveryMixin:
                         **optional_read_context_query,
                     },
                 },
-                "task_status": {
+                "task_get": {
                     "method": "GET",
-                    "url": f"{base}/tasks/<task_id>",
+                    "url": f"{base}/task/get/<task_id>",
                     "query": {**optional_read_context_query},
                 },
                 "task_output": {
                     "method": "GET",
-                    "url": f"{base}/tasks/<task_id>/output?stdout_offset=0&stderr_offset=0&wait_seconds=20",
+                    "url": f"{base}/task/output/<task_id>?stdout_offset=0&stderr_offset=0&wait_seconds=20",
                     "query": {
                         "stdout_offset": 0,
                         "stderr_offset": 0,
@@ -1915,7 +1890,7 @@ class DiscoveryMixin:
                 },
                 "task_stream": {
                     "method": "GET",
-                    "url": f"{base}/tasks/<task_id>/stream?stdout_offset=0&stderr_offset=0",
+                    "url": f"{base}/task/stream/<task_id>?stdout_offset=0&stderr_offset=0",
                     "content_type": "text/event-stream",
                     "events": ["output", "done", "reconnect", "error"],
                     "notes": "reconnect closes a duration-limited stream and returns the exact stdout/stderr offsets to use for the next request; error ends an already-started stream with a stable code plus byte cursors, including client/provider failures; concurrent streams are bounded globally and per token",
@@ -1927,7 +1902,7 @@ class DiscoveryMixin:
                 },
                 "task_stdin": {
                     "method": "POST",
-                    "url": f"{base}/tasks/<task_id>/stdin",
+                    "url": f"{base}/task/stdin/<task_id>",
                     "json": {
                         "data": "<optional UTF-8 input>",
                         "data_base64": "<optional Base64 input; mutually exclusive with data>",
@@ -1939,13 +1914,13 @@ class DiscoveryMixin:
                 },
                 "task_interrupt": {
                     "method": "POST",
-                    "url": f"{base}/tasks/<task_id>/interrupt",
+                    "url": f"{base}/task/interrupt/<task_id>",
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
                     "notes": "server tasks receive SIGTERM then SIGKILL after a two-second grace period; POSIX client tasks receive SIGINT and native Windows client tasks receive CTRL_BREAK",
                 },
                 "task_kill": {
                     "method": "POST",
-                    "url": f"{base}/tasks/<task_id>/kill",
+                    "url": f"{base}/task/kill/<task_id>",
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
                     "notes": "server and POSIX client tasks are force-killed; native Windows client tasks use taskkill /T /F",
                 },
@@ -1965,34 +1940,34 @@ class DiscoveryMixin:
                 "REST Skill clients should invoke the installed scripts/openkapsel_config.py init <workspace-url> <control-token> by its Skill path while the working directory is the local controlling project to create a mode-0600 .openkapsel.env there. Resolve the nearest file from the current directory so changing project directories selects different workspaces; explicit helper arguments and the legacy process environment remain supported.",
                 "When credentials have less than two days remaining, call credentials_renew once and atomically replace both values in .openkapsel.env with the returned workspace_url and control_token. The bundled helpers perform this check and update automatically for directory-scoped configuration.",
                 "Skill-capable REST clients should inspect skills.openkapsel_rest and may install its token-free SHA-256-verified archive or read the linked SKILL.md remotely before loading detailed endpoint contracts.",
-                "Before changing the workspace, query context with type=plan&root_plans=true&status=in_progress. Reuse a suitable plan tree or create one root plan by POST context/add_context with type=plan and no plan_id.",
-                "At task start, read memory_project/get_project_memory when project-wide knowledge is needed. When creating a plan, provide scope_paths and memory_tags when known; OpenKapsel returns related_memory using path overlap, exact tags, and text relevance.",
-                "Decompose a root plan by creating sub-plans whose plan_id is the parent plan's integer id. Use context_plan_tree/get_plan_tree to inspect the depth-annotated hierarchy and its attached operations/notes.",
+                "Before changing the workspace, query context with type=plan&root_plans=true&status=in_progress. Reuse a suitable plan tree or create one root plan by POST /context with type=plan and no plan_id.",
+                "At task start, read memory_project when project-wide knowledge is needed. When creating a plan, provide scope_paths and memory_tags when known; OpenKapsel returns related_memory using path overlap, exact tags, and text relevance.",
+                "Decompose a root plan by creating sub-plans whose plan_id is the parent plan's integer id. Use context_plan_tree to inspect the depth-annotated hierarchy and its attached operations/notes.",
                 "Every modifying REST or MCP operation must provide plan_id, taskname, and a short message. plan_id must identify the plan or sub-plan that owns the action; OpenKapsel rejects missing, nonexistent, non-plan, self-referential, and cyclic relationships before changing the workspace.",
                 "Reads should normally omit taskname, message, and plan_id and are then not recorded. To record a read, provide taskname and message; plan_id is optional but recommended to attach it to the relevant plan.",
-                "Use context_query/query_context to filter history by direct plan_id, root plans, text, integer id, exact taskname, anonymous actor_id, or exact recorded path. Plans update in place and move through in_progress, completed, or cancelled; replacing a note creates a newer id and removes the old row.",
-                "Use memory_query/query_memory for long-lived project knowledge. Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable until rewritten. New Memory requires at least one exact indexed tag; prefer 4-16 specific reusable tags.",
+                "Use context_query to filter history by direct plan_id, root plans, text, integer id, exact taskname, anonymous actor_id, or exact recorded path. Plans update in place and move through in_progress, completed, or cancelled; replacing a note creates a newer id and removes the old row.",
+                "Use memory_query for long-lived project knowledge. Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable until rewritten. New Memory requires at least one exact indexed tag; prefer 4-16 specific reusable tags.",
                 "Completing a plan requires debrief with items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new long-lived Memory; multiple items create multiple Memories. Each item has 1-256 character content and its own tags; prefer 4-16 specific reusable tags. The server derives one common canonical path from successful write operations directly owned by that Plan: server-local, mapping:<id>, and storage:<provider_id> are distinct scopes; mixed targets collapse to server:.; Shell contributes only its cwd. memory_actions is only for update or archive of existing Memory. Use memory_feedback only for Memory that materially helped. Every verified memory_conflicts item must update content or archive the Memory in the same completion request.",
                 "MCP clients should initialize the mcp endpoint, call tools/list, and then use tools/call; REST clients can use the endpoints below directly.",
-                "Inspect the workspace first with list_files/fs_list and read_file/fs_read.",
+                "Inspect the workspace first with fs_list and read_files/fs_read_files.",
                 "Open the web_preview endpoint URL to preview workspace HTML and its relative CSS, JavaScript, images, fonts, or media in a sandboxed browser document.",
                 "Implement registration, login, roles, cookies, sessions, CSRF, and access control directly in the workspace FastAPI application when the site needs them; OpenKapsel does not add an authentication layer.",
                 "For persistent application data, define a FastAPI route in <app-directory>/api/app.py and use openkapsel_runtime.database.engine('main') or database.session('main') with portable SQLAlchemy APIs; each app gets private runtime-managed storage, while browser code calls /<app-path>/api/* and never accesses database storage directly.",
-                "Use find_files/fs_find for recursive filename discovery, files_grep/fs_grep for cross-file content grep, and list_tree/fs_tree for a bounded recursive overview.",
-                "Request sha256 explicitly from stat_file/fs_stat only when content verification is needed.",
+                "Use fs_find for recursive filename discovery, fs_grep for cross-file content grep, and fs_tree for a bounded recursive overview.",
+                "Request sha256 explicitly from fs_stat only when content verification is needed.",
                 "Use fs_stat before transferring files, then stream binary or large downloads through fs_content with HTTP Range.",
                 "Use direct fs_content PUT for small binary files, or create an upload session for large files and send raw bytes in chunks.",
-                "Uploads never overwrite. To replace a file, first use mutate_files/fs_mutate with path.delete so its previous version is retained in private recycle storage, then upload the new file.",
-                "Create directories with create_directory/fs_mkdir, and move or rename paths with move_path/fs_move.",
-                "For ordinary files up to 32 MiB, use mutate_files/fs_mutate for content changes; existing paths require exact ETags and all items are preflighted before publication. MCP write_file, edit_text, and delete_path are convenience wrappers over the same transaction engine.",
-                "Files above 32 MiB are large files: inspect them only through read_large_file/fs_read_large with explicit offset+length, and mutate them only through replace_large_file_range/fs_replace_large using exact ETag + range SHA-256 and equal-length bytes.",
-                "Use mutate_files/fs_mutate path.delete (or MCP delete_path) for recoverable transactional deletion, list_recycle/recycle_list to inspect deleted items, and restore_recycle/recycle_restore to recover them.",
-                "For cross-workspace transfer, create_share/share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with import_share/share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
-                "Run tests or builds with run_shell/shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
+                "Uploads never overwrite. To replace a file, first use fs_mutate with path.delete so its previous version is retained in private recycle storage, then upload the new file.",
+                "Create directories with fs_mkdir, and move or rename paths with fs_move.",
+                "For ordinary files up to 32 MiB, use fs_mutate for content changes; existing paths require exact ETags and all items are preflighted before publication. MCP fs_write, fs_edit_text, and fs_delete are convenience wrappers over the same transaction engine.",
+                "Files above 32 MiB are large files: inspect them only through fs_read_large with explicit offset+length, and mutate them only through fs_replace_large using exact ETag + range SHA-256 and equal-length bytes.",
+                "Use fs_mutate path.delete (or MCP fs_delete) for recoverable transactional deletion, recycle_list to inspect deleted items, and recycle_restore to recover them.",
+                "For cross-workspace transfer, share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
+                "Run tests or builds with shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
                 "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id; use run-now instead of creating sub-three-minute schedules.",
                 "Use GET, PUT, or DELETE env to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization. PUT and DELETE require mutation Context; secrets are injected without appearing in sandbox launcher arguments.",
-                "For restricted Shell, inspect this token's live sandbox processes and aggregate resource usage with list_sandbox_processes/sandbox_processes.",
-                "Use interrupt_task/task_interrupt for normal termination; reserve kill_task/task_kill for an unresponsive task that must stop immediately.",
+                "For restricted Shell, inspect this token's live sandbox processes and aggregate resource usage with sandbox_processes.",
+                "Use task_interrupt for normal termination; reserve task_kill for an unresponsive task that must stop immediately.",
             ],
         }
 
@@ -2071,7 +2046,7 @@ class DiscoveryMixin:
             "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping names/roots, online/write state, and client capabilities. Use each mapping name in RPC paths. RPC operation_specs include description, JSON input_schema, write, and execution=sync|task."},
             "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_name>/rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
-                "description": "Invoke one advertised client RPC operation using the mapping name returned by GET /mappings. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /tasks routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
+                "description": "Invoke one advertised client RPC operation using the mapping name returned by GET /mappings. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /task/* routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
         })
         payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
@@ -2121,12 +2096,10 @@ class DiscoveryMixin:
                 self.token_record.can_preview,
             ),
             "fs_list": ("files.read", read_enabled),
-            "fs_read": ("files.read", read_enabled),
             "fs_stat": ("files.read", read_enabled),
             "fs_manifest": ("files.read", read_enabled),
-            "fs_read_many": ("files.read", read_enabled),
+            "fs_read_files": ("files.read", read_enabled),
             "fs_grep": ("files.read", read_enabled),
-            "fs_search": ("files.read", read_enabled),
             "fs_find": ("files.read", read_enabled),
             "fs_tree": ("files.read", read_enabled),
             "fs_content": ("files.read", read_enabled),
@@ -2163,7 +2136,7 @@ class DiscoveryMixin:
             "schedule_runs": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_run_item": ("Bearer control token + schedules + shell", schedules_enabled),
             "task_list": ("Bearer control token + shell", shell_enabled),
-            "task_status": ("Bearer control token + shell", shell_enabled),
+            "task_get": ("Bearer control token + shell", shell_enabled),
             "task_output": ("Bearer control token + shell", shell_enabled),
             "task_stream": ("Bearer control token + shell", shell_enabled),
             "task_stdin": ("Bearer control token + shell", shell_enabled),
@@ -2223,7 +2196,7 @@ class DiscoveryMixin:
                 "schedule_runs",
                 "schedule_run_item",
                 "task_list",
-                "task_status",
+                "task_get",
                 "task_output",
                 "task_stream",
                 "task_stdin",
@@ -2287,10 +2260,10 @@ class DiscoveryMixin:
                 "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
                 "scope": "openkapsel",
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
-                "rest_access": "OAuth grants use the MCP endpoint directly; get_workspace_credentials can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
+                "rest_access": "OAuth grants use the MCP endpoint directly; workspace_credentials_get can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
                 "workspace_credentials": {
-                    "export_tool": "get_workspace_credentials",
-                    "renew_tool": "renew_workspace_credentials",
+                    "export_tool": "workspace_credentials_get",
+                    "renew_tool": "workspace_credentials_renew",
                     "renewal_window_seconds": 2 * 24 * 60 * 60,
                     "rotation": "read URL token and control token rotate atomically; old REST credentials become invalid; MCP connection credentials are unchanged",
                 },

@@ -55,20 +55,20 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         bearer = oauth["access_token"]
 
         tools = self.tool_names(bearer)
-        self.assertIn("get_workspace_credentials", tools)
-        self.assertIn("renew_workspace_credentials", tools)
-        self.assertTrue(tools["get_workspace_credentials"]["annotations"]["readOnlyHint"])
-        self.assertFalse(tools["renew_workspace_credentials"]["annotations"]["readOnlyHint"])
-        self.assertTrue(tools["renew_workspace_credentials"]["annotations"]["destructiveHint"])
+        self.assertIn("workspace_credentials_get", tools)
+        self.assertIn("workspace_credentials_renew", tools)
+        self.assertTrue(tools["workspace_credentials_get"]["annotations"]["readOnlyHint"])
+        self.assertFalse(tools["workspace_credentials_renew"]["annotations"]["readOnlyHint"])
+        self.assertTrue(tools["workspace_credentials_renew"]["annotations"]["destructiveHint"])
 
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         exported = self.assert_current_export(
-            self.call_tool(bearer, "get_workspace_credentials"), current, rotated=False
+            self.call_tool(bearer, "workspace_credentials_get"), current, rotated=False
         )
         old_url = exported["workspace_url"]
         old_control = current.control_token
 
-        not_due = self.call_tool(bearer, "renew_workspace_credentials")
+        not_due = self.call_tool(bearer, "workspace_credentials_renew")
         self.assertTrue(not_due["isError"], not_due)
         self.assertEqual(
             "credentials_renewal_not_due",
@@ -79,7 +79,7 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         self.assertEqual(old_control, unchanged.control_token)
 
         due = self.make_due()
-        renewed_result = self.call_tool(bearer, "renew_workspace_credentials")
+        renewed_result = self.call_tool(bearer, "workspace_credentials_renew")
         renewed = self.server.tokens.get_by_app_id(self.record.app_id)
         value = self.assert_current_export(renewed_result, renewed, rotated=True)
         self.assertNotEqual(due.token, renewed.token)
@@ -96,7 +96,7 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         self.assertEqual(200, status)
 
         again = self.assert_current_export(
-            self.call_tool(bearer, "get_workspace_credentials"),
+            self.call_tool(bearer, "workspace_credentials_get"),
             renewed,
             rotated=False,
         )
@@ -108,15 +108,15 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         )
         self.mcp = "/kapsel/mcp-connect/" + conn["id"] + "/mcp"
         bearer = conn["secret"]
-        self.assertIn("get_workspace_credentials", self.tool_names(bearer))
+        self.assertIn("workspace_credentials_get", self.tool_names(bearer))
 
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         self.assert_current_export(
-            self.call_tool(bearer, "get_workspace_credentials"), current, rotated=False
+            self.call_tool(bearer, "workspace_credentials_get"), current, rotated=False
         )
 
         due = self.make_due()
-        renewed = self.call_tool(bearer, "renew_workspace_credentials")
+        renewed = self.call_tool(bearer, "workspace_credentials_renew")
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         self.assert_current_export(renewed, current, rotated=True)
         self.assertNotEqual(due.control_token, current.control_token)
@@ -135,11 +135,11 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         )
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         exported = self.assert_current_export(
-            self.call_tool(bearer, "get_workspace_credentials"), current, rotated=False
+            self.call_tool(bearer, "workspace_credentials_get"), current, rotated=False
         )
         self.assertFalse(exported["credentials_valid"])
 
-        renewal = self.call_tool(bearer, "renew_workspace_credentials")
+        renewal = self.call_tool(bearer, "workspace_credentials_renew")
         self.assertTrue(renewal["isError"])
         self.assertEqual(
             "credentials_cannot_be_renewed",
@@ -158,8 +158,8 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         structured = payload["result"]["structuredContent"]
         auth = structured["authentication"]
-        self.assertEqual("get_workspace_credentials", auth["workspace_credentials"]["export_tool"])
-        self.assertEqual("renew_workspace_credentials", auth["workspace_credentials"]["renew_tool"])
+        self.assertEqual("workspace_credentials_get", auth["workspace_credentials"]["export_tool"])
+        self.assertEqual("workspace_credentials_renew", auth["workspace_credentials"]["renew_tool"])
         encoded = json.dumps(structured)
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         for secret in (current.token, current.control_token, current.preview_token):
@@ -172,7 +172,7 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
 
         import concurrent.futures
         def renew(_):
-            return self.call_tool(bearer, "renew_workspace_credentials")
+            return self.call_tool(bearer, "workspace_credentials_renew")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(renew, range(2)))

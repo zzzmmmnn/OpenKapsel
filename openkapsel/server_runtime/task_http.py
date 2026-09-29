@@ -37,7 +37,7 @@ class TaskHttpMixin:
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
-            {"task_id": task.id, "status": task.status, "location": "server", "status_url": f"{self._base_path()}/tasks/{task.id}"},
+            {"task_id": task.id, "status": task.status, "location": "server", "status_url": f"{self._base_path()}/task/get/{task.id}"},
         )
 
 

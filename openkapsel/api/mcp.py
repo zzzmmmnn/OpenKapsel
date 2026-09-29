@@ -117,16 +117,17 @@ def _mutation_item_schema() -> dict[str, Any]:
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
-    _tool("read_files", "Read multiple files", "Read bounded text files with explicit encoding (default UTF-8), per-item status/content/etag and partial errors. No write or Shell permission required.",
+    _tool("fs_read_files", "Read files", "Read one or more bounded text files with explicit encoding (default UTF-8), shared character offset, per-item status/content/etag and partial errors. Use paths with one item for a single-file read.",
           _object_schema({"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                          "encoding": TEXT_ENCODING, "limit": {"type": "integer", "minimum": 1}, "max_total_chars": {"type": "integer", "minimum": 1}}, ("paths",)), read_only=True),
-    _tool("file_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
+                          "encoding": TEXT_ENCODING, "offset": {**NONNEGATIVE, "default": 0},
+                          "limit": {"type": "integer", "minimum": 1}, "max_total_chars": {"type": "integer", "minimum": 1}}, ("paths",)), read_only=True),
+    _tool("fs_manifest", "File manifest", "Batch stat with items or recursive metadata with recursive=true and path. Optional SHA256, bounded traversal; items and recursive mode are mutually exclusive.",
           _object_schema({"items": {"type": "array", "items": _object_schema({"path": {"type": "string"}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string"}}, ("path",))},
                           "recursive": {"type": "boolean"}, "path": {"type": "string"}, "depth": {"type": "integer", "minimum": 0}, "include_sha256": {"type": "boolean"}}), read_only=True),
     _tool(
-        "rpc",
+        "rpc_call",
         "Call RPC plugin",
-        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id for get_task/read_task_output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
+        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id for task_get/task_output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
         _object_schema({
             "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", "description": "Optional workspace mapping name. Omit to execute the RPC family on the server workspace; legacy mapping IDs are also accepted."},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -141,7 +142,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "get_workspace_credentials",
+        "workspace_credentials_get",
         "Get workspace REST credentials",
         "Return the linked configuration's current REST workspace URL, control token, and credential expiration. This exports portable REST credentials from an authenticated MCP connection; it does not rotate them.",
         _object_schema({}),
@@ -150,7 +151,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "renew_workspace_credentials",
+        "workspace_credentials_renew",
         "Renew workspace REST credentials",
         "Atomically rotate the linked configuration's REST URL token and control token using the normal self-renewal window. The previous REST credentials become invalid immediately; the MCP connection remains valid.",
         _object_schema({}),
@@ -176,7 +177,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "query_context",
+        "context_query",
         "Query workspace context",
         "Query operation, plan, and note records by id, text, actor, or path, newest first.",
         _object_schema(
@@ -227,7 +228,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "get_plan_tree",
+        "context_plan_tree",
         "Get context plan tree",
         "Return a bounded plan subtree plus operations and notes directly attached to its plans.",
         _object_schema(
@@ -253,7 +254,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "add_context",
+        "context_add",
         "Add workspace context",
         "Append an AI-authored plan or note. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
         _object_schema(
@@ -292,7 +293,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "update_plan",
+        "context_plan_update",
         "Update context plan",
         "Update a plan in place, including its task grouping, content, or status.",
         _object_schema(
@@ -321,7 +322,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "query_memory",
+        "memory_query",
         "Query project memory",
         "Query active or archived project-level Memory by content text, exact tag, or overlapping canonical path scope.",
         _object_schema(
@@ -341,7 +342,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "get_memory",
+        "memory_get",
         "Get project memory",
         "Read one Memory by stable memory_id, optionally including its revision history.",
         _object_schema(
@@ -357,7 +358,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "get_project_memory",
+        "memory_project",
         "Get project memory profile",
         "Return a bounded recent/helpful profile of active project Memory entries.",
         _object_schema({}),
@@ -366,7 +367,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "add_memory",
+        "memory_add",
         "Add project memory",
         "Create a revisioned project Memory with short content, exact tags, and one optional canonical path.",
         _object_schema(
@@ -394,7 +395,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "update_memory",
+        "memory_update",
         "Update project memory",
         "Update content, tags, or path of one Memory using its current revision as an optimistic concurrency precondition. Legacy content longer than 256 characters may remain unchanged, but replacement content is limited to 256.",
         _object_schema(
@@ -425,7 +426,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "archive_memory",
+        "memory_archive",
         "Archive project memory",
         "Soft-delete one Memory while retaining its revision history.",
         _object_schema(
@@ -444,7 +445,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "replace_note",
+        "context_note_replace",
         "Replace context note",
         "Edit a note by atomically inserting a newer note and deleting the old row.",
         _object_schema(
@@ -461,7 +462,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "list_files",
+        "fs_list",
         "List files",
         "List a directory with file types, sizes, and modification times. The private .recycle directory is hidden.",
         _object_schema(
@@ -475,14 +476,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "create_share",
+        "share_create",
         "Create temporary share",
         "Copy one workspace file or directory into the temporary shared area and return a random share ID. Shares expire after one day by default.",
         _object_schema({"path": PATH}, ("path",)),
         read_only=False,
     ),
     _tool(
-        "inspect_share",
+        "share_query",
         "Inspect temporary share",
         "List an ID-addressed temporary share without requiring the creator's token.",
         _object_schema(
@@ -497,7 +498,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "import_share",
+        "share_import",
         "Import temporary share",
         "Copy a temporary share into a new path in this token's workspace. Existing destinations are never overwritten.",
         _object_schema(
@@ -511,7 +512,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         read_only=False,
     ),
     _tool(
-        "delete_share",
+        "share_delete",
         "Delete temporary share",
         "Delete a temporary share early. Only the token application that created it may delete it.",
         _object_schema({"share_id": {"type": "string", "minLength": 1}}, ("share_id",)),
@@ -520,23 +521,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "read_file",
-        "Read text file",
-        "Read a text window, UTF-8 by default. Offset and limit count decoded Unicode characters, preserving literal newlines.",
-        _object_schema(
-            {
-                "path": PATH,
-                "offset": {**NONNEGATIVE, "default": 0},
-                "encoding": TEXT_ENCODING,
-                "limit": {**POSITIVE, "default": 65536},
-            },
-            ("path",),
-        ),
-        read_only=True,
-        idempotent=True,
-    ),
-    _tool(
-        "stat_file",
+        "fs_stat",
         "Get file information",
         "Return selected metadata. SHA-256 is only calculated when requested in fields.",
         _object_schema(
@@ -554,7 +539,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "find_files",
+        "fs_find",
         "Find files by name",
         "Recursively find files and directories whose basename contains a literal query. Mapped roots use indexed file_search acceleration when available and otherwise fall back to recursive traversal.",
         _object_schema(
@@ -571,9 +556,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "files_grep",
+        "fs_grep",
         "Grep file contents",
-        "Search UTF-8 text across files with a bounded recursive depth. Supports literal or regex matching; binary and oversized files are skipped. Legacy MCP name search_files remains accepted but is not advertised.",
+        "Search UTF-8 text across files with a bounded recursive depth. Supports literal or regex matching; binary and oversized files are skipped.",
         _object_schema(
             {
                 "query": {"type": "string", "minLength": 1},
@@ -591,7 +576,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "list_tree",
+        "fs_tree",
         "List directory tree",
         "Return a nested directory tree up to the requested recursive depth.",
         _object_schema(
@@ -604,9 +589,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "read_binary_chunk",
+        "fs_read_binary",
         "Read binary chunk",
-        "Read a bounded byte range as Base64 for files up to 32 MiB. Larger files require read_large_file.",
+        "Read a bounded byte range as Base64 for files up to 32 MiB. Larger files require fs_read_large.",
         _object_schema(
             {
                 "path": PATH,
@@ -619,7 +604,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "read_large_file",
+        "fs_read_large",
         "Read large-file range",
         "Read one explicit byte range from a file larger than 32 MiB. Offset and length are required; returns Base64 bytes, exact ETag and range SHA-256 for a guarded equal-length replacement.",
         _object_schema(
@@ -634,7 +619,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "prepare_download",
+        "fs_download",
         "Prepare raw file download",
         "Return a token-free REST URL for raw byte download with HTTP Range. Reuse the MCP Bearer authorization header.",
         _object_schema({"path": PATH}, ("path",)),
@@ -642,7 +627,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "get_web_preview_url",
+        "web_preview_url",
         "Get web preview URL",
         "Return the independently scoped browser preview URL for a path inside this token's child workspace.",
         _object_schema(
@@ -655,7 +640,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         open_world=True,
     ),
     _tool(
-        "write_file",
+        "fs_write",
         "Write text file",
         "Create a new text file, or replace an existing one when exact expected_etag is supplied. This convenience tool uses the transactional mutation engine; create parent directories explicitly first.",
         _object_schema(
@@ -676,7 +661,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=False,
     ),
     _tool(
-        "edit_text",
+        "fs_edit_text",
         "Edit exact text",
         "Replace exact text or insert before/after an exact match transactionally. Requires the exact current ETag; optional line or unique text-marker bounds limit the editable range.",
         _object_schema(
@@ -730,7 +715,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=False,
     ),
     _tool(
-        "mutate_files",
+        "fs_mutate",
         "Transactional file mutation",
         "Apply one transaction across paths in a single filesystem domain. Existing paths require exact ETags. Supports exact text replacement and insert-before/insert-after with optional line bounds or unique multiline full-file text markers, JSON/YAML/TOML structured patch, create-only files, whole-file replacement, and recoverable path.delete for files/directories. Match-count mismatches report observed counts without publishing changes. All preconditions are checked before publication and ordinary errors roll back the whole request. Content mutation above 32 MiB is rejected.",
         _object_schema(
@@ -751,9 +736,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=False,
     ),
     _tool(
-        "replace_large_file_range",
+        "fs_replace_large",
         "Replace large-file range",
-        "Replace one exact byte range in a file larger than 32 MiB without changing file size. Requires the exact ETag and range SHA-256 returned by read_large_file; replacement byte length must equal length.",
+        "Replace one exact byte range in a file larger than 32 MiB without changing file size. Requires the exact ETag and range SHA-256 returned by fs_read_large; replacement byte length must equal length.",
         _object_schema(
             {
                 "path": PATH,
@@ -774,7 +759,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "create_directory",
+        "fs_mkdir",
         "Create directory",
         "Create a directory, optionally creating missing parent directories.",
         _object_schema(
@@ -789,7 +774,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "move_path",
+        "fs_move",
         "Move or rename path",
         "Move or rename a file or directory. Existing destinations are protected unless overwrite is explicitly true.",
         _object_schema(
@@ -805,9 +790,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         destructive=True,
     ),
     _tool(
-        "delete_path",
+        "fs_delete",
         "Recycle path",
-        "Transactionally recycle a file or directory. Requires the exact current ETag returned by stat_file or another file read.",
+        "Transactionally recycle a file or directory. Requires the exact current ETag returned by fs_stat or read_files.",
         _object_schema(
             {
                 "path": PATH,
@@ -820,7 +805,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=False,
     ),
     _tool(
-        "list_recycle",
+        "recycle_list",
         "List recycle items",
         "List recoverably deleted items from this child workspace.",
         _object_schema(
@@ -833,7 +818,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "restore_recycle",
+        "recycle_restore",
         "Restore recycle item",
         "Restore a recycle item to its original path. Refuses to overwrite an existing path.",
         _object_schema({"recycle_id": {"type": "string"}}, ("recycle_id",)),
@@ -841,7 +826,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         destructive=False,
     ),
     _tool(
-        "start_upload",
+        "upload_create",
         "Start resumable upload",
         "Create a token-bound resumable binary upload session for a new file. Existing destinations must first be moved to the recycle bin. The result includes token-free URLs for efficient raw-byte transfer.",
         _object_schema(
@@ -870,7 +855,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         read_only=False,
     ),
     _tool(
-        "get_upload",
+        "upload_status",
         "Get upload status",
         "Return the current offset, expected size, and expiry for an upload session.",
         _object_schema({"upload_id": {"type": "string"}}, ("upload_id",)),
@@ -878,7 +863,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "finish_upload",
+        "upload_commit",
         "Finish upload",
         "Verify size and optional SHA-256, then atomically commit the uploaded file.",
         _object_schema({"upload_id": {"type": "string"}}, ("upload_id",)),
@@ -886,7 +871,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         destructive=True,
     ),
     _tool(
-        "abort_upload",
+        "upload_cancel",
         "Abort upload",
         "Cancel an incomplete upload and remove its temporary data.",
         _object_schema({"upload_id": {"type": "string"}}, ("upload_id",)),
@@ -949,7 +934,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         open_world=True,
     ),
     _tool(
-        "run_shell",
+        "shell_exec",
         "Run shell command",
         "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server. Never falls back on client errors. Use the returned task_id with normal task tools. Client Shell uses its own execution/sandbox policy, not server limits or environment; output is combined. Native Windows uses cmd.exe, POSIX/Podman uses /bin/sh.",
         _object_schema(
@@ -970,7 +955,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
                 "interactive": {
                     "type": "boolean",
-                    "description": "Keep stdin open for send_task_input calls.",
+                    "description": "Keep stdin open for task_stdin calls.",
                     "default": False,
                 },
             },
@@ -981,15 +966,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         open_world=True,
     ),
     _tool(
-        "get_task",
+        "task_get",
         "Get task status",
-        "Poll a server or client task for status, exit code and output. Client stdout/stderr are combined in stdout; the initial 64 KiB includes stdout_next_offset. Use read_task_output with that cursor for the remaining bytes.",
+        "Poll a server or client task for status, exit code and output. Client stdout/stderr are combined in stdout; the initial 64 KiB includes stdout_next_offset. Use task_output with that cursor for the remaining bytes.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=True,
         idempotent=True,
     ),
     _tool(
-        "list_tasks",
+        "task_list",
         "List shell tasks",
         "List server token tasks and workspace client tasks without full output. target=auto includes both; unavailable_mappings reports clients whose tasks could not be queried.",
         _object_schema(
@@ -1004,7 +989,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "list_sandbox_processes",
+        "sandbox_processes",
         "List sandbox processes",
         "List processes in this token's restricted-shell cgroup and return aggregate PID, memory, CPU, and OOM counters.",
         _object_schema(
@@ -1017,7 +1002,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "read_task_output",
+        "task_output",
         "Read incremental task output",
         "Read task output from byte cursors, optionally waiting for new output. Server tasks have separate stdout and stderr. Client tasks combine both streams in stdout (output_combined=true); stderr is empty. Advance each returned next_offset. Client retained output is capped at 2 MiB.",
         _object_schema(
@@ -1033,7 +1018,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         read_only=True,
     ),
     _tool(
-        "send_task_input",
+        "task_stdin",
         "Send task input",
         "Write UTF-8 or Base64 input to an interactive server or client task and optionally close stdin. A client task accepts at most 16 KiB per call (server tasks: 256 KiB). Data and close=true may be sent together.",
         _object_schema(
@@ -1048,15 +1033,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         read_only=False,
     ),
     _tool(
-        "interrupt_task",
+        "task_interrupt",
         "Interrupt task",
-        "Interrupt a running task. Server tasks receive SIGTERM and escalate to SIGKILL after a grace period; client tasks receive SIGINT on POSIX/Podman or CTRL_BREAK on native Windows. Use kill_task for immediate force termination.",
+        "Interrupt a running task. Server tasks receive SIGTERM and escalate to SIGKILL after a grace period; client tasks receive SIGINT on POSIX/Podman or CTRL_BREAK on native Windows. Use task_kill for immediate force termination.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=False,
         destructive=True,
     ),
     _tool(
-        "kill_task",
+        "task_kill",
         "Force-kill task",
         "Force-kill a running task. Server and POSIX/Podman client tasks receive SIGKILL; native Windows client tasks use taskkill /T /F. This does not wait for graceful termination.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
@@ -1073,78 +1058,77 @@ def tools_for(
 ) -> list[dict[str, Any]]:
     readable = {
         "workspace_info",
-        "get_workspace_credentials",
-        "renew_workspace_credentials",
-        "inspect_share",
-        "delete_share",
-        "add_context",
-        "update_plan",
-        "replace_note",
-        "add_memory",
-        "update_memory",
-        "archive_memory",
+        "workspace_credentials_get",
+        "workspace_credentials_renew",
+        "share_query",
+        "share_delete",
+        "context_add",
+        "context_plan_update",
+        "context_note_replace",
+        "memory_add",
+        "memory_update",
+        "memory_archive",
     }
     if record.can_read or record.can_write:
-        readable.add("rpc")
+        readable.add("rpc_call")
     if record.can_read:
-        readable.update({"read_files", "file_manifest"})
+        readable.update({"fs_read_files", "fs_manifest"})
         readable.update(
             {
-                "query_context",
-                "get_plan_tree",
-                "query_memory",
-                "get_memory",
-                "get_project_memory",
-                "list_files",
-                "read_file",
-                "stat_file",
-                "read_binary_chunk",
-                "read_large_file",
-                "prepare_download",
-                "find_files",
-                "files_grep",
-                "list_tree",
-                "create_share",
+                "context_query",
+                "context_plan_tree",
+                "memory_query",
+                "memory_get",
+                "memory_project",
+                "fs_list",
+                "fs_stat",
+                "fs_read_binary",
+                "fs_read_large",
+                "fs_download",
+                "fs_find",
+                "fs_grep",
+                "fs_tree",
+                "share_create",
             }
         )
         if record.can_preview:
-            readable.add("get_web_preview_url")
+            readable.add("web_preview_url")
         if recycle_enabled:
-            readable.add("list_recycle")
+            readable.add("recycle_list")
     if record.can_write:
         readable.update(
             {
-                "write_file",
-                "edit_text",
-                "mutate_files",
-                "replace_large_file_range",
-                "create_directory",
-                "move_path",
-                "start_upload",
+                "fs_write",
+                "fs_edit_text",
+                "fs_mutate",
+                "fs_replace_large",
+                "fs_mkdir",
+                "fs_move",
+                "upload_create",
                 "upload_chunk",
-                "get_upload",
-                "finish_upload",
-                "abort_upload",
-                "import_share",
+                "upload_status",
+                "upload_commit",
+                "upload_cancel",
+                "share_import",
             }
         )
         if recycle_enabled:
-            readable.update({"delete_path", "restore_recycle"})
+            readable.update({"fs_delete", "recycle_restore"})
     if record.can_read or record.can_write:
         readable.update(
             {
-                "get_task",
-                "list_tasks",
-                "read_task_output",
-                "interrupt_task",
-                "kill_task",
+                "task_get",
+                "task_list",
+                "task_output",
+                "task_interrupt",
+                "task_kill",
             }
         )
     if record.shell_mode != "none":
         readable.update(
             {
-                "run_shell",
-                "send_task_input",
+                "shell_exec",
+                "task_stdin",
             }
         )
         if record.can_schedule:
@@ -1156,10 +1140,10 @@ def tools_for(
                 }
             )
     if record.shell_mode == "restricted":
-        readable.add("list_sandbox_processes")
+        readable.add("sandbox_processes")
     selected = [copy.deepcopy(tool) for tool in ALL_TOOLS if tool["name"] in readable]
     for tool in selected:
-        if tool["name"] == "read_binary_chunk":
+        if tool["name"] == "fs_read_binary":
             length = tool["inputSchema"]["properties"]["length"]
             length["maximum"] = mcp_binary_chunk_bytes
             length["default"] = mcp_binary_chunk_bytes

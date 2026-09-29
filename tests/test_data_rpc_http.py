@@ -39,7 +39,7 @@ class DataRpcHTTPTests(unittest.TestCase):
     def finished(self, task_id):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            status, _, raw = self.request("GET", self.base + "/tasks/" + task_id, headers=self.control())
+            status, _, raw = self.request("GET", self.base + "/task/get/" + task_id, headers=self.control())
             self.assertEqual(200, status, raw)
             body = json.loads(raw)
             if body["status"] == "finished":

@@ -9,7 +9,7 @@ Restricted Shell and full Shell have different boundaries. Restricted Shell is c
 Git inspection is a read-only RPC capability, not Shell execution. REST uses
 `POST /rpc/git/<operation>` for the server workspace or
 `POST /mappings/<mapping_name>/rpc/git/<operation>` for a mapped repository.
-MCP uses the same `git` family through the generic `rpc` tool. Reads work
+MCP uses the same `git` family through the generic `rpc_call` tool. Reads work
 with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
 Supported read operations are `status`, `diff`, `diff_stat`, `log`,
@@ -47,7 +47,7 @@ Read Context is optional. Server Git mutations use
 `POST /rpc/git/<operation>`; mapped Git mutations use
 `POST /mappings/<mapping_name>/rpc/git/<operation>`. `add`, `commit`, `restore`,
 `checkout`, `fetch`, `pull`, and `clone` are task operations and use ordinary
-`/tasks` lifecycle APIs without requiring Shell permission. They require write
+`/task/*` lifecycle APIs without requiring Shell permission. They require write
 permission and Plan Context; mapped writes also require a writable mapping, and
 fetch/pull/clone additionally obey the token network/domain policy.
 
@@ -91,7 +91,7 @@ fallback. Client sandbox/limits apply and server `/env` is not injected. Native
 Windows commands use cmd.exe; POSIX/Podman use `/bin/sh -c`. Null/omitted timeout
 uses the client maximum; an explicit timeout must fit its policy.
 
-All returned IDs work with ordinary `/tasks` APIs. Client output is combined in
+All returned IDs work with ordinary `/task/*` APIs. Client output is combined in
 stdout (`output_combined: true`), with empty stderr. Status returns the first
 64 KiB plus `stdout_next_offset`; use incremental output for the rest. Client
 stdin accepts at most 16 KiB/request. Task listing `target=auto` includes server
@@ -99,7 +99,7 @@ token tasks and workspace client tasks; `target=server|client` filters it.
 Inspect `unavailable_mappings` rather than assuming missing tasks stopped.
 Reconnect preserves client tasks while the client process remains alive;
 never automatically retry a start whose response was lost. Schedules remain
-server-side; client execution uses unified `/shell/exec` and `/tasks/*` routes,
+server-side; client execution uses unified `/shell/exec` and `/task/*` routes,
 with no mapping-specific public task or argv REST endpoints.
 
 `POST /shell/exec` returns `202` with `task_id`:
@@ -121,13 +121,13 @@ The command runs asynchronously. `timeout_seconds` may be `null` or within the p
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/tasks?offset=0&limit=100&status=running` | List this token's running/finished tasks; omit `status` for all |
-| `GET` | `/tasks/<task_id>` | Current state and exit metadata |
-| `GET` | `/tasks/<task_id>/output` | Incremental stdout/stderr by byte cursor |
-| `GET` | `/tasks/<task_id>/stream` | Bounded SSE output until `done` or `reconnect` |
-| `POST` | `/tasks/<task_id>/stdin` | Send UTF-8/Base64 input or close stdin |
-| `POST` | `/tasks/<task_id>/interrupt` | Server: SIGTERM then SIGKILL; client: SIGINT or Windows CTRL_BREAK |
-| `POST` | `/tasks/<task_id>/kill` | Server/POSIX client: SIGKILL; native Windows client: taskkill `/T /F` |
+| `GET` | `/task/list?offset=0&limit=100&status=running` | List this token's running/finished tasks; omit `status` for all |
+| `GET` | `/task/get/<task_id>` | Current state and exit metadata |
+| `GET` | `/task/output/<task_id>` | Incremental stdout/stderr by byte cursor |
+| `GET` | `/task/stream/<task_id>` | Bounded SSE output until `done` or `reconnect` |
+| `POST` | `/task/stdin/<task_id>` | Send UTF-8/Base64 input or close stdin |
+| `POST` | `/task/interrupt/<task_id>` | Server: SIGTERM then SIGKILL; client: SIGINT or Windows CTRL_BREAK |
+| `POST` | `/task/kill/<task_id>` | Server/POSIX client: SIGKILL; native Windows client: taskkill `/T /F` |
 | `GET` | `/sandbox/processes` | Token cgroup process/resource view for restricted Shell |
 
 ## Native mapping dependencies
@@ -166,7 +166,7 @@ launch path for their cwd mapping, but schedule records do not yet accept extra
 The HTTP client's request wait is separate from the task's `timeout_seconds`.
 A slow native setup can delay the initial 202 response. A request timeout,
 cancellation, or lost response does not prove the task was never started or has
-stopped. Inspect `/tasks` and use an existing task ID; never automatically replay
+stopped. Inspect `/task/list` and use an existing task ID; never automatically replay
 a Shell start or an uncertain write.
 
 ## Output polling
@@ -174,7 +174,7 @@ a Shell start or an uncertain write.
 Call:
 
 ```text
-GET /tasks/<id>/output?stdout_offset=0&stderr_offset=0&limit=65536&wait_seconds=20
+GET /task/output/<id>?stdout_offset=0&stderr_offset=0&limit=65536&wait_seconds=20
 ```
 
 Advance each cursor to its returned `next_offset`. A `gap` means older bytes fell outside the bounded stream and the response tells where retained output begins. `wait_seconds` supports long polling up to the published maximum.
@@ -182,7 +182,7 @@ Advance each cursor to its returned `next_offset`. A `gap` means older bytes fel
 SSE uses `text/event-stream` with `output`, `done`, and `reconnect` events:
 
 ```text
-GET /tasks/<id>/stream?stdout_offset=<n>&stderr_offset=<n>
+GET /task/stream/<id>?stdout_offset=<n>&stderr_offset=<n>
 ```
 
 `reconnect` means the maximum stream duration was reached while the task is still running. Reconnect using its exact `stdout_offset` and `stderr_offset`. Concurrent streams are limited globally and per token; `429 too_many_streams` includes `Retry-After` and the published limits.
@@ -199,7 +199,7 @@ python3 scripts/openkapsel_http.py GET tasks/<id>/stream --stream
 
 ## Interactive input and termination
 
-`POST /tasks/<id>/stdin` JSON accepts exactly one of `data` (UTF-8) or `data_base64`, plus optional `close`. Include JSON Context fields. The task must have been created with `interactive: true`. Client tasks accept at most 16 KiB per call; server tasks accept at most 256 KiB. The final chunk and `close: true` can be sent together.
+`POST /task/stdin/<id>` JSON accepts exactly one of `data` (UTF-8) or `data_base64`, plus optional `close`. Include JSON Context fields. The task must have been created with `interactive: true`. Client tasks accept at most 16 KiB per call; server tasks accept at most 256 KiB. The final chunk and `close: true` can be sent together.
 
 Interrupt and kill have no JSON body, so send all three `OpenKapsel-*` Context headers. Prefer interrupt; use force-kill when graceful termination is inappropriate or failed.
 

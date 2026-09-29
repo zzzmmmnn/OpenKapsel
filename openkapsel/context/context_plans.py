@@ -2,7 +2,7 @@
 
 The request ledger deliberately has no cascading foreign key: pruning old Context
 must never silently make an old request_id reusable. Replays are creation receipts,
-not current-state reads; callers use query_context/get_plan_tree for current state.
+not current-state reads; callers use context_query/context_plan_tree for current state.
 """
 from __future__ import annotations
 

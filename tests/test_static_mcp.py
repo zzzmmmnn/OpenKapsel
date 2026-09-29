@@ -40,7 +40,7 @@ class StaticMcpTests(unittest.TestCase):
         self.assertIn("static_mcp", text)
         for credential in (current.token, current.control_token, current.preview_token, conn["secret"]):
             self.assertNotIn(credential, text)
-        status, result = self.rpc(conn["secret"], "tools/call", {"name": "prepare_download", "arguments": {"path": "hello.txt"}})
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "fs_download", "arguments": {"path": "hello.txt"}})
         self.assertEqual(200, status)
         url = urlsplit(result["result"]["structuredContent"]["transfer"]["url"])
         auth = {"Authorization": "Bearer " + conn["secret"]}
@@ -49,12 +49,12 @@ class StaticMcpTests(unittest.TestCase):
         root = self.server.tokens.scope_root(current)
         plan = self.server.context_for(root).add("plan", "Transfer test", taskname="transfer", actor_id=current.actor_id)
         context = {"plan_id": plan, "taskname": "transfer", "message": "Upload file"}
-        status, result = self.rpc(conn["secret"], "tools/call", {"name": "start_upload", "arguments": {"path": "uploaded.txt", "size": 3, **context}})
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "upload_create", "arguments": {"path": "uploaded.txt", "size": 3, **context}})
         self.assertEqual(200, status)
         self.assertFalse(result['result']['isError'], result)
         transfer = result['result']['structuredContent']['raw_transfer']
         headers = {**auth, "OpenKapsel-Plan-Id": str(plan), "OpenKapsel-Taskname": "transfer", "OpenKapsel-Message": "Upload file"}
-        self.assertEqual(200, self.request('PATCH', urlsplit(transfer['url']).path, b'abc', {**headers, 'Upload-Offset': '0', 'Content-Type': 'application/octet-stream'})[0])
+        self.assertEqual(200, self.request('PATCH', urlsplit(transfer['chunk_url']).path, b'abc', {**headers, 'Upload-Offset': '0', 'Content-Type': 'application/octet-stream'})[0])
         self.assertEqual(201, self.request('POST', urlsplit(transfer['commit_url']).path, headers=headers)[0])
         self.assertEqual(b'abc', (root / 'uploaded.txt').read_bytes())
         self.assertIsNotNone(self.server.static_mcp.get(conn["id"])["last_used_at"])
@@ -73,7 +73,7 @@ class StaticMcpTests(unittest.TestCase):
         )
         rebound = self.server.static_mcp.get(conn["id"])
         self.assertEqual(conn["secret"], rebound["secret"])
-        status, result = self.rpc(conn["secret"], "tools/call", {"name": "list_files", "arguments": {"path": "."}})
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "fs_list", "arguments": {"path": "."}})
         self.assertEqual(200, status)
         self.assertEqual(["new.txt"], [item["name"] for item in result["result"]["structuredContent"]["entries"]])
         with self.server.static_mcp._db() as db:

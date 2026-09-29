@@ -721,8 +721,9 @@ class MappingTransportTests(unittest.TestCase):
                 self.assertEqual(result["body"]["size"], 5)
                 self.assertEqual(result["body"]["path"], "/workspace/client/hello.txt")
                 self.assertEqual(len(result["body"]["sha256"]), 64)
-                result = sessions[0].call("api_fs_read", {"query": {"path": ["missing"]}})
-                self.assertEqual(result["status"], 404)
+                result = sessions[0].call("api_fs_read_files", {"body": {"paths": ["missing"]}})
+                self.assertEqual(result["status"], 207)
+                self.assertEqual(result["body"]["items"][0]["status"], 404)
                 import shutil
                 if shutil.which("git"):
                     from tests.test_git_operations import make_repo

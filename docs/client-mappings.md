@@ -115,13 +115,13 @@ package does not execute its plugin code.
 Dynamic operations use the same family/operation shape on both execution hosts.
 For a mapping, inspect `GET /mappings` and call
 `POST /mappings/<mapping_name>/rpc/<family>/<operation>`; legacy mapping IDs remain accepted for compatibility. For a server-workspace family,
-call `POST /rpc/<family>/<operation>`. MCP uses one `rpc` tool: provide
+call `POST /rpc/<family>/<operation>`. MCP uses one `rpc_call` tool: provide
 `mapping_id` for client execution or omit it for server execution. Each operation
 publishes `write` and `execution`. The registry default is `execution=sync` for
 reads and `execution=task` for writes, although plugins may declare either mode
 explicitly. `sync` returns the result directly. `task` returns HTTP 202 and a
 normal task ID; mapped tasks use `client.<mapping>.<task>`, while server tasks use
-the server task registry. Poll `/tasks/<id>` or `/tasks/<id>/output`, and use the
+the server task registry. Poll `/task/get/<id>` or `/task/output/<id>`, and use the
 ordinary interrupt/kill task controls. Mapping tasks survive provider WebSocket
 disconnects/reconnects while the client process remains alive. Server RPC tasks
 follow normal server task persistence. A selected target never falls back to the
@@ -187,7 +187,7 @@ restrictions still apply. Unmounted backing directories are inaccessible.
 
 Git RPC family `git` version `2` keeps `status`, `diff`, `diff_stat`, `log`,
 `show`, and `ls_files` as `write=false, execution=sync` sanitized-snapshot reads.
-MCP exposes these reads and the write operations through the single generic `rpc`
+MCP exposes these reads and the write operations through the single generic `rpc_call`
 tool. The same family exposes `add`, `commit`, `restore`, `checkout`, `fetch`,
 `pull`, and `clone` as
 `write=true, execution=task`; provide `mapping_id` for a mapping or omit it to
@@ -229,9 +229,9 @@ Execution requires server caller Shell/write permissions, a writable mapping wit
 
 To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
 
-The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/tasks` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
+The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/task/*` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
 
-There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/tasks/*` routes. Client output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
+There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/task/*` routes. Client output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
 
 ### Task lifetime across reconnects
 
@@ -253,7 +253,7 @@ Local task limits can be set in `limits`: `max_tasks` (1–16), `max_seconds` (1
 
 The built-in read-only `file_search` family exposes the same `search` and `status` operations on server workspaces and mapping clients. Windows talks directly to a running Everything instance through local QUERY2 `WM_COPYDATA` IPC; no ETP server, `es.exe`, or Everything SDK DLL is required. macOS uses the system `mdfind` command. Linux requires `plocate`. Searches use literal filename-substring semantics, are restricted to the selected export-relative `path`, and return only export-relative paths after an additional boundary/private-path check. `search.timeout_seconds` defaults to 5 seconds and preserves partial results on timeout.
 
-The normal `find_files` MCP tool and `GET /fs/query/find` REST endpoint provide the portable recursive filename-search façade. Inside mappings, current clients use `file_search` automatically when it is advertised and otherwise recursively traverse the export, with one shared deadline and result format. Content grep is exposed consistently as MCP `files_grep`, REST `/fs/query/grep`, and core file operation `fs_grep`. Historical `search_files`, `/fs/query/search`, and `fs_search` names remain compatibility aliases only. Set `rpc.file_search` to false on a mapping client to force recursive filename search.
+The normal `fs_find` MCP tool and `GET /fs/query/find` REST endpoint provide the portable recursive filename-search façade. Inside mappings, current clients use `file_search` automatically when it is advertised and otherwise recursively traverse the export, with one shared deadline and result format. Content grep is exposed consistently as MCP `fs_grep`, REST `/fs/query/grep`, and core file operation `fs_grep`. Set `rpc.file_search` to false on a mapping client to force recursive filename search.
 
 ## Structured and table RPC
 
