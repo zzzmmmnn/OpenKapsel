@@ -160,6 +160,10 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         auth = structured["authentication"]
         self.assertEqual("credentials_get", auth["workspace_credentials"]["export_tool"])
         self.assertEqual("credentials_renew", auth["workspace_credentials"]["renew_tool"])
+        self.assertEqual(
+            ["credentials_get", "credentials_renew"],
+            auth["consent"]["rest_credentials_tools"],
+        )
         encoded = json.dumps(structured)
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         for secret in (current.token, current.control_token, current.preview_token):
