@@ -77,6 +77,10 @@ class MappingQueryTests(unittest.TestCase):
         nested.mkdir()
         wanted = nested / "Needle-config.toml"
         wanted.write_text("x")
+        # The test exercises indexed-search preference, not host backend discovery.
+        # CI runners may not have plocate/mdfind/Everything, so advertise the mocked
+        # backend explicitly before dispatching fs_find.
+        self.files.rpc_capabilities["file_search"] = {"state": "available"}
         with patch(
             "openkapsel.rpc_plugins.file_search._backend_paths",
             return_value=("mock-index", iter([str(wanted)])),
