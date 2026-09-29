@@ -12,7 +12,7 @@ Install the normal client dependencies plus the SSH extra:
 python -m pip install -e '.[client,ssh-rpc]'
 ```
 
-If `rpc.ssh` is enabled but Paramiko is missing, the client advertises the family as `unsupported` with reason `dependency_missing`. If no SSH profiles are configured, it advertises `unsupported` with reason `not_configured`.
+`ssh` is disabled by default and requires `rpc.ssh: true`. Even when enabled, it is advertised in `capabilities.rpc` only after its runtime probe succeeds. If Paramiko is missing or no valid SSH profiles are configured, the family is omitted rather than advertised as `unsupported`. When `rpc.ssh` is absent or false, SSH profile configuration is not initialized.
 
 ## Client configuration
 

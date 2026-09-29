@@ -68,6 +68,7 @@ def _write_schema(properties: dict[str, Any], required=()):
 class GitRpcPlugin:
     family = "git"
     version = 2
+    default_enabled = True
     description = (
         "Fixed Git reads and common mutations for server or mapping RPC execution. "
         "Hooks/signing/helpers are disabled; fetch/pull/clone require caller-supplied network policy."

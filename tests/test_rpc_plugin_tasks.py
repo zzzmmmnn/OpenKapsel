@@ -131,7 +131,10 @@ class RpcPluginTaskTests(unittest.TestCase):
             runtime = ClientRuntime(config)
             plugin = SlowPlugin(started, release)
             runtime.files.rpc_registry.register(plugin, source="test:slow")
-            runtime.files.rpc_capabilities = runtime.files.rpc_registry.capability_map(config)
+            capability_config = {**config, "rpc": {"slow": True}}
+            runtime.files.rpc_capabilities = runtime.files.rpc_registry.capability_map(
+                capability_config
+            )
             try:
                 started_task = runtime.tasks.dispatch("task_start", {
                     "task_id": "rpc-survive-1",
@@ -274,7 +277,9 @@ class RpcPluginTaskTests(unittest.TestCase):
             started = threading.Event()
             plugin = WaitPlugin(started)
             files.rpc_registry.register(plugin, source="test:waiter")
-            files.rpc_capabilities = files.rpc_registry.capability_map({})
+            files.rpc_capabilities = files.rpc_registry.capability_map(
+                {"rpc": {"waiter": True}}
+            )
             tasks = ClientTasks(files, enabled=False, max_tasks=1, max_seconds=30)
             try:
                 tasks.dispatch("task_start", {

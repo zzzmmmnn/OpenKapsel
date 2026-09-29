@@ -20,6 +20,7 @@ class RpcPlugin(Protocol):
     family: str
     version: int
     description: str
+    default_enabled: bool
     operations: dict[str, dict[str, Any]]
 
     def probe(self, config: dict[str, Any]) -> tuple[str, str | None, dict[str, Any] | None]:
@@ -38,6 +39,7 @@ class RegisteredPlugin:
     plugin: RpcPlugin
     source: str
     description: str
+    default_enabled: bool
     operations: dict[str, dict[str, Any]]
 
 
@@ -90,7 +92,7 @@ def _operation_specs(value: Any, *, family: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _plugin_object(value: Any) -> tuple[RpcPlugin, str, dict[str, dict[str, Any]]]:
+def _plugin_object(value: Any) -> tuple[RpcPlugin, str, bool, dict[str, dict[str, Any]]]:
     if isinstance(value, type):
         value = value()
     elif callable(value) and not hasattr(value, "family"):
@@ -102,6 +104,9 @@ def _plugin_object(value: Any) -> tuple[RpcPlugin, str, dict[str, dict[str, Any]
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError(f"RPC plugin {family} has an invalid version")
     description = _description(getattr(value, "description", None), label=f"RPC plugin {family}")
+    default_enabled = getattr(value, "default_enabled", False)
+    if not isinstance(default_enabled, bool):
+        raise ValueError(f"RPC plugin {family} default_enabled must be boolean")
     operations = _operation_specs(getattr(value, "operations", None), family=family)
     if not callable(getattr(value, "probe", None)) or not callable(getattr(value, "dispatch", None)):
         raise ValueError(f"RPC plugin {family} must implement probe and dispatch")
@@ -109,7 +114,7 @@ def _plugin_object(value: Any) -> tuple[RpcPlugin, str, dict[str, dict[str, Any]
         getattr(value, "dispatch_task", None)
     ):
         raise ValueError(f"RPC plugin {family} task operations require dispatch_task")
-    return value, description, operations
+    return value, description, default_enabled, operations
 
 
 class ClientRpcRegistry:
@@ -121,13 +126,13 @@ class ClientRpcRegistry:
         return frozenset(self._plugins)
 
     def register(self, plugin: RpcPlugin, *, source: str) -> None:
-        plugin, description, operations = _plugin_object(plugin)
+        plugin, description, default_enabled, operations = _plugin_object(plugin)
         if plugin.family == "file":
             raise ValueError("file is a reserved core RPC family")
         if plugin.family in self._plugins:
             raise ValueError(f"duplicate RPC plugin family: {plugin.family}")
         self._plugins[plugin.family] = RegisteredPlugin(
-            plugin.family, plugin, source, description, operations
+            plugin.family, plugin, source, description, default_enabled, operations
         )
 
     def load_import_spec(self, spec: str) -> None:
@@ -165,17 +170,19 @@ class ClientRpcRegistry:
             }
         }
         for family, registered in self._plugins.items():
-            enabled = raw.get(family, True)
+            enabled = raw.get(family, registered.default_enabled)
             if not isinstance(enabled, bool):
                 raise ValueError(f"rpc.{family} must be a boolean")
+            if not enabled:
+                continue
             plugin = registered.plugin
             state, reason, details = plugin.probe(config)
             if state not in {"available", "unsupported"}:
                 raise ValueError(f"RPC plugin {family} returned invalid probe state")
-            if not enabled:
-                state, reason, details = "disabled", "client_config", None
+            if state != "available":
+                continue
             capability: dict[str, Any] = {
-                "state": state,
+                "state": "available",
                 "version": plugin.version,
                 "description": registered.description,
                 # Keep the compact list for compatibility with existing servers.
@@ -185,8 +192,6 @@ class ClientRpcRegistry:
                 "read_only": not any(spec["write"] for spec in registered.operations.values()),
                 "plugin": registered.source,
             }
-            if reason:
-                capability["reason"] = reason
             if details:
                 capability["details"] = details
             result[family] = capability
@@ -281,7 +286,12 @@ def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:
     from .ssh import SshRpcPlugin
     registry.register(structured_plugin, source="openkapsel.rpc_plugins.structured:plugin")
     registry.register(tabular_plugin, source="openkapsel.rpc_plugins.tabular:plugin")
-    registry.register(SshRpcPlugin(config), source="openkapsel.rpc_plugins.ssh:SshRpcPlugin")
+    rpc_config = config.get("rpc")
+    ssh_enabled = isinstance(rpc_config, dict) and rpc_config.get("ssh") is True
+    registry.register(
+        SshRpcPlugin(config if ssh_enabled else {}),
+        source="openkapsel.rpc_plugins.ssh:SshRpcPlugin",
+    )
 
     specs = config.get("rpc_plugins", [])
     if specs is None:

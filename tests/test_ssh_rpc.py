@@ -358,10 +358,28 @@ class SshRpcTests(unittest.TestCase):
 
     def test_capability_states_and_metadata(self):
         empty = load_client_rpc_registry({}).capability_map({})
-        self.assertEqual("unsupported", empty["ssh"]["state"])
-        self.assertEqual("not_configured", empty["ssh"]["reason"])
-        self.assertTrue(empty["ssh"]["operation_specs"]["read"]["write"])
-        self.assertEqual("task", empty["ssh"]["operation_specs"]["exec"]["execution"])
+        self.assertNotIn("ssh", empty)
+
+        enabled = config()
+        enabled["rpc"] = {"ssh": True}
+        with patch("openkapsel.rpc_plugins.ssh._installed", return_value=True):
+            registry = load_client_rpc_registry(enabled)
+            try:
+                capabilities = registry.capability_map(enabled)
+            finally:
+                registry.close()
+        self.assertEqual("available", capabilities["ssh"]["state"])
+        self.assertTrue(capabilities["ssh"]["operation_specs"]["read"]["write"])
+        self.assertEqual("task", capabilities["ssh"]["operation_specs"]["exec"]["execution"])
+
+        with patch("openkapsel.rpc_plugins.ssh._installed", return_value=False):
+            missing = load_client_rpc_registry(enabled)
+            try:
+                capabilities = missing.capability_map(enabled)
+            finally:
+                missing.close()
+        self.assertNotIn("ssh", capabilities)
+
         with patch("openkapsel.rpc_plugins.ssh._installed", return_value=False):
             plugin = SshRpcPlugin(config())
             try:
@@ -371,6 +389,18 @@ class SshRpcTests(unittest.TestCase):
         self.assertEqual("unsupported", state)
         self.assertEqual("dependency_missing", reason)
         self.assertNotIn("secret", repr(details))
+
+    def test_disabled_ssh_does_not_initialize_profile_config(self):
+        malformed = {"ssh": {"profiles": {"broken": {}}}}
+        registry = load_client_rpc_registry(malformed)
+        try:
+            self.assertNotIn("ssh", registry.capability_map(malformed))
+        finally:
+            registry.close()
+
+        malformed["rpc"] = {"ssh": True}
+        with self.assertRaises(ValueError):
+            load_client_rpc_registry(malformed)
 
     def test_profile_host_port_compact_syntax(self):
         base = {
@@ -553,7 +583,9 @@ class SshRpcTests(unittest.TestCase):
         registry = ClientRpcRegistry()
         registry.register(self.plugin, source="test:ssh")
         self.files.rpc_registry = registry
-        self.files.rpc_capabilities = registry.capability_map(config())
+        enabled = config()
+        enabled["rpc"] = {"ssh": True}
+        self.files.rpc_capabilities = registry.capability_map(enabled)
         tasks = ClientTasks(self.files, enabled=False, max_tasks=2, max_seconds=30)
         try:
             started = tasks.dispatch("task_start", {

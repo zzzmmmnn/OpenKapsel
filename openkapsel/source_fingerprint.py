@@ -63,6 +63,8 @@ SERVER_FILES = (
     "openkapsel/workspace/workspace_images.py",
     "openkapsel/execution/shell_routing.py",
     "openkapsel/rpc_plugins/registry.py",
+    "openkapsel/rpc_plugins/archive/__init__.py",
+    "openkapsel/rpc_plugins/git/__init__.py",
     "openkapsel/rpc_plugins/file_search/__init__.py",
     "openkapsel/rpc_plugins/file_search/everything_ipc.py",
 )

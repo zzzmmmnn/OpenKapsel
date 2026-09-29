@@ -381,6 +381,7 @@ def _scan(files, args, task):
 class TabularRpcPlugin:
     family = "tabular"
     version = 1
+    default_enabled = True
     description = "Read-only CSV/Excel inspection and pages; CSV supports 2-10 GiB files via streaming seek cursors. Bounded count/aggregate scans run as cancellable tasks."
     operations = {
         "inspect": {"description": "Inspect columns/workbook sheets and a small sample. CSV row count is unknown until explicitly scanned.",

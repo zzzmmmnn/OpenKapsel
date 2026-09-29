@@ -162,7 +162,9 @@ def _create_resources(config, *, protected_paths=()):
     rpc_capabilities = rpc_registry.capability_map(config)
     extensions = []
     for family in sorted(rpc_registry.families):
-        capability = rpc_capabilities[family]
+        capability = rpc_capabilities.get(family)
+        if capability is None:
+            continue
         extensions.append(
             f"{family} v{capability['version']} ({capability['state']})"
         )

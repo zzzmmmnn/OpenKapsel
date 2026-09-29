@@ -299,6 +299,7 @@ def _search(files, args):
 class FileSearchRpcPlugin:
     family = "file_search"
     version = 1
+    default_enabled = True
     description = (
         "Read-only indexed filename search scoped to the selected export. "
         "Uses native Everything IPC on Windows, mdfind on macOS, and plocate on Linux."

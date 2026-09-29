@@ -17,12 +17,22 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         config = config or {}
         return load_client_rpc_registry(config).capability_map(config)
 
-    def test_defaults_enable_file_git_and_archive_plugins(self):
-        capabilities = self.capabilities()
+    def test_defaults_enable_supported_builtin_plugins(self):
+        with (
+            patch("openkapsel.rpc_plugins.git.shutil.which", return_value="/usr/bin/git"),
+            patch(
+                "openkapsel.rpc_plugins.file_search._backend_status",
+                return_value={"backend": "mock", "available": True},
+            ),
+        ):
+            capabilities = self.capabilities()
         self.assertEqual("available", capabilities["file"]["state"])
-        self.assertIn(capabilities["git"]["state"], {"available", "unsupported"})
+        self.assertEqual("available", capabilities["git"]["state"])
         self.assertEqual("available", capabilities["archive"]["state"])
-        self.assertIn(capabilities["file_search"]["state"], {"available", "unsupported"})
+        self.assertEqual("available", capabilities["file_search"]["state"])
+        self.assertEqual("available", capabilities["structured"]["state"])
+        self.assertEqual("available", capabilities["tabular"]["state"])
+        self.assertNotIn("ssh", capabilities)
         self.assertIn("fs_read", capabilities["file"]["operations"])
         self.assertIn("log", capabilities["git"]["operations"])
         self.assertEqual(["search", "status"], capabilities["file_search"]["operations"])
@@ -49,11 +59,14 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])
 
     def test_client_can_disable_extensions_but_core_files_remain_available(self):
-        capabilities = self.capabilities({"rpc": {"git": False, "archive": False}})
+        with patch(
+            "openkapsel.rpc_plugins.git.GitRpcPlugin.probe",
+            side_effect=AssertionError("disabled plugin must not be probed"),
+        ):
+            capabilities = self.capabilities({"rpc": {"git": False, "archive": False}})
         self.assertEqual("available", capabilities["file"]["state"])
-        self.assertEqual("disabled", capabilities["git"]["state"])
-        self.assertEqual("disabled", capabilities["archive"]["state"])
-        self.assertEqual("client_config", capabilities["git"]["reason"])
+        self.assertNotIn("git", capabilities)
+        self.assertNotIn("archive", capabilities)
 
     def test_removed_file_switch_is_rejected_with_migration_guidance(self):
         for value in (True, False, "disabled", None):
@@ -88,11 +101,18 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                     finally:
                         files.close()
 
-    def test_missing_git_dependency_is_unsupported(self):
+    def test_missing_git_dependency_is_not_advertised(self):
         with patch("openkapsel.rpc_plugins.git.shutil.which", return_value=None):
             capabilities = self.capabilities()
-        self.assertEqual("unsupported", capabilities["git"]["state"])
-        self.assertEqual("dependency_missing", capabilities["git"]["reason"])
+        self.assertNotIn("git", capabilities)
+
+    def test_missing_file_search_backend_is_not_advertised(self):
+        with patch(
+            "openkapsel.rpc_plugins.file_search._backend_status",
+            return_value={"backend": "plocate", "available": False, "reason": "dependency_missing"},
+        ):
+            capabilities = self.capabilities()
+        self.assertNotIn("file_search", capabilities)
 
     def test_explicit_import_spec_registers_third_party_plugin(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -115,6 +135,12 @@ class ClientRpcCapabilityTests(unittest.TestCase):
             sys.path.insert(0, directory)
             try:
                 importlib.invalidate_caches()
+                disabled_config = {"rpc_plugins": ["vendor_rpc:plugin"]}
+                disabled_registry = load_client_rpc_registry(disabled_config)
+                try:
+                    self.assertNotIn("vendor", disabled_registry.capability_map(disabled_config))
+                finally:
+                    disabled_registry.close()
                 config = {"rpc_plugins": ["vendor_rpc:plugin"], "rpc": {"vendor": True}}
                 registry = load_client_rpc_registry(config)
                 capabilities = registry.capability_map(config)

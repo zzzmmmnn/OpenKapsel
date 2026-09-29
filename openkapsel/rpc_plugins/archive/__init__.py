@@ -703,6 +703,7 @@ def archive_extract_task(files, args, task):
 class ArchiveRpcPlugin:
     family = "archive"
     version = 1
+    default_enabled = True
     description = (
         "Safely browse ZIP and Python-standard-library tar archives without extracting "
         "members to the workspace."

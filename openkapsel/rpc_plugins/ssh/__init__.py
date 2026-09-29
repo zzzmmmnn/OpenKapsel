@@ -706,6 +706,7 @@ _LOCAL_PATH = {"type": "string", "minLength": 1, "maxLength": 4096}
 class SshRpcPlugin:
     family = "ssh"
     version = 2
+    default_enabled = False
     description = (
         "Privileged client-local SSH/SFTP using reusable Paramiko transports with optional "
         "SOCKS4, SOCKS5, HTTP CONNECT, or HTTPS CONNECT proxies. Credentials remain in the "

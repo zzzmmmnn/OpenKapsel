@@ -252,6 +252,7 @@ _PATCH = {**_PATH, "operations": {"type": "array", "minItems": 1, "maxItems": MA
 class StructuredRpcPlugin:
     family = "structured"
     version = 1
+    default_enabled = True
     description = "Bounded JSON/YAML/TOML reads, validation, patch previews and conditional atomic writes. No executable tags, code or FUSE."
     operations = {
         "read": {"description": "Read a JSON Pointer subtree; paginate immediate object keys or array items. Native dates/large integers are annotated.",
