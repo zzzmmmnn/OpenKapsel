@@ -612,7 +612,7 @@ class DiscoveryMixin:
                     "Before modifying a workspace, create or reuse a Context plan. Every modifying REST or MCP operation requires plan_id, taskname, and a brief message.",
                     "Configure app-identity-scoped Shell variables and POSIX initialization with the control-authenticated env endpoint; configured values are injected into full, Bubblewrap, and Podman Shell tasks without appearing in launcher arguments.",
                     "Start ordinary workspace work with discovery/files; use discovery/context and discovery/memory when coordinating or retaining project knowledge.",
-                    "MCP clients should call tools/list for authoritative tool input schemas; workspace_info returns this compact index by default and accepts a section parameter.",
+                    "MCP clients should call tools/list for authoritative tool input schemas; discovery returns this compact index by default and accepts a section parameter.",
                     "Use discovery/sharing for temporary cross-workspace transfer by random share ID.",
                 ],
                 "errors": full["errors"],
@@ -2227,7 +2227,7 @@ class DiscoveryMixin:
             )
         return payload
 
-    def _mcp_workspace_info(self, section: str = "main") -> dict[str, Any]:
+    def _mcp_discovery(self, section: str = "main") -> dict[str, Any]:
         """Return Discovery metadata without echoing the capability token into MCP logs."""
         payload = self._discovery(section)
         base = self._base_path()
@@ -2260,10 +2260,10 @@ class DiscoveryMixin:
                 "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
                 "scope": "openkapsel",
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
-                "rest_access": "OAuth grants use the MCP endpoint directly; workspace_credentials_get can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
+                "rest_access": "OAuth grants use the MCP endpoint directly; credentials_get can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
                 "workspace_credentials": {
-                    "export_tool": "workspace_credentials_get",
-                    "renew_tool": "workspace_credentials_renew",
+                    "export_tool": "credentials_get",
+                    "renew_tool": "credentials_renew",
                     "renewal_window_seconds": 2 * 24 * 60 * 60,
                     "rotation": "read URL token and control token rotate atomically; old REST credentials become invalid; MCP connection credentials are unchanged",
                 },

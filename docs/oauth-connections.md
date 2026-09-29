@@ -24,11 +24,11 @@ Connections are grouped by project directory. Edit a connection's comment or sel
 
 Connections refer to the stable `app_id` of a token configuration and pin its workspace directory. Current permissions, workspace expiry, sandbox and network policies remain authoritative on every call. Disabling/deleting the configuration or changing its directory blocks the connection. Read/control credential expiration and renewal do not invalidate OAuth credentials.
 
-The `openkapsel` scope grants the linked configuration's enabled MCP capabilities, without administration access. Configure a separate token record if a client needs a different permission set, even when both records reference the same directory. Permission changes to a linked record also change the connection's effective permissions.\n\nAn authenticated OAuth MCP connection is also a portable delegation entry point for that configuration. `workspace_credentials_get` returns the current REST `workspace_url`, `control_token`, and credential expiration without rotating anything. `workspace_credentials_renew` uses the same final-two-day self-renewal rule as REST `POST /credentials/renew`: it atomically rotates the URL/read token and control token, invalidates the previous REST pair immediately, and leaves the OAuth access/refresh grant unchanged. Expired REST credentials still cannot self-renew; an administrator must renew them. Ordinary MCP Discovery and `workspace_info` describe this capability but continue to redact the actual REST credentials.
+The `openkapsel` scope grants the linked configuration's enabled MCP capabilities, without administration access. Configure a separate token record if a client needs a different permission set, even when both records reference the same directory. Permission changes to a linked record also change the connection's effective permissions.\n\nAn authenticated OAuth MCP connection is also a portable delegation entry point for that configuration. `credentials_get` returns the current REST `workspace_url`, `control_token`, and credential expiration without rotating anything. `credentials_renew` uses the same final-two-day self-renewal rule as REST `POST /credentials/renew`: it atomically rotates the URL/read token and control token, invalidates the previous REST pair immediately, and leaves the OAuth access/refresh grant unchanged. Expired REST credentials still cannot self-renew; an administrator must renew them. Ordinary MCP Discovery and `discovery` describe this capability but continue to redact the actual REST credentials.
 
 Access tokens expire after one hour. Refresh tokens rotate on every use, with a fixed grant lifetime of 30 days. Reusing a consumed refresh token revokes that entire grant, including its access tokens. After grant expiry, the same registered client can ask a current matching control-token holder to authorize again. Clients must persist a refresh response before retrying; a lost rotation response may require reauthorization.
 
-OAuth credentials work only on the connection's MCP endpoint and the connection-scoped raw transfer URLs returned by MCP tools. Other REST endpoints require their normal read/control credentials. Use tools for task polling, Context, Memory and other operations instead of following REST examples. `workspace_info` identifies the OAuth mode and masks underlying capability credentials.
+OAuth credentials work only on the connection's MCP endpoint and the connection-scoped raw transfer URLs returned by MCP tools. Other REST endpoints require their normal read/control credentials. Use tools for task polling, Context, Memory and other operations instead of following REST examples. `discovery` identifies the OAuth mode and masks underlying capability credentials.
 
 ## Control-token consent boundary
 
@@ -78,7 +78,7 @@ Legacy GET `/admin/oauth/approve?request=...` links redirect to the independent
 page when still valid; old POST approval forms are rejected, never forwarded.
 
 OAuth authorization-server metadata publishes the implementation-specific
-`openkapsel_consent` object. Authenticated MCP `workspace_info` publishes the same
+`openkapsel_consent` object. Authenticated MCP `discovery` publishes the same
 object at `authentication.consent`. Standard endpoints, PKCE and client token
 exchange remain unchanged. REST Discovery remains focused on REST/Skill access.
 

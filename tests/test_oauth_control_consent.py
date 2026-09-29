@@ -291,7 +291,7 @@ class ControlConsentHTTPTests(unittest.TestCase):
         consent = json.loads(raw)["openkapsel_consent"]
         self.assertEqual("matching_control_token", consent["authentication"])
         self.assertFalse(consent["administrator_login_required"])
-        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "workspace_info", "arguments": {}})
+        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "discovery", "arguments": {}})
         self.assertEqual(200, status, payload)
         self.assertEqual(consent, payload["result"]["structuredContent"]["authentication"]["consent"])
 

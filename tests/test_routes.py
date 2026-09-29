@@ -103,8 +103,8 @@ class EndpointContractTests(unittest.TestCase):
             set(update["properties"]),
         )
 
-    def test_workspace_info_exposes_discovery_sections(self) -> None:
-        tool = next(tool for tool in ALL_TOOLS if tool["name"] == "workspace_info")
+    def test_discovery_exposes_discovery_sections(self) -> None:
+        tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")
         section = tool["inputSchema"]["properties"]["section"]
         self.assertEqual(
             {"main", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},

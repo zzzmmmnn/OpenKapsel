@@ -34,7 +34,7 @@ class StaticMcpTests(unittest.TestCase):
         self.server.tokens.update(current.token, credentials_expires_at="2000-01-01T00:00:00+00:00")
         self.assertEqual(200, self.rpc(conn["secret"], "tools/list")[0])
         self.assertEqual(401, self.rpc(current.control_token, "tools/list")[0])
-        status, result = self.rpc(conn["secret"], "tools/call", {"name": "workspace_info", "arguments": {}})
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "discovery", "arguments": {}})
         self.assertEqual(200, status)
         text = json.dumps(result)
         self.assertIn("static_mcp", text)

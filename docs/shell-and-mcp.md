@@ -150,8 +150,8 @@ The negotiated protocol is `2025-11-25`, with compatibility for `2025-03-26` and
 
 The current tool surface includes:
 
-- Discovery: `workspace_info`
-- portable REST delegation: `workspace_credentials_get` and `workspace_credentials_renew`
+- Discovery: `discovery`
+- portable REST delegation: `credentials_get` and `credentials_renew`
 - generic RPC: `rpc_call` for advertised server or mapping RPC families such as Git and Archive
 - Context: query, create, Plan tree, Plan update, and Note replacement
 - Memory: query, get project Memory, add, revise, and archive
@@ -163,7 +163,7 @@ The current tool surface includes:
 
 MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated `/transfer/...` URLs containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
 
-`workspace_info` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `schedules`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
+`discovery` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `schedules`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
 
 The Shell tools in `tools/list` use the same unified task IDs as REST:
 `shell_exec` and `task_list` accept `target=auto|server|client`; `task_get` and

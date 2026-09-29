@@ -2463,7 +2463,7 @@ class WorkspaceServerTests(unittest.TestCase):
         names = {tool["name"] for tool in listed["result"]["tools"]}
         self.assertTrue(
             {
-                "workspace_info",
+                "discovery",
                 "fs_list",
                 "fs_read_files",
                 "fs_stat",
@@ -2502,16 +2502,16 @@ class WorkspaceServerTests(unittest.TestCase):
         delete_tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "fs_delete")
         self.assertTrue(delete_tool["annotations"]["destructiveHint"])
 
-        status, workspace_info, _ = self.mcp_request(
+        status, discovery, _ = self.mcp_request(
             token,
             200,
             "tools/call",
-            {"name": "workspace_info", "arguments": {}},
+            {"name": "discovery", "arguments": {}},
         )
         self.assertEqual(200, status)
-        self.assertFalse(workspace_info["result"]["isError"])
-        workspace_payload = workspace_info["result"]["structuredContent"]
-        self.assertNotIn(token, json.dumps(workspace_info["result"], ensure_ascii=False))
+        self.assertFalse(discovery["result"]["isError"])
+        workspace_payload = discovery["result"]["structuredContent"]
+        self.assertNotIn(token, json.dumps(discovery["result"], ensure_ascii=False))
         self.assertEqual("main", workspace_payload["section"])
         self.assertIn("files", workspace_payload["sections"])
         self.assertNotIn("fs_write", workspace_payload["endpoints"])
@@ -2531,21 +2531,21 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             203,
             "tools/call",
-            {"name": "workspace_info", "arguments": {"section": "unknown"}},
+            {"name": "discovery", "arguments": {"section": "unknown"}},
         )
         self.assertEqual(-32602, invalid_section["error"]["code"])
 
-        status, workspace_info, _ = self.mcp_request(
+        status, discovery, _ = self.mcp_request(
             token,
             202,
             "tools/call",
-            {"name": "workspace_info", "arguments": {"section": "full"}},
+            {"name": "discovery", "arguments": {"section": "full"}},
         )
         self.assertEqual(200, status)
-        self.assertFalse(workspace_info["result"]["isError"])
-        workspace_payload = workspace_info["result"]["structuredContent"]
+        self.assertFalse(discovery["result"]["isError"])
+        workspace_payload = discovery["result"]["structuredContent"]
         self.assertEqual("full", workspace_payload["section"])
-        self.assertNotIn(token, json.dumps(workspace_info["result"], ensure_ascii=False))
+        self.assertNotIn(token, json.dumps(discovery["result"], ensure_ascii=False))
         self.assertEqual(
             "https://preview.ws.example.test/"
             "<PREVIEW_TOKEN>/<workspace-relative-path>",
@@ -3017,7 +3017,7 @@ class WorkspaceServerTests(unittest.TestCase):
         status, read_tools, _ = self.mcp_request(read_only.token, 104, "tools/list", {})
         self.assertEqual(200, status)
         read_names = {tool["name"] for tool in read_tools["result"]["tools"]}
-        self.assertTrue({"workspace_info", "fs_list", "fs_read_files", "recycle_list"}.issubset(read_names))
+        self.assertTrue({"discovery", "fs_list", "fs_read_files", "recycle_list"}.issubset(read_names))
         self.assertTrue(
             {"fs_write", "fs_delete", "recycle_restore", "shell_exec"}.isdisjoint(read_names)
         )
@@ -3463,7 +3463,7 @@ class WorkspaceServerTests(unittest.TestCase):
             if tool["annotations"]["readOnlyHint"] or tool_name in {
                 "context_add",
                 "context_plan_update",
-                "workspace_credentials_renew",
+                "credentials_renew",
                 "rpc_call",
             }:
                 continue
