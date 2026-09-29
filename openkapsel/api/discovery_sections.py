@@ -7,15 +7,15 @@ SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sha
 
 SECTION_ENDPOINTS = {
     "files": {
-        "rpc", "mappings", "fs_query", "fs_read", "fs_content", "fs_write",
-        "transfers", "recycle", "uploads",
+        "rpc", "mapping", "fs_query", "fs_read", "fs_content", "fs_write",
+        "transfer", "recycle", "upload",
     },
     "context": {"context"},
     "memory": {"memory"},
-    "shell": {"rpc", "mappings", "shell", "tasks", "environment"},
-    "schedules": {"schedules"},
+    "shell": {"rpc", "mapping", "shell", "task", "environment"},
+    "schedules": {"schedule"},
     "web": {"web"},
-    "sharing": {"sharing"},
+    "sharing": {"share"},
 }
 
 SECTION_CAPABILITIES = {

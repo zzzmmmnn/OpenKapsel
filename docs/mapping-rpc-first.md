@@ -44,7 +44,7 @@ Normal HTTP/WebSocket, RPC concurrency, task and memory limits still apply.
 `mapping_mount_idle_seconds` accepts 0-3600 seconds; zero requests immediate
 unmount after the last lease is released.
 
-`GET /mappings` exposes `online`, `mounted`, `mount_references`, and
+`GET /mapping` exposes `online`, `mounted`, `mount_references`, and
 `native_mounts_enabled`. Busy mappings cannot be renamed, deleted or have their
 administrative properties changed until native consumers stop. Offline or
 unmounted roots never turn into writable ordinary server directories.

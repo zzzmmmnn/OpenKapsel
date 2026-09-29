@@ -92,7 +92,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
         plan_id = self.create_plan()
         endpoint = (
             self.base
-            + f"/mappings/{self.row['id']}/rpc/archive/create"
+            + f"/mapping/{self.row['id']}/rpc/archive/create"
         )
         status, _, raw = self.request(
             "POST",
@@ -176,7 +176,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
         self.session.call = busy_call
         status, _, raw = self.request(
             "POST",
-            self.base + f"/mappings/{self.row['id']}/rpc/archive/create",
+            self.base + f"/mapping/{self.row['id']}/rpc/archive/create",
             json.dumps({
                 "args": {
                     "destination": "busy.zip",
@@ -219,7 +219,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
         self.session.call = busy_call
         status, _, raw = self.request(
             "POST",
-            self.base + f"/mappings/{self.row['id']}/rpc/archive/create",
+            self.base + f"/mapping/{self.row['id']}/rpc/archive/create",
             json.dumps({
                 "args": {
                     "destination": "busy-generic.zip",
@@ -254,7 +254,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
         self.session.call = ambiguous_call
         status, _, raw = self.request(
             "POST",
-            self.base + f"/mappings/{self.row['id']}/rpc/archive/create",
+            self.base + f"/mapping/{self.row['id']}/rpc/archive/create",
             json.dumps({
                 "args": {
                     "destination": "ambiguous.zip",

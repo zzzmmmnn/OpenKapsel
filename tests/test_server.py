@@ -299,7 +299,7 @@ class WorkspaceServerTests(unittest.TestCase):
         return status, json.loads(raw.decode("utf-8"))
 
     def test_schedule_rest_and_mcp_use_separate_permission(self) -> None:
-        denied_status, denied = self.request("GET", self.endpoint("/schedules"))
+        denied_status, denied = self.request("GET", self.endpoint("/schedule"))
         self.assertEqual(HTTPStatus.FORBIDDEN, denied_status)
         self.assertEqual("schedule_permission_denied", denied["error"]["code"])
 
@@ -309,7 +309,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(HTTPStatus.OK, discovery_status)
         schedule_update_fields = set(
-            discovery_operation(schedule_discovery, "schedules", "update")["body_fields"]
+            discovery_operation(schedule_discovery, "schedule", "update")["body_fields"]
         )
         self.assertIn("overlap_policy", schedule_update_fields)
         self.assertIn("misfire_policy", schedule_update_fields)
@@ -317,7 +317,7 @@ class WorkspaceServerTests(unittest.TestCase):
         plan_id = self._ensure_test_plan("test-token")
         create_status, created = self.request(
             "POST",
-            self.endpoint("/schedules"),
+            self.endpoint("/schedule"),
             {
                 "name": "test schedule",
                 "schedule": {"type": "interval", "minutes": 3, "timezone": "UTC"},
@@ -333,7 +333,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(3, created["schedule"]["minutes"])
 
         run_status, run = self.request(
-            "POST", self.endpoint(f"/schedules/{schedule_id}/run"), {}
+            "POST", self.endpoint(f"/schedule/{schedule_id}/run"), {}
         )
         self.assertEqual(HTTPStatus.ACCEPTED, run_status)
         self.assertIsNotNone(run["task_id"])
@@ -341,13 +341,13 @@ class WorkspaceServerTests(unittest.TestCase):
         while run["status"] in {"claimed", "running"} and time.monotonic() < deadline:
             time.sleep(0.02)
             item_status, run = self.request(
-                "GET", self.endpoint(f"/schedule-runs/{run['run_id']}")
+                "GET", self.endpoint(f"/schedule/run/{run['run_id']}")
             )
             self.assertEqual(HTTPStatus.OK, item_status)
         self.assertEqual("succeeded", run["status"])
 
         list_status, runs = self.request(
-            "GET", self.endpoint(f"/schedules/{schedule_id}/runs")
+            "GET", self.endpoint(f"/schedule/{schedule_id}/runs")
         )
         self.assertEqual(HTTPStatus.OK, list_status)
         self.assertEqual(1, runs["count"])
@@ -540,7 +540,7 @@ class WorkspaceServerTests(unittest.TestCase):
             set(main["sections"]),
         )
         self.assertEqual(
-            {"discovery", "credentials", "environment"},
+            {"discovery", "credential", "environment"},
             set(main["endpoints"]),
         )
         self.assertEqual([".openkapsel"], main["path_rules"]["private_directories"])
@@ -558,7 +558,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("files", files["section"])
         self.assertIn("fs_query", files["endpoints"])
-        self.assertIn("uploads", files["endpoints"])
+        self.assertIn("upload", files["endpoints"])
         self.assertNotIn("context", files["endpoints"])
 
         status, missing_section = self.request(
@@ -582,15 +582,15 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertEqual(skill, section_payload["skills"]["openkapsel_rest"])
             section_endpoint_sets.append(set(section_payload["endpoints"]))
         self.assertEqual(
-            set(payload["endpoints"]) - {"discovery", "credentials"},
+            set(payload["endpoints"]) - {"discovery", "credential"},
             set().union(*section_endpoint_sets),
         )
 
         def op(family: str, operation: str) -> dict:
             return discovery_operation(payload, family, operation)
         discovery_text = json.dumps(payload, sort_keys=True)
-        self.assertIn("./mappings/<mapping_name>/rpc/<family>/<operation>", discovery_text)
-        self.assertNotIn("./mappings/<mapping_id>/rpc/", discovery_text)
+        self.assertIn("./mapping/<mapping_name>/rpc/<family>/<operation>", discovery_text)
+        self.assertNotIn("./mapping/<mapping_id>/rpc/", discovery_text)
         storage = payload["limits"]["workspace_storage"]
         self.assertEqual("directory", storage["backend"])
         self.assertFalse(storage["hard_quota_enforced"])
@@ -603,15 +603,15 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("POST", op("fs_write", "move")["method"])
         self.assertEqual("GET", op("recycle", "list")["method"])
         self.assertEqual("POST", op("recycle", "restore")["method"])
-        self.assertEqual("POST", op("tasks", "kill")["method"])
+        self.assertEqual("POST", op("task", "kill")["method"])
         self.assertEqual(
             {"output", "done", "reconnect", "error"},
-            set(op("tasks", "stream")["events"]),
+            set(op("task", "stream")["events"]),
         )
-        self.assertIn("CTRL_BREAK", op("tasks", "interrupt")["description"])
-        self.assertIn("taskkill /T /F", op("tasks", "kill")["description"])
-        self.assertEqual("POST", op("sharing", "create")["method"])
-        self.assertEqual("GET", op("sharing", "query")["method"])
+        self.assertIn("CTRL_BREAK", op("task", "interrupt")["description"])
+        self.assertIn("taskkill /T /F", op("task", "kill")["description"])
+        self.assertEqual("POST", op("share", "create")["method"])
+        self.assertEqual("GET", op("share", "query")["method"])
         self.assertEqual(86400, payload["limits"]["share_ttl_seconds"])
         self.assertEqual(10, payload["limits"]["max_share_entries"])
         self.assertEqual(256 * 1024 * 1024, payload["limits"]["max_share_bytes"])
@@ -634,10 +634,10 @@ class WorkspaceServerTests(unittest.TestCase):
             "files.read + web_preview",
             op("web", "preview")["required_capability"],
         )
-        self.assertTrue(op("tasks", "kill")["available"])
+        self.assertTrue(op("task", "kill")["available"])
         self.assertEqual(
             "Bearer control token + shell",
-            op("tasks", "kill")["required_capability"],
+            op("task", "kill")["required_capability"],
         )
         self.assertTrue(
             payload["capabilities"]["web_preview"]["sandboxed_document_origin"]
@@ -787,7 +787,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("Every modifying REST operation must provide plan_id", workflow_text)
         self.assertIn("context_plan_tree", workflow_text)
         self.assertIn("Uploads never overwrite", workflow_text)
-        upload_fields = op("uploads", "create")["body_fields"]
+        upload_fields = op("upload", "create")["body_fields"]
         self.assertNotIn("overwrite", upload_fields)
         self.assertNotIn("expected_etag", upload_fields)
         direct_upload = op("fs_content", "write")
@@ -804,7 +804,7 @@ class WorkspaceServerTests(unittest.TestCase):
             op("fs_query", "stat"),
             op("fs_query", "find"),
             op("fs_query", "grep"),
-            op("tasks", "output"),
+            op("task", "output"),
         ):
             for field in ("plan_id", "taskname", "message"):
                 self.assertIn(field, endpoint["query_fields"])
@@ -854,10 +854,10 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "context", "credentials", "discovery", "environment",
+                "context", "credential", "discovery", "environment",
                 "fs_content", "fs_query", "fs_read", "fs_write",
-                "mappings", "memory", "recycle", "rpc", "schedules",
-                "sharing", "shell", "tasks", "transfers", "uploads", "web",
+                "mapping", "memory", "recycle", "rpc", "schedule",
+                "share", "shell", "task", "transfer", "upload", "web",
             },
             set(payload["endpoints"]),
         )
@@ -891,7 +891,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(44, len(mapping_handshake["server_fingerprint"]))
         self.assertEqual(
             ["output", "done", "reconnect", "error"],
-            op("tasks", "stream")["events"],
+            op("task", "stream")["events"],
         )
         self.assertEqual(64, payload["limits"]["sandbox_max_processes"])
         self.assertEqual(256 * 1024 * 1024, payload["limits"]["sandbox_memory_bytes"])
@@ -969,11 +969,11 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint_reference = bundle.read("openkapsel-rest/references/endpoint-index.md")
             self.assertNotIn(b"/admin", endpoint_reference)
             self.assertIn(
-                b"/mappings/<mapping_name>/rpc/<family>/<operation>",
+                b"/mapping/<mapping_name>/rpc/<family>/<operation>",
                 endpoint_reference,
             )
             self.assertNotIn(
-                b"/mappings/<mapping_id>/rpc/",
+                b"/mapping/<mapping_id>/rpc/",
                 endpoint_reference,
             )
             self.assertIn(b"/fs/query/find", endpoint_reference)
@@ -1170,7 +1170,7 @@ class WorkspaceServerTests(unittest.TestCase):
         old_actor = current.actor_id
 
         status, payload = self.request(
-            "POST", self.endpoint("/credentials/renew")
+            "POST", self.endpoint("/credential/renew")
         )
         self.assertEqual(409, status)
         self.assertEqual("credentials_renewal_not_due", payload["error"]["code"])
@@ -1183,7 +1183,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         status, raw, headers = self.raw_request(
             "POST",
-            f"/kapsel/w/{old_read}/credentials/renew",
+            f"/kapsel/w/{old_read}/credential/renew",
             headers={"Authorization": f"Bearer {current.control_token}"},
             authorize=False,
         )
@@ -3032,7 +3032,7 @@ class WorkspaceServerTests(unittest.TestCase):
             discovery_operation(read_discovery, "fs_write", "mutate")["available"]
         )
         self.assertFalse(
-            discovery_operation(read_discovery, "tasks", "kill")["available"]
+            discovery_operation(read_discovery, "task", "kill")["available"]
         )
 
     def test_mcp_conditional_writes_preview_and_raw_large_file_transfer(self) -> None:
@@ -3463,7 +3463,7 @@ class WorkspaceServerTests(unittest.TestCase):
             if tool["annotations"]["readOnlyHint"] or tool_name in {
                 "context_add",
                 "context_plan_update",
-                "credentials_renew",
+                "credential_renew",
                 "rpc_call",
             }:
                 continue

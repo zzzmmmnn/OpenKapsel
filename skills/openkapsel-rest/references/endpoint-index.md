@@ -8,14 +8,14 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 |---|---|
 | `GET` | `<workspace_url>/` |
 | `GET` | `<workspace_url>/discovery/{files,context,memory,shell,schedules,web,sharing,full}` |
-| `POST` | `<workspace_url>/credentials/renew` |
+| `POST` | `<workspace_url>/credential/renew` |
 | `GET` | `<workspace_url>/fs/query/list` |
 | `GET` | `<workspace_url>/fs/query/stat` |
 | `POST` | `<workspace_url>/fs/query/manifest` |
 | `POST` | `<workspace_url>/fs/read/files` |
 | `POST` | `<workspace_url>/rpc/git/<operation>` |
 | `POST` | `<workspace_url>/rpc/archive/<operation>` |
-| `POST` | `<workspace_url>/mappings/<mapping_name>/rpc/<family>/<operation>` |
+| `POST` | `<workspace_url>/mapping/<mapping_name>/rpc/<family>/<operation>` |
 | `GET` | `<workspace_url>/fs/query/find` |
 | `GET` | `<workspace_url>/fs/query/grep` |
 | `GET` | `<workspace_url>/fs/query/tree` |
@@ -80,13 +80,13 @@ routing, and client execution rejects non-empty declarations. See
 
 | Method | Route |
 |---|---|
-| `GET|POST` | `<workspace_url>/schedules` |
-| `GET|PATCH|DELETE` | `<workspace_url>/schedules/<schedule_id>` |
-| `POST` | `<workspace_url>/schedules/<schedule_id>/run` |
-| `POST` | `<workspace_url>/schedules/<schedule_id>/pause` |
-| `POST` | `<workspace_url>/schedules/<schedule_id>/resume` |
-| `GET` | `<workspace_url>/schedules/<schedule_id>/runs` |
-| `GET` | `<workspace_url>/schedule-runs/<run_id>` |
+| `GET|POST` | `<workspace_url>/schedule` |
+| `GET|PATCH|DELETE` | `<workspace_url>/schedule/<schedule_id>` |
+| `POST` | `<workspace_url>/schedule/<schedule_id>/run` |
+| `POST` | `<workspace_url>/schedule/<schedule_id>/pause` |
+| `POST` | `<workspace_url>/schedule/<schedule_id>/resume` |
+| `GET` | `<workspace_url>/schedule/<schedule_id>/runs` |
+| `GET` | `<workspace_url>/schedule/run/<run_id>` |
 
 ## Sharing, preview, and applications
 
@@ -113,17 +113,17 @@ There is intentionally no MCP route in this skill.
 
 - `POST /recycle/purge`: permanently remove one explicitly confirmed recycle entry.
 
-- `GET /mappings`: mapped roots, `online`, `mounted`, `mount_references`,
+- `GET /mapping`: mapped roots, `online`, `mounted`, `mount_references`,
   `native_mounts_enabled`, execution/RPC and `file_stream` capabilities. Online
   and unmounted is normal; file endpoints never start native mounts.
 - `POST /rpc/<family>/<operation>`: invoke one RPC operation on the server workspace for an explicitly registered server family. Inspect Discovery/operation metadata for `write` and `execution`; `sync` returns directly and `task` returns HTTP 202 plus a normal server task id. `write=false` requires read permission; `write=true` requires control/write permission plus `plan_id`/`taskname`/`message`. Server task operations use the ordinary `/task/*` lifecycle. There is no fallback to a mapping after the server target is selected.
-- `POST /mappings/<mapping_name>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Resolve the name from `GET /mappings`; legacy mapping IDs remain accepted for compatibility. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. If a start returns `409 client_task_capacity_reached`, collect completed client task results by reading output through each final offset before retrying; listing alone does not release retained results. No server/FUSE fallback.
+- `POST /mapping/<mapping_name>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Resolve the name from `GET /mapping`; legacy mapping IDs remain accepted for compatibility. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. If a start returns `409 client_task_capacity_reached`, collect completed client task results by reading output through each final offset before retrying; listing alone does not release retained results. No server/FUSE fallback.
 - `POST /rpc/archive/list`: browse a server-side ZIP/tar archive without extracting.
 - `POST /rpc/archive/read`: read a bounded server-side archive member preview.
-- For mapped archives use `/mappings/<mapping_name>/rpc/archive/<operation>`.
+- For mapped archives use `/mapping/<mapping_name>/rpc/archive/<operation>`.
 - `POST /fs/write/copy`: start an asynchronous copy.
-- `GET /fs/transfers/<id>`: inspect transfer progress.
-- `POST /fs/transfers/<id>/cancel` and `/resume`: control transfers.
+- `GET /fs/transfer/<id>`: inspect transfer progress.
+- `POST /fs/transfer/<id>/cancel` and `/resume`: control transfers.
 
 See [mappings.md](mappings.md) for permissions, request fields, and root-scoped recycling.
 

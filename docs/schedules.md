@@ -26,7 +26,7 @@ The only overlap policy is `skip`. Misfire policy may be `skip` or `coalesce`: s
 
 ## API lifecycle
 
-The focused Discovery document at `GET discovery/schedules` is authoritative. REST routes are:
+The focused Discovery document at `GET discovery/schedule` is authoritative. REST routes are:
 
 - `GET|POST schedules`
 - `GET|PATCH|DELETE schedules/<schedule_id>`

@@ -64,7 +64,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertEqual([], config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
         base = "/kapsel/w/" + self.record.token
-        self.assertNotIn(config["token"].encode(), self.request("GET", base + "/mappings")[2])
+        self.assertNotIn(config["token"].encode(), self.request("GET", base + "/mapping")[2])
         # Provider credentials cannot grant REST control or unified task access.
         for credential in (None, config["token"]):
             headers = {} if credential is None else {"Authorization": "Bearer " + credential}
@@ -124,7 +124,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.server.mappings.sessions[row["id"]] = session
         try:
             base = "/kapsel/w/" + self.record.token
-            status, _, raw = self.request("GET", base + "/mappings")
+            status, _, raw = self.request("GET", base + "/mapping")
             self.assertEqual(200, status, raw)
             advertised = json.loads(raw)["mappings"][0]["capabilities"]["rpc"]["vendor"]
             self.assertEqual("Inspect or update vendor metadata.", advertised["description"])
@@ -133,7 +133,7 @@ class MappingHTTPTests(unittest.TestCase):
                 advertised["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
             )
 
-            endpoint = base + f"/mappings/{row['name']}/rpc/vendor/inspect"
+            endpoint = base + f"/mapping/{row['name']}/rpc/vendor/inspect"
             session.closed = True
 
             def reconnect_rest(delay):
@@ -156,7 +156,7 @@ class MappingHTTPTests(unittest.TestCase):
                 ("rpc", "vendor", "inspect", {"value": 7}),
             ], calls)
 
-            write_endpoint = base + f"/mappings/{row['name']}/rpc/vendor/update"
+            write_endpoint = base + f"/mapping/{row['name']}/rpc/vendor/update"
             status, _, raw = self.request(
                 "POST", write_endpoint, json.dumps({"args": {"value": 9}}),
                 {"Authorization": "Bearer " + self.record.control_token, "Content-Type": "application/json"},

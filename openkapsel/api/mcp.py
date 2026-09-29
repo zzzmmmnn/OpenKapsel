@@ -142,7 +142,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "credentials_get",
+        "credential_get",
         "Get workspace REST credentials",
         "Return the linked configuration's current REST workspace URL, control token, and credential expiration. This exports portable REST credentials from an authenticated MCP connection; it does not rotate them.",
         _object_schema({}),
@@ -151,7 +151,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         context_message=False,
     ),
     _tool(
-        "credentials_renew",
+        "credential_renew",
         "Renew workspace REST credentials",
         "Atomically rotate the linked configuration's REST URL token and control token using the normal self-renewal window. The previous REST credentials become invalid immediately; the MCP connection remains valid.",
         _object_schema({}),
@@ -1058,8 +1058,8 @@ def tools_for(
 ) -> list[dict[str, Any]]:
     readable = {
         "discovery",
-        "credentials_get",
-        "credentials_renew",
+        "credential_get",
+        "credential_renew",
         "share_query",
         "share_delete",
         "context_add",

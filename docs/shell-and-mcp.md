@@ -49,7 +49,7 @@ task or argv REST routes.
 
 Git inspection is a read-only RPC capability, not Shell execution. REST uses
 `POST /rpc/git/<operation>` for the server workspace or
-`POST /mappings/<mapping_name>/rpc/git/<operation>` for a mapped repository. Legacy mapping IDs remain accepted by the route for compatibility.
+`POST /mapping/<mapping_name>/rpc/git/<operation>` for a mapped repository. Legacy mapping IDs remain accepted by the route for compatibility.
 MCP uses the same `git` family through the generic `rpc_call` tool. Reads work
 with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
@@ -151,7 +151,7 @@ The negotiated protocol is `2025-11-25`, with compatibility for `2025-03-26` and
 The current tool surface includes:
 
 - Discovery: `discovery`
-- portable REST delegation: `credentials_get` and `credentials_renew`
+- portable REST delegation: `credential_get` and `credential_renew`
 - generic RPC: `rpc_call` for advertised server or mapping RPC families such as Git and Archive
 - Context: query, create, Plan tree, Plan update, and Note replacement
 - Memory: query, get project Memory, add, revise, and archive

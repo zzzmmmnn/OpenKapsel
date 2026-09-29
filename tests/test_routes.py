@@ -58,11 +58,11 @@ class EndpointContractTests(unittest.TestCase):
                 "task_kill",
                 {"task_id": "task_abc"},
             ),
-            ("POST", "/schedules/schedule_abc/run"): (
+            ("POST", "/schedule/schedule_abc/run"): (
                 "schedule_run",
                 {"schedule_id": "schedule_abc"},
             ),
-            ("GET", "/schedule-runs/run_abc"): (
+            ("GET", "/schedule/run/run_abc"): (
                 "schedule_run_item",
                 {"run_id": "run_abc"},
             ),
@@ -76,8 +76,8 @@ class EndpointContractTests(unittest.TestCase):
                 self.assertEqual(expected[1], route_match.groupdict())
         self.assertIsNone(match_endpoint("GET", "/fs/read/text"))
         self.assertIsNone(match_endpoint("GET", "/uploads/a"))
-        self.assertIsNone(match_endpoint("GET", "/mappings/abcdefghijklmnopqrstuvwx/tasks"))
-        self.assertIsNone(match_endpoint("POST", "/mappings/abcdefghijklmnopqrstuvwx/tasks/task_abc/kill"))
+        self.assertIsNone(match_endpoint("GET", "/mapping/abcdefghijklmnopqrstuvwx/tasks"))
+        self.assertIsNone(match_endpoint("POST", "/mapping/abcdefghijklmnopqrstuvwx/tasks/task_abc/kill"))
 
     def test_every_routed_endpoint_has_a_discovery_key(self) -> None:
         self.assertEqual(

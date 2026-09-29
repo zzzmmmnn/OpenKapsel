@@ -209,7 +209,7 @@ class GitHTTPTests(unittest.TestCase):
         def rpc(operation):
             status, _, raw = self.request(
                 "POST",
-                self.base + f"/mappings/{row['id']}/rpc/git/{operation}",
+                self.base + f"/mapping/{row['id']}/rpc/git/{operation}",
                 json.dumps({"args": {"cwd": "."}}).encode("utf-8"),
                 {"Content-Type": "application/json"},
             )

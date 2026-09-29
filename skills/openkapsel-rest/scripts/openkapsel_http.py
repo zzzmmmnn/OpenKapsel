@@ -174,7 +174,7 @@ def ensure_fresh_credentials(credentials: Credentials) -> Credentials:
 
     renewed = api_request(
         "POST",
-        "credentials/renew",
+        "credential/renew",
         base_url=credentials.base_url,
         control_token=credentials.control_token,
         auth_mode="control",

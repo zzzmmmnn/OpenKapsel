@@ -1,6 +1,6 @@
 # Client-backed directories and execution
 
-Fetch `GET /mappings` before using client-backed paths. It returns each mapping's
+Fetch `GET /mapping` before using client-backed paths. It returns each mapping's
 human-readable `name`, stable `id`, workspace-relative `path`, `online`,
 `writable`, `mounted`, `mount_references`, `native_mounts_enabled`, and
 advertised client capabilities. Use `name` when addressing mapping RPCs; the
@@ -52,7 +52,7 @@ merely installing a package does not load it.
 
 The built-in SSH family version 1 is different from ordinary read-only data plugins: every SSH operation advertises `write=true` because using a client-local SSH credential is privileged external access. When Paramiko is installed and `ssh.profiles` is configured, it exposes synchronous `profiles`, `status`, `close`, `stat`, `listdir`, and bounded `read`, plus task operations `exec`, `upload`, and `download`. The first operation may pass a profile name and returns a process-scoped `connection_id`; later operations reuse it. An expired, lost, or explicitly closed ID fails distinctly and is never silently reconnected. See [ssh-rpc.md](ssh-rpc.md).
 
-Each plugin self-describes the family and every operation. In `GET /mappings`,
+Each plugin self-describes the family and every operation. In `GET /mapping`,
 `capabilities.rpc.<family>.description` explains the family and
 `operation_specs.<operation>` contains `description`, a JSON
 `input_schema`, boolean `write`, and `execution` (`sync` or `task`).
@@ -62,8 +62,8 @@ clients should inspect this metadata instead of hard-coding future families such
 as doc/csv/sqlite. A family-level `read_only` value may be present for
 rolling-upgrade compatibility, but operation metadata is authoritative.
 
-Use `POST /mappings/<mapping_name>/rpc/<family>/<operation>`. Resolve
-`mapping_name` from `GET /mappings`; legacy mapping IDs are still accepted by the
+Use `POST /mapping/<mapping_name>/rpc/<family>/<operation>`. Resolve
+`mapping_name` from `GET /mapping`; legacy mapping IDs are still accepted by the
 server for compatibility, but new calls should use the name. A `sync`
 operation returns its result directly. A `task` operation returns HTTP 202 and
 a unified `client.<mapping>.<task>` id immediately; query it through the
@@ -82,7 +82,7 @@ also include `timeout_seconds`; the client enforces its local `max_seconds`
 policy (600 seconds by default). The server forwards exactly one start RPC and
 never falls back to server/FUSE for a generic plugin operation.
 
-Archive preview uses the generic `archive` RPC family. Call `POST /rpc/archive/list` or `POST /rpc/archive/read` for the server workspace, and `POST /mappings/<mapping_name>/rpc/archive/<operation>` for mapped archives. Put archive-specific parameters under `args`. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
+Archive preview uses the generic `archive` RPC family. Call `POST /rpc/archive/list` or `POST /rpc/archive/read` for the server workspace, and `POST /mapping/<mapping_name>/rpc/archive/<operation>` for mapped archives. Put archive-specific parameters under `args`. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
 
 `GET /recycle/list?root=.` selects the ordinary workspace recycle bin. Use `root=<mapping-name>` for that client's recycle bin. `POST /recycle/restore` accepts the same `root` and `recycle_id`, plus normal mutation Context. Never infer a recycle root from the ID alone.
 
@@ -126,8 +126,8 @@ transport response limit.
 
 - `POST /fs/write/copy`: JSON `source`, `destination`, `plan_id`, `taskname`, `message`. The destination parent must exist. Overwrite is not supported.
 - `POST /fs/write/move`: moving between different storage roots returns an asynchronous transfer, not an immediate rename.
-- Both return HTTP 202 with an `id`. Poll `GET /fs/transfers/<id>`.
-- `POST /fs/transfers/<id>/cancel` or `/resume`: supply normal mutation Context. Resume validates the source and partial destination before continuing. Do not start a second transfer to resume the first one.
+- Both return HTTP 202 with an `id`. Poll `GET /fs/transfer/<id>`.
+- `POST /fs/transfer/<id>/cancel` or `/resume`: supply normal mutation Context. Resume validates the source and partial destination before continuing. Do not start a second transfer to resume the first one.
 - `completed` is success. `copied_source_retained` means a move copied the destination but could not safely recycle the source. Do not delete the source blindly.
 - Partial data is staged on the destination storage, not buffered as an entire file on the server. Cancel preserves partial data for resumption.
 

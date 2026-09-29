@@ -108,8 +108,8 @@ class McpHandlersMixin:
                 redact_linked_secrets=not (
                     method == "tools/call"
                     and params.get("name") in {
-                        "credentials_get",
-                        "credentials_renew",
+                        "credential_get",
+                        "credential_renew",
                     }
                 ),
             )
@@ -162,8 +162,8 @@ class McpHandlersMixin:
                 "When schedule tools are available, use schedule_write for persistent once, interval, or strict six-field cron Shell work; use schedule_control operation=run for explicit immediate execution. "
                 "Use task_interrupt for normal termination and task_kill only for immediate forced termination. "
                 "When connected through OAuth or Static MCP, use MCP tools by default. "
-                "Use credentials_get only when portable REST access is needed on another platform; "
-                "credentials_renew rotates the linked REST URL/control token only inside the normal renewal window and invalidates the previous REST pair. "
+                "Use credential_get only when portable REST access is needed on another platform; "
+                "credential_renew rotates the linked REST URL/control token only inside the normal renewal window and invalidates the previous REST pair. "
                 "The MCP connection credential has its own lifetime and remains separate."
             ),
         }
@@ -223,8 +223,8 @@ class McpHandlersMixin:
             "memory_add",
             "memory_update",
             "memory_archive",
-            "credentials_get",
-            "credentials_renew",
+            "credential_get",
+            "credential_renew",
         }
         track_operation = name not in context_tools and name != "rpc_call" and (
             not tool["annotations"]["readOnlyHint"]
@@ -316,10 +316,10 @@ class McpHandlersMixin:
         }
 
     def _execute_mcp_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if name == "credentials_get":
+        if name == "credential_get":
             _, record = self._mcp_workspace_credential_binding()
             return self._mcp_workspace_credentials(record, rotated=False)
-        if name == "credentials_renew":
+        if name == "credential_renew":
             connection, _ = self._mcp_workspace_credential_binding()
             try:
                 record = self.server.tokens.renew_credentials_for_app_if_due(

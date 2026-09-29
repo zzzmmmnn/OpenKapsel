@@ -32,7 +32,7 @@ class DataRpcHTTPTests(unittest.TestCase):
         body = {"args": args}
         if context:
             body.update(context)
-        status, _, raw = self.request("POST", self.base + f"/mappings/{self.row['id']}/rpc/{family}/{operation}",
+        status, _, raw = self.request("POST", self.base + f"/mapping/{self.row['id']}/rpc/{family}/{operation}",
                                       json.dumps(body), self.control() if headers is None else headers)
         return status, json.loads(raw)
 
@@ -92,7 +92,7 @@ class DataRpcHTTPTests(unittest.TestCase):
         self.assertEqual(403, status, denied)
 
     def test_discovery_exposes_strict_schemas_and_readonly_task_metadata(self):
-        status, _, raw = self.request("GET", self.base + "/mappings", headers=self.control())
+        status, _, raw = self.request("GET", self.base + "/mapping", headers=self.control())
         self.assertEqual(200, status, raw)
         caps = json.loads(raw)["mappings"][0]["capabilities"]["rpc"]
         self.assertEqual("task", caps["structured"]["operation_specs"]["patch"]["execution"])

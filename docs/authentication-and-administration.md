@@ -69,7 +69,7 @@ OAuth approval uses an independent authorization page with the current control t
 
 Administrator renewal replaces the read and control tokens atomically and sets their shared expiration to 1–30 days from renewal time. The default is three days.
 
-A control-authenticated Workspace can call `POST credentials/renew` only when less than two days remain. Self-renewal always rotates both credentials for another three days and returns the new read token, control token, full Workspace URL, and expiration.
+A control-authenticated Workspace can call `POST credential/renew` only when less than two days remain. Self-renewal always rotates both credentials for another three days and returns the new read token, control token, full Workspace URL, and expiration.
 
 The preview token and workspace lifetime do not change during renewal. Individual URL, control, and preview rotation controls remain available for targeted revocation; rotating one credential does not extend expiration.
 

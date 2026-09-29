@@ -400,7 +400,7 @@ class RequestDispatchMixin:
         )
 
 
-    def _handle_credentials_renew(self) -> None:
+    def _handle_credential_renew(self) -> None:
         previous_token = self.token_record.token
         try:
             record = self.server.tokens.renew_credentials_if_due(previous_token)

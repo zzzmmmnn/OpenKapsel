@@ -1,7 +1,7 @@
 # Structured configuration and read-only tables
 
 These are client RPC extensions, not Shell commands or server filesystem mounts.
-Call `GET /mappings` first. Inspect `capabilities.rpc.structured` and
+Call `GET /mapping` first. Inspect `capabilities.rpc.structured` and
 `capabilities.rpc.tabular`, including their `operation_specs`, `write`,
 `execution`, and `details.formats`. Use the generic RPC endpoint/tools; no new
 DSH/OpenCode typed tool is required.
@@ -43,7 +43,7 @@ CSV/workbook or creates an index or sidecar beside it.
 }
 ```
 
-Send this to `POST /mappings/<mapping_name>/rpc/structured/read`. `pointer` is an RFC 6901
+Send this to `POST /mapping/<mapping_name>/rpc/structured/read`. `pointer` is an RFC 6901
 JSON Pointer; the empty string selects the document root. Escape `/` as `~1` and
 `~` as `~0` within a key. `offset` and `limit` paginate the selected object's
 immediate keys or array items, not arbitrary text. Use `next_offset`, `total`,
@@ -150,7 +150,7 @@ leading zeros and formula-like text; no formulas are executed.
 }
 ```
 
-Send to `POST /mappings/<mapping_name>/rpc/tabular/read`. For the next request, retain the
+Send to `POST /mapping/<mapping_name>/rpc/tabular/read`. For the next request, retain the
 same parser/filter options and add the returned `next_cursor` to `args`.
 Column selectors may be unique names or zero-based indices. Filters are ANDed;
 supported comparisons are `eq`, `ne`, `contains`, `starts_with`, `gt`, `ge`, `lt`,
@@ -201,7 +201,7 @@ combining consecutive results.
 }
 ```
 
-Send to `POST /mappings/<mapping_name>/rpc/tabular/scan`; no mutation Context is required.
+Send to `POST /mapping/<mapping_name>/rpc/tabular/scan`; no mutation Context is required.
 `mode: "count"` with only `path` counts logical data records. `where` filters may
 be used in either mode. The endpoint returns HTTP 202 immediately. Poll the
 unified task through `/task/get/<id>` or `/task/output/<id>`; scan progress is

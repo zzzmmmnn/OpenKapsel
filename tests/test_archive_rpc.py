@@ -145,7 +145,7 @@ class ArchiveHTTPTests(unittest.TestCase):
 
     def rpc_json(self, operation, args, *, mapped=False):
         prefix = (
-            self.base + f"/mappings/{self.row['id']}/rpc/archive/"
+            self.base + f"/mapping/{self.row['id']}/rpc/archive/"
             if mapped
             else self.base + "/rpc/archive/"
         )

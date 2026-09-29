@@ -8,7 +8,7 @@ Restricted Shell and full Shell have different boundaries. Restricted Shell is c
 
 Git inspection is a read-only RPC capability, not Shell execution. REST uses
 `POST /rpc/git/<operation>` for the server workspace or
-`POST /mappings/<mapping_name>/rpc/git/<operation>` for a mapped repository.
+`POST /mapping/<mapping_name>/rpc/git/<operation>` for a mapped repository.
 MCP uses the same `git` family through the generic `rpc_call` tool. Reads work
 with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
@@ -45,7 +45,7 @@ snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
 422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
 Read Context is optional. Server Git mutations use
 `POST /rpc/git/<operation>`; mapped Git mutations use
-`POST /mappings/<mapping_name>/rpc/git/<operation>`. `add`, `commit`, `restore`,
+`POST /mapping/<mapping_name>/rpc/git/<operation>`. `add`, `commit`, `restore`,
 `checkout`, `fetch`, `pull`, and `clone` are task operations and use ordinary
 `/task/*` lifecycle APIs without requiring Shell permission. They require write
 permission and Plan Context; mapped writes also require a writable mapping, and

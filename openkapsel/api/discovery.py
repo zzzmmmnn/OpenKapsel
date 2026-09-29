@@ -244,10 +244,10 @@ class DiscoveryMixin:
                     "section": operation("discovery_section"),
                 },
             ),
-            "credentials": family(
-                "./credentials/renew",
+            "credential": family(
+                "./credential/renew",
                 "Workspace REST credential lifecycle.",
-                {"renew": operation("credentials_renew")},
+                {"renew": operation("credential_renew")},
             ),
             "rpc": family(
                 "./rpc/<family>/<operation>",
@@ -256,12 +256,12 @@ class DiscoveryMixin:
                     "server": operation("server_rpc"),
                     "mapping": operation(
                         "mapping_rpc",
-                        path="./mappings/<mapping_name>/rpc/<family>/<operation>",
+                        path="./mapping/<mapping_name>/rpc/<family>/<operation>",
                     ),
                 },
             ),
-            "mappings": family(
-                "./mappings",
+            "mapping": family(
+                "./mapping",
                 "Mapping discovery and client capability inspection.",
                 {"list": operation("mapping_list")},
             ),
@@ -304,20 +304,20 @@ class DiscoveryMixin:
                     "copy": operation("fs_copy"),
                 },
             ),
-            "transfers": family(
-                "./fs/transfers/<transfer_id>",
+            "transfer": family(
+                "./fs/transfer/<transfer_id>",
                 "Asynchronous copy/move transfer progress and control.",
                 {
                     "get": operation("file_transfer", method="GET"),
                     "cancel": operation(
                         "file_transfer",
                         method="POST",
-                        path="./fs/transfers/<transfer_id>/cancel",
+                        path="./fs/transfer/<transfer_id>/cancel",
                     ),
                     "resume": operation(
                         "file_transfer",
                         method="POST",
-                        path="./fs/transfers/<transfer_id>/resume",
+                        path="./fs/transfer/<transfer_id>/resume",
                     ),
                 },
             ),
@@ -330,7 +330,7 @@ class DiscoveryMixin:
                     "purge": operation("recycle_purge"),
                 },
             ),
-            "uploads": family(
+            "upload": family(
                 "./upload/<operation>[/<upload_id>]",
                 "Resumable create-only upload sessions.",
                 {
@@ -341,7 +341,7 @@ class DiscoveryMixin:
                     "cancel": operation("upload_cancel", path="./upload/cancel/<upload_id>"),
                 },
             ),
-            "sharing": family(
+            "share": family(
                 "./share/<operation>[/<share_id>]",
                 "Temporary cross-workspace file/directory sharing.",
                 {
@@ -374,7 +374,7 @@ class DiscoveryMixin:
                     ),
                 },
             ),
-            "tasks": family(
+            "task": family(
                 "./task/<operation>[/<task_id>]",
                 "Server/unified task listing, output, streaming, and control.",
                 {
@@ -399,8 +399,8 @@ class DiscoveryMixin:
                     ),
                 },
             ),
-            "schedules": family(
-                "./schedules[/<schedule_id>]",
+            "schedule": family(
+                "./schedule[/<schedule_id>]",
                 "Persistent Shell schedules and dispatch history.",
                 {
                     "list": operation("schedule_list"),
@@ -410,23 +410,23 @@ class DiscoveryMixin:
                     "delete": operation("schedule_delete"),
                     "run": operation(
                         "schedule_run",
-                        path="./schedules/<schedule_id>/run",
+                        path="./schedule/<schedule_id>/run",
                     ),
                     "pause": operation(
                         "schedule_pause",
-                        path="./schedules/<schedule_id>/pause",
+                        path="./schedule/<schedule_id>/pause",
                     ),
                     "resume": operation(
                         "schedule_resume",
-                        path="./schedules/<schedule_id>/resume",
+                        path="./schedule/<schedule_id>/resume",
                     ),
                     "runs": operation(
                         "schedule_runs",
-                        path="./schedules/<schedule_id>/runs",
+                        path="./schedule/<schedule_id>/runs",
                     ),
                     "run_get": operation(
                         "schedule_run_item",
-                        path="./schedule-runs/<run_id>",
+                        path="./schedule/run/<run_id>",
                     ),
                 },
             ),
@@ -600,7 +600,7 @@ class DiscoveryMixin:
                 "sections": sections,
                 "endpoints": {
                     key: full["endpoints"][key]
-                    for key in ("discovery", "credentials", "environment", "mcp")
+                    for key in ("discovery", "credential", "environment", "mcp")
                     if key in full["endpoints"]
                 },
                 "workflow": [
@@ -1275,9 +1275,9 @@ class DiscoveryMixin:
                     "url": f"{base}/discovery/<files|context|memory|shell|schedules|web|sharing|full>",
                     "notes": "main discovery is a compact index; section documents contain domain-specific details and full preserves the complete compatibility document",
                 },
-                "credentials_renew": {
+                "credential_renew": {
                     "method": "POST",
-                    "url": f"{base}/credentials/renew",
+                    "url": f"{base}/credential/renew",
                     "authentication": "current Bearer control token bound to the current read URL",
                     "request_body": None,
                     "available_when": "credentials have less than 172800 seconds remaining",
@@ -1768,11 +1768,11 @@ class DiscoveryMixin:
                 },
                 "schedule_list": {
                     "method": "GET",
-                    "url": f"{base}/schedules",
+                    "url": f"{base}/schedule",
                 },
                 "schedule_create": {
                     "method": "POST",
-                    "url": f"{base}/schedules",
+                    "url": f"{base}/schedule",
                     "json": {
                         "name": "nightly build",
                         "schedule": {
@@ -1802,11 +1802,11 @@ class DiscoveryMixin:
                 },
                 "schedule_get": {
                     "method": "GET",
-                    "url": f"{base}/schedules/<schedule_id>",
+                    "url": f"{base}/schedule/<schedule_id>",
                 },
                 "schedule_update": {
                     "method": "PATCH",
-                    "url": f"{base}/schedules/<schedule_id>",
+                    "url": f"{base}/schedule/<schedule_id>",
                     "json": {
                         "expected_revision": 1,
                         "name": "<optional>",
@@ -1824,7 +1824,7 @@ class DiscoveryMixin:
                 },
                 "schedule_delete": {
                     "method": "DELETE",
-                    "url": f"{base}/schedules/<schedule_id>",
+                    "url": f"{base}/schedule/<schedule_id>",
                     "json": {
                         "plan_id": "<required owning plan id>",
                         "taskname": "<required task grouping name>",
@@ -1833,7 +1833,7 @@ class DiscoveryMixin:
                 },
                 "schedule_run": {
                     "method": "POST",
-                    "url": f"{base}/schedules/<schedule_id>/run",
+                    "url": f"{base}/schedule/<schedule_id>/run",
                     "json": {
                         "plan_id": "<required owning plan id>",
                         "taskname": "<required task grouping name>",
@@ -1843,21 +1843,21 @@ class DiscoveryMixin:
                 },
                 "schedule_pause": {
                     "method": "POST",
-                    "url": f"{base}/schedules/<schedule_id>/pause",
+                    "url": f"{base}/schedule/<schedule_id>/pause",
                     "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
                 },
                 "schedule_resume": {
                     "method": "POST",
-                    "url": f"{base}/schedules/<schedule_id>/resume",
+                    "url": f"{base}/schedule/<schedule_id>/resume",
                     "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
                 },
                 "schedule_runs": {
                     "method": "GET",
-                    "url": f"{base}/schedules/<schedule_id>/runs?limit=50",
+                    "url": f"{base}/schedule/<schedule_id>/runs?limit=50",
                 },
                 "schedule_run_item": {
                     "method": "GET",
-                    "url": f"{base}/schedule-runs/<run_id>",
+                    "url": f"{base}/schedule/run/<run_id>",
                     "notes": "task_id links to ordinary Shell task status and output while retained",
                 },
                 "task_list": {
@@ -1938,7 +1938,7 @@ class DiscoveryMixin:
             "workflow": [
                 "The URL token is read-only. Send Authorization: Bearer <CONTROL_TOKEN> for Context access, mutations, uploads, MCP, Shell, task control, and sandbox process inspection.",
                 "REST Skill clients should invoke the installed scripts/openkapsel_config.py init <workspace-url> <control-token> by its Skill path while the working directory is the local controlling project to create a mode-0600 .openkapsel.env there. Resolve the nearest file from the current directory so changing project directories selects different workspaces; explicit helper arguments and the legacy process environment remain supported.",
-                "When credentials have less than two days remaining, call credentials_renew once and atomically replace both values in .openkapsel.env with the returned workspace_url and control_token. The bundled helpers perform this check and update automatically for directory-scoped configuration.",
+                "When credentials have less than two days remaining, call credential_renew once and atomically replace both values in .openkapsel.env with the returned workspace_url and control_token. The bundled helpers perform this check and update automatically for directory-scoped configuration.",
                 "Skill-capable REST clients should inspect skills.openkapsel_rest and may install its token-free SHA-256-verified archive or read the linked SKILL.md remotely before loading detailed endpoint contracts.",
                 "Before changing the workspace, query context with type=plan&root_plans=true&status=in_progress. Reuse a suitable plan tree or create one root plan by POST /context with type=plan and no plan_id.",
                 "At task start, read memory_project when project-wide knowledge is needed. When creating a plan, provide scope_paths and memory_tags when known; OpenKapsel returns related_memory using path overlap, exact tags, and text relevance.",
@@ -1999,13 +1999,13 @@ class DiscoveryMixin:
                 "policy": "Only server Shell and FastAPI dependencies acquire native mounts. Provider connections and all file APIs remain RPC-only.",
             },
             "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True},
-            "list": "./mappings", "storage": "client-local; excluded from workspace image quota",
+            "list": "./mapping", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
             "rpc": {
                 "states": ["available", "unsupported", "disabled", "offline"],
-                "routing": "Core file RPC is always enabled; rpc.file is not a client setting. Plugin families are advertised only when enabled and runtime-supported; absent families are not callable. Use the mapping name returned by GET /mappings in mapped RPC paths. File and plugin RPC operations never fall back to native mounts.",
-                "configuration": "Client config rpc.<family>=true|false overrides each plugin's default activation. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mappings. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
+                "routing": "Core file RPC is always enabled; rpc.file is not a client setting. Plugin families are advertised only when enabled and runtime-supported; absent families are not callable. Use the mapping name returned by GET /mapping in mapped RPC paths. File and plugin RPC operations never fall back to native mounts.",
+                "configuration": "Client config rpc.<family>=true|false overrides each plugin's default activation. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mapping. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
                 "families": {
                     "file": {
                         "version": 4, "fallback": None, "operations": sorted(FILE_API_OPERATIONS),
@@ -2039,14 +2039,14 @@ class DiscoveryMixin:
             "recycle_purge": {"method": "POST", "url": "./recycle/purge", "body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
             "fs_copy": {"method": "POST", "url": "./fs/write/copy", "body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
                 "description": "Start a bounded, resumable file/directory copy. Destination parent must exist. No overwrite; return 202 and transfer id. Staging remains on destination storage."},
-            "file_transfer": {"method": "GET/POST", "url": "./fs/transfers/<id>", "description": "GET returns progress/state. POST /cancel or /resume requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
+            "file_transfer": {"method": "GET/POST", "url": "./fs/transfer/<id>", "description": "GET returns progress/state. POST /cancel or /resume requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
             "server_rpc": {"method": "POST", "url": "./rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
                 "description": "Invoke one server RPC family operation against the token workspace. Built-in server families include Git and Archive. execution=sync returns directly; execution=task returns 202 plus a normal server task_id. write=false requires read permission; write=true requires control authorization, write permission, and Plan Context. Git fetch/pull/clone also obey the token network policy."},
-            "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping names/roots, online/write state, and client capabilities. Use each mapping name in RPC paths. RPC operation_specs include description, JSON input_schema, write, and execution=sync|task."},
-            "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_name>/rpc/<family>/<operation>",
+            "mapping_list": {"method": "GET", "url": "./mapping", "description": "List mapping names/roots, online/write state, and client capabilities. Use each mapping name in RPC paths. RPC operation_specs include description, JSON input_schema, write, and execution=sync|task."},
+            "mapping_rpc": {"method": "POST", "url": "./mapping/<mapping_name>/rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
-                "description": "Invoke one advertised client RPC operation using the mapping name returned by GET /mappings. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /task/* routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
+                "description": "Invoke one advertised client RPC operation using the mapping name returned by GET /mapping. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /task/* routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
         })
         payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
@@ -2058,7 +2058,7 @@ class DiscoveryMixin:
             "mapping_list": ("read", self.token_record.can_read),
             "mapping_rpc": ("write=false: files.read; write=true: Bearer control token + write + writable mapping + Plan Context", read_enabled or (control_authorized and self.token_record.can_write)),
             "discovery_section": ("URL token", True),
-            "credentials_renew": ("Bearer control token", control_authorized),
+            "credential_renew": ("Bearer control token", control_authorized),
             "environment_get": ("Bearer control token", control_authorized),
             "environment_replace": ("Bearer control token", control_authorized),
             "environment_clear": ("Bearer control token", control_authorized),
@@ -2155,7 +2155,7 @@ class DiscoveryMixin:
             privileged_endpoints = {
                 "recycle_purge",
                 "fs_copy", "file_transfer",
-                "credentials_renew",
+                "credential_renew",
                 "environment_get",
                 "environment_replace",
                 "environment_clear",
@@ -2259,11 +2259,11 @@ class DiscoveryMixin:
                 "authorization": "Authorization: Bearer <OAUTH_ACCESS_TOKEN>",
                 "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
                 "scope": "openkapsel",
-                "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credentials/renew.",
-                "rest_access": "OAuth grants use the MCP endpoint directly; credentials_get can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
+                "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credential/renew.",
+                "rest_access": "OAuth grants use the MCP endpoint directly; credential_get can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
                 "workspace_credentials": {
-                    "export_tool": "credentials_get",
-                    "renew_tool": "credentials_renew",
+                    "export_tool": "credential_get",
+                    "renew_tool": "credential_renew",
                     "renewal_window_seconds": 2 * 24 * 60 * 60,
                     "rotation": "read URL token and control token rotate atomically; old REST credentials become invalid; MCP connection credentials are unchanged",
                 },
@@ -2278,7 +2278,7 @@ class DiscoveryMixin:
                     renewal="An administrator can extend this Static MCP connection's own expiration; workspace REST credential renewal is separate.",
                     rest_access="This MCP credential can export or renew the linked configuration's portable REST workspace URL and control token through MCP tools.",
                 )
-            payload.get("endpoints", {}).pop("credentials", None)
+            payload.get("endpoints", {}).pop("credential", None)
             if "mcp" in payload.get("endpoints", {}):
                 payload["endpoints"]["mcp"]["path"] = payload["authentication"]["resource"]
             payload.get("token", {}).pop("credentials_expires_at", None)

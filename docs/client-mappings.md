@@ -77,7 +77,7 @@ If local DNS returns a proxy's synthetic address (for example an address from `1
 
 ## Files, recycling, and transfers
 
-Use normal file APIs and client RPC for mapped paths; explicit server Shell and FastAPI execution acquire native views only when needed. `GET /mappings` reports online state, writable state, client capabilities, mount state, and native mount reference counts. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
+Use normal file APIs and client RPC for mapped paths; explicit server Shell and FastAPI execution acquire native views only when needed. `GET /mapping` reports online state, writable state, client capabilities, mount state, and native mount reference counts. Mapping roots cannot be moved or deleted through file APIs; detach them through administration.
 
 Updated clients advertise a generic `capabilities.rpc` map. Core file RPC is
 always enabled and reports `available`; its version and supported operations
@@ -108,13 +108,13 @@ third-party plugins that omit it default to opt-in and require
 authoritative mutation declaration for that operation. `input_schema` is a
 bounded JSON object schema. The client publishes both the compatible
 operation-name list and the full `operation_specs` metadata in
-`GET /mappings`. A derived family `read_only` value remains only for
+`GET /mapping`. A derived family `read_only` value remains only for
 rolling-upgrade compatibility. Loading is opt-in: merely installing a Python
 package does not execute its plugin code.
 
 Dynamic operations use the same family/operation shape on both execution hosts.
-For a mapping, inspect `GET /mappings` and call
-`POST /mappings/<mapping_name>/rpc/<family>/<operation>`; legacy mapping IDs remain accepted for compatibility. For a server-workspace family,
+For a mapping, inspect `GET /mapping` and call
+`POST /mapping/<mapping_name>/rpc/<family>/<operation>`; legacy mapping IDs remain accepted for compatibility. For a server-workspace family,
 call `POST /rpc/<family>/<operation>`. MCP uses one `rpc_call` tool: provide
 `mapping_id` for client execution or omit it for server execution. Each operation
 publishes `write` and `execution`. The registry default is `execution=sync` for
@@ -221,7 +221,7 @@ are added.
 
 API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/restore use `root=.` for the ordinary workspace or the mapping directory name for a client recycle store. Raw Shell deletion is still direct deletion. Symlinks, Windows reparse points, and special files are not exported in this version. POSIX `chmod` is unsupported on Windows; filesystem case sensitivity remains that of the client. Full distributed file-lock semantics are not promised.
 
-`POST /fs/write/copy` starts a verified, resumable copy. `fs/move` between different roots uses verified copy followed by source recycling. Both return 202 with a transfer ID; poll `/fs/transfers/<id>` and use POST `/cancel` or `/resume` with mutation Context. A move is not atomic. `copied_source_retained` means the destination exists but the source still needs attention. Publication never silently overwrites an existing destination. Cancellation retains partial data on the destination for resumption, so it still consumes client/destination space.
+`POST /fs/write/copy` starts a verified, resumable copy. `fs/move` between different roots uses verified copy followed by source recycling. Both return 202 with a transfer ID; poll `/fs/transfer/<id>` and use POST `/cancel` or `/resume` with mutation Context. A move is not atomic. `copied_source_retained` means the destination exists but the source still needs attention. Publication never silently overwrites an existing destination. Cancellation retains partial data on the destination for resumption, so it still consumes client/destination space.
 
 ## Client execution policy
 

@@ -120,7 +120,7 @@ class SkillCredentialConfigTests(unittest.TestCase):
                 renewed = openkapsel_http.ensure_fresh_credentials(old)
             self.assertEqual(2, request.call_count)
             self.assertEqual("", request.call_args_list[0].args[1])
-            self.assertEqual("credentials/renew", request.call_args_list[1].args[1])
+            self.assertEqual("credential/renew", request.call_args_list[1].args[1])
             self.assertEqual("https://file.example/kapsel/w/new-read", renewed.base_url)
             self.assertEqual("new-control", renewed.control_token)
             saved = openkapsel_config.read_env_file(env_file)

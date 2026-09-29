@@ -13,7 +13,7 @@ Shell execution:
 | `tabular` | inspect, read | scan (read-only) |
 
 JSON and CSV/TSV operate with standard-library dependencies. Optional parsers are
-loaded only when their formats are used. `GET /mappings` reports the actual
+loaded only when their formats are used. `GET /mapping` reports the actual
 supported format list, schemas and limits. Both generic REST/MCP RPC and the
 existing DSH/OpenCode `kapsel_rpc` bridge use those schemas directly.
 

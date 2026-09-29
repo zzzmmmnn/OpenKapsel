@@ -1,6 +1,6 @@
 # SSH RPC
 
-SSH is a privileged client RPC family. Inspect `GET /mappings` and require `capabilities.rpc.ssh.state == "available"` before use. Paramiko must be installed on the mapping client and the client's private configuration must contain at least one `ssh.profiles` entry.
+SSH is a privileged client RPC family. Inspect `GET /mapping` and require `capabilities.rpc.ssh.state == "available"` before use. Paramiko must be installed on the mapping client and the client's private configuration must contain at least one `ssh.profiles` entry.
 
 Every SSH operation advertises `write=true`, including remote reads, because the operation consumes client-local SSH credentials. Send the matching control token and normal `plan_id`, `taskname`, and `message`; the mapping must also be writable. SSH passwords, key passphrases and private-key contents are never RPC arguments.
 
@@ -47,7 +47,7 @@ For task operations the initial HTTP response contains the OpenKapsel task ID, n
 Example REST task start:
 
 ```http
-POST /mappings/<mapping_name>/rpc/ssh/exec
+POST /mapping/<mapping_name>/rpc/ssh/exec
 Authorization: Bearer <CONTROL_TOKEN>
 Content-Type: application/json
 
