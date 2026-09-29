@@ -26,19 +26,19 @@ The only overlap policy is `skip`. Misfire policy may be `skip` or `coalesce`: s
 
 ## API lifecycle
 
-The focused Discovery document at `GET discovery/schedule` is authoritative. REST routes are:
+The focused Discovery document at `GET /discovery/schedules` is authoritative. REST routes are:
 
-- `GET|POST schedules`
-- `GET|PATCH|DELETE schedules/<schedule_id>`
-- `POST schedules/<schedule_id>/{run,pause,resume}`
-- `GET schedules/<schedule_id>/runs`
-- `GET schedule-runs/<run_id>`
+- `GET|POST /schedule`
+- `GET|PATCH|DELETE /schedule/<schedule_id>`
+- `POST /schedule/{execute,pause,resume}/<schedule_id>`
+- `GET /schedule/run/list/<schedule_id>`
+- `GET /schedule/run/<run_id>`
 
-MCP exposes the same lifecycle through three grouped tools: `schedule_read` (`list`, `get`, `list_runs`, `get_run`), `schedule_write` (`create`, `update`), and `schedule_control` (`delete`, `run`, `pause`, `resume`). `tools/list` is authoritative for the current argument schemas.
+MCP exposes the same lifecycle through three grouped tools: `schedule_read` (`list`, `get`, `run_list`, `run_get`), `schedule_write` (`create`, `update`), and `schedule_control` (`delete`, `execute`, `pause`, `resume`). `tools/list` is authoritative for the current argument schemas.
 
 Creation and every modifying action requires ordinary `plan_id`, `taskname`, and `message` Context. The creation values also become each run's automatic Context unless a complete `run_context` is supplied. Updates require `expected_revision`; a supplied `run_context` replaces future-run attribution as one unit.
 
-`run` is the explicit immediate-execution path and does not move the next ordinary occurrence. It still observes overlap and task/sandbox capacity. Pause stops future dispatch but does not terminate an already running task. Delete and update are refused while a run is active.
+`execute` is the explicit immediate-execution action and does not move the next ordinary occurrence. It still observes overlap and task/sandbox capacity. Pause stops future dispatch but does not terminate an already running task. Delete and update are refused while a run is active.
 
 The scheduler atomically claims an occurrence in its workspace database before starting Shell. A `once` schedule is marked completed in the same transaction, so the command cannot reactivate or rerun that ID; a later execution requires a new schedule and therefore obeys the three-minute minimum again.
 

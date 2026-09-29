@@ -333,7 +333,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(3, created["schedule"]["minutes"])
 
         run_status, run = self.request(
-            "POST", self.endpoint(f"/schedule/{schedule_id}/run"), {}
+            "POST", self.endpoint(f"/schedule/execute/{schedule_id}"), {}
         )
         self.assertEqual(HTTPStatus.ACCEPTED, run_status)
         self.assertIsNotNone(run["task_id"])
@@ -347,7 +347,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("succeeded", run["status"])
 
         list_status, runs = self.request(
-            "GET", self.endpoint(f"/schedule/{schedule_id}/runs")
+            "GET", self.endpoint(f"/schedule/run/list/{schedule_id}")
         )
         self.assertEqual(HTTPStatus.OK, list_status)
         self.assertEqual(1, runs["count"])
@@ -436,7 +436,7 @@ class WorkspaceServerTests(unittest.TestCase):
         run = call(
             97,
             "schedule_control",
-            {"operation": "run", "schedule_id": schedule_id},
+            {"operation": "execute", "schedule_id": schedule_id},
         )
         run_id = run["run_id"]
         deadline = time.monotonic() + 3
@@ -446,7 +446,7 @@ class WorkspaceServerTests(unittest.TestCase):
             run = call(
                 request_id,
                 "schedule_read",
-                {"operation": "get_run", "run_id": run_id},
+                {"operation": "run_get", "run_id": run_id},
             )
             request_id += 1
         self.assertEqual("succeeded", run["status"])
@@ -454,7 +454,7 @@ class WorkspaceServerTests(unittest.TestCase):
         runs = call(
             request_id,
             "schedule_read",
-            {"operation": "list_runs", "schedule_id": schedule_id, "limit": 10},
+            {"operation": "run_list", "schedule_id": schedule_id, "limit": 10},
         )
         request_id += 1
         self.assertIn(run_id, {item["run_id"] for item in runs["runs"]})
@@ -603,7 +603,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("POST", op("fs_write", "move")["method"])
         self.assertEqual("GET", op("recycle", "list")["method"])
         self.assertEqual("POST", op("recycle", "restore")["method"])
-        self.assertEqual("POST", op("task", "kill")["method"])
+        self.assertEqual("DELETE", op("task", "kill")["method"])
         self.assertEqual(
             {"output", "done", "reconnect", "error"},
             set(op("task", "stream")["events"]),
@@ -1428,18 +1428,26 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(201, status)
         request_then_discovery(
-            "DELETE", self.endpoint(f"/upload/cancel/{upload['upload_id']}"), 204
+            "POST", self.endpoint(f"/upload/cancel/{upload['upload_id']}"), 204
         )
 
-        for action in ("interrupt", "kill"):
-            status, task = self.request(
-                "POST", self.endpoint("/shell/exec"), {"command": "sleep 30"}
-            )
-            self.assertEqual(202, status)
-            request_then_discovery(
-                "POST", self.endpoint(f"/task/{action}/{task['task_id']}"), 200
-            )
-            self.wait_for_task(task["task_id"])
+        status, task = self.request(
+            "POST", self.endpoint("/shell/exec"), {"command": "sleep 30"}
+        )
+        self.assertEqual(202, status)
+        request_then_discovery(
+            "POST", self.endpoint(f"/task/interrupt/{task['task_id']}"), 200
+        )
+        self.wait_for_task(task["task_id"])
+
+        status, task = self.request(
+            "POST", self.endpoint("/shell/exec"), {"command": "sleep 30"}
+        )
+        self.assertEqual(202, status)
+        request_then_discovery(
+            "DELETE", self.endpoint(f"/task/{task['task_id']}"), 200
+        )
+        self.wait_for_task(task["task_id"])
 
     def test_browser_discovery_is_html_and_errors_keep_real_status(self) -> None:
         browser_headers = {"Accept": "text/html,application/xhtml+xml"}
@@ -2073,7 +2081,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(202, status)
         status, killed = self.request(
-            "POST", self.endpoint(f"/task/kill/{killable['task_id']}"), {}
+            "DELETE", self.endpoint(f"/task/{killable['task_id']}"), {}
         )
         self.assertEqual(200, status)
         self.assertTrue(killed["interrupted"])
@@ -2130,8 +2138,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn('"stdout_offset":0', stream)
 
         status, _killed = self.request(
-            "POST",
-            self.endpoint(f"/task/kill/{task_id}"),
+            "DELETE",
+            self.endpoint(f"/task/{task_id}"),
             {},
         )
         self.assertEqual(200, status)
@@ -4026,7 +4034,7 @@ class WorkspaceServerTests(unittest.TestCase):
         }
         status, raw, _ = self.raw_request(
             "DELETE",
-            self.endpoint(f"/share/delete/{share_id}"),
+            self.endpoint(f"/share/{share_id}"),
             headers=headers,
         )
         self.assertEqual(204, status)

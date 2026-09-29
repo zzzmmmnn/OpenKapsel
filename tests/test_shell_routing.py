@@ -116,13 +116,19 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.assertEqual("hel", result["stdout"]["data"])
         self.assertTrue(result["output_combined"])
         self.assertEqual("lo\n", self.api("/task/output/" + tid + "?stdout_offset=3")[1]["stdout"]["data"])
-        for action in ("interrupt", "kill"):
-            status, task = self.api("/shell/exec", {"command": "sleep 30", "cwd": "laptop"})
-            self.assertEqual(202, status, task)
-            headers = dict(self.headers, **{"OpenKapsel-Plan-Id": str(self.plan), "OpenKapsel-Taskname": "rpc", "OpenKapsel-Message": "Stop task"})
-            status, _, raw = self.request("POST", self.base + "/task/" + action + "/" + task["task_id"], None, headers)
-            self.assertEqual(200, status, raw)
-            self.finished(task["task_id"])
+        status, task = self.api("/shell/exec", {"command": "sleep 30", "cwd": "laptop"})
+        self.assertEqual(202, status, task)
+        headers = dict(self.headers, **{"OpenKapsel-Plan-Id": str(self.plan), "OpenKapsel-Taskname": "rpc", "OpenKapsel-Message": "Interrupt task"})
+        status, _, raw = self.request("POST", self.base + "/task/interrupt/" + task["task_id"], None, headers)
+        self.assertEqual(200, status, raw)
+        self.finished(task["task_id"])
+
+        status, task = self.api("/shell/exec", {"command": "sleep 30", "cwd": "laptop"})
+        self.assertEqual(202, status, task)
+        headers = dict(self.headers, **{"OpenKapsel-Plan-Id": str(self.plan), "OpenKapsel-Taskname": "rpc", "OpenKapsel-Message": "Kill task"})
+        status, _, raw = self.request("DELETE", self.base + "/task/" + task["task_id"], None, headers)
+        self.assertEqual(200, status, raw)
+        self.finished(task["task_id"])
 
     def test_sse_drains_finished_output_larger_than_one_rpc(self):
         status, task = self.api("/shell/exec", {"command": "head -c 150000 /dev/zero", "cwd": "laptop"})

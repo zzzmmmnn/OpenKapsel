@@ -127,7 +127,7 @@ The command runs asynchronously. `timeout_seconds` may be `null` or within the p
 | `GET` | `/task/stream/<task_id>` | Bounded SSE output until `done` or `reconnect` |
 | `POST` | `/task/stdin/<task_id>` | Send UTF-8/Base64 input or close stdin |
 | `POST` | `/task/interrupt/<task_id>` | Server: SIGTERM then SIGKILL; client: SIGINT or Windows CTRL_BREAK |
-| `POST` | `/task/kill/<task_id>` | Server/POSIX client: SIGKILL; native Windows client: taskkill `/T /F` |
+| `DELETE` | `/task/<task_id>` | Server/POSIX client: SIGKILL; native Windows client: taskkill `/T /F` |
 | `GET` | `/sandbox/processes` | Token cgroup process/resource view for restricted Shell |
 
 ## Native mapping dependencies

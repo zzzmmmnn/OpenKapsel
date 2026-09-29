@@ -91,7 +91,7 @@ It is atomic and create-only. It never overwrites. If the destination exists, st
 2. `GET|HEAD /upload/status/<upload_id>` to recover status/offset after interruption.
 3. `PATCH /upload/chunk/<upload_id>` with raw bytes, `Upload-Offset`, `Content-Type: application/octet-stream`, and all three `OpenKapsel-*` Context headers.
 4. `POST /upload/commit/<upload_id>` with the three Context headers.
-5. `DELETE /upload/cancel/<upload_id>` with the three Context headers to cancel.
+5. `POST /upload/cancel/<upload_id>` with the three Context headers to cancel.
 
 Chunks are strictly ordered. Use `limits.recommended_upload_chunk_bytes`; do not exceed the server request-body limit. Commit rechecks permission, destination absence, final size, and optional SHA-256 before atomic publication.
 

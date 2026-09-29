@@ -195,7 +195,7 @@ class MemoryHandlersMixin:
         write_operations = {
             "fs.copy", "fs.content.put", "fs.mutate", "fs.large.replace", "fs.mkdir",
             "fs.move", "fs.transfer.control", "recycle.restore", "upload.commit",
-            "shell.exec", "schedule.run_now", "server.rpc", "mapping.rpc",
+            "shell.exec", "schedule.execute", "server.rpc", "mapping.rpc",
         }
         context = self.server.context_for(self.token_scope_root)
         scopes: list[str] = []

@@ -351,7 +351,7 @@ class DiscoveryMixin:
                         path=endpoints["share_query"].get("url"),
                     ),
                     "import": operation("share_import", path="./share/import/<share_id>"),
-                    "delete": operation("share_delete", path="./share/delete/<share_id>"),
+                    "delete": operation("share_delete", path="./share/<share_id>"),
                 },
             ),
             "environment": family(
@@ -394,7 +394,7 @@ class DiscoveryMixin:
                     ),
                     "kill": operation(
                         "task_kill",
-                        path="./task/kill/<task_id>",
+                        path="./task/<task_id>",
                         description=endpoints.get("task_kill", {}).get("notes"),
                     ),
                 },
@@ -408,24 +408,24 @@ class DiscoveryMixin:
                     "get": operation("schedule_get"),
                     "update": operation("schedule_update"),
                     "delete": operation("schedule_delete"),
-                    "run": operation(
-                        "schedule_run",
-                        path="./schedule/<schedule_id>/run",
+                    "execute": operation(
+                        "schedule_execute",
+                        path="./schedule/execute/<schedule_id>",
                     ),
                     "pause": operation(
                         "schedule_pause",
-                        path="./schedule/<schedule_id>/pause",
+                        path="./schedule/pause/<schedule_id>",
                     ),
                     "resume": operation(
                         "schedule_resume",
-                        path="./schedule/<schedule_id>/resume",
+                        path="./schedule/resume/<schedule_id>",
                     ),
-                    "runs": operation(
-                        "schedule_runs",
-                        path="./schedule/<schedule_id>/runs",
+                    "run_list": operation(
+                        "schedule_run_list",
+                        path="./schedule/run/list/<schedule_id>",
                     ),
                     "run_get": operation(
-                        "schedule_run_item",
+                        "schedule_run_get",
                         path="./schedule/run/<run_id>",
                     ),
                 },
@@ -1706,7 +1706,7 @@ class DiscoveryMixin:
                 },
                 "share_delete": {
                     "method": "DELETE",
-                    "url": f"{base}/share/delete/<share_id>",
+                    "url": f"{base}/share/<share_id>",
                     "authentication": "creator Bearer control token",
                     "request_headers": {
                         "OpenKapsel-Plan-Id": "<required owning plan id>",
@@ -1741,7 +1741,7 @@ class DiscoveryMixin:
                     "headers": {"Upload-Offset": "<current offset>", "OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
                 },
                 "upload_commit": {"method": "POST", "url": f"{base}/upload/commit/<upload_id>", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
-                "upload_cancel": {"method": "DELETE", "url": f"{base}/upload/cancel/<upload_id>", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
+                "upload_cancel": {"method": "POST", "url": f"{base}/upload/cancel/<upload_id>", "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"}},
                 "mcp": {
                     "method": "POST",
                     "url": f"{base}/mcp",
@@ -1753,7 +1753,7 @@ class DiscoveryMixin:
                     "target_values": ["auto", "server", "client"],
                     "native_dependencies": "Server tasks acquire the cwd mapping automatically. Declare other workspace mapping names/IDs with mount_mappings; command text is not inspected. FastAPI uses api/mappings.json with the same field. Native mounts are leased for the process lifetime, not per HTTP request.",
                     "routing": "Default auto uses client RPC when cwd is inside a mapping; otherwise server. Explicit server executes on server even for a mapped cwd; client requires a mapped cwd. Command text is never inspected for cd. Offline/denied/old clients fail closed, never fall back.",
-                    "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /task/get, /task/output, /task/stream, /task/stdin, /task/interrupt, and /task/kill; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
+                    "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /task/get, /task/output, /task/stream, /task/stdin, /task/interrupt, and DELETE /task/<task_id>; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
                     "json": {
                         "command": "<shell command>",
                         "target": "auto",
@@ -1831,9 +1831,9 @@ class DiscoveryMixin:
                         "message": "<required brief operation summary>",
                     },
                 },
-                "schedule_run": {
+                "schedule_execute": {
                     "method": "POST",
-                    "url": f"{base}/schedule/<schedule_id>/run",
+                    "url": f"{base}/schedule/execute/<schedule_id>",
                     "json": {
                         "plan_id": "<required owning plan id>",
                         "taskname": "<required task grouping name>",
@@ -1843,19 +1843,19 @@ class DiscoveryMixin:
                 },
                 "schedule_pause": {
                     "method": "POST",
-                    "url": f"{base}/schedule/<schedule_id>/pause",
+                    "url": f"{base}/schedule/pause/<schedule_id>",
                     "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
                 },
                 "schedule_resume": {
                     "method": "POST",
-                    "url": f"{base}/schedule/<schedule_id>/resume",
+                    "url": f"{base}/schedule/resume/<schedule_id>",
                     "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
                 },
-                "schedule_runs": {
+                "schedule_run_list": {
                     "method": "GET",
-                    "url": f"{base}/schedule/<schedule_id>/runs?limit=50",
+                    "url": f"{base}/schedule/run/list/<schedule_id>?limit=50",
                 },
-                "schedule_run_item": {
+                "schedule_run_get": {
                     "method": "GET",
                     "url": f"{base}/schedule/run/<run_id>",
                     "notes": "task_id links to ordinary Shell task status and output while retained",
@@ -1919,8 +1919,8 @@ class DiscoveryMixin:
                     "notes": "server tasks receive SIGTERM then SIGKILL after a two-second grace period; POSIX client tasks receive SIGINT and native Windows client tasks receive CTRL_BREAK",
                 },
                 "task_kill": {
-                    "method": "POST",
-                    "url": f"{base}/task/kill/<task_id>",
+                    "method": "DELETE",
+                    "url": f"{base}/task/<task_id>",
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
                     "notes": "server and POSIX client tasks are force-killed; native Windows client tasks use taskkill /T /F",
                 },
@@ -2130,11 +2130,11 @@ class DiscoveryMixin:
             "schedule_get": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_update": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_delete": ("Bearer control token + schedules + shell", schedules_enabled),
-            "schedule_run": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_execute": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_pause": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_resume": ("Bearer control token + schedules + shell", schedules_enabled),
-            "schedule_runs": ("Bearer control token + schedules + shell", schedules_enabled),
-            "schedule_run_item": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_run_list": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_run_get": ("Bearer control token + schedules + shell", schedules_enabled),
             "task_list": ("Bearer control token + shell", shell_enabled),
             "task_get": ("Bearer control token + shell", shell_enabled),
             "task_output": ("Bearer control token + shell", shell_enabled),
@@ -2190,11 +2190,11 @@ class DiscoveryMixin:
                 "schedule_get",
                 "schedule_update",
                 "schedule_delete",
-                "schedule_run",
+                "schedule_execute",
                 "schedule_pause",
                 "schedule_resume",
-                "schedule_runs",
-                "schedule_run_item",
+                "schedule_run_list",
+                "schedule_run_get",
                 "task_list",
                 "task_get",
                 "task_output",

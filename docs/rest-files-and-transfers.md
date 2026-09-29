@@ -28,14 +28,14 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `POST` | `/upload/create` | Start a resumable upload |
 | `GET/HEAD` | `/upload/status/<id>` | Inspect upload status |
 | `PATCH` | `/upload/chunk/<id>` | Append upload bytes |
-| `POST/DELETE` | `/upload/commit/<id>`, `/upload/cancel/<id>` | Commit or cancel an upload |
+| `POST` | `/upload/commit/<id>`, `/upload/cancel/<id>` | Commit or cancel an upload |
 | `POST` | `/shell/exec` | Start an asynchronous Shell task |
 | `GET` | `/task/list`, `/task/get/<id>` | List tasks or inspect task state |
 | `GET` | `/task/output/<id>`, `/task/stream/<id>` | Incremental or SSE output |
 | `POST` | `/task/stdin/<id>` | Write or close interactive stdin |
-| `POST` | `/task/interrupt/<id>`, `/task/kill/<id>` | Graceful or forced termination |
+| `POST/DELETE` | `/task/interrupt/<id>`, `/task/<id>` | Graceful interrupt or forced termination |
 | `GET` | `/sandbox/processes` | List token cgroup processes and usage |
-| `POST/GET/DELETE` | `/share/create`, `/share/query/<id>`, `/share/delete/<id>` | Create, inspect, or delete a share |
+| `POST/GET/DELETE` | `/share/create`, `/share/query/<id>`, `/share/<id>` | Create, inspect, or delete a share |
 | `POST` | `/share/import/<id>` | Import a share into the Workspace |
 | `POST` | `/mcp` | Stateless Streamable HTTP MCP |
 

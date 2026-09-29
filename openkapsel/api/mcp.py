@@ -881,10 +881,10 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "schedule_read",
         "Read schedules",
-        "Read schedules or schedule runs. operation=list|get|list_runs|get_run.",
+        "Read schedules or schedule runs. operation=list|get|run_list|run_get.",
         _object_schema(
             {
-                "operation": {"type": "string", "enum": ["list", "get", "list_runs", "get_run"]},
+                "operation": {"type": "string", "enum": ["list", "get", "run_list", "run_get"]},
                 "schedule_id": {"type": "string"},
                 "run_id": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
@@ -921,10 +921,10 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "schedule_control",
         "Control schedule",
-        "Delete, run, pause, or resume one schedule.",
+        "Delete, execute, pause, or resume one schedule.",
         _object_schema(
             {
-                "operation": {"type": "string", "enum": ["delete", "run", "pause", "resume"]},
+                "operation": {"type": "string", "enum": ["delete", "execute", "pause", "resume"]},
                 "schedule_id": {"type": "string"},
             },
             ("operation", "schedule_id"),

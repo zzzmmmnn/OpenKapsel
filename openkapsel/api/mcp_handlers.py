@@ -159,7 +159,7 @@ class McpHandlersMixin:
                 "Call web_preview_url when a workspace page should be opened in a browser. "
                 "fs_delete is recoverable through recycle_list and recycle_restore. "
                 "shell_exec defaults to target=auto: a mapped cwd runs on that client, otherwise on the server. Set target=server or client explicitly when needed. Client execution follows its own sandbox and platform policy. The returned task_id works with task_get, task_output, task_stdin, task_interrupt, and task_kill. Client stdout and stderr are combined in stdout, and client stdin is limited to 16 KiB per call. "
-                "When schedule tools are available, use schedule_write for persistent once, interval, or strict six-field cron Shell work; use schedule_control operation=run for explicit immediate execution. "
+                "When schedule tools are available, use schedule_write for persistent once, interval, or strict six-field cron Shell work; use schedule_control operation=execute for explicit immediate execution. "
                 "Use task_interrupt for normal termination and task_kill only for immediate forced termination. "
                 "When connected through OAuth or Static MCP, use MCP tools by default. "
                 "Use credential_get only when portable REST access is needed on another platform; "
@@ -193,8 +193,8 @@ class McpHandlersMixin:
             raise McpError(-32602, str(exc), {"name": name}) from None
         operation_requirements = {
             ("schedule_read", "get"): ("schedule_id",),
-            ("schedule_read", "list_runs"): ("schedule_id",),
-            ("schedule_read", "get_run"): ("run_id",),
+            ("schedule_read", "run_list"): ("schedule_id",),
+            ("schedule_read", "run_get"): ("run_id",),
             ("schedule_write", "create"): ("name", "schedule", "command"),
             ("schedule_write", "update"): ("schedule_id", "expected_revision"),
             ("fs_edit_text", "replace"): ("old", "new"),
@@ -716,7 +716,7 @@ class McpHandlersMixin:
                     self._handle_schedule_list({})
                 elif operation == "get":
                     self._handle_schedule_get(str(arguments["schedule_id"]))
-                elif operation == "list_runs":
+                elif operation == "run_list":
                     query = {"limit": [str(arguments.get("limit", 50))]}
                     self._handle_schedule_runs(str(arguments["schedule_id"]), query)
                 else:
@@ -737,7 +737,7 @@ class McpHandlersMixin:
                 }
                 if operation == "delete":
                     self._handle_schedule_delete(schedule_id)
-                elif operation == "run":
+                elif operation == "execute":
                     self._handle_schedule_run(schedule_id)
                 elif operation == "pause":
                     self._handle_schedule_pause(schedule_id)
@@ -916,7 +916,7 @@ class McpHandlersMixin:
             "commit_url": f"{transfer_base}/upload/commit/{encoded_id}",
             "commit_method": "POST",
             "cancel_url": f"{transfer_base}/upload/cancel/{encoded_id}",
-            "cancel_method": "DELETE",
+            "cancel_method": "POST",
             "commit_and_cancel_headers": {
                 "OpenKapsel-Plan-Id": "<required owning plan id>",
                 "OpenKapsel-Taskname": "<required task grouping name>",

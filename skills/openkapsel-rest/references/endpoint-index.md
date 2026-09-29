@@ -35,12 +35,12 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `POST` | `<workspace_url>/upload/create` |
 | `GET|HEAD` | `<workspace_url>/upload/status/<upload_id>` |
 | `PATCH` | `<workspace_url>/upload/chunk/<upload_id>` |
-| `DELETE` | `<workspace_url>/upload/cancel/<upload_id>` |
+| `POST` | `<workspace_url>/upload/cancel/<upload_id>` |
 | `POST` | `<workspace_url>/upload/commit/<upload_id>` |
 | `GET|HEAD|PUT` | `<service-base>/transfer/fs/content` |
 | `GET|HEAD` | `<service-base>/transfer/upload/status/<upload_id>` |
 | `PATCH` | `<service-base>/transfer/upload/chunk/<upload_id>` |
-| `DELETE` | `<service-base>/transfer/upload/cancel/<upload_id>` |
+| `POST` | `<service-base>/transfer/upload/cancel/<upload_id>` |
 | `POST` | `<service-base>/transfer/upload/commit/<upload_id>` |
 
 ## Context and Memory
@@ -68,7 +68,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `GET` | `<workspace_url>/task/stream/<task_id>` |
 | `POST` | `<workspace_url>/task/stdin/<task_id>` |
 | `POST` | `<workspace_url>/task/interrupt/<task_id>` |
-| `POST` | `<workspace_url>/task/kill/<task_id>` |
+| `DELETE` | `<workspace_url>/task/<task_id>` |
 | `GET` | `<workspace_url>/sandbox/processes` |
 
 Server `POST /shell/exec` accepts optional `mount_mappings` for extra native
@@ -82,10 +82,10 @@ routing, and client execution rejects non-empty declarations. See
 |---|---|
 | `GET|POST` | `<workspace_url>/schedule` |
 | `GET|PATCH|DELETE` | `<workspace_url>/schedule/<schedule_id>` |
-| `POST` | `<workspace_url>/schedule/<schedule_id>/run` |
-| `POST` | `<workspace_url>/schedule/<schedule_id>/pause` |
-| `POST` | `<workspace_url>/schedule/<schedule_id>/resume` |
-| `GET` | `<workspace_url>/schedule/<schedule_id>/runs` |
+| `POST` | `<workspace_url>/schedule/execute/<schedule_id>` |
+| `POST` | `<workspace_url>/schedule/pause/<schedule_id>` |
+| `POST` | `<workspace_url>/schedule/resume/<schedule_id>` |
+| `GET` | `<workspace_url>/schedule/run/list/<schedule_id>` |
 | `GET` | `<workspace_url>/schedule/run/<run_id>` |
 
 ## Sharing, preview, and applications
@@ -95,7 +95,7 @@ routing, and client execution rejects non-empty declarations. See
 | `POST` | `<workspace_url>/share/create` |
 | `GET` | `<service-base>/share/query/<share_id>` |
 | `POST` | `<workspace_url>/share/import/<share_id>` |
-| `DELETE` | `<workspace_url>/share/delete/<share_id>` |
+| `DELETE` | `<workspace_url>/share/<share_id>` |
 | `GET|HEAD` | `<preview-base>/<workspace-relative-path>` |
 | `GET|HEAD|POST|PUT|PATCH|DELETE` | `<preview-base>/<app-path>/api/<route>` |
 

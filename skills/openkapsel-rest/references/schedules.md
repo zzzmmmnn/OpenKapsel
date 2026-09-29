@@ -35,7 +35,7 @@ Timing variants are:
 - `{"type":"once","run_at":"<timezone-aware ISO 8601>","timezone":"UTC"}` at least 3 minutes in the future.
 - `{"type":"cron","expression":"<second minute hour day month weekday>","timezone":"<IANA name>"}` with exactly six fields. The second is one explicit integer. Numeric lists, ranges, steps, and `*` are supported in the remaining fields; names and Quartz extensions are not. The expression is rejected if any adjacent occurrences can be less than 3 minutes apart.
 
-Use `POST /schedule/<id>/run` for an explicit immediate execution. It still observes task capacity and overlap limits, and it does not move the schedule's next ordinary occurrence.
+Use `POST /schedule/execute/<id>` for an explicit immediate execution. It still observes task capacity and overlap limits, and it does not move the schedule's next ordinary occurrence.
 
 ## Manage and inspect
 
@@ -45,10 +45,10 @@ Use `POST /schedule/<id>/run` for an explicit immediate execution. It still obse
 | `GET` | `/schedule/<id>` | Read one schedule and its revision |
 | `PATCH` | `/schedule/<id>` | Update with `expected_revision`; use `run_context` only to replace future-run attribution |
 | `DELETE` | `/schedule/<id>` | Delete when it has no running task |
-| `POST` | `/schedule/<id>/pause` | Stop future dispatch without killing a running task |
-| `POST` | `/schedule/<id>/resume` | Recompute the next occurrence from now |
-| `POST` | `/schedule/<id>/run` | Dispatch explicitly now |
-| `GET` | `/schedule/<id>/runs?limit=50` | List dispatch history |
+| `POST` | `/schedule/pause/<id>` | Stop future dispatch without killing a running task |
+| `POST` | `/schedule/resume/<id>` | Recompute the next occurrence from now |
+| `POST` | `/schedule/execute/<id>` | Dispatch explicitly now |
+| `GET` | `/schedule/run/list/<id>?limit=50` | List dispatch history |
 | `GET` | `/schedule/run/<run_id>` | Read one dispatch and its linked `task_id` |
 
 All modifying requests carry ordinary mutation Context fields. A schedule update is optimistic: fetch its revision first and send `expected_revision`. PATCH may replace `name`, `schedule`, `command`, `cwd`, `timeout_seconds`, `overlap_policy`, `misfire_policy`, or the complete future-run `run_context`; the only overlap policy is `skip`, while misfire is `skip` or `coalesce`. Pause before changing intent when another actor may edit it.

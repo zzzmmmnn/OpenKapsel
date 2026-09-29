@@ -41,6 +41,13 @@ from openkapsel.client_runtime.client_reload import (
 
 LOG = logging.getLogger("openkapsel.client")
 HEARTBEAT_SECONDS = 10.0
+RECONNECT_DELAYS = (1, 3, 5, 10, 20)
+
+
+def _reconnect_delay(disconnect_count):
+    if disconnect_count < 1:
+        raise ValueError("disconnect_count must be >= 1")
+    return RECONNECT_DELAYS[min(disconnect_count, len(RECONNECT_DELAYS)) - 1]
 
 
 class ClientReloadRequired(RuntimeError):
@@ -339,7 +346,7 @@ def _capabilities(files, tasks):
     return capabilities
 
 
-def run_once(config, stop=None, *, runtime=None, reload_state=None):
+def run_once(config, stop=None, *, runtime=None, reload_state=None, on_ready=None):
     import websocket
     stop = stop or threading.Event()
     owned = runtime is None
@@ -382,6 +389,8 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None):
         ready = _recv_message(sock)
         if ready != {"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}:
             raise ValueError("mapping server did not confirm READY")
+        if on_ready is not None:
+            on_ready()
         runtime.pending_reload = False
         if reload_state is not None:
             reload_state.mark_ready(server_fingerprint)
@@ -480,10 +489,21 @@ def main():
         os.environ.pop("OPENKAPSEL_CLIENT_RELOADED", None)
         reload_state.mark_process_reload()
         runtime = ClientRuntime(config, protected_paths=(options.config,))
+        disconnect_count = 0
+
+        def reset_disconnect_count():
+            nonlocal disconnect_count
+            disconnect_count = 0
+
         try:
             while True:
                 try:
-                    run_once(config, runtime=runtime, reload_state=reload_state)
+                    run_once(
+                        config,
+                        runtime=runtime,
+                        reload_state=reload_state,
+                        on_ready=reset_disconnect_count,
+                    )
                 except ClientReloadRequired as exc:
                     delay = reload_state.next_required_delay() if exc.required else 0
                     LOG.info(
@@ -538,8 +558,10 @@ def main():
                         raise SystemExit(1) from None
                 if options.once:
                     return
-                LOG.info("Reconnecting mapping provider in 5s")
-                time.sleep(5)
+                disconnect_count += 1
+                delay = _reconnect_delay(disconnect_count)
+                LOG.info("Reconnecting mapping provider in %ss", delay)
+                time.sleep(delay)
         except KeyboardInterrupt:
             return
         finally:

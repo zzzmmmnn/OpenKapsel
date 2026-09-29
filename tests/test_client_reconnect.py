@@ -429,11 +429,110 @@ class ClientReconnectTests(unittest.TestCase):
             client_module.main()
 
         self.assertEqual(2, run.call_count)
-        sleep.assert_called_once_with(5)
+        sleep.assert_called_once_with(1)
         self.assertIn(
-            "Reconnecting mapping provider in 5s",
+            "Reconnecting mapping provider in 1s",
             "\n".join(logs.output),
         )
+
+
+    def test_main_reconnect_backoff_caps_and_ready_resets_it(self):
+        class Lock:
+            config = {"url": "ws://example/provider", "token": "t", "root": "."}
+
+            def close(self):
+                pass
+
+        class ReloadState:
+            def __init__(self, *_args):
+                pass
+
+            def mark_process_reload(self):
+                pass
+
+        class Runtime:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def close(self):
+                pass
+
+        events = iter([
+            "fail", "fail", "fail", "fail", "fail", "fail",
+            "ready_disconnect", "fail", "ready_error", "stop",
+        ])
+
+        def provider(*_args, on_ready=None, **_kwargs):
+            event = next(events)
+            if event == "stop":
+                raise KeyboardInterrupt
+            if event == "ready_disconnect":
+                on_ready()
+                return None
+            if event == "ready_error":
+                on_ready()
+                raise OSError("disconnected after READY")
+            raise OSError("connect failed before READY")
+
+        with (
+            patch.object(sys, "argv", ["openkapsel-client", "--config", "dummy.json"]),
+            patch.object(client_module.ClientConfigLock, "acquire", return_value=Lock()),
+            patch.object(client_module, "ClientReloadState", ReloadState),
+            patch.object(client_module, "ClientRuntime", Runtime),
+            patch.object(client_module, "run_once", side_effect=provider),
+            patch.object(client_module.time, "sleep") as sleep,
+            patch.object(client_module.logging, "basicConfig"),
+        ):
+            client_module.main()
+
+        self.assertEqual(
+            [1, 3, 5, 10, 20, 20, 1, 3, 1],
+            [call.args[0] for call in sleep.call_args_list],
+        )
+
+    def test_run_once_calls_on_ready_only_after_ready_handshake(self):
+        ready_calls = []
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}),
+            "",
+        ])
+
+        class Socket:
+            def send(self, _data):
+                pass
+
+            def recv(self):
+                return next(messages)
+
+            def close(self):
+                pass
+
+            def ping(self, *_args):
+                pass
+
+        with patch("websocket.create_connection", return_value=Socket()):
+            run_once(
+                self.config,
+                runtime=self.runtime,
+                on_ready=lambda: ready_calls.append("ready"),
+            )
+        self.assertEqual(["ready"], ready_calls)
+
+        messages = iter([
+            self.server_hello(),
+            json.dumps({"type": "not_ready"}),
+        ])
+        with (
+            patch("websocket.create_connection", return_value=Socket()),
+            self.assertRaises(ValueError),
+        ):
+            run_once(
+                self.config,
+                runtime=self.runtime,
+                on_ready=lambda: ready_calls.append("invalid"),
+            )
+        self.assertEqual(["ready"], ready_calls)
 
     def test_runtime_close_stops_tasks_and_config_cannot_switch(self):
         task = self.start("runtime-close", "import time; time.sleep(60)")

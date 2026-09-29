@@ -37,6 +37,10 @@ class EndpointContractTests(unittest.TestCase):
                 "upload_chunk",
                 {"upload_id": "upload_123"},
             ),
+            ("POST", "/upload/cancel/upload_123"): (
+                "upload_cancel",
+                {"upload_id": "upload_123"},
+            ),
             ("POST", "/upload/commit/upload_123"): (
                 "upload_commit",
                 {"upload_id": "upload_123"},
@@ -54,16 +58,28 @@ class EndpointContractTests(unittest.TestCase):
                 "memory_item_mutate",
                 {"memory_id": "mem_abc"},
             ),
-            ("POST", "/task/kill/task_abc"): (
+            ("DELETE", "/task/task_abc"): (
                 "task_kill",
                 {"task_id": "task_abc"},
             ),
-            ("POST", "/schedule/schedule_abc/run"): (
-                "schedule_run",
+            ("POST", "/schedule/execute/schedule_abc"): (
+                "schedule_execute",
+                {"schedule_id": "schedule_abc"},
+            ),
+            ("POST", "/schedule/pause/schedule_abc"): (
+                "schedule_pause",
+                {"schedule_id": "schedule_abc"},
+            ),
+            ("POST", "/schedule/resume/schedule_abc"): (
+                "schedule_resume",
+                {"schedule_id": "schedule_abc"},
+            ),
+            ("GET", "/schedule/run/list/schedule_abc"): (
+                "schedule_run_list",
                 {"schedule_id": "schedule_abc"},
             ),
             ("GET", "/schedule/run/run_abc"): (
-                "schedule_run_item",
+                "schedule_run_get",
                 {"run_id": "run_abc"},
             ),
         }
@@ -75,6 +91,13 @@ class EndpointContractTests(unittest.TestCase):
                 self.assertEqual(expected[0], endpoint.name)
                 self.assertEqual(expected[1], route_match.groupdict())
         self.assertIsNone(match_endpoint("GET", "/fs/read/text"))
+        self.assertIsNone(match_endpoint("DELETE", "/share/delete/share_abc"))
+        self.assertIsNone(match_endpoint("DELETE", "/upload/cancel/upload_123"))
+        self.assertIsNone(match_endpoint("POST", "/task/kill/task_abc"))
+        self.assertIsNone(match_endpoint("POST", "/schedule/schedule_abc/run"))
+        self.assertIsNone(match_endpoint("POST", "/schedule/schedule_abc/pause"))
+        self.assertIsNone(match_endpoint("POST", "/schedule/schedule_abc/resume"))
+        self.assertIsNone(match_endpoint("GET", "/schedule/schedule_abc/runs"))
         self.assertIsNone(match_endpoint("GET", "/uploads/a"))
         self.assertIsNone(match_endpoint("GET", "/mapping/abcdefghijklmnopqrstuvwx/tasks"))
         self.assertIsNone(match_endpoint("POST", "/mapping/abcdefghijklmnopqrstuvwx/tasks/task_abc/kill"))
