@@ -176,6 +176,9 @@ class McpHandlersMixin:
         mirrored_name = self.headers.get("Mcp-Name")
         if mirrored_name is not None and mirrored_name != name:
             raise McpError(-32600, "Mcp-Name header does not match the tool name")
+        # search_files was the historical MCP name for content grep. Keep
+        # accepting it without advertising the ambiguous name to new clients.
+        name = {"search_files": "files_grep"}.get(name, name)
         available = {
             tool["name"]: tool
             for tool in tools_for(
@@ -581,7 +584,8 @@ class McpHandlersMixin:
             "list_files": self._handle_fs_list,
             "read_file": self._handle_fs_read,
             "stat_file": self._handle_fs_stat,
-            "search_files": self._handle_fs_search,
+            "find_files": self._handle_fs_find,
+            "files_grep": self._handle_fs_search,
             "list_tree": self._handle_fs_tree,
             "list_recycle": self._handle_recycle_list,
         }

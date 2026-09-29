@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.errors import ApiError
 from openkapsel.rpc_plugins import load_server_rpc_registry
 from openkapsel.rpc_plugins.file_search import _plocate_pattern, plugin
 from openkapsel.rpc_plugins.file_search.everything_ipc import (
@@ -143,6 +144,39 @@ class FileSearchRpcTests(unittest.TestCase):
             self.assertEqual("p/Needle-B.txt", result["body"]["results"][0]["path"])
             self.assertFalse(result["body"]["truncated"])
             self.assertIsNone(result["body"]["next_offset"])
+
+    def test_search_timeout_returns_partial_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scope = root / "p"
+            scope.mkdir()
+            wanted = scope / "Needle.txt"
+            wanted.write_text("x", encoding="utf-8")
+            files = self._files(root)
+
+            def paths():
+                yield str(wanted)
+                raise ApiError(
+                    504,
+                    "file_search_timeout",
+                    "indexed search timed out; narrow the query or scope",
+                )
+
+            with patch(
+                "openkapsel.rpc_plugins.file_search._backend_paths",
+                return_value=("mock", paths()),
+            ) as backend:
+                result = plugin.dispatch(
+                    files,
+                    "search",
+                    {"query": "needle", "path": "p"},
+                )
+            self.assertEqual(200, result["status"])
+            self.assertTrue(result["body"]["timed_out"])
+            self.assertTrue(result["body"]["truncated"])
+            self.assertEqual(5.0, result["body"]["timeout_seconds"])
+            self.assertEqual("p/Needle.txt", result["body"]["results"][0]["path"])
+            self.assertEqual(5.0, backend.call_args.args[3])
 
     def test_filename_query_rejects_path_separators(self):
         with tempfile.TemporaryDirectory() as directory:

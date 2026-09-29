@@ -74,3 +74,32 @@ class MappingQueryMixin:
             if type(result.get(field)) is not int or result[field] < 0:
                 raise ApiError(502, "invalid_mapping_response", "invalid mapping search counters")
         return result
+
+    def _mapping_find(self, row, query, remaining, timeout_seconds):
+        forwarded = {key: list(value) for key, value in query.items()}
+        forwarded.update(
+            path=["."],
+            max_results=[str(remaining)],
+            timeout_seconds=[str(timeout_seconds)],
+        )
+        _, result = self._call_mapping_file_api(
+            row,
+            "fs_find",
+            query=forwarded,
+            min_version=4,
+        )
+        items = result.get("results")
+        if not isinstance(items, list) or len(items) > remaining:
+            raise ApiError(502, "invalid_mapping_response", "invalid mapping find results")
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("path"), str)
+                or item.get("type") not in {"file", "directory"}
+            ):
+                raise ApiError(502, "invalid_mapping_response", "invalid mapping find result")
+        if not isinstance(result.get("timed_out"), bool) or not isinstance(
+            result.get("truncated"), bool
+        ):
+            raise ApiError(502, "invalid_mapping_response", "invalid mapping find status")
+        return result

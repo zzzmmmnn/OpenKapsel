@@ -782,7 +782,8 @@ class WorkspaceServerTests(unittest.TestCase):
             op("fs_query", "list"),
             op("fs_read", "text"),
             op("fs_query", "stat"),
-            op("fs_query", "search"),
+            op("fs_query", "find"),
+            op("fs_query", "grep"),
             op("tasks", "output"),
         ):
             for field in ("plan_id", "taskname", "message"):
@@ -955,9 +956,13 @@ class WorkspaceServerTests(unittest.TestCase):
                 b"/mappings/<mapping_id>/rpc/",
                 endpoint_reference,
             )
+            self.assertIn(b"/fs/query/find", endpoint_reference)
             files_reference = bundle.read("openkapsel-rest/references/files.md")
             self.assertIn(b"`text.insert_before`", files_reference)
             self.assertIn(b"`text.insert_after`", files_reference)
+            self.assertIn(b"`files_grep`", files_reference)
+            self.assertIn(b"/fs/query/find", files_reference)
+            self.assertIn(b"timeout_seconds=5", files_reference)
             schedules_reference = bundle.read("openkapsel-rest/references/schedules.md")
             self.assertIn(b"`overlap_policy`", schedules_reference)
             self.assertIn(b"`misfire_policy`", schedules_reference)
@@ -2433,7 +2438,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 "stat_file",
                 "read_binary_chunk",
                 "read_large_file",
-                "search_files",
+                "find_files",
+                "files_grep",
                 "list_tree",
                 "write_file",
                 "edit_text",
@@ -2461,6 +2467,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(
             {"replace_text", "insert_before", "insert_after"}.isdisjoint(names)
         )
+        self.assertNotIn("search_files", names)
         delete_tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "delete_path")
         self.assertTrue(delete_tool["annotations"]["destructiveHint"])
 
@@ -2895,9 +2902,29 @@ class WorkspaceServerTests(unittest.TestCase):
             token,
             93,
             "tools/call",
-            {"name": "search_files", "arguments": {"query": "hello", "depth": 2}},
+            {"name": "files_grep", "arguments": {"query": "hello", "depth": 2}},
         )
         self.assertGreaterEqual(searched["result"]["structuredContent"]["match_count"], 1)
+        _, legacy_searched, _ = self.mcp_request(
+            token,
+            931,
+            "tools/call",
+            {"name": "search_files", "arguments": {"query": "hello", "depth": 2}},
+        )
+        self.assertGreaterEqual(
+            legacy_searched["result"]["structuredContent"]["match_count"], 1
+        )
+        _, found, _ = self.mcp_request(
+            token,
+            932,
+            "tools/call",
+            {"name": "find_files", "arguments": {"query": "hello"}},
+        )
+        self.assertIn(
+            "hello.txt",
+            [Path(item["path"]).name for item in found["result"]["structuredContent"]["results"]],
+        )
+        self.assertEqual(5.0, found["result"]["structuredContent"]["timeout_seconds"])
         _, tree, _ = self.mcp_request(
             token,
             94,

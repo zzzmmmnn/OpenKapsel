@@ -39,8 +39,12 @@ class MappingHandlersMixin:
         body = copy.deepcopy(original)
         write = operation in FILE_API_WRITE_OPERATIONS
         targets = []
-        if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search"}:
-            value = self._query_one(query, "path", "." if operation in {"fs_list", "fs_tree", "fs_search"} else "")
+        if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search", "fs_find"}:
+            value = self._query_one(
+                query,
+                "path",
+                "." if operation in {"fs_list", "fs_tree", "fs_search", "fs_find"} else "",
+            )
             if not value:
                 return False
             targets.append((query, "path", value, True))

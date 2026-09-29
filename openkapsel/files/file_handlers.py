@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import stat
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -311,6 +312,175 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "counts": counts,
                 "total": len(results),
                 "include_sha256": include_sha256,
+            },
+        )
+
+    def _try_indexed_find(
+        self,
+        *,
+        query: str,
+        path: str,
+        max_results: int,
+        case_sensitive: bool,
+        timeout_seconds: float,
+    ):
+        return None
+
+    def _handle_fs_find(self, query: dict[str, list[str]]) -> None:
+        self._require_permission(self.token_record.can_read, "read permission is not granted")
+        if self._try_mapping_file_api("fs_find", query=query):
+            return
+
+        needle = self._required_query(query, "query")
+        if len(needle) > 1024:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_request",
+                "query must contain at most 1024 characters",
+            )
+        if "\x00" in needle or "/" in needle or "\\" in needle:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_request",
+                "query is a filename fragment and cannot contain path separators",
+            )
+        path_arg = self._query_one(query, "path", ".")
+        root = self._resolve_path(path_arg)
+        root_stat = self._file_stat(root)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "not_a_directory",
+                "find path must identify a directory",
+            )
+        max_results = self._query_int(
+            query,
+            "max_results",
+            min(100, self.server.config.max_search_results),
+            minimum=1,
+            maximum=self.server.config.max_search_results,
+        )
+        case_sensitive = self._query_bool(query, "case_sensitive", False)
+        timeout_seconds = self._query_float(
+            query,
+            "timeout_seconds",
+            5.0,
+            minimum=0.1,
+            maximum=60.0,
+        )
+        started = time.monotonic()
+        deadline = started + timeout_seconds
+
+        accelerated = self._try_indexed_find(
+            query=needle,
+            path=path_arg,
+            max_results=max_results,
+            case_sensitive=case_sensitive,
+            timeout_seconds=max(0.1, deadline - time.monotonic()),
+        )
+        if accelerated is not None:
+            payload = dict(accelerated)
+            payload.update(
+                path=str(root),
+                query=needle,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+                timeout_seconds=timeout_seconds,
+            )
+            self._send_json(HTTPStatus.OK, payload)
+            return
+
+        left = needle if case_sensitive else needle.casefold()
+        results: list[dict[str, str]] = []
+        unavailable_mappings = []
+        timed_out = False
+        truncated = False
+        stack = [root]
+
+        while stack:
+            if time.monotonic() >= deadline:
+                timed_out = truncated = True
+                break
+            directory = stack.pop()
+            mapping = self._mapping_root(directory)
+            if mapping is not None:
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0:
+                    timed_out = truncated = True
+                    break
+                try:
+                    mapped = self._mapping_find(
+                        mapping,
+                        query,
+                        max_results - len(results),
+                        max(0.1, remaining_time),
+                    )
+                except ApiError as exc:
+                    unavailable_mappings.append(
+                        self._unavailable_mapping(mapping, directory, exc)
+                    )
+                    truncated = True
+                    continue
+                results.extend(mapped["results"])
+                timed_out |= mapped["timed_out"]
+                truncated |= mapped["truncated"]
+                if len(results) >= max_results:
+                    truncated = True
+                    break
+                if timed_out:
+                    break
+                continue
+
+            try:
+                entries = self._directory_entries(directory)
+                entries.sort(key=lambda item: item[0].casefold(), reverse=True)
+            except (OSError, SafePathError, ApiError):
+                continue
+            directories = []
+            for name, entry_stat in entries:
+                if time.monotonic() >= deadline:
+                    timed_out = truncated = True
+                    break
+                entry = directory / name
+                if self._is_hidden_internal_path(directory, entry) or stat.S_ISLNK(
+                    entry_stat.st_mode
+                ):
+                    continue
+                if stat.S_ISREG(entry_stat.st_mode):
+                    kind = "file"
+                elif stat.S_ISDIR(entry_stat.st_mode):
+                    kind = "directory"
+                    directories.append(entry)
+                else:
+                    continue
+                candidate = name if case_sensitive else name.casefold()
+                if left in candidate:
+                    results.append({"path": str(entry), "type": kind})
+                    if len(results) >= max_results:
+                        truncated = True
+                        break
+            if timed_out or len(results) >= max_results:
+                break
+            stack.extend(directories)
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "path": str(root),
+                "query": needle,
+                "case_sensitive": case_sensitive,
+                "max_results": max_results,
+                "timeout_seconds": timeout_seconds,
+                "backend": "recursive",
+                "results": results,
+                "result_count": len(results),
+                "truncated": truncated,
+                "timed_out": timed_out,
+                **(
+                    {"unavailable_mappings": unavailable_mappings}
+                    if unavailable_mappings
+                    else {}
+                ),
             },
         )
 

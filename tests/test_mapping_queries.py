@@ -3,6 +3,7 @@
 import hashlib
 import os
 import unittest
+from pathlib import Path
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -23,6 +24,12 @@ class MappingQueryTests(unittest.TestCase):
 
     def search(self, **query):
         return self.api("/fs/query/search?" + urlencode(dict(path=".", query="needle", **query), doseq=True))
+
+    def find(self, **query):
+        return self.api(
+            "/fs/query/find?"
+            + urlencode(dict(path=".", query="needle", **query), doseq=True)
+        )
 
     def test_root_list_is_virtual_even_when_provider_offline(self):
         (self.scope / "local.txt").write_text("local")
@@ -51,6 +58,45 @@ class MappingQueryTests(unittest.TestCase):
         self.assertEqual(1, remote.call_count)
         self.assertEqual("api_fs_search", remote.call_args.args[0])
         self.assertNotIn(str(self.export), str(result))
+
+    def test_mapping_find_prefers_indexed_file_search(self):
+        nested = self.export / "nested"
+        nested.mkdir()
+        wanted = nested / "Needle-config.toml"
+        wanted.write_text("x")
+        with patch(
+            "openkapsel.rpc_plugins.file_search._backend_paths",
+            return_value=("mock-index", iter([str(wanted)])),
+        ) as indexed:
+            status, result = self.api(
+                "/fs/query/find?path=laptop&query=needle&timeout_seconds=5"
+            )
+        self.assertEqual(200, status, result)
+        self.assertEqual("mock-index", result["backend"])
+        self.assertFalse(result["timed_out"])
+        self.assertEqual(1, len(result["results"]))
+        self.assertTrue(
+            result["results"][0]["path"].endswith(
+                "/laptop/nested/Needle-config.toml"
+            )
+        )
+        self.assertEqual(["api_fs_find"], [op for op, _ in self.calls])
+        indexed.assert_called_once()
+        self.assertLessEqual(indexed.call_args.args[3], 5.0)
+
+    def test_root_find_delegates_and_recursively_falls_back_without_index(self):
+        self.files.rpc_capabilities.pop("file_search", None)
+        (self.export / "nested").mkdir()
+        (self.export / "nested" / "Needle-remote.txt").write_text("x")
+        (self.scope / "Needle-local.txt").write_text("x")
+        status, result = self.find(timeout_seconds=5)
+        self.assertEqual(200, status, result)
+        self.assertEqual(
+            {"Needle-local.txt", "Needle-remote.txt"},
+            {Path(item["path"]).name for item in result["results"]},
+        )
+        self.assertFalse(result["timed_out"])
+        self.assertEqual(["api_fs_find"], [op for op, _ in self.calls])
 
     def test_search_depth_filters_regex_and_limits(self):
         (self.export / "nested").mkdir()

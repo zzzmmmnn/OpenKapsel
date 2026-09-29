@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from openkapsel.errors import ApiError
 from openkapsel.files.file_support import FileOperationSupportMixin
 from openkapsel.rpc_plugins._data import fail, object_schema, response, validate
 
@@ -21,7 +22,8 @@ from openkapsel.rpc_plugins._data import fail, object_schema, response, validate
 MAX_QUERY_CHARS = 1024
 MAX_RESULTS = 200
 MAX_OFFSET = 10_000
-SEARCH_TIMEOUT_SECONDS = 10.0
+DEFAULT_SEARCH_TIMEOUT_SECONDS = 5.0
+MAX_SEARCH_TIMEOUT_SECONDS = 60.0
 
 _SEARCH_SCHEMA = object_schema(
     {
@@ -30,6 +32,12 @@ _SEARCH_SCHEMA = object_schema(
         "offset": {"type": "integer", "minimum": 0, "maximum": MAX_OFFSET, "default": 0},
         "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS, "default": 100},
         "case_sensitive": {"type": "boolean", "default": False},
+        "timeout_seconds": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": MAX_SEARCH_TIMEOUT_SECONDS,
+            "default": DEFAULT_SEARCH_TIMEOUT_SECONDS,
+        },
     },
     ("query",),
 )
@@ -92,7 +100,7 @@ def _plocate_pattern(value: str) -> str:
     return "".join(result)
 
 
-def _nul_paths(command: list[str], backend: str) -> Iterator[str]:
+def _nul_paths(command: list[str], backend: str, timeout_seconds: float) -> Iterator[str]:
     process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
@@ -109,7 +117,7 @@ def _nul_paths(command: list[str], backend: str) -> Iterator[str]:
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     output = bytearray()
     error = bytearray()
-    deadline = time.monotonic() + SEARCH_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout_seconds
     completed = False
     try:
         while selector.get_map():
@@ -165,7 +173,12 @@ def _nul_paths(command: list[str], backend: str) -> Iterator[str]:
         process.stderr.close()
 
 
-def _backend_paths(scope: Path, query: str, case_sensitive: bool) -> tuple[str, Iterator[str]]:
+def _backend_paths(
+    scope: Path,
+    query: str,
+    case_sensitive: bool,
+    timeout_seconds: float,
+) -> tuple[str, Iterator[str]]:
     backend, executable = _platform_backend()
     if backend == "everything_ipc":
         from .everything_ipc import EverythingIpcError, query_paths
@@ -176,7 +189,7 @@ def _backend_paths(scope: Path, query: str, case_sensitive: bool) -> tuple[str, 
                     str(scope),
                     query,
                     case_sensitive=case_sensitive,
-                    timeout_seconds=SEARCH_TIMEOUT_SECONDS,
+                    timeout_seconds=timeout_seconds,
                 )
             except EverythingIpcError as exc:
                 fail(
@@ -192,13 +205,14 @@ def _backend_paths(scope: Path, query: str, case_sensitive: bool) -> tuple[str, 
         return backend, _nul_paths(
             [executable, "-0", "-onlyin", str(scope), "-name", term],
             backend,
+            timeout_seconds,
         )
     if backend == "plocate" and executable:
         command = [executable, "-0", "-e"]
         if not case_sensitive:
             command.append("-i")
         command.extend(["--", _plocate_pattern(str(scope)), _plocate_pattern(query)])
-        return backend, _nul_paths(command, backend)
+        return backend, _nul_paths(command, backend, timeout_seconds)
     fail("file_search_unavailable", "no indexed filename-search backend is available", 503)
 
 
@@ -262,26 +276,40 @@ def _search(files, args):
     offset = args.get("offset", 0)
     limit = args.get("limit", 100)
     case_sensitive = args.get("case_sensitive", False)
-    backend, paths = _backend_paths(scope, query, case_sensitive)
+    timeout_seconds = float(
+        args.get("timeout_seconds", DEFAULT_SEARCH_TIMEOUT_SECONDS)
+    )
+    backend, paths = _backend_paths(
+        scope,
+        query,
+        case_sensitive,
+        timeout_seconds,
+    )
 
     accepted = []
     seen = set()
+    timed_out = False
     try:
-        for raw in paths:
-            item = _candidate(files, scope, raw, query, case_sensitive)
-            if item is None or item["path"] in seen:
-                continue
-            seen.add(item["path"])
-            accepted.append(item)
-            if len(accepted) >= offset + limit + 1:
-                break
+        try:
+            for raw in paths:
+                item = _candidate(files, scope, raw, query, case_sensitive)
+                if item is None or item["path"] in seen:
+                    continue
+                seen.add(item["path"])
+                accepted.append(item)
+                if len(accepted) >= offset + limit + 1:
+                    break
+        except ApiError as exc:
+            if exc.code != "file_search_timeout":
+                raise
+            timed_out = True
     finally:
         close = getattr(paths, "close", None)
         if callable(close):
             close()
 
     selected = accepted[offset : offset + limit]
-    truncated = len(accepted) > offset + limit
+    truncated = len(accepted) > offset + limit or timed_out
     return {
         "backend": backend,
         "scope": scope_arg,
@@ -289,9 +317,11 @@ def _search(files, args):
         "case_sensitive": case_sensitive,
         "offset": offset,
         "limit": limit,
+        "timeout_seconds": timeout_seconds,
         "results": selected,
         "returned": len(selected),
         "truncated": truncated,
+        "timed_out": timed_out,
         "next_offset": offset + len(selected) if truncated else None,
     }
 

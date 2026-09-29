@@ -11,6 +11,7 @@ import contextlib
 import os
 import secrets
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,7 +79,7 @@ class ClientFileAPI(FileHandlersMixin):
         handler = cls(files, arguments)
         try:
             method = getattr(handler, "_handle_" + operation)
-            if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search"}:
+            if operation in {"fs_list", "fs_stat", "fs_read", "fs_tree", "fs_search", "fs_find"}:
                 method(handler.query)
             else:
                 method()
@@ -120,6 +121,117 @@ class ClientFileAPI(FileHandlersMixin):
 
     def _try_mapping_file_api(self, *args, **kwargs):
         return False
+
+    def _try_indexed_find(
+        self,
+        *,
+        query,
+        path,
+        max_results,
+        case_sensitive,
+        timeout_seconds,
+    ):
+        capability = self.files.rpc_capabilities.get("file_search", {})
+        if capability.get("state") != "available":
+            return None
+
+        deadline = time.monotonic() + timeout_seconds
+        items = []
+        offset = 0
+        backend = "indexed"
+        truncated = False
+        timed_out = False
+        while len(items) < max_results:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = truncated = True
+                break
+            result = self.files.rpc_registry.dispatch_sync(
+                self.files,
+                "file_search",
+                "search",
+                {
+                    "query": query,
+                    "path": path,
+                    "offset": offset,
+                    "limit": min(200, max_results - len(items)),
+                    "case_sensitive": case_sensitive,
+                    "timeout_seconds": max(0.1, remaining),
+                },
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("status"), int):
+                raise ApiError(
+                    502,
+                    "invalid_mapping_response",
+                    "indexed file search returned an invalid response",
+                )
+            if result["status"] != 200:
+                error = result.get("error", {})
+                if result["status"] >= 500 and not items:
+                    return None
+                if result["status"] >= 500:
+                    truncated = True
+                    break
+                raise ApiError(
+                    result["status"],
+                    error.get("code", "file_search_failed"),
+                    error.get("message", "indexed file search failed"),
+                    error.get("details"),
+                )
+            body = result.get("body")
+            if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+                raise ApiError(
+                    502,
+                    "invalid_mapping_response",
+                    "indexed file search returned an invalid result",
+                )
+            page = body["results"]
+            if any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("path"), str)
+                or item.get("type") not in {"file", "directory"}
+                for item in page
+            ):
+                raise ApiError(
+                    502,
+                    "invalid_mapping_response",
+                    "indexed file search returned an invalid item",
+                )
+            normalized = []
+            for item in page:
+                try:
+                    absolute = self.files.path(item["path"])
+                except OSError:
+                    raise ApiError(
+                        502,
+                        "invalid_mapping_response",
+                        "indexed file search returned an invalid path",
+                    ) from None
+                normalized.append({"path": str(absolute), "type": item["type"]})
+            backend = body.get("backend", backend)
+            items.extend(normalized)
+            timed_out |= bool(body.get("timed_out"))
+            truncated = bool(body.get("truncated"))
+            next_offset = body.get("next_offset")
+            if timed_out or not truncated or next_offset is None:
+                break
+            if type(next_offset) is not int or next_offset <= offset:
+                raise ApiError(
+                    502,
+                    "invalid_mapping_response",
+                    "indexed file search returned an invalid next offset",
+                )
+            offset = next_offset
+
+        if len(items) >= max_results and truncated:
+            items = items[:max_results]
+        return {
+            "backend": backend,
+            "results": items,
+            "result_count": len(items),
+            "truncated": truncated or timed_out,
+            "timed_out": timed_out,
+        }
 
     def _read_json(self):
         return self.body

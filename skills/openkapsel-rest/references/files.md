@@ -15,7 +15,8 @@ All paths are workspace-relative unless they are absolute paths inside the works
 | `GET` | `/fs/query/stat` | required `path`; optional comma-separated `fields` |
 | `POST` | `/fs/query/manifest` | bounded `items` with `path` plus optional expected `size`/`sha256`; returns per-file synchronization status |
 | `POST` | `/fs/read/many` | read several small text files with optional `encoding`, per-file errors and bounded total content |
-| `GET` | `/fs/query/search` | `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
+| `GET` | `/fs/query/find` | recursive filename/directory search: `path=.`, required literal `query`, `max_results`, `case_sensitive=false`, `timeout_seconds=5` |
+| `GET` | `/fs/query/search` | content grep: `path=.`, required `query`, `depth`, `max_results`, `regex`, `case_sensitive` |
 | `GET` | `/fs/query/tree` | `path=.`, `depth=2`; nested tree bounded by published node/depth limits |
 | `GET|HEAD` | `/fs/content` | required `path`; raw bytes, ETag, Last-Modified, single HTTP Range support |
 
@@ -27,15 +28,17 @@ For a recursive inventory, use `{"recursive":true,"path":"src","depth":8,"includ
 
 Prefer `POST /fs/read/many` with `{"paths":["src/main.py","README.md"],"limit":65536,"max_total_chars":262144}` when reading several small source files. Limits count characters (per-file and aggregate), bounded by `max_read_chars`; paths are bounded by `max_batch_file_operations`. Check each item's `status` (HTTP 207 means partial errors). Continue truncated content with `/fs/read/text` using `offset=next_offset`; retry remaining paths separately on `read_budget_exhausted`. It is read-only and requires no mutation context.
 
-Search supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters.
+`/fs/query/find` recursively matches a literal substring against each file or directory basename. It does not follow symlinks. The default search deadline is 5 seconds; a deadline returns the matches found so far with `timed_out=true` and `truncated=true`. Inside mappings, current clients automatically use the advertised `file_search` index (Everything IPC, mdfind, or plocate) when available and otherwise recursively traverse the export.
+
+Content grep at `/fs/query/search` supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters. Its MCP tool is `files_grep`; legacy MCP callers may still use `search_files`.
 
 For a single mapping, these operations run client-locally in one RPC with an
 updated client. RPC-first servers do not fall back to FUSE. Reduce batch size,
 text budget or depth on 413, or use binary transfer for large payloads.
 
 Workspace-root listing merges virtual mapping registrations without requiring
-providers to be online or mounted. Search, tree and recursive manifests delegate
-visited mapping subtrees while preserving global depth/result/node limits.
+providers to be online or mounted. Filename find, content grep, tree and recursive
+manifests delegate visited mapping subtrees while preserving their global budgets.
 Inspect `unavailable_mappings`, `truncated` and unavailable nodes: an incomplete
 result does not mean no matching files exist. Mixed-backend batches retain their
 per-item results and preflight rules; they do not require native mounts. Binary

@@ -84,7 +84,7 @@ class GitHTTPTests(unittest.TestCase):
 
         for name, args in (("read_files", {"paths": ["source.txt"]}),
                            ("file_manifest", {"recursive": True, "depth": 1}),
-                           ("search_files", {"query": "original", "include": ["*.txt"], "exclude": [".git"]})):
+                           ("files_grep", {"query": "original", "include": ["*.txt"], "exclude": [".git"]})):
             status, payload = self.rpc(conn["secret"], "tools/call", {"name": name, "arguments": args})
             self.assertEqual(200, status, payload)
             self.assertFalse(payload["result"]["isError"], payload)

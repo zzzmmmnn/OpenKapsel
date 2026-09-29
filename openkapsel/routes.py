@@ -142,6 +142,11 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         request_body=True, transfer_slot=True, discovery_key="fs_read",
     ),
     _exact(
+        "fs_find", ("GET",), "/fs/query/find", "_handle_fs_find",
+        invocation="query", transfer_slot=True, context_mode="optional_query",
+        context_operations=(("GET", "fs.find"),), discovery_key="fs_query",
+    ),
+    _exact(
         "fs_search", ("GET",), "/fs/query/search", "_handle_fs_search",
         invocation="query", transfer_slot=True, context_mode="optional_query",
         context_operations=(("GET", "fs.search"),), discovery_key="fs_query",

@@ -554,9 +554,26 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
-        "search_files",
-        "Search file contents",
-        "Search UTF-8 text across files with a bounded recursive depth. Binary and oversized files are skipped.",
+        "find_files",
+        "Find files by name",
+        "Recursively find files and directories whose basename contains a literal query. Mapped roots use indexed file_search acceleration when available and otherwise fall back to recursive traversal.",
+        _object_schema(
+            {
+                "query": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "path": {**PATH, "default": "."},
+                "max_results": {**POSITIVE, "default": 100},
+                "case_sensitive": {"type": "boolean", "default": False},
+                "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 60, "default": 5},
+            },
+            ("query",),
+        ),
+        read_only=True,
+        idempotent=True,
+    ),
+    _tool(
+        "files_grep",
+        "Grep file contents",
+        "Search UTF-8 text across files with a bounded recursive depth. Supports literal or regex matching; binary and oversized files are skipped. Legacy MCP name search_files remains accepted but is not advertised.",
         _object_schema(
             {
                 "query": {"type": "string", "minLength": 1},
@@ -1084,7 +1101,8 @@ def tools_for(
                 "read_binary_chunk",
                 "read_large_file",
                 "prepare_download",
-                "search_files",
+                "find_files",
+                "files_grep",
                 "list_tree",
                 "create_share",
             }

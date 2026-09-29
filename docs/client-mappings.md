@@ -251,7 +251,9 @@ Local task limits can be set in `limits`: `max_tasks` (1–16), `max_seconds` (1
 
 ## Indexed file search RPC
 
-The built-in read-only `file_search` family exposes the same `search` and `status` operations on server workspaces and mapping clients. Windows talks directly to a running Everything instance through local QUERY2 `WM_COPYDATA` IPC; no ETP server, `es.exe`, or Everything SDK DLL is required. macOS uses the system `mdfind` command. Linux requires `plocate`. Searches use literal filename-substring semantics, are restricted to the selected export-relative `path`, and return only export-relative paths after an additional boundary/private-path check. Set `rpc.file_search` to false on a mapping client to disable it.
+The built-in read-only `file_search` family exposes the same `search` and `status` operations on server workspaces and mapping clients. Windows talks directly to a running Everything instance through local QUERY2 `WM_COPYDATA` IPC; no ETP server, `es.exe`, or Everything SDK DLL is required. macOS uses the system `mdfind` command. Linux requires `plocate`. Searches use literal filename-substring semantics, are restricted to the selected export-relative `path`, and return only export-relative paths after an additional boundary/private-path check. `search.timeout_seconds` defaults to 5 seconds and preserves partial results on timeout.
+
+The normal `find_files` MCP tool and `GET /fs/query/find` REST endpoint provide the portable recursive filename-search façade. Inside mappings, current clients use `file_search` automatically when it is advertised and otherwise recursively traverse the export, with one shared deadline and result format. Content search is exposed as MCP `files_grep` / REST `/fs/query/search`; the historical MCP name `search_files` remains a non-advertised compatibility alias. Set `rpc.file_search` to false on a mapping client to force recursive filename search.
 
 ## Structured and table RPC
 
