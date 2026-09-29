@@ -62,6 +62,52 @@ class MappingStore:
                 raise KeyError("mapping does not exist")
             return self.public(dict(row))
 
+    def resolve(self, workspace, reference):
+        """Resolve one caller-scoped mapping name or legacy mapping id."""
+        self.validate_name(reference)
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT * FROM mappings WHERE workspace=? AND (name=? OR id=?)",
+                (workspace, reference, reference),
+            ).fetchall()
+        if not rows:
+            raise KeyError("mapping does not exist")
+        if len(rows) != 1:
+            raise ValueError("mapping reference is ambiguous")
+        return self.public(dict(rows[0]))
+
+    @staticmethod
+    def _assert_reference_available(
+        db, workspace, mapping_id, name, *, exclude_id=None
+    ):
+        rows = db.execute(
+            "SELECT id,name FROM mappings "
+            "WHERE workspace=? AND (name=? OR id=? OR name=?)",
+            (workspace, name, name, mapping_id),
+        ).fetchall()
+        conflicts = [row for row in rows if row["id"] != exclude_id]
+        if any(row["name"] == name for row in conflicts):
+            raise ValueError("mapping name is already registered")
+        if any(row["id"] == name for row in conflicts):
+            raise ValueError("mapping name conflicts with an existing mapping id")
+        if mapping_id is not None and any(
+            row["name"] == mapping_id for row in conflicts
+        ):
+            raise ValueError("mapping id conflicts with an existing mapping name")
+
+    def ensure_reference_available(
+        self, workspace, mapping_id, name, *, exclude_id=None
+    ):
+        self.validate_name(name)
+        with self.db() as db:
+            self._assert_reference_available(
+                db,
+                workspace,
+                mapping_id,
+                name,
+                exclude_id=exclude_id,
+            )
+
     @staticmethod
     def validate_name(name):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name):
@@ -71,8 +117,19 @@ class MappingStore:
         self.validate_name(name)
         if not isinstance(comment, str) or len(comment) > 200:
             raise ValueError("comment must contain at most 200 characters")
-        mid, secret = token_urlsafe_alnum(18), token_urlsafe_alnum(32)
+        secret = token_urlsafe_alnum(32)
         with self.db() as db:
+            self._assert_reference_available(db, workspace, None, name)
+            for _ in range(32):
+                mid = token_urlsafe_alnum(18)
+                collision = db.execute(
+                    "SELECT 1 FROM mappings WHERE id=? OR (workspace=? AND name=?)",
+                    (mid, workspace, mid),
+                ).fetchone()
+                if collision is None:
+                    break
+            else:
+                raise RuntimeError("could not allocate an unambiguous mapping id")
             db.execute("INSERT INTO mappings(id,workspace,name,comment,secret_hash,writable,allow_exec,created_at) VALUES(?,?,?,?,?,?,?,?)",
                        (mid, workspace, name, comment, self.digest(secret), bool(writable), bool(allow_exec), time.time()))
         return self.get(mid), secret
@@ -89,13 +146,23 @@ class MappingStore:
             return self.public(dict(row))
 
     def update(self, mid, *, workspace=None, name=None, comment=None, writable=None, allow_exec=None, enabled=None, rotate=False):
-        self.get(mid)
+        current = self.get(mid)
         if name is not None:
             self.validate_name(name)
         if comment is not None and (not isinstance(comment, str) or len(comment) > 200):
             raise ValueError("comment must contain at most 200 characters")
+        target_workspace = workspace if workspace is not None else current["workspace"]
+        target_name = name if name is not None else current["name"]
         secret = token_urlsafe_alnum(32) if rotate else None
         with self.db() as db:
+            if workspace is not None or name is not None:
+                self._assert_reference_available(
+                    db,
+                    target_workspace,
+                    mid,
+                    target_name,
+                    exclude_id=mid,
+                )
             for key, value in {"workspace": workspace, "name": name, "comment": comment, "writable": writable, "allow_exec": allow_exec,
                                "enabled": enabled, "secret_hash": self.digest(secret) if secret else None}.items():
                 if value is not None:

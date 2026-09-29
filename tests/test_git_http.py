@@ -58,6 +58,10 @@ class GitHTTPTests(unittest.TestCase):
         self.assertNotIn("git", tools)
         self.assertIn("rpc", tools)
         self.assertNotIn("mapping_id", tools["rpc"]["inputSchema"].get("required", []))
+        mapping_target = tools["rpc"]["inputSchema"]["properties"]["mapping_id"]
+        self.assertRegex("rpc-laptop", mapping_target["pattern"])
+        self.assertRegex("x" * 64, mapping_target["pattern"])
+        self.assertIn("mapping name", mapping_target["description"].lower())
         self.assertTrue(
             {"git_" + op for op in operations}.isdisjoint(tools)
         )

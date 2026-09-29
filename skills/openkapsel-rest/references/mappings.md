@@ -1,8 +1,10 @@
 # Client-backed directories and execution
 
 Fetch `GET /mappings` before using client-backed paths. It returns each mapping's
-`id`, workspace-relative `path`, `online`, `writable`, `mounted`,
-`mount_references`, `native_mounts_enabled`, and advertised client capabilities.
+human-readable `name`, stable `id`, workspace-relative `path`, `online`,
+`writable`, `mounted`, `mount_references`, `native_mounts_enabled`, and
+advertised client capabilities. Use `name` when addressing mapping RPCs; the
+stable ID is retained for compatibility and internal identities.
 Files live on the client, not inside the server workspace image. On OpenKapsel
 1.61.0+ RPC-first servers, `online=true` with `mounted=false` is normal: use file
 and RPC endpoints without starting a native mount. Registration, provider
@@ -10,9 +12,10 @@ connection, and native filesystem view have independent lifetimes. Offline
 operations fail; never recreate a mapping root or treat it as an empty local
 directory. Runtime Discovery remains authoritative for older servers.
 
-Clients advertise a generic `capabilities.rpc` map. Optional extensions report
-`available`, `unsupported`, or `disabled`; the server derives `offline` from
-provider connectivity. Core file RPC uses version 4 on current clients and is always enabled.
+Clients advertise a generic `capabilities.rpc` map containing only enabled,
+runtime-supported plugin families; absent plugin families are not callable. The server
+derives `offline` from provider connectivity. Core file RPC uses version 4 on current
+clients and is always enabled.
 Version 3 remains sufficient for the older codec-aware text operations; version 4 adds
 single-request transactional mutation and guarded large-file range operations. **rpc.file has been removed**; delete that key from older client
 configurations rather than setting it to true or false. Permissions and operation
@@ -59,7 +62,9 @@ clients should inspect this metadata instead of hard-coding future families such
 as doc/csv/sqlite. A family-level `read_only` value may be present for
 rolling-upgrade compatibility, but operation metadata is authoritative.
 
-Use `POST /mappings/<mapping_id>/rpc/<family>/<operation>`. A `sync`
+Use `POST /mappings/<mapping_name>/rpc/<family>/<operation>`. Resolve
+`mapping_name` from `GET /mappings`; legacy mapping IDs are still accepted by the
+server for compatibility, but new calls should use the name. A `sync`
 operation returns its result directly. A `task` operation returns HTTP 202 and
 a unified `client.<mapping>.<task>` id immediately; query it through the
 ordinary `/tasks/<id>` and `/tasks/<id>/output` routes and use ordinary
@@ -77,7 +82,7 @@ also include `timeout_seconds`; the client enforces its local `max_seconds`
 policy (600 seconds by default). The server forwards exactly one start RPC and
 never falls back to server/FUSE for a generic plugin operation.
 
-Archive preview uses the generic `archive` RPC family. Call `POST /rpc/archive/list` or `POST /rpc/archive/read` for the server workspace, and `POST /mappings/<mapping_id>/rpc/archive/<operation>` for mapped archives. Put archive-specific parameters under `args`. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
+Archive preview uses the generic `archive` RPC family. Call `POST /rpc/archive/list` or `POST /rpc/archive/read` for the server workspace, and `POST /mappings/<mapping_name>/rpc/archive/<operation>` for mapped archives. Put archive-specific parameters under `args`. Preview never extracts members to disk, refuses link members as files, bounds listing/member reads, and supports the Python runtime's standard-library ZIP/tar formats such as `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`, and where available `.tar.zst`/`.tzst`.
 
 `GET /recycle/list?root=.` selects the ordinary workspace recycle bin. Use `root=<mapping-name>` for that client's recycle bin. `POST /recycle/restore` accepts the same `root` and `recycle_id`, plus normal mutation Context. Never infer a recycle root from the ID alone.
 

@@ -256,7 +256,7 @@ class DiscoveryMixin:
                     "server": operation("server_rpc"),
                     "mapping": operation(
                         "mapping_rpc",
-                        path="./mappings/<mapping_id>/rpc/<family>/<operation>",
+                        path="./mappings/<mapping_name>/rpc/<family>/<operation>",
                     ),
                 },
             ),
@@ -2015,8 +2015,8 @@ class DiscoveryMixin:
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",
             "rpc": {
                 "states": ["available", "unsupported", "disabled", "offline"],
-                "routing": "Core file RPC is always enabled; rpc.file is not a client setting. File operation/version negotiation and read/write permissions still apply. Optional RPC extensions advertise available/unsupported/disabled; the server derives offline from provider connectivity. File and plugin RPC operations never fall back to native mounts.",
-                "configuration": "Client config rpc.<family>=true|false selectively enables implemented mapping families. Missing local dependencies are unsupported, not disabled. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mappings. Generic RPC exposes Git and Archive on mappings, and the server registry exposes its explicitly registered Git and Archive families. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
+                "routing": "Core file RPC is always enabled; rpc.file is not a client setting. Plugin families are advertised only when enabled and runtime-supported; absent families are not callable. Use the mapping name returned by GET /mappings in mapped RPC paths. File and plugin RPC operations never fall back to native mounts.",
+                "configuration": "Client config rpc.<family>=true|false overrides each plugin's default activation. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mappings. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
                 "families": {
                     "file": {
                         "version": 4, "fallback": None, "operations": sorted(FILE_API_OPERATIONS),
@@ -2054,10 +2054,10 @@ class DiscoveryMixin:
             "server_rpc": {"method": "POST", "url": "./rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
                 "description": "Invoke one server RPC family operation against the token workspace. Built-in server families include Git and Archive. execution=sync returns directly; execution=task returns 202 plus a normal server task_id. write=false requires read permission; write=true requires control authorization, write permission, and Plan Context. Git fetch/pull/clone also obey the token network policy."},
-            "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping IDs, roots, online/write state, and client capabilities. RPC operation_specs include description, JSON input_schema, write, and execution=sync|task."},
-            "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_id>/rpc/<family>/<operation>",
+            "mapping_list": {"method": "GET", "url": "./mappings", "description": "List mapping names/roots, online/write state, and client capabilities. Use each mapping name in RPC paths. RPC operation_specs include description, JSON input_schema, write, and execution=sync|task."},
+            "mapping_rpc": {"method": "POST", "url": "./mappings/<mapping_name>/rpc/<family>/<operation>",
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
-                "description": "Invoke one advertised client RPC operation. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /tasks routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
+                "description": "Invoke one advertised client RPC operation using the mapping name returned by GET /mappings. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /tasks routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
         })
         payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."

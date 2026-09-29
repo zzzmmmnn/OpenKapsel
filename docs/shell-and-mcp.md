@@ -49,7 +49,7 @@ task or argv REST routes.
 
 Git inspection is a read-only RPC capability, not Shell execution. REST uses
 `POST /rpc/git/<operation>` for the server workspace or
-`POST /mappings/<mapping_id>/rpc/git/<operation>` for a mapped repository.
+`POST /mappings/<mapping_name>/rpc/git/<operation>` for a mapped repository. Legacy mapping IDs remain accepted by the route for compatibility.
 MCP uses the same `git` family through the generic `rpc` tool. Reads work
 with Shell disabled, client `allow_exec=false`, and read-only mappings.
 

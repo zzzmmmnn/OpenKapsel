@@ -334,15 +334,16 @@ class MappingHandlersMixin:
 
     def _handle_mapping_rpc(self, target):
         match = re.fullmatch(
-            r"([A-Za-z0-9_-]{24})/rpc/([a-z][a-z0-9_]{0,31})/([a-z][a-z0-9_]{0,31})",
+            r"([A-Za-z0-9][A-Za-z0-9_-]{0,63})/rpc/([a-z][a-z0-9_]{0,31})/([a-z][a-z0-9_]{0,31})",
             target,
         )
         if not match:
             raise ApiError(404, "not_found", "mapping RPC operation does not exist")
-        mid, family, operation = match.groups()
+        mapping_ref, family, operation = match.groups()
         if family == "file":
             raise ApiError(400, "invalid_rpc_family", "file RPC uses the normal file APIs")
-        row = self._mapping_for_caller(mid)
+        row = self._mapping_for_caller(mapping_ref)
+        mid = row["id"]
         capability, waited_for_online = self.server.mappings.rpc_capability_for_call(
             mid,
             family,
@@ -535,14 +536,20 @@ class MappingHandlersMixin:
                 raise ApiError(404, "not_found", "unknown transfer action")
         self._send_json(200, self.server.file_transfers.public(job))
 
-    def _mapping_for_caller(self, mid):
+    def _mapping_for_caller(self, mapping_ref):
         try:
-            row = self.server.mappings.store.get(mid)
+            return self.server.mappings.store.resolve(
+                self.token_record.path_prefix,
+                mapping_ref,
+            )
         except KeyError:
             raise ApiError(404, "mapping_not_found", "mapping does not exist") from None
-        if row["workspace"] != self.token_record.path_prefix:
-            raise ApiError(404, "mapping_not_found", "mapping does not exist")
-        return row
+        except ValueError:
+            raise ApiError(
+                409,
+                "mapping_reference_ambiguous",
+                "mapping name conflicts with a legacy mapping id",
+            ) from None
 
     def _mapping_rpc(self, row, operation, args, *, retry=True):
         try:

@@ -16,7 +16,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `POST` | `<workspace_url>/fs/read/many` |
 | `POST` | `<workspace_url>/rpc/git/<operation>` |
 | `POST` | `<workspace_url>/rpc/archive/<operation>` |
-| `POST` | `<workspace_url>/mappings/<mapping_id>/rpc/<family>/<operation>` |
+| `POST` | `<workspace_url>/mappings/<mapping_name>/rpc/<family>/<operation>` |
 | `GET` | `<workspace_url>/fs/query/search` |
 | `GET` | `<workspace_url>/fs/query/tree` |
 | `GET|HEAD|PUT` | `<workspace_url>/fs/content` |
@@ -113,10 +113,10 @@ There is intentionally no MCP route in this skill.
   `native_mounts_enabled`, execution/RPC and `file_stream` capabilities. Online
   and unmounted is normal; file endpoints never start native mounts.
 - `POST /rpc/<family>/<operation>`: invoke one RPC operation on the server workspace for an explicitly registered server family. Inspect Discovery/operation metadata for `write` and `execution`; `sync` returns directly and `task` returns HTTP 202 plus a normal server task id. `write=false` requires read permission; `write=true` requires control/write permission plus `plan_id`/`taskname`/`message`. Server task operations use the ordinary `/tasks` lifecycle. There is no fallback to a mapping after the server target is selected.
-- `POST /mappings/<mapping_id>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. If a start returns `409 client_task_capacity_reached`, collect completed client task results by reading output through each final offset before retrying; listing alone does not release retained results. No server/FUSE fallback.
+- `POST /mappings/<mapping_name>/rpc/<family>/<operation>`: invoke one advertised client RPC operation. Resolve the name from `GET /mappings`; legacy mapping IDs remain accepted for compatibility. Inspect `operation_specs.<operation>.write` and `execution`. `sync` returns directly; `task` returns HTTP 202 + a unified client task id and may take optional `timeout_seconds`. Writes require control/write permission, an administratively writable mapping, and `plan_id`/`taskname`/`message`. Task starts survive provider reconnects while the client process lives; do not replay an uncertain write-task start. If a start returns `409 client_task_capacity_reached`, collect completed client task results by reading output through each final offset before retrying; listing alone does not release retained results. No server/FUSE fallback.
 - `POST /rpc/archive/list`: browse a server-side ZIP/tar archive without extracting.
 - `POST /rpc/archive/read`: read a bounded server-side archive member preview.
-- For mapped archives use `/mappings/<mapping_id>/rpc/archive/<operation>`.
+- For mapped archives use `/mappings/<mapping_name>/rpc/archive/<operation>`.
 - `POST /fs/write/copy`: start an asynchronous copy.
 - `GET /fs/transfers/<id>`: inspect transfer progress.
 - `POST /fs/transfers/<id>/cancel` and `/resume`: control transfers.

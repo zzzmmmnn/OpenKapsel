@@ -133,7 +133,7 @@ class MappingHTTPTests(unittest.TestCase):
                 advertised["operation_specs"]["inspect"]["input_schema"]["properties"]["value"]["type"],
             )
 
-            endpoint = base + f"/mappings/{row['id']}/rpc/vendor/inspect"
+            endpoint = base + f"/mappings/{row['name']}/rpc/vendor/inspect"
             session.closed = True
 
             def reconnect_rest(delay):
@@ -156,7 +156,7 @@ class MappingHTTPTests(unittest.TestCase):
                 ("rpc", "vendor", "inspect", {"value": 7}),
             ], calls)
 
-            write_endpoint = base + f"/mappings/{row['id']}/rpc/vendor/update"
+            write_endpoint = base + f"/mappings/{row['name']}/rpc/vendor/update"
             status, _, raw = self.request(
                 "POST", write_endpoint, json.dumps({"args": {"value": 9}}),
                 {"Authorization": "Bearer " + self.record.control_token, "Content-Type": "application/json"},
@@ -202,7 +202,7 @@ class MappingHTTPTests(unittest.TestCase):
             tool = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
                 "name": "rpc",
                 "arguments": {
-                    "mapping_id": row["id"],
+                    "mapping_id": row["name"],
                     "family": "vendor",
                     "operation": "inspect",
                     "args": {"value": 8},
@@ -230,7 +230,7 @@ class MappingHTTPTests(unittest.TestCase):
             write_tool = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
                 "name": "rpc",
                 "arguments": {
-                    "mapping_id": row["id"],
+                    "mapping_id": row["name"],
                     "family": "vendor",
                     "operation": "update",
                     "args": {"value": 11},

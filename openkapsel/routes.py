@@ -67,7 +67,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         request_body=True, transfer_slot=True, discovery_key="rpc"),
     _exact("mapping_list", ("GET",), "/mappings", "_handle_mapping_list", discovery_key="mappings"),
     EndpointSpec("mapping_rpc", frozenset(("POST",)),
-        re.compile(r"/mappings/(?P<target>[A-Za-z0-9_-]{24}/rpc/[a-z][a-z0-9_]{0,31}/[a-z][a-z0-9_]{0,31})"),
+        re.compile(r"/mappings/(?P<target>[A-Za-z0-9][A-Za-z0-9_-]{0,63}/rpc/[a-z][a-z0-9_]{0,31}/[a-z][a-z0-9_]{0,31})"),
         "_handle_mapping_rpc", invocation="param", parameter="target",
         request_body=True, transfer_slot=True, discovery_key="rpc"),
     _exact(

@@ -114,7 +114,7 @@ package does not execute its plugin code.
 
 Dynamic operations use the same family/operation shape on both execution hosts.
 For a mapping, inspect `GET /mappings` and call
-`POST /mappings/<id>/rpc/<family>/<operation>`; for a server-workspace family,
+`POST /mappings/<mapping_name>/rpc/<family>/<operation>`; legacy mapping IDs remain accepted for compatibility. For a server-workspace family,
 call `POST /rpc/<family>/<operation>`. MCP uses one `rpc` tool: provide
 `mapping_id` for client execution or omit it for server execution. Each operation
 publishes `write` and `execution`. The registry default is `execution=sync` for

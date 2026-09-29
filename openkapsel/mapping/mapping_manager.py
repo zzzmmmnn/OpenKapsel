@@ -641,8 +641,12 @@ class MappingManager:
             if (target_workspace.is_symlink() or not target_workspace.is_dir()
                     or target_workspace.resolve().parent != self.root):
                 raise ValueError("mapping workspace must be an existing direct child workspace")
-            if any(r["id"] != mid and r["name"] == name for r in self.store.list(workspace)):
-                raise ValueError("mapping name is already registered")
+            self.store.ensure_reference_available(
+                workspace,
+                mid,
+                name,
+                exclude_id=mid,
+            )
             old_path = self.mount_path(row)
             new_path = target_workspace / name
             new_path.mkdir(mode=0)

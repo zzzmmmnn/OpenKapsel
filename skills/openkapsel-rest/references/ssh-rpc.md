@@ -47,7 +47,7 @@ For task operations the initial HTTP response contains the OpenKapsel task ID, n
 Example REST task start:
 
 ```http
-POST /mappings/<id>/rpc/ssh/exec
+POST /mappings/<mapping_name>/rpc/ssh/exec
 Authorization: Bearer <CONTROL_TOKEN>
 Content-Type: application/json
 

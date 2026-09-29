@@ -72,6 +72,58 @@ class MappingTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             store.authenticate(row["id"], replacement)
 
+    def test_mapping_reference_name_id_and_collision_guards(self):
+        store = MappingStore(self.root / "state" / "mapping-refs.sqlite3")
+        first, _ = store.create("project", "laptop")
+        self.assertEqual(first["id"], store.resolve("project", "laptop")["id"])
+        self.assertEqual(first["id"], store.resolve("project", first["id"])["id"])
+        with self.assertRaises(KeyError):
+            store.resolve("other", "laptop")
+
+        with self.assertRaises(ValueError):
+            store.create("project", first["id"])
+        other, _ = store.create("project", "desktop")
+        with self.assertRaises(ValueError):
+            store.update(other["id"], name=first["id"])
+        # References are workspace-scoped, so an ID-shaped name in another
+        # workspace is unambiguous there.
+        cross_workspace, _ = store.create("other", first["id"])
+        self.assertEqual(
+            cross_workspace["id"],
+            store.resolve("other", first["id"])["id"],
+        )
+        with self.assertRaises(ValueError):
+            store.update(first["id"], workspace="other")
+
+        reserved_name = "A" * 24
+        store.create("project", reserved_name)
+        with patch(
+            "openkapsel.mapping.mapping_store.token_urlsafe_alnum",
+            side_effect=["secret", reserved_name, "B" * 24],
+        ):
+            generated, _ = store.create("project", "generated")
+        self.assertEqual("B" * 24, generated["id"])
+
+        # A pre-upgrade database can theoretically contain an ambiguous
+        # name-vs-id pair. Resolve must reject it rather than silently choosing.
+        with store.db() as db:
+            db.execute(
+                "INSERT INTO mappings(id,workspace,name,comment,secret_hash,writable,allow_exec,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    "C" * 24,
+                    "project",
+                    first["id"],
+                    "",
+                    store.digest("legacy"),
+                    0,
+                    0,
+                    time.time(),
+                ),
+            )
+        with self.assertRaises(ValueError):
+            store.resolve("project", first["id"])
+
     def test_containment_and_no_symlink_following(self):
         outside = self.root / "outside"
         outside.write_text("private")
@@ -517,6 +569,13 @@ class MappingTests(unittest.TestCase):
         self.assertEqual("two", manager.store.authenticate(row["id"], key)["workspace"])
         self.assertFalse(old_path.exists())
         self.assertTrue((workspace / "two" / "laptop").is_dir())
+
+        blocker, _ = manager.store.create("one", row["id"])
+        with patch.object(manager, "unmount"):
+            with self.assertRaises(ValueError):
+                manager.relocate(row["id"], "one", "laptop")
+        self.assertFalse((workspace / "one" / "laptop").exists())
+        manager.store.delete(blocker["id"])
 
         occupied = workspace / "one" / "occupied"
         occupied.mkdir()

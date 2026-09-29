@@ -126,9 +126,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "rpc",
         "Call RPC plugin",
-        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; provide mapping_id for that client mapping. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id for get_task/read_task_output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
+        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id for get_task/read_task_output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
         _object_schema({
-            "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{24}$", "description": "Optional mapping target. Omit to execute the RPC family on the server workspace."},
+            "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", "description": "Optional workspace mapping name. Omit to execute the RPC family on the server workspace; legacy mapping IDs are also accepted."},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "args": {"type": "object", "default": {}},

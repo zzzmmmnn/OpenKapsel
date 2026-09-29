@@ -568,6 +568,9 @@ class WorkspaceServerTests(unittest.TestCase):
 
         def op(family: str, operation: str) -> dict:
             return discovery_operation(payload, family, operation)
+        discovery_text = json.dumps(payload, sort_keys=True)
+        self.assertIn("./mappings/<mapping_name>/rpc/<family>/<operation>", discovery_text)
+        self.assertNotIn("./mappings/<mapping_id>/rpc/", discovery_text)
         storage = payload["limits"]["workspace_storage"]
         self.assertEqual("directory", storage["backend"])
         self.assertFalse(storage["hard_quota_enforced"])
@@ -942,8 +945,15 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertNotIn(
                 "openkapsel-rest/references/administration.md", bundle.namelist()
             )
+            endpoint_reference = bundle.read("openkapsel-rest/references/endpoint-index.md")
+            self.assertNotIn(b"/admin", endpoint_reference)
+            self.assertIn(
+                b"/mappings/<mapping_name>/rpc/<family>/<operation>",
+                endpoint_reference,
+            )
             self.assertNotIn(
-                b"/admin", bundle.read("openkapsel-rest/references/endpoint-index.md")
+                b"/mappings/<mapping_id>/rpc/",
+                endpoint_reference,
             )
             files_reference = bundle.read("openkapsel-rest/references/files.md")
             self.assertIn(b"`text.insert_before`", files_reference)
