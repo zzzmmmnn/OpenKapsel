@@ -4475,8 +4475,11 @@ class WorkspaceServerTests(unittest.TestCase):
             ("/kapsel/admin", "/kapsel/favicon.svg"),
             ("/kapsel/admin/", "/kapsel/admin/favicon.svg"),
         ):
-            status, page, _ = self.raw_request("GET", page_path)
+            status, page, page_headers = self.raw_request("GET", page_path)
             self.assertEqual(200, status)
+            policy = page_headers["Content-Security-Policy"].split("; ")
+            self.assertIn("default-src 'none'", policy)
+            self.assertIn("img-src 'self'", policy)
             self.assertIn(
                 '<link rel="icon" href="favicon.svg">',
                 page.decode("utf-8"),

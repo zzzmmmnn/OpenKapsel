@@ -647,7 +647,7 @@ class AdminHandlersMixin:
             self.close_connection = True
         self.send_header(
             "Content-Security-Policy",
-            f"default-src 'none'; style-src 'unsafe-inline'; script-src {script_src}; form-action {form_action}; base-uri 'none'; frame-ancestors 'none'",
+            f"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src {script_src}; form-action {form_action}; base-uri 'none'; frame-ancestors 'none'",
         )
         for key, value in (headers or {}).items():
             self.send_header(key, value)
