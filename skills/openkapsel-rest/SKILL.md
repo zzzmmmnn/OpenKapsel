@@ -33,7 +33,7 @@ For directory-scoped credentials, the helpers cache the published expiration in 
 
 ## Operating rules
 
-1. Fetch `GET /` once. Add the matching Bearer token when privileged capability availability matters. Runtime Discovery is authoritative for permissions, limits, URLs, and version differences.
+1. Fetch `GET /` once. Add the matching Bearer token when privileged capability availability matters. Runtime Discovery is authoritative for permissions, limits, URLs, version differences, and the optional GET-only query transport. If the host cannot change the URL path, HTTP method, or Authorization header, use the `req` or signed GET-envelope fallback exactly as described in [references/api-basics.md](references/api-basics.md); otherwise prefer ordinary REST requests.
 2. Load only the relevant Discovery section and matching reference below. Avoid `discovery/full` unless auditing compatibility across the entire server.
 3. Before changing workspace state, query for a suitable active root Plan or create one. Every ordinary modifying endpoint requires `plan_id`, `taskname`, and `message`. When the task already has distinct parts, prefer one plan creation with `subplans` and a stable `request_id`; see the Context reference and runtime Discovery for support. Configure persistent Shell variables or POSIX initialization through `/env`, not the local credential file.
 4. Keep `taskname` stable for one task and messages brief. Ordinary reads should omit Context fields unless recording the read is genuinely useful.

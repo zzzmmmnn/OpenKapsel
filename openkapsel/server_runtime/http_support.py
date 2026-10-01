@@ -140,13 +140,15 @@ class HttpSupportMixin:
             body = self._mcp_tool_arguments
             self._begin_deferred_context_operation(body)
             return body
-        content_type = self.headers.get_content_type()
-        if content_type != "application/json":
-            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content_type", "Content-Type must be application/json")
-        length = self._request_content_length(required=True)
-        if length > self.server.config.max_body_bytes:
-            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body_too_large", "request body is too large")
-        raw = self.rfile.read(length)
+        raw = getattr(self, "_signed_envelope_body", None)
+        if raw is None:
+            content_type = self.headers.get_content_type()
+            if content_type != "application/json":
+                raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "content_type", "Content-Type must be application/json")
+            length = self._request_content_length(required=True)
+            if length > self.server.config.max_body_bytes:
+                raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body_too_large", "request body is too large")
+            raw = self.rfile.read(length)
         try:
             body = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):

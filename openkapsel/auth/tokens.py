@@ -203,6 +203,7 @@ class TokenStore:
         self._records: dict[str, TokenRecord] = {}
         self._preview_records: dict[str, TokenRecord] = {}
         self._control_records: dict[str, TokenRecord] = {}
+        self._signed_salts: dict[tuple[str, str], float] = {}
         if self.data_file is not None and self.data_file.exists():
             self._load()
             os.chmod(self.data_file, 0o600)
@@ -260,6 +261,26 @@ class TokenStore:
                 if secrets.compare_digest(supplied, token):
                     found = record
             return found if found is not None and found.credentials_valid else None
+
+    def consume_signed_salt(
+        self,
+        identity: str,
+        salt: str,
+        *,
+        now: float,
+        ttl_seconds: int,
+    ) -> bool:
+        """Atomically reject replayed signed-envelope salts within their validity window."""
+        with self._lock:
+            expired = [key for key, expires_at in self._signed_salts.items() if expires_at <= now]
+            for key in expired:
+                self._signed_salts.pop(key, None)
+            key = (identity, salt)
+            if key in self._signed_salts:
+                return False
+            self._signed_salts[key] = now + ttl_seconds
+            return True
+
 
     @contextmanager
     def control_authorization(self, supplied: str):

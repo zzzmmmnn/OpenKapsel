@@ -507,7 +507,7 @@ class DiscoveryMixin:
             key: full[key]
             for key in (
                 "protocol", "server_version", "name", "os", "root", "cwd",
-                "authentication", "token", "skills", "endpoint_defaults",
+                "authentication", "request_transport", "token", "skills", "endpoint_defaults",
             )
         } | {
             "section": section,
@@ -733,6 +733,35 @@ class DiscoveryMixin:
                     "renewed_lifetime_seconds": 3 * 24 * 60 * 60,
                     "rotates": ["read_token", "control_token"],
                     "preview_token_unchanged": True,
+                },
+            },
+            "request_transport": {
+                "query_route": {
+                    "available": True,
+                    "outer_method": "GET",
+                    "scope": "exact workspace root URL only",
+                    "req_parameter": "req",
+                    "req_format": "relative endpoint route without a leading slash",
+                    "control_authorization": "not implied; ordinary endpoint authorization still applies",
+                },
+                "signed_get_envelope": {
+                    "available": True,
+                    "outer_method": "GET",
+                    "required_parameters": ["req", "timestamp", "salt", "http_method", "signature"],
+                    "optional_parameters": ["body"],
+                    "http_method_position": "penultimate query parameter",
+                    "signature_position": "final query parameter",
+                    "signature_format": "base64url without padding",
+                    "signature_algorithm": "HMAC-SHA256",
+                    "signature_key": "matching control token",
+                    "signed_bytes": "raw query string bytes before the final &signature= field; do not reorder or re-encode",
+                    "query_encoding": "ASCII request-target; percent-encode UTF-8 values before signing",
+                    "timestamp_format": "Unix time in whole seconds",
+                    "timestamp_window_seconds": 300,
+                    "salt_format": "fresh random string of exactly 8 ASCII letters or digits",
+                    "salt_replay": "a salt cannot be reused for the same credential identity inside the acceptance window",
+                    "body": "optional URL-encoded UTF-8 JSON object for simple JSON-body endpoints",
+                    "response_cache": "no-store",
                 },
             },
             "path_rules": {

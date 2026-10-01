@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import hmac
 import http.client
 import io
 import json
@@ -238,6 +239,159 @@ class WorkspaceServerTests(unittest.TestCase):
 
     def endpoint(self, suffix: str = "") -> str:
         return f"/kapsel/w/test-token{suffix}"
+
+    def signed_envelope_path(
+        self,
+        req: str,
+        http_method: str,
+        *,
+        salt: str,
+        query: list[tuple[str, str]] | None = None,
+        body: dict | None = None,
+        timestamp: int | None = None,
+        token: str = "test-token",
+    ) -> str:
+        pairs: list[tuple[str, str]] = [
+            ("req", req),
+            ("timestamp", str(int(time.time()) if timestamp is None else timestamp)),
+            ("salt", salt),
+        ]
+        pairs.extend(query or [])
+        if body is not None:
+            pairs.append(
+                (
+                    "body",
+                    json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+                )
+            )
+        pairs.append(("http_method", http_method))
+        signed_query = urlencode(pairs)
+        control_token = self.server.tokens.get(token).control_token
+        signature = base64.urlsafe_b64encode(
+            hmac.digest(
+                control_token.encode("utf-8"),
+                signed_query.encode("utf-8"),
+                "sha256",
+            )
+        ).rstrip(b"=").decode("ascii")
+        return f"/kapsel/w/{token}?{signed_query}&signature={signature}"
+
+    def test_workspace_root_req_alias_routes_read_only_get(self) -> None:
+        path = self.endpoint(
+            "?" + urlencode({"req": "fs/query/list", "path": "project"})
+        )
+        status, raw, _ = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(HTTPStatus.OK, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertIn("entries", payload)
+
+        control_path = self.endpoint("?" + urlencode({"req": "memory"}))
+        control_status, control_raw, _ = self.raw_request(
+            "GET", control_path, authorize=False
+        )
+        self.assertEqual(HTTPStatus.UNAUTHORIZED, control_status, control_raw)
+        control_payload = json.loads(control_raw.decode("utf-8"))
+        self.assertEqual("control_token_required", control_payload["error"]["code"])
+
+        discovery_status, discovery = self.request("GET", self.endpoint())
+        self.assertEqual(HTTPStatus.OK, discovery_status)
+        transport = discovery["request_transport"]
+        self.assertTrue(transport["query_route"]["available"])
+        signed = transport["signed_get_envelope"]
+        self.assertEqual(300, signed["timestamp_window_seconds"])
+        self.assertEqual("penultimate query parameter", signed["http_method_position"])
+        self.assertEqual("final query parameter", signed["signature_position"])
+
+    def test_signed_get_envelope_authorizes_control_get_and_rejects_replay(self) -> None:
+        path = self.signed_envelope_path(
+            "memory",
+            "GET",
+            salt="Ab12Cd34",
+        )
+        status, raw, headers = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(HTTPStatus.OK, status, raw)
+        self.assertEqual("no-store", headers.get("Cache-Control"))
+
+        replay_status, replay_raw, _ = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(HTTPStatus.CONFLICT, replay_status, replay_raw)
+        replay = json.loads(replay_raw.decode("utf-8"))
+        self.assertEqual("signed_envelope_replay", replay["error"]["code"])
+
+    def test_signed_get_envelope_dispatches_json_body_with_effective_method(self) -> None:
+        path = self.signed_envelope_path(
+            "context",
+            "POST",
+            salt="Ef56Gh78",
+            body={
+                "type": "plan",
+                "taskname": "signed-envelope",
+                "content": "Create a plan through the GET transport envelope.",
+            },
+        )
+        status, raw, _ = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(HTTPStatus.CREATED, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertEqual("plan", payload["type"])
+        self.assertEqual("signed-envelope", payload["taskname"])
+
+        expired = self.signed_envelope_path(
+            "memory",
+            "GET",
+            salt="Ij90Kl12",
+            timestamp=int(time.time()) - 301,
+        )
+        expired_status, expired_raw, _ = self.raw_request(
+            "GET", expired, authorize=False
+        )
+        self.assertEqual(HTTPStatus.UNAUTHORIZED, expired_status, expired_raw)
+        expired_payload = json.loads(expired_raw.decode("utf-8"))
+        self.assertEqual("signed_envelope_expired", expired_payload["error"]["code"])
+
+    def test_signed_get_envelope_rejects_bad_signature_and_bad_field_order(self) -> None:
+        path = self.signed_envelope_path(
+            "memory",
+            "GET",
+            salt="Mn34Op56",
+        )
+        prefix, signature = path.rsplit("=", 1)
+        replacement = "A" if signature[-1] != "A" else "B"
+        bad_signature = prefix + "=" + signature[:-1] + replacement
+        status, raw, _ = self.raw_request("GET", bad_signature, authorize=False)
+        self.assertEqual(HTTPStatus.UNAUTHORIZED, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertEqual("invalid_signed_signature", payload["error"]["code"])
+
+        signed_query, signature = path.rsplit("&signature=", 1)
+        bad_order = signed_query + "&extra=1&signature=" + signature
+        order_status, order_raw, _ = self.raw_request(
+            "GET", bad_order, authorize=False
+        )
+        self.assertEqual(HTTPStatus.BAD_REQUEST, order_status, order_raw)
+        order_payload = json.loads(order_raw.decode("utf-8"))
+        self.assertEqual("invalid_signed_envelope", order_payload["error"]["code"])
+
+    def test_signed_get_envelope_body_is_not_accepted_by_bodyless_endpoint(self) -> None:
+        path = self.signed_envelope_path(
+            "memory",
+            "GET",
+            salt="Qr78St90",
+            body={"ignored": True},
+        )
+        status, raw, _ = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertEqual("signed_envelope_body_not_allowed", payload["error"]["code"])
+
+    def test_signed_get_envelope_requires_physical_get(self) -> None:
+        path = self.signed_envelope_path(
+            "memory",
+            "GET",
+            salt="Uv12Wx34",
+        )
+        status, raw, _ = self.raw_request("POST", path, authorize=False)
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertEqual("signed_envelope_get_required", payload["error"]["code"])
 
     def file_etag(self, path: str, *, token: str = "test-token") -> str:
         query = urlencode({"path": path, "fields": "etag"})

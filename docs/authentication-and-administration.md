@@ -18,6 +18,8 @@ Authorization: Bearer <CONTROL_TOKEN>
 
 The control token must belong to the same record as the URL token. A missing or invalid control token returns `401`; a valid token from a different record returns `403`. Discovery never echoes the control token.
 
+For constrained clients that can only issue `GET` requests to the exact Workspace root URL, Discovery advertises a query-route fallback and an HMAC-signed GET envelope. The signed form never places the control token itself in the URL: it uses the control token as the HMAC-SHA256 key over the raw query string, requires a current timestamp and fresh random 8-character ASCII alphanumeric salt, carries the effective method in penultimate `http_method`, and places `signature` last. See the REST Skill API basics for the exact wire contract.
+
 Read and control credentials share a short expiration, initially three days. The administrator-selected workspace lifetime is separate and usually longer. The independent preview token remains valid until preview is disabled, it is rotated, or the workspace expires.
 
 ## Discovery

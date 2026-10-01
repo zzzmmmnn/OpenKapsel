@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import hmac
 import secrets
+import time
 import traceback
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlsplit
 
 from openkapsel.auth.admin_ui import render_discovery, render_http_error
 from openkapsel.auth.tokens import CredentialRenewalNotDue
@@ -16,6 +18,11 @@ from openkapsel.web_assets import builtin_favicon_etag, builtin_favicon_svg
 from openkapsel.routes import EndpointSpec, match_endpoint
 
 LOGGER = __import__("logging").getLogger("openkapsel")
+SIGNED_GET_WINDOW_SECONDS = 300
+SIGNED_GET_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"})
+SIGNED_GET_RESERVED_QUERY = frozenset(
+    {"req", "timestamp", "salt", "body", "http_method", "signature"}
+)
 
 class RequestDispatchMixin:
     def version_string(self) -> str:
@@ -45,6 +52,8 @@ class RequestDispatchMixin:
     def end_headers(self) -> None:
         # Capability URLs must never be disclosed through browser referrers.
         self.send_header("Referrer-Policy", "no-referrer")
+        if getattr(self, "_signed_envelope_active", False):
+            self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
 
@@ -76,6 +85,8 @@ class RequestDispatchMixin:
         self.oauth_connection_id = None
         self.static_mcp_connection_id = None
         self.control_authorized = False
+        self._signed_envelope_active = False
+        self._signed_envelope_body = None
         self._prepare_context_tracking(None, {})
         try:
             parsed = urlsplit(self.path)
@@ -134,12 +145,40 @@ class RequestDispatchMixin:
                 route = self._authenticated_route(request_path)
                 if route.rstrip("/") == "/mcp":
                     raise ApiError(404, "not_found", "Create an MCP connection in administration")
+            if (
+                method != "GET"
+                and route in ("", "/")
+                and self._query_ends_with_signature(parsed.query)
+            ):
+                self._signed_envelope_active = True
+                self._discard_request_body()
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "signed_envelope_get_required",
+                    "signed envelope transport must use an actual HTTP GET request",
+                )
             api_target = self._resolve_web_api_target(route)
             if api_target is not None:
                 self._handle_web_api(method, api_target, parsed.query)
                 return
             query = parse_qs(parsed.query, keep_blank_values=True)
+            effective_method = method
+            query_routed = False
             if method == "GET" and route in ("", "/"):
+                if self._query_ends_with_signature(parsed.query):
+                    effective_method, route, query = self._decode_signed_get_envelope(parsed.query)
+                    self.command = effective_method
+                    query_routed = True
+                elif "req" in query:
+                    route, query = self._decode_query_route(query)
+                    query_routed = True
+            if query_routed and (route == "/web" or route.startswith("/web/")):
+                self._discard_request_body()
+                raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
+            if query_routed and route.rstrip("/") == "/mcp":
+                self._discard_request_body()
+                raise ApiError(404, "not_found", "Create an MCP connection in administration")
+            if effective_method == "GET" and route in ("", "/"):
                 self._prepare_context_tracking(None, query)
                 self._discard_request_body()
                 discovery = self._discovery()
@@ -155,28 +194,35 @@ class RequestDispatchMixin:
                         discovery,
                         headers={"Vary": "Authorization"},
                     )
-            elif method in {"GET", "HEAD"} and (route == "/web" or route.startswith("/web/")):
+            elif effective_method in {"GET", "HEAD"} and (route == "/web" or route.startswith("/web/")):
                 self._prepare_context_tracking(None, query)
                 self._discard_request_body()
                 self._handle_web_preview(
                     route,
                     parsed.path,
                     parsed.query,
-                    head_only=method == "HEAD",
+                    head_only=effective_method == "HEAD",
                 )
             else:
-                matched_endpoint = match_endpoint(method, route)
+                matched_endpoint = match_endpoint(effective_method, route)
                 if matched_endpoint is None:
                     self._prepare_context_tracking(None, query)
                     self._discard_request_body()
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
                 endpoint, route_match = matched_endpoint
+                if self._signed_envelope_body is not None and not endpoint.request_body:
+                    self._discard_request_body()
+                    raise ApiError(
+                        HTTPStatus.BAD_REQUEST,
+                        "signed_envelope_body_not_allowed",
+                        "body is not accepted by the requested endpoint",
+                    )
                 if endpoint.control_required:
                     self._require_control_token()
                 self._prepare_context_tracking(endpoint, query)
                 if not endpoint.request_body:
                     self._discard_request_body()
-                self._dispatch_endpoint(endpoint, route_match, query, method)
+                self._dispatch_endpoint(endpoint, route_match, query, effective_method)
         except ApiError as exc:
             error_payload: dict[str, Any] = {
                 "error": {"code": exc.code, "message": exc.message}
@@ -227,6 +273,227 @@ class RequestDispatchMixin:
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 error_payload,
             )
+
+
+    @staticmethod
+    def _query_ends_with_signature(raw_query: str) -> bool:
+        if not raw_query:
+            return False
+        key, separator, _ = raw_query.rsplit("&", 1)[-1].partition("=")
+        return bool(separator and key == "signature")
+
+
+    @staticmethod
+    def _route_from_req(value: str) -> str:
+        if (
+            not value
+            or len(value) > 512
+            or value.startswith("/")
+            or value != value.strip()
+            or any(char in value for char in ("\x00", "?", "#", "\\"))
+        ):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_req_route",
+                "req must be a non-empty relative route without a leading slash",
+            )
+        return "/" + value
+
+
+    def _decode_query_route(
+        self,
+        query: dict[str, list[str]],
+    ) -> tuple[str, dict[str, list[str]]]:
+        req_values = query.pop("req", [])
+        if len(req_values) != 1:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_req_route",
+                "req must appear exactly once",
+            )
+        reserved = (SIGNED_GET_RESERVED_QUERY - {"req"}).intersection(query)
+        if reserved:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "signed_envelope_required",
+                "signed-envelope parameters require a final signature parameter",
+            )
+        return self._route_from_req(req_values[0]), query
+
+
+    def _decode_signed_get_envelope(
+        self,
+        raw_query: str,
+    ) -> tuple[str, str, dict[str, list[str]]]:
+        self._signed_envelope_active = True
+        if not raw_query.isascii():
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_envelope",
+                "signed envelope query parameters must use ASCII URL encoding",
+            )
+        if self._request_content_length(required=False):
+            self._discard_request_body()
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "signed_envelope_transport_body",
+                "signed GET envelopes carry JSON through the body query parameter",
+            )
+
+        raw_fields = raw_query.split("&")
+        if len(raw_fields) < 2:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_envelope",
+                "http_method must be penultimate and signature must be final",
+            )
+        last_key, last_separator, _ = raw_fields[-1].partition("=")
+        method_key, method_separator, _ = raw_fields[-2].partition("=")
+        if (
+            not last_separator
+            or last_key != "signature"
+            or not method_separator
+            or method_key != "http_method"
+        ):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_envelope",
+                "http_method must be penultimate and signature must be final",
+            )
+        try:
+            pairs = parse_qsl(
+                raw_query,
+                keep_blank_values=True,
+                strict_parsing=True,
+                encoding="utf-8",
+                errors="strict",
+                max_num_fields=256,
+            )
+        except (UnicodeError, ValueError):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_envelope",
+                "signed envelope query parameters are malformed",
+            ) from None
+
+        reserved_values = {name: [] for name in SIGNED_GET_RESERVED_QUERY}
+        for key, value in pairs:
+            if key in reserved_values:
+                reserved_values[key].append(value)
+        for name in ("req", "timestamp", "salt", "http_method", "signature"):
+            if len(reserved_values[name]) != 1:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_signed_envelope",
+                    f"{name} must appear exactly once",
+                )
+        if len(reserved_values["body"]) > 1:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_envelope",
+                "body must appear at most once",
+            )
+        if pairs[-1][0] != "signature" or pairs[-2][0] != "http_method":
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_envelope",
+                "http_method must be penultimate and signature must be final",
+            )
+
+        effective_method = reserved_values["http_method"][0]
+        if effective_method not in SIGNED_GET_METHODS:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_method",
+                "http_method must be GET, HEAD, POST, PUT, PATCH, or DELETE",
+            )
+
+        timestamp_text = reserved_values["timestamp"][0]
+        if (
+            not timestamp_text
+            or len(timestamp_text) > 12
+            or not timestamp_text.isascii()
+            or not timestamp_text.isdigit()
+        ):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_timestamp",
+                "timestamp must be Unix time in whole seconds",
+            )
+        timestamp = int(timestamp_text)
+        now = int(time.time())
+        if abs(now - timestamp) > SIGNED_GET_WINDOW_SECONDS:
+            raise ApiError(
+                HTTPStatus.UNAUTHORIZED,
+                "signed_envelope_expired",
+                "timestamp is outside the signed-envelope acceptance window",
+            )
+
+        salt = reserved_values["salt"][0]
+        if len(salt) != 8 or not salt.isascii() or not salt.isalnum():
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_signed_salt",
+                "salt must be exactly 8 ASCII letters or digits",
+            )
+
+        supplied_signature = reserved_values["signature"][0]
+        if (
+            len(supplied_signature) != 43
+            or not supplied_signature.isascii()
+            or any(not (char.isalnum() or char in "_-") for char in supplied_signature)
+        ):
+            raise ApiError(
+                HTTPStatus.UNAUTHORIZED,
+                "invalid_signed_signature",
+                "signature is invalid",
+            )
+        signed_query = raw_query.rsplit("&", 1)[0]
+        expected_signature = base64.urlsafe_b64encode(
+            hmac.digest(
+                self.token_record.control_token.encode("utf-8"),
+                signed_query.encode("ascii"),
+                "sha256",
+            )
+        ).rstrip(b"=").decode("ascii")
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise ApiError(
+                HTTPStatus.UNAUTHORIZED,
+                "invalid_signed_signature",
+                "signature is invalid",
+            )
+
+        identity = self.token_record.app_id or self.token_record.token
+        if not self.server.tokens.consume_signed_salt(
+            identity,
+            salt,
+            now=now,
+            ttl_seconds=max(1, timestamp + SIGNED_GET_WINDOW_SECONDS - now),
+        ):
+            raise ApiError(
+                HTTPStatus.CONFLICT,
+                "signed_envelope_replay",
+                "salt has already been used within the acceptance window",
+            )
+
+        route = self._route_from_req(reserved_values["req"][0])
+        if reserved_values["body"]:
+            encoded_body = reserved_values["body"][0].encode("utf-8")
+            if len(encoded_body) > self.server.config.max_body_bytes:
+                raise ApiError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "body_too_large",
+                    "signed-envelope body is too large",
+                )
+            self._signed_envelope_body = encoded_body
+
+        query: dict[str, list[str]] = {}
+        for key, value in pairs:
+            if key in SIGNED_GET_RESERVED_QUERY:
+                continue
+            query.setdefault(key, []).append(value)
+        self.control_authorized = True
+        return effective_method, route, query
 
 
     def _authenticated_route(self, path: str) -> str:
@@ -346,7 +613,11 @@ class RequestDispatchMixin:
 
 
     def _wants_html(self) -> bool:
-        return self.command == "GET" and "text/html" in self.headers.get("Accept", "").lower()
+        return (
+            not getattr(self, "_signed_envelope_active", False)
+            and self.command == "GET"
+            and "text/html" in self.headers.get("Accept", "").lower()
+        )
 
 
     def _base_path(self) -> str:
