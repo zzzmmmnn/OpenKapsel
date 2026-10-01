@@ -18,27 +18,7 @@ The workspace-relative `.openkapsel` directory is reserved private runtime state
 
 ## GET-only transport fallback
 
-Some AI hosts can issue only `GET` requests to a fixed base URL. OpenKapsel therefore accepts a compatibility transport only at the exact workspace root URL. Prefer normal REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them.
-
-For read-only GET endpoints, `req` can supply the relative endpoint route without changing the URL path:
-
-```text
-GET <workspace_url>?req=fs/query/list&path=.
-```
-
-`req` must appear exactly once, must not begin with `/`, and is consumed before the endpoint handler receives the remaining query parameters. This form does not grant control authorization and does not expose preview, FastAPI, administrator, public-share, OAuth, or MCP routes.
-
-When the host also cannot send a non-GET method or an Authorization header, use a signed GET envelope. The outer transport remains `GET <workspace_url>`. The query contains `req`, `timestamp`, a fresh random 8-character ASCII alphanumeric `salt`, ordinary endpoint query parameters, optional `body`, then `http_method` as the penultimate parameter and `signature` as the final parameter:
-
-```text
-GET <workspace_url>?req=context&timestamp=<unix-seconds>&salt=Ab12Cd34&body=<url-encoded-json>&http_method=POST&signature=<base64url-hmac>
-```
-
-The signature is Base64URL without padding over `HMAC-SHA256`, keyed directly by the matching control token. Sign the exact raw query-string bytes before the final `&signature=` field; do not parse, sort, normalize, decode, or re-encode them before signing. The signed query itself must be ASCII URL encoding, so percent-encode UTF-8 values before constructing and signing it. This naturally authenticates `req`, all endpoint query values, `body`, and `http_method` together. The server accepts timestamps within 300 seconds of its clock and rejects reuse of the same `salt` for the same credential identity inside that acceptance window.
-
-`http_method` may be `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, or `DELETE`. After verification, OpenKapsel dispatches the request internally with that method and treats the HMAC as proof of the matching control token. `body`, when present, is the URL-decoded UTF-8 JSON object consumed by ordinary JSON-body handlers; this fallback is not a replacement for raw binary, chunked upload, streaming, protocol-header-dependent operations, or other body formats. Because endpoint parameters and `body` are carried in the URL and may appear in access logs, do not place unrelated secrets in them. Signed-envelope responses use `Cache-Control: no-store`.
-
-A signed envelope must itself arrive as an actual HTTP `GET`, and the physical request must not carry an HTTP body. `http_method` must be immediately before `signature`, and `signature` must be the final query parameter. Do not put the control token itself anywhere in the URL.
+When an AI host cannot change the Workspace URL path, HTTP method, or Authorization header, load `GET <workspace_url>/discovery/transport` and follow [request-transport.md](request-transport.md). That dedicated document is the only detailed wire-format reference; prefer ordinary REST whenever the host supports it.
 
 ## Directory-scoped configuration and renewal
 
@@ -58,6 +38,7 @@ Directory-scoped helpers discover and cache `OPENKAPSEL_CREDENTIALS_EXPIRES_AT`.
 | Method | Relative path | Purpose |
 |---|---|---|
 | `GET` | `/` | Compact capability index and links |
+| `GET` | `/discovery/transport` | GET-only query routing and signed-envelope transport contract |
 | `GET` | `/discovery/files` | File, recycle, and binary transfer contract |
 | `GET` | `/discovery/context` | Context and Plan contract |
 | `GET` | `/discovery/memory` | Long-term Memory contract |

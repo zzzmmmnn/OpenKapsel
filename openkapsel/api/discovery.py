@@ -507,7 +507,7 @@ class DiscoveryMixin:
             key: full[key]
             for key in (
                 "protocol", "server_version", "name", "os", "root", "cwd",
-                "authentication", "request_transport", "token", "skills", "endpoint_defaults",
+                "authentication", "token", "skills", "endpoint_defaults",
             )
         } | {
             "section": section,
@@ -519,6 +519,7 @@ class DiscoveryMixin:
         capabilities = full["capabilities"]
         sections: dict[str, Any] = {}
         availability = {
+            "transport": True,
             "files": bool(
                 capabilities["files"]["read"] or capabilities["files"]["write"]
             ),
@@ -547,6 +548,11 @@ class DiscoveryMixin:
         result = self._discovery_common(full, "main")
         result.update(
             {
+                "request_transport": {
+                    "available": True,
+                    "discovery_url": "./discovery/transport",
+                    "summary": "GET-only query routing and signed transport fallback for constrained clients.",
+                },
                 "path_rules": {
                     "relative_paths_from": full["path_rules"]["relative_paths_from"],
                     "symlink_escape": full["path_rules"]["symlink_escape"],
@@ -623,6 +629,8 @@ class DiscoveryMixin:
     def _section_discovery(self, full: dict[str, Any], section: str) -> dict[str, Any]:
         result = self._discovery_common(full, section)
         result["summary"] = SECTION_SUMMARIES[section]
+        if section == "transport":
+            result["request_transport"] = full["request_transport"]
         if section in {"files", "web", "sharing"}:
             result["path_rules"] = full["path_rules"]
         capability_names = SECTION_CAPABILITIES[section]
@@ -747,7 +755,7 @@ class DiscoveryMixin:
                 "signed_get_envelope": {
                     "available": True,
                     "outer_method": "GET",
-                    "required_parameters": ["req", "timestamp", "salt", "http_method", "signature"],
+                    "required_parameters": ["req", "timestamp", "nonce", "http_method", "signature"],
                     "optional_parameters": ["body"],
                     "http_method_position": "penultimate query parameter",
                     "signature_position": "final query parameter",
@@ -758,8 +766,9 @@ class DiscoveryMixin:
                     "query_encoding": "ASCII request-target; percent-encode UTF-8 values before signing",
                     "timestamp_format": "Unix time in whole seconds",
                     "timestamp_window_seconds": 300,
-                    "salt_format": "fresh random string of exactly 8 ASCII letters or digits",
-                    "salt_replay": "a salt cannot be reused for the same credential identity inside the acceptance window",
+                    "nonce_format": "fresh random string of exactly 8 ASCII letters or digits",
+                    "nonce_replay": "a nonce cannot be reused for the same credential identity inside the acceptance window",
+                    "nonce_replay_scope": "process-local cache bounded to the remaining timestamp acceptance window",
                     "body": "optional URL-encoded UTF-8 JSON object for simple JSON-body endpoints",
                     "response_cache": "no-store",
                 },
@@ -1301,7 +1310,7 @@ class DiscoveryMixin:
                 "discovery": {"method": "GET", "url": f"{base}/"},
                 "discovery_section": {
                     "method": "GET",
-                    "url": f"{base}/discovery/<files|context|memory|shell|schedules|web|sharing|full>",
+                    "url": f"{base}/discovery/<transport|files|context|memory|shell|schedules|web|sharing|full>",
                     "notes": "main discovery is a compact index; section documents contain domain-specific details and full preserves the complete compatibility document",
                 },
                 "credential_renew": {

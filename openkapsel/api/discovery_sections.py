@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 
-SECTION_NAMES = ("files", "context", "memory", "shell", "schedules", "web", "sharing")
+SECTION_NAMES = ("transport", "files", "context", "memory", "shell", "schedules", "web", "sharing")
 
 SECTION_ENDPOINTS = {
+    "transport": set(),
     "files": {
         "rpc", "mapping", "fs_query", "fs_read", "fs_content", "fs_write",
         "transfer", "recycle", "upload",
@@ -19,6 +20,7 @@ SECTION_ENDPOINTS = {
 }
 
 SECTION_CAPABILITIES = {
+    "transport": set(),
     "files": {
         "mappings",
         "files", "recycle", "file_operations", "binary_transfer", "extra_paths",
@@ -40,6 +42,7 @@ SECTION_CAPABILITIES = {
 }
 
 SECTION_LIMITS = {
+    "transport": set(),
     "files": {
         "workspace_storage", "max_request_body_bytes", "max_read_chars",
         "default_read_chars", "max_direct_upload_bytes", "max_file_bytes",
@@ -89,6 +92,7 @@ SECTION_LIMITS = {
 }
 
 SECTION_SUMMARIES = {
+    "transport": "GET-only query routing and HMAC-signed transport envelopes for constrained clients.",
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
@@ -99,6 +103,12 @@ SECTION_SUMMARIES = {
 }
 
 SECTION_WORKFLOWS = {
+    "transport": [
+        "Prefer ordinary REST paths and Authorization: Bearer <CONTROL_TOKEN> whenever the client supports them.",
+        "Use req at the exact workspace root only when the client cannot change the request path.",
+        "Use the signed GET envelope only when the client also cannot send the required HTTP method or Authorization header.",
+        "Generate a fresh random nonce for every signed envelope and never reuse it inside the timestamp acceptance window.",
+    ],
     "files": [
         "Use /fs/query/<operation> for list/stat/tree/search/manifest inspection.",
         "Use /fs/read/<operation> for text, multi-file, or bounded large-file reads; keep /fs/content for raw Range streaming.",

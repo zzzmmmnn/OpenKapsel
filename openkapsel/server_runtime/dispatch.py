@@ -21,7 +21,7 @@ LOGGER = __import__("logging").getLogger("openkapsel")
 SIGNED_GET_WINDOW_SECONDS = 300
 SIGNED_GET_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"})
 SIGNED_GET_RESERVED_QUERY = frozenset(
-    {"req", "timestamp", "salt", "body", "http_method", "signature"}
+    {"req", "timestamp", "nonce", "body", "http_method", "signature"}
 )
 
 class RequestDispatchMixin:
@@ -380,7 +380,7 @@ class RequestDispatchMixin:
         for key, value in pairs:
             if key in reserved_values:
                 reserved_values[key].append(value)
-        for name in ("req", "timestamp", "salt", "http_method", "signature"):
+        for name in ("req", "timestamp", "nonce", "http_method", "signature"):
             if len(reserved_values[name]) != 1:
                 raise ApiError(
                     HTTPStatus.BAD_REQUEST,
@@ -429,12 +429,12 @@ class RequestDispatchMixin:
                 "timestamp is outside the signed-envelope acceptance window",
             )
 
-        salt = reserved_values["salt"][0]
-        if len(salt) != 8 or not salt.isascii() or not salt.isalnum():
+        nonce = reserved_values["nonce"][0]
+        if len(nonce) != 8 or not nonce.isascii() or not nonce.isalnum():
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
-                "invalid_signed_salt",
-                "salt must be exactly 8 ASCII letters or digits",
+                "invalid_signed_nonce",
+                "nonce must be exactly 8 ASCII letters or digits",
             )
 
         supplied_signature = reserved_values["signature"][0]
@@ -464,16 +464,16 @@ class RequestDispatchMixin:
             )
 
         identity = self.token_record.app_id or self.token_record.token
-        if not self.server.tokens.consume_signed_salt(
+        if not self.server.tokens.consume_signed_nonce(
             identity,
-            salt,
+            nonce,
             now=now,
             ttl_seconds=max(1, timestamp + SIGNED_GET_WINDOW_SECONDS - now),
         ):
             raise ApiError(
                 HTTPStatus.CONFLICT,
                 "signed_envelope_replay",
-                "salt has already been used within the acceptance window",
+                "nonce has already been used within the acceptance window",
             )
 
         route = self._route_from_req(reserved_values["req"][0])

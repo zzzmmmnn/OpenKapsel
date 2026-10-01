@@ -245,7 +245,7 @@ class WorkspaceServerTests(unittest.TestCase):
         req: str,
         http_method: str,
         *,
-        salt: str,
+        nonce: str,
         query: list[tuple[str, str]] | None = None,
         body: dict | None = None,
         timestamp: int | None = None,
@@ -254,7 +254,7 @@ class WorkspaceServerTests(unittest.TestCase):
         pairs: list[tuple[str, str]] = [
             ("req", req),
             ("timestamp", str(int(time.time()) if timestamp is None else timestamp)),
-            ("salt", salt),
+            ("nonce", nonce),
         ]
         pairs.extend(query or [])
         if body is not None:
@@ -295,9 +295,21 @@ class WorkspaceServerTests(unittest.TestCase):
 
         discovery_status, discovery = self.request("GET", self.endpoint())
         self.assertEqual(HTTPStatus.OK, discovery_status)
-        transport = discovery["request_transport"]
+        transport_ref = discovery["request_transport"]
+        self.assertEqual("./discovery/transport", transport_ref["discovery_url"])
+        self.assertNotIn("signed_get_envelope", transport_ref)
+
+        transport_status, transport_doc = self.request(
+            "GET", self.endpoint("/discovery/transport")
+        )
+        self.assertEqual(HTTPStatus.OK, transport_status)
+        transport = transport_doc["request_transport"]
         self.assertTrue(transport["query_route"]["available"])
         signed = transport["signed_get_envelope"]
+        self.assertEqual(
+            ["req", "timestamp", "nonce", "http_method", "signature"],
+            signed["required_parameters"],
+        )
         self.assertEqual(300, signed["timestamp_window_seconds"])
         self.assertEqual("penultimate query parameter", signed["http_method_position"])
         self.assertEqual("final query parameter", signed["signature_position"])
@@ -306,7 +318,7 @@ class WorkspaceServerTests(unittest.TestCase):
         path = self.signed_envelope_path(
             "memory",
             "GET",
-            salt="Ab12Cd34",
+            nonce="Ab12Cd34",
         )
         status, raw, headers = self.raw_request("GET", path, authorize=False)
         self.assertEqual(HTTPStatus.OK, status, raw)
@@ -321,7 +333,7 @@ class WorkspaceServerTests(unittest.TestCase):
         path = self.signed_envelope_path(
             "context",
             "POST",
-            salt="Ef56Gh78",
+            nonce="Ef56Gh78",
             body={
                 "type": "plan",
                 "taskname": "signed-envelope",
@@ -337,7 +349,7 @@ class WorkspaceServerTests(unittest.TestCase):
         expired = self.signed_envelope_path(
             "memory",
             "GET",
-            salt="Ij90Kl12",
+            nonce="Ij90Kl12",
             timestamp=int(time.time()) - 301,
         )
         expired_status, expired_raw, _ = self.raw_request(
@@ -351,7 +363,7 @@ class WorkspaceServerTests(unittest.TestCase):
         path = self.signed_envelope_path(
             "memory",
             "GET",
-            salt="Mn34Op56",
+            nonce="Mn34Op56",
         )
         prefix, signature = path.rsplit("=", 1)
         replacement = "A" if signature[-1] != "A" else "B"
@@ -374,7 +386,7 @@ class WorkspaceServerTests(unittest.TestCase):
         path = self.signed_envelope_path(
             "memory",
             "GET",
-            salt="Qr78St90",
+            nonce="Qr78St90",
             body={"ignored": True},
         )
         status, raw, _ = self.raw_request("GET", path, authorize=False)
@@ -386,7 +398,7 @@ class WorkspaceServerTests(unittest.TestCase):
         path = self.signed_envelope_path(
             "memory",
             "GET",
-            salt="Uv12Wx34",
+            nonce="Uv12Wx34",
         )
         status, raw, _ = self.raw_request("POST", path, authorize=False)
         self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
@@ -690,7 +702,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("main", main["section"])
         self.assertEqual(
-            {"files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},
+            {"transport", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},
             set(main["sections"]),
         )
         self.assertEqual(
@@ -714,6 +726,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("fs_query", files["endpoints"])
         self.assertIn("upload", files["endpoints"])
         self.assertNotIn("context", files["endpoints"])
+        self.assertNotIn("request_transport", files)
 
         status, missing_section = self.request(
             "GET", self.endpoint("/discovery/unknown")
@@ -728,7 +741,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("full", payload["section"])
         self.assertLess(len(json.dumps(main)) * 3, len(json.dumps(payload)))
         section_endpoint_sets = []
-        for section_name in ("files", "context", "memory", "shell", "schedules", "web", "sharing"):
+        for section_name in ("transport", "files", "context", "memory", "shell", "schedules", "web", "sharing"):
             section_status, section_payload = self.request(
                 "GET", self.endpoint(f"/discovery/{section_name}")
             )
