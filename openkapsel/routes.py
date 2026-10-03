@@ -90,6 +90,10 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         context_operations=(("DELETE", "environment.clear"),),
         discovery_key="environment",
     ),
+    _exact(
+        "transport_hmac", ("GET",), "/transport/hmac", "_handle_transport_hmac",
+        invocation="query", discovery_key="transport",
+    ),
     EndpointSpec(
         "discovery_section", frozenset(("GET",)),
         re.compile(r"/discovery/(?P<section>[A-Za-z0-9_-]+)"),

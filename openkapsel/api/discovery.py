@@ -244,6 +244,11 @@ class DiscoveryMixin:
                     "section": operation("discovery_section"),
                 },
             ),
+            "transport": family(
+                "./transport/hmac",
+                "GET-only helpers for constrained transports.",
+                {"hmac": operation("transport_hmac")},
+            ),
             "credential": family(
                 "./credential/renew",
                 "Workspace REST credential lifecycle.",
@@ -762,9 +767,15 @@ class DiscoveryMixin:
                         "use only when the client is restricted to GET at the exact workspace "
                         "root and cannot send the required method or Authorization header"
                     ),
+                    "hmac_helper": (
+                        "use when the client can issue only bare GET requests and cannot compute "
+                        "HMAC-SHA256 locally"
+                    ),
                 },
                 "examples": {
                     "query_route": "GET <workspace_url>?req=fs/query/list&path=.",
+                    "hmac_helper_path": "GET <workspace_url>transport/hmac?key=<url-encoded-key>&target=<url-encoded-target>",
+                    "hmac_helper_query_route": "GET <workspace_url>?req=transport/hmac&key=<url-encoded-key>&target=<url-encoded-target>",
                     "signed_get_envelope": (
                         "GET <workspace_url>?req=context&timestamp=<unix-seconds>"
                         "&nonce=<8-alnum>&body=<url-encoded-json>&http_method=POST"
@@ -778,6 +789,22 @@ class DiscoveryMixin:
                     "req_parameter": "req",
                     "req_format": "relative endpoint route without a leading slash",
                     "control_authorization": "not implied; ordinary endpoint authorization still applies",
+                },
+                "hmac_helper": {
+                    "available": True,
+                    "method": "GET",
+                    "paths": ["./transport/hmac", "?req=transport/hmac"],
+                    "authentication": "workspace read URL only; no Authorization header",
+                    "required_parameters": ["key", "target"],
+                    "algorithm": "HMAC-SHA256",
+                    "input_encoding": "UTF-8 key and target strings after URL query decoding",
+                    "result_encoding": "base64url without padding",
+                    "max_key_bytes": 4096,
+                    "max_target_bytes": 32768,
+                    "side_effects": "none",
+                    "response_cache": "no-store",
+                    "logging": "OpenKapsel removes the complete query from its access log for both helper entry forms; upstream HTTP infrastructure may still log URLs",
+                    "transport_use": "URL-encode the exact raw signed-envelope query prefix as target, then append the returned result as the final signature parameter without changing that prefix",
                 },
                 "signed_get_envelope": {
                     "available": True,
@@ -1339,6 +1366,21 @@ class DiscoveryMixin:
                     "method": "GET",
                     "url": f"{base}/discovery/<transport|files|context|memory|shell|schedules|web|sharing|full>",
                     "notes": "main discovery is a compact index; section documents contain domain-specific details and full preserves the complete compatibility document",
+                },
+                "transport_hmac": {
+                    "method": "GET",
+                    "url": f"{base}/transport/hmac",
+                    "authentication": "workspace read URL only; no Authorization header",
+                    "query": {
+                        "key": "required UTF-8 HMAC key, at most 4096 bytes",
+                        "target": "required UTF-8 target string, at most 32768 bytes",
+                    },
+                    "response": {
+                        "algorithm": "HMAC-SHA256",
+                        "encoding": "base64url-nopad",
+                        "result": "<43-character base64url digest>",
+                    },
+                    "notes": "pure computation with no server-side state change; also available through ?req=transport/hmac at the exact workspace root; the secret-bearing query is redacted from OpenKapsel access logs but upstream proxies may still log request URLs",
                 },
                 "credential_renew": {
                     "method": "POST",

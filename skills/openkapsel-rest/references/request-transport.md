@@ -45,7 +45,22 @@ signature = Base64URL-no-padding(
 
 The signed query string must be ASCII request-target data. Percent-encode UTF-8 values before constructing and signing it. Do not parse, sort, normalize, decode, or re-encode the query after calculating the signature.
 
-Because the exact raw query is signed, `req`, `timestamp`, `nonce`, endpoint query parameters, `body`, and `http_method` are authenticated together. The control token itself never appears in the URL.
+Because the exact raw query is signed, `req`, `timestamp`, `nonce`, endpoint query parameters, `body`, and `http_method` are authenticated together. When HMAC is computed locally, the control token itself never appears in the URL.
+
+### HMAC helper for bare-GET clients
+
+If the host can issue only bare `GET` requests and has no HMAC-SHA256 primitive, OpenKapsel can perform only the HMAC calculation. Both forms below call the same read-only helper:
+
+```text
+GET <workspace_url>transport/hmac?key=<url-encoded-key>&target=<url-encoded-target>
+GET <workspace_url>?req=transport/hmac&key=<url-encoded-key>&target=<url-encoded-target>
+```
+
+`key` and `target` must each appear exactly once. The helper computes `HMAC-SHA256(UTF-8(key), UTF-8(target))` and returns the digest as Base64URL without padding. `key` is limited to 4096 UTF-8 bytes and `target` to 32768 UTF-8 bytes. It does not validate or consume a signed-envelope nonce and has no state-changing side effects.
+
+For a signed envelope, build the exact raw query prefix through `http_method` first, pass that complete prefix as `target`, and use the returned `result` as the final `signature` value without changing the prefix afterward.
+
+This fallback necessarily places the HMAC key, normally the control token, in the request URL. OpenKapsel removes the complete query string from its own access log for both helper forms, returns `Cache-Control: no-store`, and sends `Referrer-Policy: no-referrer`. Reverse proxies, CDNs, browsers, or other upstream HTTP infrastructure may still record the URL, so use this helper only when local HMAC and request headers are unavailable.
 
 ## Server verification
 

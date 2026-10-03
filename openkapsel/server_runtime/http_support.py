@@ -342,9 +342,9 @@ class HttpSupportMixin:
 
     def log_message(self, fmt: str, *args: Any) -> None:
         message = fmt % args
-        if "/oauth/" in self.path:
-            message = message.replace(self.path, self.path.split("?", 1)[0])
         request_path = self.path.split("?", 1)[0]
+        if "/oauth/" in self.path or getattr(self, "_redact_request_query", False):
+            message = message.replace(self.path, request_path)
         if request_path.startswith("/.well-known/") or (
             request_path.startswith(self.server.config.url_base_path + "/oauth/")
             and request_path.endswith(("/resource", "/oauth-authorization-server"))

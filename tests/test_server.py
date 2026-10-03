@@ -325,6 +325,48 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("signed_get_envelope", full_transport["selection"])
         self.assertEqual(transport, full_transport)
 
+    def test_transport_hmac_supports_path_and_req_route_without_authorization(self) -> None:
+        key = "helper-secret"
+        target = "req=memory&timestamp=1700000000&nonce=Ab12Cd34&http_method=GET"
+        expected = base64.urlsafe_b64encode(
+            hmac.digest(key.encode("utf-8"), target.encode("utf-8"), "sha256")
+        ).rstrip(b"=").decode("ascii")
+        cases = [
+            self.endpoint("/transport/hmac?" + urlencode({"key": key, "target": target})),
+            self.endpoint("?" + urlencode({"req": "transport/hmac", "key": key, "target": target})),
+        ]
+        for path in cases:
+            with self.subTest(path=path):
+                with self.assertLogs("openkapsel", level="INFO") as captured:
+                    status, raw, headers = self.raw_request("GET", path, authorize=False)
+                self.assertEqual(HTTPStatus.OK, status, raw)
+                payload = json.loads(raw.decode("utf-8"))
+                self.assertEqual("HMAC-SHA256", payload["algorithm"])
+                self.assertEqual("base64url-nopad", payload["encoding"])
+                self.assertEqual(expected, payload["result"])
+                self.assertEqual("no-store", headers.get("Cache-Control"))
+                self.assertEqual("no-referrer", headers.get("Referrer-Policy"))
+                logged = "\n".join(captured.output)
+                self.assertNotIn(key, logged)
+                self.assertNotIn(urlencode({"target": target}), logged)
+
+    def test_transport_hmac_validates_parameters_and_limits(self) -> None:
+        duplicate = self.endpoint(
+            "/transport/hmac?" + urlencode([("key", "a"), ("key", "b"), ("target", "c")])
+        )
+        status, raw, _ = self.raw_request("GET", duplicate, authorize=False)
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertEqual("invalid_transport_hmac", payload["error"]["code"])
+
+        oversized = self.endpoint(
+            "/transport/hmac?" + urlencode({"key": "x" * 4097, "target": "c"})
+        )
+        status, raw, _ = self.raw_request("GET", oversized, authorize=False)
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
+        payload = json.loads(raw.decode("utf-8"))
+        self.assertEqual("transport_hmac_key_too_large", payload["error"]["code"])
+
     def test_signed_get_envelope_authorizes_control_get_and_rejects_replay(self) -> None:
         path = self.signed_envelope_path(
             "memory",
@@ -1035,7 +1077,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "context", "credential", "discovery", "environment",
                 "fs_content", "fs_query", "fs_read", "fs_write",
                 "mapping", "memory", "recycle", "rpc", "schedule",
-                "share", "shell", "task", "transfer", "upload", "web",
+                "share", "shell", "task", "transfer", "transport", "upload", "web",
             },
             set(payload["endpoints"]),
         )

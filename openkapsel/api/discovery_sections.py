@@ -6,7 +6,7 @@ from __future__ import annotations
 SECTION_NAMES = ("transport", "files", "context", "memory", "shell", "schedules", "web", "sharing")
 
 SECTION_ENDPOINTS = {
-    "transport": set(),
+    "transport": {"transport"},
     "files": {
         "rpc", "mapping", "fs_query", "fs_read", "fs_content", "fs_write",
         "transfer", "recycle", "upload",
@@ -92,7 +92,7 @@ SECTION_LIMITS = {
 }
 
 SECTION_SUMMARIES = {
-    "transport": "GET-only query routing and HMAC-signed transport envelopes for constrained clients.",
+    "transport": "GET-only query routing, HMAC calculation, and signed transport envelopes for constrained clients.",
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
@@ -107,6 +107,7 @@ SECTION_WORKFLOWS = {
         "Prefer ordinary REST paths and Authorization: Bearer <CONTROL_TOKEN> whenever the client supports them.",
         "Use req at the exact workspace root only when the client cannot change the request path.",
         "Use the signed GET envelope only when the client also cannot send the required HTTP method or Authorization header.",
+        "If the client also lacks HMAC-SHA256, call transport/hmac or ?req=transport/hmac with URL-encoded key and target, then use the returned base64url-no-padding result as signature.",
         "Generate a fresh random nonce for every signed envelope and never reuse it inside the timestamp acceptance window.",
     ],
     "files": [

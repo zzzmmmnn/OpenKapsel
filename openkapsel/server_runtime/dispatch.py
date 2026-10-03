@@ -23,6 +23,8 @@ SIGNED_GET_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
 SIGNED_GET_RESERVED_QUERY = frozenset(
     {"req", "timestamp", "nonce", "body", "http_method", "signature"}
 )
+TRANSPORT_HMAC_MAX_KEY_BYTES = 4096
+TRANSPORT_HMAC_MAX_TARGET_BYTES = 32768
 
 class RequestDispatchMixin:
     def version_string(self) -> str:
@@ -87,9 +89,15 @@ class RequestDispatchMixin:
         self.control_authorized = False
         self._signed_envelope_active = False
         self._signed_envelope_body = None
+        self._redact_request_query = False
         self._prepare_context_tracking(None, {})
         try:
             parsed = urlsplit(self.path)
+            req_values = parse_qs(parsed.query, keep_blank_values=True).get("req", [])
+            self._redact_request_query = (
+                parsed.path.rstrip("/").endswith("/transport/hmac")
+                or "transport/hmac" in req_values
+            )
             if self._is_dedicated_preview_request():
                 route = self._preview_authenticated_route(parsed.path)
                 api_target = self._resolve_web_api_target(route)
@@ -658,6 +666,54 @@ class RequestDispatchMixin:
             self._run_transfer(handler, *args, **kwargs)
         else:
             handler(*args, **kwargs)
+
+
+    def _handle_transport_hmac(self, query: dict[str, list[str]]) -> None:
+        unexpected = sorted(set(query) - {"key", "target"})
+        if unexpected:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_transport_hmac",
+                "transport HMAC accepts only key and target query parameters",
+            )
+
+        values: dict[str, str] = {}
+        for name in ("key", "target"):
+            items = query.get(name, [])
+            if len(items) != 1:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_transport_hmac",
+                    f"{name} must appear exactly once",
+                )
+            values[name] = items[0]
+
+        key_bytes = values["key"].encode("utf-8")
+        target_bytes = values["target"].encode("utf-8")
+        if len(key_bytes) > TRANSPORT_HMAC_MAX_KEY_BYTES:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "transport_hmac_key_too_large",
+                f"key must not exceed {TRANSPORT_HMAC_MAX_KEY_BYTES} UTF-8 bytes",
+            )
+        if len(target_bytes) > TRANSPORT_HMAC_MAX_TARGET_BYTES:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "transport_hmac_target_too_large",
+                f"target must not exceed {TRANSPORT_HMAC_MAX_TARGET_BYTES} UTF-8 bytes",
+            )
+
+        result = base64.urlsafe_b64encode(
+            hmac.digest(key_bytes, target_bytes, "sha256")
+        ).rstrip(b"=").decode("ascii")
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "algorithm": "HMAC-SHA256",
+                "encoding": "base64url-nopad",
+                "result": result,
+            },
+        )
 
 
     def _require_control_token(self) -> None:
