@@ -744,6 +744,33 @@ class DiscoveryMixin:
                 },
             },
             "request_transport": {
+                "summary": (
+                    "Compatibility transport for constrained clients; prefer ordinary REST "
+                    "paths and Authorization headers whenever the client supports them."
+                ),
+                "discovery_url": "./transport",
+                "selection": {
+                    "ordinary_rest": (
+                        "preferred when the client can set the request path, HTTP method, "
+                        "and Authorization header"
+                    ),
+                    "query_route": (
+                        "use only when the client must keep the exact workspace root path "
+                        "but can issue an ordinary GET request"
+                    ),
+                    "signed_get_envelope": (
+                        "use only when the client is restricted to GET at the exact workspace "
+                        "root and cannot send the required method or Authorization header"
+                    ),
+                },
+                "examples": {
+                    "query_route": "GET <workspace_url>?req=fs/query/list&path=.",
+                    "signed_get_envelope": (
+                        "GET <workspace_url>?req=context&timestamp=<unix-seconds>"
+                        "&nonce=<8-alnum>&body=<url-encoded-json>&http_method=POST"
+                        "&signature=<base64url-hmac>"
+                    ),
+                },
                 "query_route": {
                     "available": True,
                     "outer_method": "GET",

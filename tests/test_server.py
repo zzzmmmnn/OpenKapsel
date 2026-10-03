@@ -314,6 +314,17 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("penultimate query parameter", signed["http_method_position"])
         self.assertEqual("final query parameter", signed["signature_position"])
 
+        full_status, full_doc = self.request(
+            "GET", self.endpoint("/discovery/full")
+        )
+        self.assertEqual(HTTPStatus.OK, full_status)
+        full_transport = full_doc["request_transport"]
+        self.assertEqual("./transport", full_transport["discovery_url"])
+        self.assertIn("ordinary_rest", full_transport["selection"])
+        self.assertIn("query_route", full_transport["selection"])
+        self.assertIn("signed_get_envelope", full_transport["selection"])
+        self.assertEqual(transport, full_transport)
+
     def test_signed_get_envelope_authorizes_control_get_and_rejects_replay(self) -> None:
         path = self.signed_envelope_path(
             "memory",
@@ -1632,6 +1643,19 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("Machine-readable Discovery JSON", page)
         self.assertNotIn(self.server.tokens.get("test-token").control_token, page)
         self.assertIn("control_authorized", page)
+
+        status, body, headers = self.raw_request(
+            "GET",
+            self.endpoint("/discovery/transport"),
+            headers=browser_headers,
+            authorize=False,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(headers["Content-Type"].startswith("text/html"))
+        transport_page = body.decode("utf-8")
+        self.assertIn("signed_get_envelope", transport_page)
+        self.assertIn("HMAC-SHA256", transport_page)
+        self.assertIn("nonce", transport_page)
 
         status, body, headers = self.raw_request(
             "GET",

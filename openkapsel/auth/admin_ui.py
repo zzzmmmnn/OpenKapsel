@@ -48,9 +48,22 @@ def _page(title: str, body: str, *, favicon_href: str | None = None) -> str:
 
 def render_discovery(payload: dict) -> str:
     pretty_json = html.escape(json.dumps(payload, ensure_ascii=False, indent=2))
-    capabilities = payload["capabilities"]
-    files = capabilities["files"]
-    body = f"""<main><header class="top"><div><h1>{html.escape(payload['name'])}</h1><div class="muted">OpenKapsel Discovery · {html.escape(payload['protocol'])}</div></div><span class="badge">Token valid</span></header><section class="card"><h2>Workspace</h2><div class="grid"><div class="span2"><label>Root</label><div class="token">{html.escape(payload['root'])}</div></div><div><label>File permissions</label><p>Read: {'allowed' if files['read'] else 'denied'}<br>Write: {'allowed' if files['write'] else 'denied'}</p></div><div><label>Shell</label><p>{html.escape(str(capabilities['shell']))}</p></div></div></section><section class="card"><h2>Machine-readable Discovery JSON</h2><p class="muted">API clients can send <code>Accept: application/json</code> or use curl to retrieve JSON directly.</p><pre style="margin:0;overflow:auto;background:#111827;color:#e5e7eb;padding:16px;border-radius:8px;white-space:pre-wrap;word-break:break-word">{pretty_json}</pre></section></main>"""
+    capabilities = payload.get("capabilities", {})
+    files = capabilities.get("files")
+    if isinstance(files, dict):
+        file_permissions = (
+            f"Read: {'allowed' if files.get('read') else 'denied'}<br>"
+            f"Write: {'allowed' if files.get('write') else 'denied'}"
+        )
+    else:
+        file_permissions = "Not included in this Discovery section"
+    shell = capabilities.get("shell")
+    shell_value = (
+        html.escape(str(shell))
+        if shell is not None
+        else "Not included in this Discovery section"
+    )
+    body = f"""<main><header class="top"><div><h1>{html.escape(payload['name'])}</h1><div class="muted">OpenKapsel Discovery · {html.escape(payload['protocol'])}</div></div><span class="badge">Token valid</span></header><section class="card"><h2>Workspace</h2><div class="grid"><div class="span2"><label>Root</label><div class="token">{html.escape(payload['root'])}</div></div><div><label>File permissions</label><p>{file_permissions}</p></div><div><label>Shell</label><p>{shell_value}</p></div></div></section><section class="card"><h2>Machine-readable Discovery JSON</h2><p class="muted">API clients can send <code>Accept: application/json</code> or use curl to retrieve JSON directly.</p><pre style="margin:0;overflow:auto;background:#111827;color:#e5e7eb;padding:16px;border-radius:8px;white-space:pre-wrap;word-break:break-word">{pretty_json}</pre></section></main>"""
     return _page(f"{payload['name']} · Workspace", body)
 
 
