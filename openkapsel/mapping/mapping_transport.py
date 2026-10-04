@@ -133,8 +133,10 @@ class ProviderSession:
             try:
                 result = answer.get(timeout=self.rpc_timeout_seconds)
             except queue.Empty:
-                # An ambiguous write is never replayed into another session.
-                self.close()
+                # A request deadline says nothing about transport liveness.
+                # Retire only this waiter in finally; late replies are ignored.
+                # An already-dispatched mutation may still complete and must
+                # never be automatically replayed after this timeout.
                 raise OSError(errno.ETIMEDOUT, "mapping request timed out; result may be unknown") from None
             if isinstance(result, MappingSessionDisconnected):
                 raise result

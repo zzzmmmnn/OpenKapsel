@@ -75,6 +75,7 @@ CLIENT_FILES = (
     "openkapsel/client_runtime/client_reload.py",
     "openkapsel/client_runtime/client_file_api.py",
     "openkapsel/client_runtime/client_files.py",
+    "openkapsel/client_runtime/client_rpc.py",
     "openkapsel/client_runtime/client_tasks.py",
     "openkapsel/client_runtime/client_windows.py",
     "openkapsel/files/git_operations.py",

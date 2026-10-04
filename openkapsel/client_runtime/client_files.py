@@ -100,6 +100,10 @@ class ClientFiles:
                 raise OSError(errno.EINVAL, "RPC plugin operation must run as a task")
             if spec["write"] and not self.writable:
                 raise OSError(errno.EROFS, "client export is read-only")
+            # SSH owns its connection/channel locks and does not access local
+            # file handles. Remote I/O must not hold the local filesystem lock.
+            if family == "ssh":
+                return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
             with self.lock:
                 return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
         read_only = operation in READ_OPERATIONS

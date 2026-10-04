@@ -155,7 +155,7 @@ OpenKapsel also has application-side limits:
 |---|---:|---|
 | `max_http_connections` | `128` | Maximum accepted OpenKapsel HTTP connections; overload returns `503` |
 | `http_socket_timeout_seconds` | `30` | Bounds stalled ordinary HTTP socket I/O and silent Workspace API SSE upstream reads; it is not a total task deadline |
-| `mapping_rpc_timeout_seconds` | `90` | Maximum server wait for one mapped-client RPC reply; a timeout is ambiguous for mutations and is never automatically replayed |
+| `mapping_rpc_timeout_seconds` | `90` | Maximum server wait for one mapped-client RPC reply; timeout does not close the provider connection or affect other RPCs; mutations remain ambiguous and are never automatically replayed |
 | `mapping_provider_idle_timeout_seconds` | `60` | Maximum provider WebSocket receive silence before the server drops the mapping session; clients ping every 10 seconds |
 | `max_sse_streams` | `16` | Global concurrent Shell and Workspace API SSE streams |
 | `max_sse_streams_per_token` | `4` | Concurrent Shell and Workspace API SSE streams for one token |

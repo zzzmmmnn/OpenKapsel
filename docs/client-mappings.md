@@ -57,7 +57,26 @@ The client opens the selected configuration once and holds an exclusive process-
 }
 ```
 
-Supported proxy schemes are `http`, `https`, `socks4`, `socks4a`, `socks5`, and `socks5h`. Use the `a`/`h` variants for proxy-side DNS. Optional proxy credentials use URL userinfo. Every configured proxy first establishes a target-specific TCP tunnel before the WebSocket handshake. An `https://` proxy uses TLS plus HTTP CONNECT; for the normal `wss://` mapping URL the client then establishes the target TLS session inside that encrypted proxy tunnel (TLS-in-TLS). Both the HTTPS proxy certificate and the mapping server certificate use normal system trust and hostname verification. A proxy connection failure never falls back to direct access, and proxied WebSocket redirects are rejected rather than retried outside the pre-established target tunnel. `transport_timeout_seconds` defaults to 60 seconds and controls client WebSocket connect/receive tolerance. The server separately waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for one RPC reply and treats mutation timeouts as ambiguous, never replaying them automatically. Use `--once` to disable automatic reconnection during diagnostics.
+Supported proxy schemes are `http`, `https`, `socks4`, `socks4a`, `socks5`, and `socks5h`. Use the `a`/`h` variants for proxy-side DNS. Optional proxy credentials use URL userinfo. Every configured proxy first establishes a target-specific TCP tunnel before the WebSocket handshake. An `https://` proxy uses TLS plus HTTP CONNECT; for the normal `wss://` mapping URL the client then establishes the target TLS session inside that encrypted proxy tunnel (TLS-in-TLS). Both the HTTPS proxy certificate and the mapping server certificate use normal system trust and hostname verification. A proxy connection failure never falls back to direct access, and proxied WebSocket redirects are rejected rather than retried outside the pre-established target tunnel. `transport_timeout_seconds` defaults to 60 seconds and controls client WebSocket connect/receive tolerance. The server separately waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for one RPC reply. An RPC timeout ends only that request: the provider connection, heartbeat and other pending RPCs remain active, and late replies for the timed-out request are discarded. Mutation timeouts remain ambiguous and are never replayed automatically. Use `--once` to disable automatic reconnection during diagnostics.
+
+### Concurrent client RPC
+
+The client receives requests independently of their execution and runs up to 32
+RPC workers per process, including workers still finishing after a reconnect.
+Replies are matched by request ID and may arrive out of order. SSH operations
+use their own connection/channel synchronization and do not hold the local file
+provider lock, so a slow SSH request does not block local file RPC or task polling.
+Local file operations and other synchronous plugins retain their filesystem lock
+for handle/seek and mutation safety. Requests beyond the worker limit fail with
+`EBUSY`; there is no unbounded request queue.
+
+Disconnect invalidates the session immediately without waiting for blocked RPC
+workers. Late replies are discarded, pending local operations do not start after
+session invalidation, and file handles belong only to their original session.
+Already-started operations may complete after disconnect; uncertain mutations
+must not be automatically replayed. Background tasks and the SSH connection pool
+remain process-scoped. Optional source reload waits for active RPC workers as
+well as running background tasks.
 
 ### Version handshake and local source reload
 

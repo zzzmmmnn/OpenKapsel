@@ -18,6 +18,7 @@ from . import __version__
 
 from openkapsel.client_runtime.client_config import ClientConfigError, ClientConfigLock
 from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.client_rpc import ClientRpcSession
 from openkapsel.network.proxy import (
     connect_proxy_tunnel,
     parse_proxy_url,
@@ -115,8 +116,14 @@ class ClientRuntime:
         )
         self.client_fingerprint = running_fingerprint("client")
         self.pending_reload = False
+        self.rpc_slots = threading.BoundedSemaphore(32)
+        self.rpc_lock = threading.Lock()
+        self.rpc_active = 0
 
     def has_active_tasks(self):
+        with self.rpc_lock:
+            if self.rpc_active:
+                return True
         with self.tasks.lock:
             return any(task["finished_at"] is None for task in self.tasks.tasks.values())
 
@@ -357,6 +364,7 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None, on_ready=Non
     url = runtime.config["url"]
     sock = None
     stopped = threading.Event()
+    session = None
     try:
         transport_timeout = float(config.get("transport_timeout_seconds", 60))
         sock = websocket.create_connection(
@@ -428,6 +436,7 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None, on_ready=Non
                             sock.close()
                     except (OSError, websocket.WebSocketException):
                         pass
+        session = ClientRpcSession(runtime, sock, stopped)
         threading.Thread(target=heartbeat, daemon=True).start()
         while not stop.is_set():
             try:
@@ -443,29 +452,16 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None, on_ready=Non
             request = json.loads(data)
             if not isinstance(request, dict) or not isinstance(request.get("id"), str):
                 raise ValueError("invalid mapping request")
-            op, args = request.get("op"), request.get("args")
-            try:
-                if not isinstance(op, str) or not isinstance(args, dict):
-                    raise OSError(errno.EINVAL, "invalid operation")
-                result = tasks.dispatch(op, args) if op.startswith("task_") else files.dispatch(op, args)
-                response = {"id": request["id"], "result": result}
-                encode(response)
-            except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
-                error = {"errno": getattr(exc, "errno", None) or errno.EINVAL}
-                if isinstance(exc, OSError) and isinstance(exc.strerror, str):
-                    message = " ".join(exc.strerror.split())
-                    if message:
-                        error["message"] = message[:200]
-                response = {"id": request["id"], "error": error}
-            sock.send(encode(response).decode())
+            session.submit(request)
+
     except websocket.WebSocketConnectionClosedException:
         LOG.info("Mapping provider disconnected")
     finally:
         stopped.set()
+        if session is not None:
+            session.close()
         if owned:
             runtime.close()
-        else:
-            files.close_handles()
         if sock:
             sock.close()
 

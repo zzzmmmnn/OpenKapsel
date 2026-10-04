@@ -53,9 +53,19 @@ class ClientReconnectTests(unittest.TestCase):
             "",
         ])
         replies = []
+        replied = threading.Event()
         class Socket:
-            def send(self, data): replies.append(json.loads(data))
-            def recv(self): return next(messages)
+            def send(self, data):
+                value = json.loads(data)
+                replies.append(value)
+                if value.get("id") == "rpc":
+                    replied.set()
+            def recv(self):
+                value = next(messages)
+                if value == "":
+                    if not replied.wait(5):
+                        raise AssertionError("RPC did not reply")
+                return value
             def close(self): pass
             def ping(self, *_): pass
         with patch("websocket.create_connection", return_value=Socket()):
