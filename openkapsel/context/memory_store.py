@@ -8,7 +8,7 @@ import posixpath
 import re
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,29 @@ class MemoryStore:
         connection.execute("PRAGMA busy_timeout = 10000")
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @contextmanager
+    def atomic_transaction(self):
+        """Hold one Memory DB write transaction across a batch of mutations."""
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    yield connection
+                except Exception:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
+
+    @contextmanager
+    def _mutation_connection(self, connection: sqlite3.Connection | None):
+        if connection is not None:
+            yield connection
+            return
+        with self.atomic_transaction() as owned:
+            yield owned
 
     @staticmethod
     def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
@@ -595,6 +618,7 @@ class MemoryStore:
         plan_id: Any = None,
         actor_id: str | None = None,
         message: str = "create memory",
+        _connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         content = self._required_text(content, "content", MAX_MEMORY_CONTENT_CHARS)
         tags = self._validate_tags(tags, required=True)
@@ -606,47 +630,41 @@ class MemoryStore:
             MAX_MEMORY_CHANGE_MESSAGE_CHARS,
         )
         now = _utc_now()
-        with self._lock:
-            self._ensure_available()
-            with closing(self._connect()) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                for _ in range(8):
-                    memory_id = "mem_" + token_urlsafe_alnum(12)
-                    try:
-                        connection.execute(
-                            """
-                            INSERT INTO memories (
-                                id, created_at, updated_at, content, tags_json, path,
-                                revision, source_plan_id, last_updated_plan_id, actor_id
-                            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                            """,
-                            (
-                                memory_id, now, now, content,
-                                self._encode(tags), path,
-                                plan_id, plan_id, actor_id,
-                            ),
-                        )
-                        break
-                    except sqlite3.IntegrityError as exc:
-                        if "memories.id" not in str(exc):
-                            connection.rollback()
-                            raise ValueError("memory could not be created") from None
-                else:
-                    connection.rollback()
-                    raise RuntimeError("unable to allocate memory id")
-                row = connection.execute(
-                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
-                ).fetchone()
-                assert row is not None
-                connection.executemany(
-                    "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
-                    ((memory_id, tag) for tag in tags),
-                )
-                connection.execute(
-                    "INSERT INTO memory_revisions VALUES (?, 1, ?, ?, ?, ?, ?)",
-                    (memory_id, now, actor_id, plan_id, message, self._snapshot(row)),
-                )
-                connection.commit()
+        with self._mutation_connection(_connection) as connection:
+            for _ in range(8):
+                memory_id = "mem_" + token_urlsafe_alnum(12)
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO memories (
+                            id, created_at, updated_at, content, tags_json, path,
+                            revision, source_plan_id, last_updated_plan_id, actor_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                        """,
+                        (
+                            memory_id, now, now, content,
+                            self._encode(tags), path,
+                            plan_id, plan_id, actor_id,
+                        ),
+                    )
+                    break
+                except sqlite3.IntegrityError as exc:
+                    if "memories.id" not in str(exc):
+                        raise ValueError("memory could not be created") from None
+            else:
+                raise RuntimeError("unable to allocate memory id")
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            assert row is not None
+            connection.executemany(
+                "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
+                ((memory_id, tag) for tag in tags),
+            )
+            connection.execute(
+                "INSERT INTO memory_revisions VALUES (?, 1, ?, ?, ?, ?, ?)",
+                (memory_id, now, actor_id, plan_id, message, self._snapshot(row)),
+            )
         return self._serialize(row)
 
     def get(self, memory_id: str, *, include_archived: bool = False) -> dict[str, Any]:
@@ -732,6 +750,7 @@ class MemoryStore:
         plan_id: Any,
         actor_id: str | None,
         message: str,
+        _connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         expected_revision = self._validate_revision(expected_revision)
         plan_id = self._validate_plan_id(plan_id)
@@ -746,72 +765,65 @@ class MemoryStore:
             raise ValueError("unknown memory fields: " + ", ".join(sorted(unknown)))
         if not changes:
             raise ValueError("memory update requires content, tags, or path")
-        with self._lock:
-            self._ensure_available()
-            with closing(self._connect()) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute(
-                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
-                ).fetchone()
-                if row is None or row["archived_at"] is not None:
-                    connection.rollback()
-                    raise KeyError("memory does not exist")
-                if int(row["revision"]) != expected_revision:
-                    connection.rollback()
-                    raise RuntimeError(
-                        f"memory revision is {row['revision']}, not {expected_revision}"
-                    )
-                content = (
-                    self._required_text(
-                        changes["content"], "content", MAX_MEMORY_CONTENT_CHARS
-                    )
-                    if "content" in changes
-                    else str(row["content"])
+        with self._mutation_connection(_connection) as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None or row["archived_at"] is not None:
+                raise KeyError("memory does not exist")
+            if int(row["revision"]) != expected_revision:
+                raise RuntimeError(
+                    f"memory revision is {row['revision']}, not {expected_revision}"
                 )
-                tags = self._validate_tags(
-                    changes.get("tags", self._decode(row["tags_json"])),
-                    required=True,
+            content = (
+                self._required_text(
+                    changes["content"], "content", MAX_MEMORY_CONTENT_CHARS
                 )
-                path = (
-                    self._normalize_path(changes["path"])
-                    if "path" in changes
-                    else self._normalize_path(row["path"])
-                )
-                revision = expected_revision + 1
-                now = _utc_now()
-                cursor = connection.execute(
-                    """
-                    UPDATE memories SET updated_at = ?, content = ?, tags_json = ?, path = ?,
-                        revision = ?, last_updated_plan_id = ?, actor_id = ?
-                    WHERE id = ? AND revision = ? AND archived_at IS NULL
-                    """,
-                    (
-                        now, content, self._encode(tags), path,
-                        revision, plan_id, actor_id, memory_id, expected_revision,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    connection.rollback()
-                    raise RuntimeError("memory revision changed during update")
-                updated = connection.execute(
-                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
-                ).fetchone()
-                assert updated is not None
-                connection.execute(
-                    "DELETE FROM memory_tags WHERE memory_id = ?", (memory_id,)
-                )
-                connection.executemany(
-                    "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
-                    ((memory_id, tag) for tag in tags),
-                )
-                connection.execute(
-                    "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        memory_id, revision, now, actor_id, plan_id,
-                        message, self._snapshot(updated),
-                    ),
-                )
-                connection.commit()
+                if "content" in changes
+                else str(row["content"])
+            )
+            tags = self._validate_tags(
+                changes.get("tags", self._decode(row["tags_json"])),
+                required=True,
+            )
+            path = (
+                self._normalize_path(changes["path"])
+                if "path" in changes
+                else self._normalize_path(row["path"])
+            )
+            revision = expected_revision + 1
+            now = _utc_now()
+            cursor = connection.execute(
+                """
+                UPDATE memories SET updated_at = ?, content = ?, tags_json = ?, path = ?,
+                    revision = ?, last_updated_plan_id = ?, actor_id = ?
+                WHERE id = ? AND revision = ? AND archived_at IS NULL
+                """,
+                (
+                    now, content, self._encode(tags), path,
+                    revision, plan_id, actor_id, memory_id, expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("memory revision changed during update")
+            updated = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            assert updated is not None
+            connection.execute(
+                "DELETE FROM memory_tags WHERE memory_id = ?", (memory_id,)
+            )
+            connection.executemany(
+                "INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)",
+                ((memory_id, tag) for tag in tags),
+            )
+            connection.execute(
+                "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    memory_id, revision, now, actor_id, plan_id,
+                    message, self._snapshot(updated),
+                ),
+            )
         return self._serialize(updated)
 
     def archive(
@@ -822,6 +834,7 @@ class MemoryStore:
         plan_id: Any,
         actor_id: str | None,
         message: str,
+        _connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         expected_revision = self._validate_revision(expected_revision)
         plan_id = self._validate_plan_id(plan_id)
@@ -830,35 +843,34 @@ class MemoryStore:
             "change message",
             MAX_MEMORY_CHANGE_MESSAGE_CHARS,
         )
-        with self._lock:
-            self._ensure_available()
-            with closing(self._connect()) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
-                if row is None or row["archived_at"] is not None:
-                    connection.rollback()
-                    raise KeyError("memory does not exist")
-                if int(row["revision"]) != expected_revision:
-                    connection.rollback()
-                    raise RuntimeError(f"memory revision is {row['revision']}, not {expected_revision}")
-                now = _utc_now()
-                revision = expected_revision + 1
-                cursor = connection.execute(
-                    "UPDATE memories SET updated_at = ?, archived_at = ?, revision = ?, "
-                    "last_updated_plan_id = ?, actor_id = ? "
-                    "WHERE id = ? AND revision = ? AND archived_at IS NULL",
-                    (now, now, revision, plan_id, actor_id, memory_id, expected_revision),
+        with self._mutation_connection(_connection) as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row is None or row["archived_at"] is not None:
+                raise KeyError("memory does not exist")
+            if int(row["revision"]) != expected_revision:
+                raise RuntimeError(
+                    f"memory revision is {row['revision']}, not {expected_revision}"
                 )
-                if cursor.rowcount != 1:
-                    connection.rollback()
-                    raise RuntimeError("memory revision changed during archive")
-                archived = connection.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
-                assert archived is not None
-                connection.execute(
-                    "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (memory_id, revision, now, actor_id, plan_id, message, self._snapshot(archived)),
-                )
-                connection.commit()
+            now = _utc_now()
+            revision = expected_revision + 1
+            cursor = connection.execute(
+                "UPDATE memories SET updated_at = ?, archived_at = ?, revision = ?, "
+                "last_updated_plan_id = ?, actor_id = ? "
+                "WHERE id = ? AND revision = ? AND archived_at IS NULL",
+                (now, now, revision, plan_id, actor_id, memory_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("memory revision changed during archive")
+            archived = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            assert archived is not None
+            connection.execute(
+                "INSERT INTO memory_revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (memory_id, revision, now, actor_id, plan_id, message, self._snapshot(archived)),
+            )
         return self._serialize(archived)
 
     def validate_helpful_feedback(self, value: Any) -> list[dict[str, Any]]:
@@ -905,6 +917,7 @@ class MemoryStore:
         plan_id: Any,
         feedback: list[dict[str, Any]],
         actor_id: str | None,
+        _connection: sqlite3.Connection | None = None,
     ) -> list[dict[str, Any]]:
         plan_id = self._validate_plan_id(plan_id)
         if len(feedback) > MAX_MEMORY_FEEDBACK_REFS:
@@ -912,58 +925,52 @@ class MemoryStore:
                 f"memory feedback cannot contain more than {MAX_MEMORY_FEEDBACK_REFS} items"
             )
         results: list[dict[str, Any]] = []
-        with self._lock:
-            self._ensure_available()
-            with closing(self._connect()) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                for item in feedback:
-                    memory_id = item["memory_id"]
-                    revision = self._validate_revision(item["revision"])
-                    existing = connection.execute(
-                        "SELECT memory_revision, created_at FROM memory_feedback "
-                        "WHERE plan_id = ? AND memory_id = ?",
-                        (plan_id, memory_id),
-                    ).fetchone()
-                    if existing is not None:
-                        if int(existing["memory_revision"]) != revision:
-                            connection.rollback()
-                            raise ValueError(
-                                f"plan {plan_id} already recorded a different revision for {memory_id}"
-                            )
-                        results.append(
-                            {
-                                "memory_id": memory_id,
-                                "revision": revision,
-                                "helpful_at": existing["created_at"],
-                            }
+        with self._mutation_connection(_connection) as connection:
+            for item in feedback:
+                memory_id = item["memory_id"]
+                revision = self._validate_revision(item["revision"])
+                existing = connection.execute(
+                    "SELECT memory_revision, created_at FROM memory_feedback "
+                    "WHERE plan_id = ? AND memory_id = ?",
+                    (plan_id, memory_id),
+                ).fetchone()
+                if existing is not None:
+                    if int(existing["memory_revision"]) != revision:
+                        raise ValueError(
+                            f"plan {plan_id} already recorded a different revision for {memory_id}"
                         )
-                        continue
-                    exists = connection.execute(
-                        "SELECT 1 FROM memories WHERE id = ?", (memory_id,)
-                    ).fetchone()
-                    if exists is None:
-                        connection.rollback()
-                        raise KeyError("memory does not exist")
-                    now = _utc_now()
-                    connection.execute(
-                        "INSERT INTO memory_feedback("
-                        "plan_id, memory_id, memory_revision, actor_id, created_at"
-                        ") VALUES (?, ?, ?, ?, ?)",
-                        (plan_id, memory_id, revision, actor_id, now),
-                    )
-                    connection.execute(
-                        "UPDATE memories SET helpful_count = helpful_count + 1, "
-                        "last_helpful_at = ? WHERE id = ?",
-                        (now, memory_id),
-                    )
                     results.append(
                         {
                             "memory_id": memory_id,
                             "revision": revision,
-                            "helpful_at": now,
+                            "helpful_at": existing["created_at"],
                         }
                     )
-                connection.commit()
+                    continue
+                exists = connection.execute(
+                    "SELECT 1 FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+                if exists is None:
+                    raise KeyError("memory does not exist")
+                now = _utc_now()
+                connection.execute(
+                    "INSERT INTO memory_feedback("
+                    "plan_id, memory_id, memory_revision, actor_id, created_at"
+                    ") VALUES (?, ?, ?, ?, ?)",
+                    (plan_id, memory_id, revision, actor_id, now),
+                )
+                connection.execute(
+                    "UPDATE memories SET helpful_count = helpful_count + 1, "
+                    "last_helpful_at = ? WHERE id = ?",
+                    (now, memory_id),
+                )
+                results.append(
+                    {
+                        "memory_id": memory_id,
+                        "revision": revision,
+                        "helpful_at": now,
+                    }
+                )
         return results
 
     def revisions(self, memory_id: str, *, limit: int = 100) -> list[dict[str, Any]]:

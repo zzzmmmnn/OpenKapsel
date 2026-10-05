@@ -987,8 +987,8 @@ class WorkspaceServerTests(unittest.TestCase):
             payload["capabilities"]["context"]["memory_capability"],
         )
         conversation_capability = payload["capabilities"]["context"]["conversation"]
-        self.assertEqual(20, conversation_capability["summary_prompt_after_user_ai_entries"])
-        self.assertEqual(30, conversation_capability["summary_required_after_user_ai_entries"])
+        self.assertEqual(40, conversation_capability["summary_prompt_after_user_ai_entries"])
+        self.assertEqual(49, conversation_capability["summary_required_after_user_ai_entries"])
         self.assertFalse(conversation_capability["summary_sub_id_fixed"])
         self.assertTrue(conversation_capability["summary_window_starts_at_latest_summary_or_one"])
         self.assertTrue(conversation_capability["append_returns_summary_status"])
@@ -1005,6 +1005,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(memory_capability["plan_completion_context_dry_run_before_memory"])
         self.assertTrue(memory_capability["plan_completion_context_lock_held_through_memory_and_commit"])
         self.assertTrue(memory_capability["plan_completion_memory_applied_before_context_commit"])
+        self.assertTrue(memory_capability["plan_completion_memory_mutations_atomic"])
         self.assertFalse(memory_capability["plan_completion_memory_atomic_with_plan_conversation"])
         self.assertTrue(memory_capability["plan_completion_memory_repairable_via_revisioned_update_or_archive"])
         self.assertTrue(memory_capability["plan_completion_retry_should_reconcile_memory_first"])
@@ -3518,11 +3519,11 @@ class WorkspaceServerTests(unittest.TestCase):
                     "role": "ai" if sub_id % 2 else "user",
                     "content": f"Fill Conversation slot {sub_id}.",
                 }
-                for sub_id in range(4, 31)
+                for sub_id in range(4, 50)
             ],
         )
         self.assertEqual(
-            30,
+            49,
             store.conversation_query(
                 conversation_id=conversation["conversation_id"],
                 full=True,
@@ -3562,7 +3563,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("invalid_context_entry", rejected["error"]["code"])
         self.assertIn("summary is required", rejected["error"]["message"])
-        self.assertIn("30 user/ai entries", rejected["error"]["message"])
+        self.assertIn("49 user/ai entries", rejected["error"]["message"])
 
         status, after_memory = self.request("GET", endpoint("/memory"))
         self.assertEqual(200, status)
@@ -3572,7 +3573,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("in_progress", current["status"])
         self.assertEqual(plan["revision"], current["revision"])
         self.assertEqual(
-            30,
+            49,
             store.conversation_query(
                 conversation_id=conversation["conversation_id"],
                 full=True,
@@ -6557,6 +6558,125 @@ class WorkspaceServerTests(unittest.TestCase):
             self.assertLess(
                 migrated_expiry, migration_started + timedelta(days=3, seconds=5)
             )
+
+    def test_plan_completion_memory_debrief_is_atomic(self) -> None:
+        record = self.server.tokens.create(
+            name="Atomic Memory workspace",
+            expires_at=None,
+            path_prefix="atomic-memory-workspace",
+            can_read=True,
+            can_write=True,
+            shell_mode="none",
+        )
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
+        conversation = self._new_test_conversation(
+            record,
+            "atomic Memory completion",
+        )
+        status, plan = self.request(
+            "POST",
+            endpoint("/context"),
+            {
+                "type": "plan",
+                "taskname": "atomic-memory",
+                "content": "Verify Plan completion Memory mutations are atomic.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the atomic Memory Plan.",
+                ),
+            },
+        )
+        self.assertEqual(201, status)
+
+        memory_store = self.server.memory_for(
+            (self.server.config.root / record.path_prefix).resolve()
+        )
+        existing = memory_store.create(
+            content="Initial Memory value.",
+            tags=["memory", "atomicity", "completion", "test"],
+            path="server:.",
+            plan_id=plan["id"],
+            actor_id=record.actor_id,
+            message="Create Memory for atomic completion test",
+        )
+        revised = memory_store.update(
+            existing["memory_id"],
+            changes={"content": "Stable revision two."},
+            expected_revision=1,
+            plan_id=plan["id"],
+            actor_id=record.actor_id,
+            message="Prepare revision two",
+        )
+        self.assertEqual(2, revised["revision"])
+        memory_store.record_helpful_feedback(
+            plan_id=plan["id"],
+            feedback=[
+                {
+                    "memory_id": existing["memory_id"],
+                    "revision": 1,
+                }
+            ],
+            actor_id=record.actor_id,
+        )
+
+        status, rejected = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{plan['id']}"),
+            {
+                "taskname": "atomic-memory",
+                "expected_revision": plan["revision"],
+                "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI attempts the atomic Memory completion.",
+                ),
+                "debrief": {
+                    "items": [
+                        {
+                            "content": "This newly created Memory must roll back.",
+                            "tags": ["memory", "atomicity", "rollback", "create"],
+                        }
+                    ],
+                    "outcome": "partial",
+                    "memory_actions": [
+                        {
+                            "action": "update",
+                            "memory_id": existing["memory_id"],
+                            "expected_revision": 2,
+                            "content": "This revision-three update must also roll back.",
+                        }
+                    ],
+                    "memory_feedback": [
+                        {
+                            "memory_id": existing["memory_id"],
+                            "revision": 2,
+                        }
+                    ],
+                    "memory_conflicts": [],
+                },
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_memory", rejected["error"]["code"])
+        self.assertIn("already recorded a different revision", rejected["error"]["message"])
+
+        memories, total = memory_store.query(include_archived=True, limit=100)
+        self.assertEqual(1, total)
+        self.assertEqual(existing["memory_id"], memories[0]["memory_id"])
+        after = memory_store.get(existing["memory_id"])
+        self.assertEqual(2, after["revision"])
+        self.assertEqual("Stable revision two.", after["content"])
+        self.assertEqual(1, after["helpful_count"])
+        self.assertEqual(
+            [2, 1],
+            [item["revision"] for item in memory_store.revisions(existing["memory_id"])],
+        )
+
+        current_plan = self.server.context_for(
+            (self.server.config.root / record.path_prefix).resolve()
+        ).query(entry_id=plan["id"])[0][0]
+        self.assertEqual("in_progress", current_plan["status"])
+        self.assertEqual(plan["revision"], current_plan["revision"])
 
     def test_project_memory_rest_mcp_relevance_revisions_and_debrief(self) -> None:
         record = self.server.tokens.create(

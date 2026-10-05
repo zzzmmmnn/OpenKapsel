@@ -11,8 +11,8 @@ from typing import Any
 MAX_CONVERSATION_CONTENT_CHARS = 1000
 MAX_CONVERSATION_SUMMARY_CHARS = 8192
 MAX_CONVERSATION_QUERY_LIMIT = 100
-CONVERSATION_SUMMARY_PROMPT_AFTER = 20
-CONVERSATION_SUMMARY_REQUIRED_AFTER = 30
+CONVERSATION_SUMMARY_PROMPT_AFTER = 40
+CONVERSATION_SUMMARY_REQUIRED_AFTER = 49
 CONVERSATION_ROLES = {"user", "ai", "summary"}
 CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
 _CONVERSATION_ALPHABET = string.ascii_letters + string.digits
@@ -24,9 +24,9 @@ CONVERSATION_INSTRUCTIONS = (
     "using the conversation_id together with its writer_nonce. Use role=user for the user's side and role=ai "
     "for the AI's side. user/ai content is limited to 1000 characters and represents that side's conversation "
     "context summary; it may keep important original wording verbatim and does not need extra compression when "
-    "the source already fits the limit. After 20 user/ai entries since the most recent role=summary, append "
+    "the source already fits the limit. After 40 user/ai entries since the most recent role=summary, append "
     "responses recommend creating a compressed aggregate summary. That summary should cover the range beginning "
-    "at the most recent summary itself (or sub_id 1 when none exists) through the latest entry. Once 30 user/ai "
+    "at the most recent summary itself (or sub_id 1 when none exists) through the latest entry. Once 49 user/ai "
     "entries have accumulated since the most recent summary, another user/ai entry is rejected until role=summary "
     "is appended. summary content may be up to 8192 characters and must compress that range while preserving its "
     "important context. Plan creation and non-cancelling Plan updates require this conversation id, its "

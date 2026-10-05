@@ -161,7 +161,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(3, total)
         self.assertEqual([3, 2, 1], [item["sub_id"] for item in entries])
 
-    def test_summary_is_prompted_after_twenty_and_required_after_thirty(self) -> None:
+    def test_summary_is_prompted_after_forty_and_required_after_forty_nine(self) -> None:
         created = self.create_conversation("summary cadence")
         conversation_id = created["conversation_id"]
         writer_nonce = created["writer_nonce"]
@@ -173,27 +173,27 @@ class ConversationTests(unittest.TestCase):
             writer_nonce=writer_nonce,
             entries=[
                 {"role": "user" if index % 2 else "ai", "content": f"record {index}"}
-                for index in range(3, 21)
+                for index in range(3, 41)
             ],
         )
-        self.assertEqual(20, prompted["summary_status"]["user_ai_since_summary"])
+        self.assertEqual(40, prompted["summary_status"]["user_ai_since_summary"])
         self.assertTrue(prompted["summary_status"]["recommended"])
         self.assertFalse(
             prompted["summary_status"]["required_before_next_user_ai"]
         )
         self.assertEqual(1, prompted["summary_status"]["source_start_sub_id"])
-        self.assertEqual(20, prompted["summary_status"]["source_end_sub_id"])
-        self.assertIn("sub_id 1 through 20", prompted["summary_status"]["instruction"])
+        self.assertEqual(40, prompted["summary_status"]["source_end_sub_id"])
+        self.assertIn("sub_id 1 through 40", prompted["summary_status"]["instruction"])
 
         summary = self.store.append_conversation(
             conversation_id=conversation_id,
             writer_nonce=writer_nonce,
             entries=[{"role": "summary", "content": "S" * 8192}],
         )
-        self.assertEqual(21, summary["entries"][0]["sub_id"])
+        self.assertEqual(41, summary["entries"][0]["sub_id"])
         self.assertEqual(0, summary["summary_status"]["user_ai_since_summary"])
         self.assertFalse(summary["summary_status"]["recommended"])
-        self.assertEqual(21, summary["summary_status"]["source_start_sub_id"])
+        self.assertEqual(41, summary["summary_status"]["source_start_sub_id"])
         with self.assertRaisesRegex(ValueError, "8192"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
@@ -206,19 +206,19 @@ class ConversationTests(unittest.TestCase):
             writer_nonce=writer_nonce,
             entries=[
                 {"role": "user" if index % 2 else "ai", "content": f"window {index}"}
-                for index in range(1, 31)
+                for index in range(1, 50)
             ],
         )
-        self.assertEqual(51, required["entries"][-1]["sub_id"])
-        self.assertEqual(30, required["summary_status"]["user_ai_since_summary"])
+        self.assertEqual(90, required["entries"][-1]["sub_id"])
+        self.assertEqual(49, required["summary_status"]["user_ai_since_summary"])
         self.assertTrue(required["summary_status"]["recommended"])
         self.assertTrue(
             required["summary_status"]["required_before_next_user_ai"]
         )
-        self.assertEqual(21, required["summary_status"]["source_start_sub_id"])
-        self.assertEqual(51, required["summary_status"]["source_end_sub_id"])
+        self.assertEqual(41, required["summary_status"]["source_start_sub_id"])
+        self.assertEqual(90, required["summary_status"]["source_end_sub_id"])
         self.assertIn("required", required["summary_status"]["instruction"])
-        self.assertIn("sub_id 21 through 51", required["summary_status"]["instruction"])
+        self.assertIn("sub_id 41 through 90", required["summary_status"]["instruction"])
 
         with self.assertRaisesRegex(ValueError, "summary is required"):
             self.store.append_conversation(
@@ -235,10 +235,10 @@ class ConversationTests(unittest.TestCase):
                 {"role": "ai", "content": "AI continues after the summary."},
             ],
         )
-        self.assertEqual([52, 53], [item["sub_id"] for item in resumed["entries"]])
+        self.assertEqual([91, 92], [item["sub_id"] for item in resumed["entries"]])
         self.assertEqual(1, resumed["summary_status"]["user_ai_since_summary"])
         self.assertFalse(resumed["summary_status"]["recommended"])
-        self.assertEqual(52, resumed["summary_status"]["source_start_sub_id"])
+        self.assertEqual(91, resumed["summary_status"]["source_start_sub_id"])
 
     def test_cross_conversation_query_defaults_to_latest_summary_window(self) -> None:
         first = self.create_conversation("first")
@@ -354,13 +354,13 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(2, updated["revision"])
         self.assertEqual("Updated Plan content.", updated["content"])
 
-        # Fill to 30 user/ai entries since no summary exists. Creation used 1-2, Plan create 3, update 4.
+        # Fill to 49 user/ai entries since no summary exists. Creation used 1-2, Plan create 3, update 4.
         self.store.append_conversation(
             conversation_id=conversation["conversation_id"],
             writer_nonce=conversation["writer_nonce"],
             entries=[
                 {"role": "ai" if index % 2 else "user", "content": f"fill {index}"}
-                for index in range(5, 31)
+                for index in range(5, 50)
             ],
         )
         with self.assertRaisesRegex(ValueError, "summary is required"):
@@ -380,7 +380,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(2, current["revision"])
         self.assertEqual("Updated Plan content.", current["content"])
         self.assertEqual(
-            30,
+            49,
             self.store.conversation_query(
                 conversation_id=conversation["conversation_id"],
                 full=True,

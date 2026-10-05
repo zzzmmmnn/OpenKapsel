@@ -455,87 +455,97 @@ class MemoryHandlersMixin:
 
         debrief_path = self._plan_memory_path(plan_id)
         results: list[dict[str, Any]] = []
-        for index, item in enumerate(normalized_items):
-            try:
-                entry = store.create(
-                    content=item["content"],
-                    tags=item["tags"],
-                    path=debrief_path,
-                    plan_id=plan_id,
-                    actor_id=actor_id,
-                    message=f"Plan {plan_id} debrief memory",
-                )
-            except (KeyError, ValueError, RuntimeError) as exc:
-                error = self._memory_error(exc)
-                error.details = {"debrief_item_index": index}
-                raise error from None
-            results.append(
-                {
-                    "action": "create",
-                    "memory_id": entry["memory_id"],
-                    "revision": entry["revision"],
-                }
-            )
-
-        for index, action_value in enumerate(actions):
-            if not isinstance(action_value, dict):
-                raise ApiError(
-                    HTTPStatus.BAD_REQUEST,
-                    "invalid_plan_debrief",
-                    f"memory action {index} must be an object",
-                )
-            action = action_value.get("action")
-            try:
-                if action == "update":
-                    memory_id = action_value.get("memory_id")
-                    if not isinstance(memory_id, str) or not memory_id:
-                        raise ValueError("memory_id is required for update")
-                    ignored = {"action", "memory_id", "expected_revision"}
-                    changes = {
-                        key: item
-                        for key, item in action_value.items()
-                        if key not in ignored
-                    }
-                    entry = store.update(
-                        memory_id,
-                        changes=changes,
-                        expected_revision=action_value.get("expected_revision"),
-                        plan_id=plan_id,
-                        actor_id=actor_id,
-                        message=completion_message,
-                    )
-                elif action == "archive":
-                    memory_id = action_value.get("memory_id")
-                    if not isinstance(memory_id, str) or not memory_id:
-                        raise ValueError("memory_id is required for archive")
-                    entry = store.archive(
-                        memory_id,
-                        expected_revision=action_value.get("expected_revision"),
-                        plan_id=plan_id,
-                        actor_id=actor_id,
-                        message=completion_message,
-                    )
-                else:
-                    raise ValueError("memory action must be update or archive")
-            except (KeyError, ValueError, RuntimeError) as exc:
-                error = self._memory_error(exc)
-                error.details = {"action_index": index}
-                raise error from None
-            results.append(
-                {
-                    "action": action,
-                    "memory_id": entry["memory_id"],
-                    "revision": entry["revision"],
-                }
-            )
         try:
-            recorded_feedback = store.record_helpful_feedback(
-                plan_id=plan_id,
-                feedback=normalized_feedback,
-                actor_id=actor_id,
-            )
-        except (KeyError, ValueError, RuntimeError) as exc:
-            raise self._memory_error(exc) from None
+            with store.atomic_transaction() as memory_connection:
+                for index, item in enumerate(normalized_items):
+                    try:
+                        entry = store.create(
+                            content=item["content"],
+                            tags=item["tags"],
+                            path=debrief_path,
+                            plan_id=plan_id,
+                            actor_id=actor_id,
+                            message=f"Plan {plan_id} debrief memory",
+                            _connection=memory_connection,
+                        )
+                    except (KeyError, ValueError, RuntimeError) as exc:
+                        error = self._memory_error(exc)
+                        error.details = {"debrief_item_index": index}
+                        raise error from None
+                    results.append(
+                        {
+                            "action": "create",
+                            "memory_id": entry["memory_id"],
+                            "revision": entry["revision"],
+                        }
+                    )
+
+                for index, action_value in enumerate(actions):
+                    if not isinstance(action_value, dict):
+                        raise ApiError(
+                            HTTPStatus.BAD_REQUEST,
+                            "invalid_plan_debrief",
+                            f"memory action {index} must be an object",
+                        )
+                    action = action_value.get("action")
+                    try:
+                        if action == "update":
+                            memory_id = action_value.get("memory_id")
+                            if not isinstance(memory_id, str) or not memory_id:
+                                raise ValueError("memory_id is required for update")
+                            ignored = {"action", "memory_id", "expected_revision"}
+                            changes = {
+                                key: item
+                                for key, item in action_value.items()
+                                if key not in ignored
+                            }
+                            entry = store.update(
+                                memory_id,
+                                changes=changes,
+                                expected_revision=action_value.get("expected_revision"),
+                                plan_id=plan_id,
+                                actor_id=actor_id,
+                                message=completion_message,
+                                _connection=memory_connection,
+                            )
+                        elif action == "archive":
+                            memory_id = action_value.get("memory_id")
+                            if not isinstance(memory_id, str) or not memory_id:
+                                raise ValueError("memory_id is required for archive")
+                            entry = store.archive(
+                                memory_id,
+                                expected_revision=action_value.get("expected_revision"),
+                                plan_id=plan_id,
+                                actor_id=actor_id,
+                                message=completion_message,
+                                _connection=memory_connection,
+                            )
+                        else:
+                            raise ValueError("memory action must be update or archive")
+                    except (KeyError, ValueError, RuntimeError) as exc:
+                        error = self._memory_error(exc)
+                        error.details = {"action_index": index}
+                        raise error from None
+                    results.append(
+                        {
+                            "action": action,
+                            "memory_id": entry["memory_id"],
+                            "revision": entry["revision"],
+                        }
+                    )
+
+                try:
+                    recorded_feedback = store.record_helpful_feedback(
+                        plan_id=plan_id,
+                        feedback=normalized_feedback,
+                        actor_id=actor_id,
+                        _connection=memory_connection,
+                    )
+                except (KeyError, ValueError, RuntimeError) as exc:
+                    raise self._memory_error(exc) from None
+        except ApiError:
+            raise
+
         return {
             "items": normalized_items,
             "outcome": outcome,

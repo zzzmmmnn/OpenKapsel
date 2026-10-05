@@ -211,7 +211,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_append",
         "Append conversation",
-        "Atomically append one or more immutable Conversation records using conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may preserve original wording without extra compression when it already fits. summary is dynamic, not tied to a fixed sub_id: after 20 user/ai entries since the newest summary, the response recommends a role=summary over the range beginning at that summary (or sub_id 1); after 30, another user/ai entry is rejected until summary is appended. Responses include summary_status.",
+        "Atomically append one or more immutable Conversation records using conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may preserve original wording without extra compression when it already fits. summary is dynamic, not tied to a fixed sub_id: after 40 user/ai entries since the newest summary, the response recommends a role=summary over the range beginning at that summary (or sub_id 1); after 49, another user/ai entry is rejected until summary is appended. Responses include summary_status.",
         _object_schema(
             {
                 "conversation_id": {"type": "integer", "minimum": 0},
