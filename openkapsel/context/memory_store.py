@@ -779,17 +779,20 @@ class MemoryStore:
                 )
                 revision = expected_revision + 1
                 now = _utc_now()
-                connection.execute(
+                cursor = connection.execute(
                     """
                     UPDATE memories SET updated_at = ?, content = ?, tags_json = ?, path = ?,
                         revision = ?, last_updated_plan_id = ?, actor_id = ?
-                    WHERE id = ?
+                    WHERE id = ? AND revision = ? AND archived_at IS NULL
                     """,
                     (
                         now, content, self._encode(tags), path,
-                        revision, plan_id, actor_id, memory_id,
+                        revision, plan_id, actor_id, memory_id, expected_revision,
                     ),
                 )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    raise RuntimeError("memory revision changed during update")
                 updated = connection.execute(
                     "SELECT * FROM memories WHERE id = ?", (memory_id,)
                 ).fetchone()
@@ -840,11 +843,15 @@ class MemoryStore:
                     raise RuntimeError(f"memory revision is {row['revision']}, not {expected_revision}")
                 now = _utc_now()
                 revision = expected_revision + 1
-                connection.execute(
+                cursor = connection.execute(
                     "UPDATE memories SET updated_at = ?, archived_at = ?, revision = ?, "
-                    "last_updated_plan_id = ?, actor_id = ? WHERE id = ?",
-                    (now, now, revision, plan_id, actor_id, memory_id),
+                    "last_updated_plan_id = ?, actor_id = ? "
+                    "WHERE id = ? AND revision = ? AND archived_at IS NULL",
+                    (now, now, revision, plan_id, actor_id, memory_id, expected_revision),
                 )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    raise RuntimeError("memory revision changed during archive")
                 archived = connection.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
                 assert archived is not None
                 connection.execute(

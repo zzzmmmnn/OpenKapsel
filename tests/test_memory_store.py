@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -91,6 +92,76 @@ class MemoryStoreTests(unittest.TestCase):
             archived_items, total = store.query(include_archived=True)
             self.assertEqual(1, total)
             self.assertIsNotNone(archived_items[0]["archived_at"])
+
+    def test_concurrent_updates_reject_stale_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            seed_store = MemoryStore(workspace)
+            created = seed_store.create(
+                content="Initial concurrent Memory value.",
+                tags=["memory", "revision", "concurrency", "cas"],
+                plan_id=1,
+                actor_id="seed",
+                message="Create concurrency seed",
+            )
+            stores = [MemoryStore(workspace), MemoryStore(workspace)]
+            barrier = threading.Barrier(2)
+            outcomes: list[tuple[str, object, object]] = []
+            outcomes_lock = threading.Lock()
+
+            def writer(store: MemoryStore, content: str, actor_id: str) -> None:
+                barrier.wait()
+                try:
+                    result = store.update(
+                        created["memory_id"],
+                        changes={"content": content},
+                        expected_revision=1,
+                        plan_id=2,
+                        actor_id=actor_id,
+                        message="Race the same Memory revision",
+                    )
+                except Exception as exc:
+                    outcome: tuple[str, object, object] = (
+                        "error",
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                else:
+                    outcome = ("ok", result["revision"], result["content"])
+                with outcomes_lock:
+                    outcomes.append(outcome)
+
+            threads = [
+                threading.Thread(
+                    target=writer,
+                    args=(stores[0], "Concurrent writer A won.", "writer-a"),
+                ),
+                threading.Thread(
+                    target=writer,
+                    args=(stores[1], "Concurrent writer B won.", "writer-b"),
+                ),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                self.assertFalse(thread.is_alive())
+
+            successes = [item for item in outcomes if item[0] == "ok"]
+            failures = [item for item in outcomes if item[0] == "error"]
+            self.assertEqual(1, len(successes))
+            self.assertEqual(1, len(failures))
+            self.assertEqual(2, successes[0][1])
+            self.assertEqual("RuntimeError", failures[0][1])
+            self.assertIn("revision", str(failures[0][2]))
+
+            current = seed_store.get(created["memory_id"])
+            self.assertEqual(2, current["revision"])
+            self.assertEqual(successes[0][2], current["content"])
+            self.assertEqual(
+                [2, 1],
+                [item["revision"] for item in seed_store.revisions(created["memory_id"])],
+            )
 
     def test_memory_requires_tags_and_content_is_capped_at_256(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
