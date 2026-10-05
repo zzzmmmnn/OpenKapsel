@@ -153,7 +153,7 @@ class McpHandlersMixin:
             },
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer fs_edit_text for focused edits. "
-                "Before modifying the workspace, use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Use context_plan_update for parent/content/status changes and context_note_replace with an owning plan_id. "
+                "Before modifying the workspace, use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Plan reads expose revision; context_plan_update requires the current expected_revision for parent/content/status changes and increments revision on success. Use context_note_replace with an owning plan_id. "
                 "Pass expected_etag to fs_write or fs_edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use fs_read_binary and Base64 upload_chunk for small binary chunks; for large files call fs_download or use the raw_transfer URLs returned by upload_create. "
                 "Call web_preview_url when a workspace page should be opened in a browser. "
@@ -417,7 +417,11 @@ class McpHandlersMixin:
             return self._create_context_entry(arguments)
         if name == "context_plan_update":
             try:
+                store = self.server.context_for(self.token_scope_root)
+                entry_id = int(arguments["id"])
+                expected_revision = arguments["expected_revision"]
                 changes: dict[str, Any] = {
+                    "expected_revision": expected_revision,
                     "taskname": str(arguments["taskname"]),
                     "content": (
                         str(arguments["content"])
@@ -430,30 +434,27 @@ class McpHandlersMixin:
                         else None
                     ),
                 }
-                completed_debrief: dict[str, Any] | None = None
-                if changes["plan_status"] == "completed":
-                    existing_entries, _ = self.server.context_for(self.token_scope_root).query(
-                        entry_id=int(arguments["id"]),
-                    )
-                    if not existing_entries or existing_entries[0]["type"] != "plan":
-                        raise KeyError("context entry does not exist")
-                    if existing_entries[0]["status"] == "completed":
-                        raise ValueError("plan is already completed")
-                    completed_debrief = self._apply_memory_debrief(
-                        int(arguments["id"]),
-                        str(arguments["taskname"]),
-                        arguments.get("debrief"),
-                    )
-                    changes["debrief"] = completed_debrief
-                    changes["actor_id"] = self.token_record.actor_id
-                elif "debrief" in arguments:
-                    raise ValueError("plan debrief is only valid when status is completed")
                 if "plan_id" in arguments:
                     changes["plan_id"] = arguments["plan_id"]
-                entry = self.server.context_for(self.token_scope_root).update_plan(
-                    int(arguments["id"]),
-                    **changes,
-                )
+                completed_debrief: dict[str, Any] | None = None
+                if changes["plan_status"] == "completed":
+                    with store.plan_update_guard(entry_id, expected_revision) as existing:
+                        if existing["status"] == "completed":
+                            raise ValueError("plan is already completed")
+                        completed_debrief = self._apply_memory_debrief(
+                            entry_id,
+                            str(arguments["taskname"]),
+                            arguments.get("debrief"),
+                        )
+                        changes["debrief"] = completed_debrief
+                        changes["actor_id"] = self.token_record.actor_id
+                        entry = store.update_plan(entry_id, **changes)
+                else:
+                    if "debrief" in arguments:
+                        raise ValueError(
+                            "plan debrief is only valid when status is completed"
+                        )
+                    entry = store.update_plan(entry_id, **changes)
                 if completed_debrief is not None:
                     entry["debrief"] = completed_debrief
                 return entry
@@ -462,6 +463,12 @@ class McpHandlersMixin:
                     HTTPStatus.NOT_FOUND,
                     "context_not_found",
                     str(exc.args[0]),
+                ) from None
+            except RuntimeError as exc:
+                raise ApiError(
+                    HTTPStatus.PRECONDITION_FAILED,
+                    "context_plan_revision_conflict",
+                    str(exc),
                 ) from None
             except ValueError as exc:
                 raise ApiError(

@@ -210,7 +210,10 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
             children = []
             for index, node in enumerate(spec["subplans"]):
                 entry = _insert_plan(store, connection, node, root["id"], actor_id, now)
-                child = {field: entry[field] for field in ("id", "plan_id", "taskname", "status")}
+                child = {
+                    field: entry[field]
+                    for field in ("id", "plan_id", "taskname", "status", "revision")
+                }
                 child["index"] = index
                 if "ref" in node:
                     child["ref"] = node["ref"]

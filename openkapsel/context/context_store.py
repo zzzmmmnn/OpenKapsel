@@ -7,7 +7,7 @@ import os
 import posixpath
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -90,7 +90,8 @@ class ContextStore:
                                     'in_progress', 'completed', 'cancelled'
                                 )
                             ),
-                            plan_id INTEGER
+                            plan_id INTEGER,
+                            revision INTEGER NOT NULL DEFAULT 1
                         )
                         """
                     )
@@ -113,6 +114,11 @@ class ContextStore:
                     if "plan_id" not in columns:
                         connection.execute(
                             "ALTER TABLE context_entries ADD COLUMN plan_id INTEGER"
+                        )
+                    if "revision" not in columns:
+                        connection.execute(
+                            "ALTER TABLE context_entries "
+                            "ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
                         )
                     connection.execute(
                         "UPDATE context_entries SET plan_status = 'in_progress' "
@@ -351,6 +357,12 @@ class ContextStore:
             raise ValueError("plan_id must be a positive integer")
         return plan_id
 
+    @staticmethod
+    def _validate_revision(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("plan expected_revision must be a positive integer")
+        return value
+
     @classmethod
     def _require_plan(
         cls,
@@ -510,10 +522,32 @@ class ContextStore:
                 (*protected_ids, CONTEXT_TRIM_ENTRIES),
             )
 
+    @contextmanager
+    def plan_update_guard(self, entry_id: int, expected_revision: Any):
+        """Serialize one in-process Plan update and reject stale revisions before side effects."""
+        expected_revision = self._validate_revision(expected_revision)
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                row = connection.execute(
+                    "SELECT * FROM context_entries WHERE id = ?",
+                    (entry_id,),
+                ).fetchone()
+            if row is None:
+                raise KeyError("context entry does not exist")
+            if row["entry_type"] != "plan":
+                raise ValueError("context entry is not a plan")
+            if int(row["revision"]) != expected_revision:
+                raise RuntimeError(
+                    f"plan revision is {row['revision']}, not {expected_revision}"
+                )
+            yield self._serialize(row)
+
     def update_plan(
         self,
         entry_id: int,
         *,
+        expected_revision: Any,
         taskname: str,
         content: str | None = None,
         plan_status: str | None = None,
@@ -521,6 +555,7 @@ class ContextStore:
         debrief: dict[str, Any] | None = None,
         actor_id: str | None = None,
     ) -> dict[str, Any]:
+        expected_revision = self._validate_revision(expected_revision)
         taskname = self._validate_taskname(taskname)
         if content is None and plan_status is None and plan_id is _UNSET and debrief is None:
             raise ValueError("plan update requires content, status, or plan_id")
@@ -562,6 +597,11 @@ class ContextStore:
                 if row["entry_type"] != "plan":
                     connection.rollback()
                     raise ValueError("context entry is not a plan")
+                if int(row["revision"]) != expected_revision:
+                    connection.rollback()
+                    raise RuntimeError(
+                        f"plan revision is {row['revision']}, not {expected_revision}"
+                    )
                 if debrief is not None:
                     existing_debrief = connection.execute(
                         "SELECT 1 FROM plan_debriefs WHERE plan_id = ?",
@@ -581,12 +621,13 @@ class ContextStore:
                             child_id=entry_id,
                         )
                     )
-                connection.execute(
+                next_revision = expected_revision + 1
+                cursor = connection.execute(
                     """
                     UPDATE context_entries
                     SET updated_at = ?, taskname = ?, content = ?, plan_status = ?,
-                        plan_id = ?
-                    WHERE id = ?
+                        plan_id = ?, revision = ?
+                    WHERE id = ? AND entry_type = 'plan' AND revision = ?
                     """,
                     (
                         _utc_now(),
@@ -596,9 +637,14 @@ class ContextStore:
                         if plan_status is not None
                         else (row["plan_status"] or "in_progress"),
                         next_plan_id,
+                        next_revision,
                         entry_id,
+                        expected_revision,
                     ),
                 )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    raise RuntimeError("plan revision changed during update")
                 if debrief is not None:
                     connection.execute(
                         """
@@ -876,6 +922,7 @@ class ContextStore:
                     "content_preview": content[:MAX_PLAN_HINT_CONTENT_CHARS],
                     "content_truncated": len(content) > MAX_PLAN_HINT_CONTENT_CHARS,
                     "status": entry["status"],
+                    "revision": entry["revision"],
                     "plan_id": None,
                     "created_at": entry["created_at"],
                     "updated_at": entry["updated_at"],
@@ -1019,6 +1066,8 @@ class ContextStore:
         }
         if row["entry_type"] == "operation":
             payload["message"] = row["content"]
+        if row["entry_type"] == "plan":
+            payload["revision"] = int(row["revision"])
         for source, destination in (
             ("request_json", "request"),
             ("result_json", "result"),

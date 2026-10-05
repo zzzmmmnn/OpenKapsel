@@ -295,10 +295,11 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update a plan in place, including its task grouping, content, or status.",
+        "Update a plan in place using its current revision as an optimistic concurrency precondition.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},
+                "expected_revision": {"type": "integer", "minimum": 1},
                 "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
                 "content": {"type": "string", "minLength": 1},
                 "plan_id": {
@@ -315,7 +316,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "description": "Required when completing a plan: items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each item directly creates one new long-lived Memory; multiple items create multiple Memories. Each item has 1-256 character content plus tags (prefer 4-16). One path is derived by the server from successful writes owned by the Plan. memory_actions only updates or archives existing Memory.",
                 },
             },
-            ("id", "taskname"),
+            ("id", "expected_revision", "taskname"),
         ),
         read_only=False,
         idempotent=True,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -49,6 +50,7 @@ class ContextStoreTests(unittest.TestCase):
             )
             store.update_plan(
                 completed_root,
+                expected_revision=1,
                 taskname="completed-root",
                 plan_status="completed",
                 debrief={
@@ -67,6 +69,7 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual(1, hints["total"])
             self.assertFalse(hints["truncated"])
             self.assertEqual([older_root], [item["id"] for item in hints["plans"]])
+            self.assertEqual(1, hints["plans"][0]["revision"])
             self.assertEqual("A long r", hints["plans"][0]["content_preview"])
             self.assertTrue(hints["plans"][0]["content_truncated"])
             self.assertIsNone(hints["plans"][0]["plan_id"])
@@ -136,8 +139,10 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual("plan", exact[0]["type"])
             self.assertEqual("context-feature", exact[0]["taskname"])
             self.assertEqual("in_progress", exact[0]["status"])
+            self.assertEqual(1, exact[0]["revision"])
             updated = store.update_plan(
                 plan_id,
+                expected_revision=exact[0]["revision"],
                 taskname="context-feature",
                 content="Implement and verify context history",
                 plan_status="completed",
@@ -163,6 +168,7 @@ class ContextStoreTests(unittest.TestCase):
             )
             self.assertEqual(plan_id, updated["id"])
             self.assertEqual("completed", updated["status"])
+            self.assertEqual(2, updated["revision"])
             completed, total = store.query(
                 entry_type="plan",
                 entry_status="completed",
@@ -232,6 +238,7 @@ class ContextStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cycle"):
                 store.update_plan(
                     plan_id,
+                    expected_revision=updated["revision"],
                     taskname="context-feature",
                     plan_id=child_plan_id,
                 )
@@ -305,7 +312,72 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual(new_id, entries[0]["id"])
             self.assertEqual("Context storage was recreated", entries[0]["content"])
 
-    def test_legacy_database_adds_taskname_plan_status_and_plan_id_columns(self) -> None:
+    def test_concurrent_plan_updates_reject_stale_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            seed_store = ContextStore(workspace)
+            plan_id = seed_store.add(
+                "plan",
+                "Initial concurrent Plan content",
+                taskname="plan-race",
+            )
+            initial = seed_store.query(entry_id=plan_id)[0][0]
+            self.assertEqual(1, initial["revision"])
+
+            stores = [ContextStore(workspace), ContextStore(workspace)]
+            barrier = threading.Barrier(2)
+            outcomes: list[tuple[str, object, object]] = []
+            outcomes_lock = threading.Lock()
+
+            def writer(store: ContextStore, content: str, taskname: str) -> None:
+                barrier.wait()
+                try:
+                    result = store.update_plan(
+                        plan_id,
+                        expected_revision=1,
+                        taskname=taskname,
+                        content=content,
+                    )
+                except Exception as exc:
+                    outcome: tuple[str, object, object] = (
+                        "error",
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                else:
+                    outcome = ("ok", result["revision"], result["content"])
+                with outcomes_lock:
+                    outcomes.append(outcome)
+
+            threads = [
+                threading.Thread(
+                    target=writer,
+                    args=(stores[0], "Concurrent Plan writer A won.", "plan-race-a"),
+                ),
+                threading.Thread(
+                    target=writer,
+                    args=(stores[1], "Concurrent Plan writer B won.", "plan-race-b"),
+                ),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                self.assertFalse(thread.is_alive())
+
+            successes = [item for item in outcomes if item[0] == "ok"]
+            failures = [item for item in outcomes if item[0] == "error"]
+            self.assertEqual(1, len(successes))
+            self.assertEqual(1, len(failures))
+            self.assertEqual(2, successes[0][1])
+            self.assertEqual("RuntimeError", failures[0][1])
+            self.assertIn("revision", str(failures[0][2]))
+
+            current = seed_store.query(entry_id=plan_id)[0][0]
+            self.assertEqual(2, current["revision"])
+            self.assertEqual(successes[0][2], current["content"])
+
+    def test_legacy_database_adds_plan_metadata_and_revision_columns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
             context = workspace / ".openkapsel" / "context"
@@ -351,12 +423,15 @@ class ContextStoreTests(unittest.TestCase):
                 )
             }
             migrated_connection.close()
-            self.assertTrue({"taskname", "plan_status", "plan_id"} <= migrated_columns)
+            self.assertTrue(
+                {"taskname", "plan_status", "plan_id", "revision"} <= migrated_columns
+            )
             entries, total = store.query(limit=200)
             self.assertEqual(2, total)
             plan = next(item for item in entries if item["type"] == "plan")
             self.assertIsNone(plan["taskname"])
             self.assertEqual("in_progress", plan["status"])
+            self.assertEqual(1, plan["revision"])
             self.assertIsNone(plan["plan_id"])
             migrated, total = store.query(
                 actor_id="legacy-actor",

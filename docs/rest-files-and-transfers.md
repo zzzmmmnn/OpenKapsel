@@ -12,7 +12,7 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `GET` | `/discovery/<section>` | Focused or complete Discovery |
 | `GET/POST` | `/context` | Query Context or create a Plan or Note |
 | `GET` | `/context/plans/<id>/tree` | Read a Plan subtree and attached entries |
-| `PATCH` | `/context/plans/<id>` | Update Plan content, status, parent, and debrief |
+| `PATCH` | `/context/plans/<id>` | Update Plan content, status, parent, and debrief using `expected_revision` |
 | `GET/POST` | `/memory`, `/memory/project` | Query, create, or read project Memory |
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
 | `GET` | `/fs/query/list`, `/fs/query/tree`, `/fs/query/find`, `/fs/query/grep` | List, recursively inspect, find by name, or grep file contents |

@@ -12,7 +12,7 @@ Entry types:
 - `plan`: AI-authored hierarchy with `in_progress`, `completed`, or `cancelled`
 - `note`: AI-authored finding attached to a Plan
 
-A root Plan has no parent. A Sub Plan references its parent. Operations and Notes reference their owning Plan. Parent cycles and self-parenting are rejected. Plan updates preserve the ID; Note editing creates a replacement record and deletes the old one atomically so recent queries find the replacement.
+A root Plan has no parent. A Sub Plan references its parent. Operations and Notes reference their owning Plan. Parent cycles and self-parenting are rejected. Plan reads expose a positive `revision`; updates preserve the ID, require the current `expected_revision`, and increment `revision` on success so stale competing writers are rejected. Note editing creates a replacement record and deletes the old one atomically so recent queries find the replacement.
 
 Every ordinary mutation requires a valid `plan_id`, `taskname`, and `message`. Task names are limited to 32 Unicode characters and operation messages to 200. Plan and Note content may contain up to 32,768 characters.
 

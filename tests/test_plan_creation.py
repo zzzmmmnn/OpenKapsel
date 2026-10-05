@@ -120,7 +120,13 @@ class PlanCreationTests(unittest.TestCase):
         before = copy.deepcopy(body)
         first = self.create(body)
         self.assertEqual(before, body)
-        self.store.update_plan(first["id"], taskname="updated", content="New current content", plan_status="cancelled")
+        self.store.update_plan(
+            first["id"],
+            expected_revision=first["revision"],
+            taskname="updated",
+            content="New current content",
+            plan_status="cancelled",
+        )
         reopened = ContextStore(self.root)
         replay = self.create(body, store=reopened)
         self.assertEqual({**first, "replayed": True}, replay)
@@ -128,6 +134,7 @@ class PlanCreationTests(unittest.TestCase):
         current = self.store.query(entry_id=first["id"])[0][0]
         self.assertEqual("New current content", current["content"])
         self.assertEqual("cancelled", current["status"])
+        self.assertEqual(2, current["revision"])
 
     def test_same_key_conflicts_on_changed_children_refs_scope_or_parent(self):
         first = self.create(dict(self.body, request_id="retry-conflict"))

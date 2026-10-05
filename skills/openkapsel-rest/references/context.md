@@ -135,13 +135,14 @@ Ordinary reads should omit Context parameters. To intentionally record a read, p
 
 `GET /context/plans/<plan_id>/tree?max_depth=8&limit=200` returns flat depth-annotated Plans plus operations and Notes attached to them. Rebuild hierarchy from each record's `id` and `plan_id`. Observe truncation fields.
 
-`PATCH /context/plans/<id>` requires `taskname` and accepts optional replacement `content`, optional `plan_id` (`null` moves to root), and optional `status`: `in_progress`, `completed`, or `cancelled`. Parent cycles and self-parenting are rejected.
+`PATCH /context/plans/<id>` requires `taskname` and the current positive `expected_revision`, then accepts optional replacement `content`, optional `plan_id` (`null` moves to root), and optional `status`: `in_progress`, `completed`, or `cancelled`. Every successful update increments `revision`; stale revisions fail with HTTP 412. Parent cycles and self-parenting are rejected.
 
 Completing a Plan requires:
 
 ```json
 {
   "taskname": "fix-preview",
+  "expected_revision": 1,
   "status": "completed",
   "debrief": {
     "items": [

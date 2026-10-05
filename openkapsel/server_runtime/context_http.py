@@ -376,6 +376,17 @@ class ContextHttpMixin:
         entry_id = self._parse_context_entry_id(value)
         body = self._read_json()
         taskname = self._required_string(body, "taskname")
+        expected_revision = body.get("expected_revision")
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 1
+        ):
+            raise ApiError(
+                HTTPStatus.PRECONDITION_REQUIRED,
+                "context_plan_revision_required",
+                "expected_revision must be the current positive Plan revision",
+            )
         content = (
             self._required_string(body, "content")
             if "content" in body
@@ -389,29 +400,13 @@ class ContextHttpMixin:
                 "status must be a string",
             )
         try:
+            store = self.server.context_for(self.token_scope_root)
             changes: dict[str, Any] = {
+                "expected_revision": expected_revision,
                 "taskname": taskname,
                 "content": content,
                 "plan_status": plan_status,
             }
-            completed_debrief: dict[str, Any] | None = None
-            if plan_status == "completed":
-                existing_entries, _ = self.server.context_for(self.token_scope_root).query(
-                    entry_id=entry_id,
-                )
-                if not existing_entries or existing_entries[0]["type"] != "plan":
-                    raise KeyError("context entry does not exist")
-                if existing_entries[0]["status"] == "completed":
-                    raise ValueError("plan is already completed")
-                completed_debrief = self._apply_memory_debrief(
-                    entry_id,
-                    taskname,
-                    body.get("debrief"),
-                )
-                changes["debrief"] = completed_debrief
-                changes["actor_id"] = self.token_record.actor_id
-            elif "debrief" in body:
-                raise ValueError("plan debrief is only valid when status is completed")
             if "plan_id" in body:
                 changes["plan_id"] = (
                     None
@@ -421,10 +416,23 @@ class ContextHttpMixin:
                         required=True,
                     )
                 )
-            entry = self.server.context_for(self.token_scope_root).update_plan(
-                entry_id,
-                **changes,
-            )
+            completed_debrief: dict[str, Any] | None = None
+            if plan_status == "completed":
+                with store.plan_update_guard(entry_id, expected_revision) as existing:
+                    if existing["status"] == "completed":
+                        raise ValueError("plan is already completed")
+                    completed_debrief = self._apply_memory_debrief(
+                        entry_id,
+                        taskname,
+                        body.get("debrief"),
+                    )
+                    changes["debrief"] = completed_debrief
+                    changes["actor_id"] = self.token_record.actor_id
+                    entry = store.update_plan(entry_id, **changes)
+            else:
+                if "debrief" in body:
+                    raise ValueError("plan debrief is only valid when status is completed")
+                entry = store.update_plan(entry_id, **changes)
             if completed_debrief is not None:
                 entry["debrief"] = completed_debrief
         except KeyError as exc:
@@ -432,6 +440,12 @@ class ContextHttpMixin:
                 HTTPStatus.NOT_FOUND,
                 "context_not_found",
                 str(exc.args[0]),
+            ) from None
+        except RuntimeError as exc:
+            raise ApiError(
+                HTTPStatus.PRECONDITION_FAILED,
+                "context_plan_revision_conflict",
+                str(exc),
             ) from None
         except ValueError as exc:
             raise ApiError(

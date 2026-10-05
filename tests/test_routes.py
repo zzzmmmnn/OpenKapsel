@@ -124,6 +124,10 @@ class EndpointContractTests(unittest.TestCase):
 
     def test_mcp_update_plan_uses_shared_memory_action_contract(self) -> None:
         update_plan = next(tool for tool in ALL_TOOLS if tool["name"] == "context_plan_update")
+        self.assertEqual(
+            {"id", "expected_revision", "taskname"},
+            set(update_plan["inputSchema"]["required"]),
+        )
         actual = update_plan["inputSchema"]["properties"]["debrief"]["properties"]
         self.assertEqual(memory_actions_schema(), actual["memory_actions"])
 

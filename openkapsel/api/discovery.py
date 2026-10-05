@@ -901,6 +901,7 @@ class DiscoveryMixin:
                     "recorded_reads_require_control_token": True,
                     "unmessaged_reads_recorded": False,
                     "plan_updates_in_place": True,
+                    "plan_updates_require_current_revision": True,
                     "plan_creation_returns_unfinished_root_plans": True,
                     "plan_creation": {
                         "atomic_subplans": True, "max_direct_subplans": MAX_SUBPLANS,
@@ -1456,7 +1457,8 @@ class DiscoveryMixin:
                     "plan_extension_schema": creation_properties(),
                     "response": {
                         "id": "ID of the newly created top-level plan (or the original ID on retry)",
-                        "subplans": "compact children in request order with index/id/plan_id/taskname/status and optional ref; no repeated content or hints",
+                        "revision": "current top-level Plan revision; newly created Plans start at 1",
+                        "subplans": "compact children in request order with index/id/plan_id/taskname/status/revision and optional ref; no repeated content or hints",
                         "request_id": "echoed when supplied",
                         "replayed": "false for first keyed creation (HTTP 201), true for matching retry (HTTP 200)",
                         "related_memory": "one deduplicated Memory result for the complete plan batch",
@@ -1472,6 +1474,7 @@ class DiscoveryMixin:
                     "authentication": "Bearer control token",
                     "json": {
                         "taskname": "<required task grouping name>",
+                        "expected_revision": "<required current positive Plan revision>",
                         "plan_id": "<optional new parent plan id; null moves this plan to the root>",
                         "content": "<optional replacement content>",
                         "status": "<optional in_progress, completed, or cancelled>",
@@ -1480,7 +1483,7 @@ class DiscoveryMixin:
                             "required_when": "status transitions to completed",
                         },
                     },
-                    "notes": "updates the existing plan row; completion requires a debrief but does not block unrelated plans; self-parenting and indirect cycles are rejected",
+                    "notes": "updates the existing plan row only when expected_revision matches; successful updates increment revision; stale revisions fail with 412; completion requires a debrief but does not block unrelated plans; self-parenting and indirect cycles are rejected",
                 },
                 "context_note_replace": {
                     "method": "PATCH",

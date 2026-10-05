@@ -3583,14 +3583,31 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(201, status)
         self.assertEqual("in_progress", rest_plan["status"])
-        status, rest_plan_updated = self.request(
+        self.assertEqual(1, rest_plan["revision"])
+        status, missing_plan_revision = self.request(
             "PATCH",
             endpoint(f"/context/plans/{rest_plan['id']}"),
             {"taskname": "rest-plan", "status": "cancelled"},
         )
+        self.assertEqual(428, status)
+        self.assertEqual(
+            "context_plan_revision_required",
+            missing_plan_revision["error"]["code"],
+        )
+
+        status, rest_plan_updated = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{rest_plan['id']}"),
+            {
+                "taskname": "rest-plan",
+                "expected_revision": rest_plan["revision"],
+                "status": "cancelled",
+            },
+        )
         self.assertEqual(200, status)
         self.assertEqual(rest_plan["id"], rest_plan_updated["id"])
         self.assertEqual("cancelled", rest_plan_updated["status"])
+        self.assertEqual(2, rest_plan_updated["revision"])
         self.assertEqual(root_plan["id"], rest_plan_updated["plan_id"])
         status, cancelled = self.request(
             "GET",
@@ -3788,6 +3805,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertFalse(planned["result"]["isError"])
         plan_id = planned["result"]["structuredContent"]["id"]
+        self.assertEqual(1, planned["result"]["structuredContent"]["revision"])
         self.assertEqual(
             "in_progress",
             planned["result"]["structuredContent"]["status"],
@@ -3808,6 +3826,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "name": "context_plan_update",
                 "arguments": {
                     "id": plan_id,
+                    "expected_revision": planned["result"]["structuredContent"]["revision"],
                     "taskname": "release-checks",
                     "status": "completed",
                     "debrief": {
@@ -3824,6 +3843,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(
             "completed",
             updated_plan["result"]["structuredContent"]["status"],
+        )
+        self.assertEqual(
+            2,
+            updated_plan["result"]["structuredContent"]["revision"],
         )
         status, queried, _ = self.mcp_request(
             record.token,
@@ -6365,11 +6388,43 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual([2, 1], [item["revision"] for item in history["revisions"]])
 
+        self.assertEqual(1, next_plan["revision"])
+        status, stale_plan = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{next_plan['id']}"),
+            {
+                "taskname": "auth-followup",
+                "expected_revision": next_plan["revision"] + 1,
+                "status": "completed",
+                "debrief": {
+                    "items": [
+                        {
+                            "content": "A stale Plan completion must not create Memory.",
+                            "tags": ["plan", "revision", "stale", "atomicity"],
+                        }
+                    ],
+                    "outcome": "partial",
+                    "memory_actions": [],
+                    "memory_feedback": [],
+                    "memory_conflicts": [],
+                },
+            },
+        )
+        self.assertEqual(412, status)
+        self.assertEqual(
+            "context_plan_revision_conflict",
+            stale_plan["error"]["code"],
+        )
+        status, after_stale_plan = self.request("GET", endpoint("/memory"))
+        self.assertEqual(200, status)
+        self.assertEqual(1, after_stale_plan["total"])
+
         status, invalid_long = self.request(
             "PATCH",
             endpoint(f"/context/plans/{next_plan['id']}"),
             {
                 "taskname": "auth-followup",
+                "expected_revision": next_plan["revision"],
                 "status": "completed",
                 "debrief": {
                     "items": [{"content": "x" * 257, "tags": ["memory"]}],
@@ -6388,6 +6443,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint(f"/context/plans/{next_plan['id']}"),
             {
                 "taskname": "auth-followup",
+                "expected_revision": next_plan["revision"],
                 "status": "completed",
                 "debrief": {
                     "items": [{"content": "Validated a concise fact.", "tags": []}],
@@ -6406,6 +6462,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint(f"/context/plans/{next_plan['id']}"),
             {
                 "taskname": "auth-followup",
+                "expected_revision": next_plan["revision"],
                 "status": "completed",
                 "debrief": {
                     "items": [
@@ -6435,6 +6492,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint(f"/context/plans/{next_plan['id']}"),
             {
                 "taskname": "auth-followup",
+                "expected_revision": next_plan["revision"],
                 "status": "completed",
                 "debrief": {
                     "items": [
@@ -6487,6 +6545,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint(f"/context/plans/{next_plan['id']}"),
             {
                 "taskname": "auth-followup",
+                "expected_revision": next_plan["revision"],
                 "status": "completed",
                 "debrief": {
                     "items": [
@@ -6517,6 +6576,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual("completed", completed["status"])
+        self.assertEqual(2, completed["revision"])
         refs = completed["debrief"]["memory_refs"]
         self.assertEqual(3, len(refs))
         self.assertEqual(["create", "create", "update"], [item["action"] for item in refs])
