@@ -16,6 +16,7 @@ from typing import Any
 from openkapsel.context.conversation import (
     MAX_CONVERSATION_SUMMARY_CHARS,
     append_conversation,
+    conversation_summary_status,
     normalize_entries,
     validate_conversation_id,
     validate_writer_nonce,
@@ -330,6 +331,9 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
                 scope_paths=spec["root"]["scope_paths"],
                 memory_tags=spec["root"]["memory_tags"],
                 conversation_entries=appended_conversation_entries,
+                conversation_summary_status=conversation_summary_status(
+                    connection, conversation_id
+                ),
             )
             ids = (root["id"], *(child["id"] for child in children))
             # Protect every member of the just-created batch even at trim limits.

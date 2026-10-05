@@ -986,6 +986,13 @@ class WorkspaceServerTests(unittest.TestCase):
             "capabilities.memory",
             payload["capabilities"]["context"]["memory_capability"],
         )
+        conversation_capability = payload["capabilities"]["context"]["conversation"]
+        self.assertEqual(20, conversation_capability["summary_prompt_after_user_ai_entries"])
+        self.assertEqual(30, conversation_capability["summary_required_after_user_ai_entries"])
+        self.assertFalse(conversation_capability["summary_sub_id_fixed"])
+        self.assertTrue(conversation_capability["summary_window_starts_at_latest_summary_or_one"])
+        self.assertTrue(conversation_capability["append_returns_summary_status"])
+
         memory_capability = payload["capabilities"]["memory"]
         self.assertTrue(memory_capability["enabled"])
         self.assertEqual("memory", memory_capability["type"])
@@ -3511,11 +3518,11 @@ class WorkspaceServerTests(unittest.TestCase):
                     "role": "ai" if sub_id % 2 else "user",
                     "content": f"Fill Conversation slot {sub_id}.",
                 }
-                for sub_id in range(4, 30)
+                for sub_id in range(4, 31)
             ],
         )
         self.assertEqual(
-            29,
+            30,
             store.conversation_query(
                 conversation_id=conversation["conversation_id"],
                 full=True,
@@ -3536,7 +3543,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "status": "completed",
                 **self._conversation_plan_fields(
                     conversation,
-                    "AI completion cannot occupy reserved summary slot 30.",
+                    "AI completion must wait for the required aggregate summary.",
                 ),
                 "debrief": {
                     "items": [
@@ -3554,8 +3561,8 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(400, status)
         self.assertEqual("invalid_context_entry", rejected["error"]["code"])
-        self.assertIn("30", rejected["error"]["message"])
-        self.assertIn("role=summary", rejected["error"]["message"])
+        self.assertIn("summary is required", rejected["error"]["message"])
+        self.assertIn("30 user/ai entries", rejected["error"]["message"])
 
         status, after_memory = self.request("GET", endpoint("/memory"))
         self.assertEqual(200, status)
@@ -3565,7 +3572,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("in_progress", current["status"])
         self.assertEqual(plan["revision"], current["revision"])
         self.assertEqual(
-            29,
+            30,
             store.conversation_query(
                 conversation_id=conversation["conversation_id"],
                 full=True,

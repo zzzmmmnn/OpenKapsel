@@ -59,7 +59,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("8192", created["instructions"])
         self.assertIn("original wording verbatim", created["instructions"])
         self.assertIn("does not need extra compression", created["instructions"])
-        self.assertIn("must compress the preceding window", created["instructions"])
+        self.assertIn("must compress that range", created["instructions"])
         with closing(sqlite3.connect(self.store.database)) as connection:
             stored = connection.execute(
                 "SELECT writer_nonce FROM conversations WHERE id = ?",
@@ -161,35 +161,39 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(3, total)
         self.assertEqual([3, 2, 1], [item["sub_id"] for item in entries])
 
-    def test_every_thirtieth_sub_id_is_required_summary(self) -> None:
+    def test_summary_is_prompted_after_twenty_and_required_after_thirty(self) -> None:
         created = self.create_conversation("summary cadence")
         conversation_id = created["conversation_id"]
         writer_nonce = created["writer_nonce"]
+        self.assertEqual(2, created["summary_status"]["user_ai_since_summary"])
+        self.assertFalse(created["summary_status"]["recommended"])
 
-        self.store.append_conversation(
+        prompted = self.store.append_conversation(
             conversation_id=conversation_id,
             writer_nonce=writer_nonce,
             entries=[
                 {"role": "user" if index % 2 else "ai", "content": f"record {index}"}
-                for index in range(3, 30)
+                for index in range(3, 21)
             ],
         )
-        with self.assertRaisesRegex(ValueError, "30.*summary"):
-            self.store.append_conversation(
-                conversation_id=conversation_id,
-                writer_nonce=writer_nonce,
-                entries=[{"role": "ai", "content": "ordinary record cannot occupy 30"}],
-            )
+        self.assertEqual(20, prompted["summary_status"]["user_ai_since_summary"])
+        self.assertTrue(prompted["summary_status"]["recommended"])
+        self.assertFalse(
+            prompted["summary_status"]["required_before_next_user_ai"]
+        )
+        self.assertEqual(1, prompted["summary_status"]["source_start_sub_id"])
+        self.assertEqual(20, prompted["summary_status"]["source_end_sub_id"])
+        self.assertIn("sub_id 1 through 20", prompted["summary_status"]["instruction"])
 
-        boundary = self.store.append_conversation(
+        summary = self.store.append_conversation(
             conversation_id=conversation_id,
             writer_nonce=writer_nonce,
-            entries=[
-                {"role": "summary", "content": "S" * 8192},
-                {"role": "ai", "content": "AI continues after the summary."},
-            ],
+            entries=[{"role": "summary", "content": "S" * 8192}],
         )
-        self.assertEqual([30, 31], [item["sub_id"] for item in boundary["entries"]])
+        self.assertEqual(21, summary["entries"][0]["sub_id"])
+        self.assertEqual(0, summary["summary_status"]["user_ai_since_summary"])
+        self.assertFalse(summary["summary_status"]["recommended"])
+        self.assertEqual(21, summary["summary_status"]["source_start_sub_id"])
         with self.assertRaisesRegex(ValueError, "8192"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
@@ -197,36 +201,44 @@ class ConversationTests(unittest.TestCase):
                 entries=[{"role": "summary", "content": "S" * 8193}],
             )
 
-        self.store.append_conversation(
+        required = self.store.append_conversation(
             conversation_id=conversation_id,
             writer_nonce=writer_nonce,
             entries=[
-                {"role": "user" if index % 2 else "ai", "content": f"record {index}"}
-                for index in range(32, 60)
+                {"role": "user" if index % 2 else "ai", "content": f"window {index}"}
+                for index in range(1, 31)
             ],
         )
-        with self.assertRaisesRegex(ValueError, "60.*summary"):
-            self.store.append_conversation(
-                conversation_id=conversation_id,
-                writer_nonce=writer_nonce,
-                entries=[{"role": "user", "content": "ordinary record cannot occupy 60"}],
-            )
-        boundary = self.store.append_conversation(
-            conversation_id=conversation_id,
-            writer_nonce=writer_nonce,
-            entries=[
-                {"role": "summary", "content": "Summary of conversation entries 31 through 59."},
-                {"role": "user", "content": "User continues after the second summary."},
-            ],
+        self.assertEqual(51, required["entries"][-1]["sub_id"])
+        self.assertEqual(30, required["summary_status"]["user_ai_since_summary"])
+        self.assertTrue(required["summary_status"]["recommended"])
+        self.assertTrue(
+            required["summary_status"]["required_before_next_user_ai"]
         )
-        self.assertEqual([60, 61], [item["sub_id"] for item in boundary["entries"]])
+        self.assertEqual(21, required["summary_status"]["source_start_sub_id"])
+        self.assertEqual(51, required["summary_status"]["source_end_sub_id"])
+        self.assertIn("required", required["summary_status"]["instruction"])
+        self.assertIn("sub_id 21 through 51", required["summary_status"]["instruction"])
 
-        with self.assertRaisesRegex(ValueError, "summary is only allowed"):
+        with self.assertRaisesRegex(ValueError, "summary is required"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
                 writer_nonce=writer_nonce,
-                entries=[{"role": "summary", "content": "not a summary slot"}],
+                entries=[{"role": "ai", "content": "must summarize first"}],
             )
+
+        resumed = self.store.append_conversation(
+            conversation_id=conversation_id,
+            writer_nonce=writer_nonce,
+            entries=[
+                {"role": "summary", "content": "Compressed dynamic window."},
+                {"role": "ai", "content": "AI continues after the summary."},
+            ],
+        )
+        self.assertEqual([52, 53], [item["sub_id"] for item in resumed["entries"]])
+        self.assertEqual(1, resumed["summary_status"]["user_ai_since_summary"])
+        self.assertFalse(resumed["summary_status"]["recommended"])
+        self.assertEqual(52, resumed["summary_status"]["source_start_sub_id"])
 
     def test_cross_conversation_query_defaults_to_latest_summary_window(self) -> None:
         first = self.create_conversation("first")
@@ -342,16 +354,16 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(2, updated["revision"])
         self.assertEqual("Updated Plan content.", updated["content"])
 
-        # Fill through sub_id 29. Creation used 1-2, Plan create 3, update 4.
+        # Fill to 30 user/ai entries since no summary exists. Creation used 1-2, Plan create 3, update 4.
         self.store.append_conversation(
             conversation_id=conversation["conversation_id"],
             writer_nonce=conversation["writer_nonce"],
             entries=[
                 {"role": "ai" if index % 2 else "user", "content": f"fill {index}"}
-                for index in range(5, 30)
+                for index in range(5, 31)
             ],
         )
-        with self.assertRaisesRegex(ValueError, "30.*summary"):
+        with self.assertRaisesRegex(ValueError, "summary is required"):
             self.store.update_plan(
                 plan["id"],
                 expected_revision=updated["revision"],
@@ -360,7 +372,7 @@ class ConversationTests(unittest.TestCase):
                 conversation_id=conversation["conversation_id"],
                 writer_nonce=conversation["writer_nonce"],
                 conversation_entries=[
-                    {"role": "ai", "content": "Cannot occupy summary slot."}
+                    {"role": "ai", "content": "Must summarize before another ordinary entry."}
                 ],
                 require_conversation=True,
             )
@@ -368,7 +380,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(2, current["revision"])
         self.assertEqual("Updated Plan content.", current["content"])
         self.assertEqual(
-            29,
+            30,
             self.store.conversation_query(
                 conversation_id=conversation["conversation_id"],
                 full=True,

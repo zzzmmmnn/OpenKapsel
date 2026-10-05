@@ -11,6 +11,8 @@ from openkapsel.context.conversation import (
     MAX_CONVERSATION_CONTENT_CHARS,
     MAX_CONVERSATION_QUERY_LIMIT,
     MAX_CONVERSATION_SUMMARY_CHARS,
+    CONVERSATION_SUMMARY_PROMPT_AFTER,
+    CONVERSATION_SUMMARY_REQUIRED_AFTER,
 )
 from openkapsel.context.context_store import (
     CONTEXT_TRIM_ENTRIES,
@@ -907,8 +909,11 @@ class DiscoveryMixin:
                         "summary_preserves_important_content": True,
                         "create_min_entries": 2,
                         "create_first_roles": ["user", "ai"],
-                        "summary_sub_ids": "every positive sub_id divisible by 30",
-                        "summary_required_before_next_ordinary_entry": True,
+                        "summary_prompt_after_user_ai_entries": CONVERSATION_SUMMARY_PROMPT_AFTER,
+                        "summary_required_after_user_ai_entries": CONVERSATION_SUMMARY_REQUIRED_AFTER,
+                        "summary_sub_id_fixed": False,
+                        "summary_window_starts_at_latest_summary_or_one": True,
+                        "append_returns_summary_status": True,
                         "query_max_entries": MAX_CONVERSATION_QUERY_LIMIT,
                         "cross_conversation_default_window": "newest summary entry plus all later entries for each conversation",
                         "full_query_supported": True,
@@ -1523,7 +1528,8 @@ class DiscoveryMixin:
                             {"role": "user|ai|summary", "content": "<user/ai max 1000 chars; summary max 8192 chars>"}
                         ],
                     },
-                    "notes": "append-only; entries cannot be modified; user/ai entries are per-side context summaries and may preserve original wording without extra compression when already within 1000 chars; every sub_id divisible by 30 is reserved for role=summary, so after 29 ordinary entries the compressed aggregate summary is written as 30 before ordinary entry 31, likewise 60 before 61; summary must compress the preceding window while retaining important context",
+                    "response": {"summary_status": {"user_ai_since_summary": "count since newest summary", "recommended": "true at 20+", "required_before_next_user_ai": "true at 30+", "source_start_sub_id": "latest summary sub_id, or 1 when none exists", "source_end_sub_id": "latest entry sub_id", "instruction": "summary guidance when recommended"}},
+                    "notes": "append-only; entries cannot be modified; user/ai entries are per-side context summaries and may preserve original wording without extra compression when already within 1000 chars; summary is not tied to a fixed sub_id. After 20 user/ai entries since the newest summary, append responses recommend a compressed role=summary covering the range from that newest summary itself (or sub_id 1 when none exists) through the latest entry. After 30 user/ai entries, another user/ai entry is rejected until role=summary is appended; summary resets the counter and may be written before the hard limit.",
                 },
                 "context_query": {
                     "method": "GET",

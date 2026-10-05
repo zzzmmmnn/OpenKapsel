@@ -14,6 +14,7 @@ from typing import Any
 
 from openkapsel.context.conversation import (
     append_conversation,
+    conversation_summary_status,
     create_conversation,
     initialize_conversation_schema,
     query_conversations,
@@ -459,10 +460,15 @@ class ContextStore:
                     entries=entries,
                     require_ai=require_ai,
                 )
+                summary_status = conversation_summary_status(
+                    connection,
+                    validate_conversation_id(conversation_id),
+                )
                 connection.commit()
         return {
             "conversation_id": validate_conversation_id(conversation_id),
             "entries": created,
+            "summary_status": summary_status,
         }
 
     def conversation_query(
@@ -822,6 +828,10 @@ class ContextStore:
             payload = self._serialize(updated)
             if appended_conversation_entries:
                 payload["conversation_entries"] = appended_conversation_entries
+                payload["conversation_summary_status"] = conversation_summary_status(
+                    connection,
+                    int(next_conversation_id),
+                )
             return payload
 
         def apply_dry_run(connection: sqlite3.Connection) -> dict[str, Any]:

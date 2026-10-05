@@ -11,6 +11,8 @@ from typing import Any
 MAX_CONVERSATION_CONTENT_CHARS = 1000
 MAX_CONVERSATION_SUMMARY_CHARS = 8192
 MAX_CONVERSATION_QUERY_LIMIT = 100
+CONVERSATION_SUMMARY_PROMPT_AFTER = 20
+CONVERSATION_SUMMARY_REQUIRED_AFTER = 30
 CONVERSATION_ROLES = {"user", "ai", "summary"}
 CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
 _CONVERSATION_ALPHABET = string.ascii_letters + string.digits
@@ -22,9 +24,11 @@ CONVERSATION_INSTRUCTIONS = (
     "using the conversation_id together with its writer_nonce. Use role=user for the user's side and role=ai "
     "for the AI's side. user/ai content is limited to 1000 characters and represents that side's conversation "
     "context summary; it may keep important original wording verbatim and does not need extra compression when "
-    "the source already fits the limit. Every 30th entry is reserved for role=summary: after entries 1-29, "
-    "append a compressed aggregate summary before the next ordinary entry; repeat for 31-59, 61-89, and so on. "
-    "summary content may be up to 8192 characters and must compress the preceding window while preserving its "
+    "the source already fits the limit. After 20 user/ai entries since the most recent role=summary, append "
+    "responses recommend creating a compressed aggregate summary. That summary should cover the range beginning "
+    "at the most recent summary itself (or sub_id 1 when none exists) through the latest entry. Once 30 user/ai "
+    "entries have accumulated since the most recent summary, another user/ai entry is rejected until role=summary "
+    "is appended. summary content may be up to 8192 characters and must compress that range while preserving its "
     "important context. Plan creation and non-cancelling Plan updates require this conversation id, its "
     "writer_nonce, and at least one atomic conversation entry."
 )
@@ -147,6 +151,64 @@ def verify_writer_nonce(
     return conversation_id
 
 
+def conversation_summary_status(
+    connection: sqlite3.Connection,
+    conversation_id: int,
+) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT
+            COALESCE(MAX(sub_id), 0) AS last_id,
+            MAX(CASE WHEN role = 'summary' THEN sub_id END) AS latest_summary_id
+        FROM conversation_entries
+        WHERE conversation_id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+    last_id = int(row["last_id"])
+    latest_summary_id = (
+        int(row["latest_summary_id"])
+        if row["latest_summary_id"] is not None
+        else None
+    )
+    count_row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM conversation_entries
+        WHERE conversation_id = ?
+          AND role IN ('user', 'ai')
+          AND sub_id > ?
+        """,
+        (conversation_id, latest_summary_id or 0),
+    ).fetchone()
+    ordinary_count = int(count_row["count"])
+    recommended = ordinary_count >= CONVERSATION_SUMMARY_PROMPT_AFTER
+    required = ordinary_count >= CONVERSATION_SUMMARY_REQUIRED_AFTER
+    source_start = latest_summary_id if latest_summary_id is not None else (1 if last_id else None)
+    instruction = None
+    if recommended:
+        if required:
+            instruction = (
+                "A role=summary entry is required before another user/ai entry. "
+                f"Compress Conversation entries sub_id {source_start} through {last_id}, "
+                "preserving important context."
+            )
+        else:
+            instruction = (
+                "Create a role=summary entry soon. "
+                f"Compress Conversation entries sub_id {source_start} through {last_id}, "
+                "preserving important context."
+            )
+    return {
+        "user_ai_since_summary": ordinary_count,
+        "recommended": recommended,
+        "required_before_next_user_ai": required,
+        "source_start_sub_id": source_start,
+        "source_end_sub_id": last_id if last_id else None,
+        "instruction": instruction,
+    }
+
+
 def _append_locked(
     connection: sqlite3.Connection,
     conversation_id: int,
@@ -157,19 +219,20 @@ def _append_locked(
         (conversation_id,),
     ).fetchone()
     last_id = int(row["last_id"])
+    state = conversation_summary_status(connection, conversation_id)
+    ordinary_count = int(state["user_ai_since_summary"])
+    latest_summary_id = state["source_start_sub_id"] if state["source_start_sub_id"] not in {None, 1} else None
     now = _utc_now()
     created: list[dict[str, Any]] = []
     for item in entries:
+        if item["role"] != "summary" and ordinary_count >= CONVERSATION_SUMMARY_REQUIRED_AFTER:
+            source_start = latest_summary_id if latest_summary_id is not None else 1
+            raise ValueError(
+                "conversation summary is required before another user/ai entry after "
+                f"{CONVERSATION_SUMMARY_REQUIRED_AFTER} user/ai entries; summarize "
+                f"sub_id {source_start} through {last_id}"
+            )
         sub_id = last_id + 1
-        summary_slot = sub_id % 30 == 0
-        if summary_slot and item["role"] != "summary":
-            raise ValueError(
-                f"conversation entry {sub_id} must be role=summary before another ordinary entry"
-            )
-        if not summary_slot and item["role"] == "summary":
-            raise ValueError(
-                f"conversation summary is only allowed at sub_id {((sub_id + 29) // 30) * 30}"
-            )
         connection.execute(
             """
             INSERT INTO conversation_entries (
@@ -188,6 +251,11 @@ def _append_locked(
             }
         )
         last_id = sub_id
+        if item["role"] == "summary":
+            latest_summary_id = sub_id
+            ordinary_count = 0
+        else:
+            ordinary_count += 1
     return created
 
 
@@ -213,6 +281,7 @@ def create_conversation(
         "conversation_id": conversation_id,
         "writer_nonce": writer_nonce,
         "entries": created,
+        "summary_status": conversation_summary_status(connection, conversation_id),
         "instructions": CONVERSATION_INSTRUCTIONS,
     }
 
