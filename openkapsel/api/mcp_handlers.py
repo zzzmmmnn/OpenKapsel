@@ -153,7 +153,7 @@ class McpHandlersMixin:
             },
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer fs_edit_text for focused edits. "
-                "Before modifying the workspace, preserve recent user/AI context in Conversation. Before conversation_create, call conversation_query and use its next_conversation_id exactly; Conversation ids are caller-supplied non-negative integers starting at 0 and cannot skip. Creation atomically requires at least two complete records, first sender=user then sender=ai, and returns write_prove in @xxxx@ form. write_prove is stored as the original value and is a write proof, not an authentication token. Keep it in the current chat/session and use conversation_append for materially new user or AI context. user/ai content is limited to 1000 characters and is that side's conversation-context summary; it may preserve important original wording verbatim and does not need extra compression when the source already fits. sender=summary is the periodic aggregate checkpoint, may be up to 8192 characters, and must compress the preceding window while retaining important context. Every 30th sub_id is reserved for sender=summary: after 1-29, append the summary as 30 before ordinary record 31; repeat at 60, 90, and so on. Cross-conversation conversation_query defaults to each conversation's newest summary plus later records; use full=true for complete history, and use start_sub_id/end_sub_id when querying one conversation. Then use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. Plan creation requires conversation_id, write_prove, and at least one conversation_entries record committed atomically with the Plan batch. Every non-cancellation-only context_plan_update likewise requires the owning conversation id/write_prove and at least one atomic Conversation record; Plan completion must include at least one sender=ai Conversation record. A cancellation-only Plan update intentionally needs no Conversation write_prove so an abandoned Plan can be closed. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent and all created Plans use the same Conversation. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Plan reads expose revision; context_plan_update requires the current expected_revision for parent/content/status changes and increments revision on success. Use context_note_replace with an owning plan_id. "
+                "Before modifying the workspace, preserve recent user/AI context in Conversation. Before conversation_create, call conversation_query and use its next_conversation_id exactly; Conversation ids are caller-supplied non-negative integers starting at 0 and cannot skip. Creation atomically requires at least two complete records, first role=user then role=ai, and returns writer_nonce in @xxxx@ form. writer_nonce is stored as the original value and is a writer nonce, not an authentication token. Keep it in the current chat/session and use conversation_append for materially new user or AI context. user/ai content is limited to 1000 characters and is that side's conversation-context summary; it may preserve important original wording verbatim and does not need extra compression when the source already fits. role=summary is the periodic aggregate checkpoint, may be up to 8192 characters, and must compress the preceding window while retaining important context. Every 30th sub_id is reserved for role=summary: after 1-29, append the summary as 30 before ordinary record 31; repeat at 60, 90, and so on. Cross-conversation conversation_query defaults to each conversation's newest summary plus later records; use full=true for complete history, and use start_sub_id/end_sub_id when querying one conversation. Then use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. Plan creation requires conversation_id, writer_nonce, and at least one conversation_entries record committed atomically with the Plan batch. Every non-cancellation-only context_plan_update likewise requires the owning conversation id/writer_nonce and at least one atomic Conversation record; Plan completion must include at least one role=ai Conversation record. A cancellation-only Plan update intentionally needs no Conversation writer_nonce so an abandoned Plan can be closed. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent and all created Plans use the same Conversation. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Completion first holds the Context DB write lock and dry-runs the full Plan+Conversation update, then applies Memory, then commits the same Plan+Conversation update on the held Context transaction. Memory is a separate database; if it succeeds but the final Context commit suffers a database/process failure, query and reconcile the already-written revisioned Memory with memory_update/memory_archive before retrying, because repeating debrief.items may create duplicates. Plan reads expose revision; context_plan_update requires the current expected_revision for parent/content/status changes and increments revision on success. Use context_note_replace with an owning plan_id. "
                 "Pass expected_etag to fs_write or fs_edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use fs_read_binary and Base64 upload_chunk for small binary chunks; for large files call fs_download or use the raw_transfer URLs returned by upload_create. "
                 "Call web_preview_url when a workspace page should be opened in a browser. "
@@ -367,7 +367,7 @@ class McpHandlersMixin:
             try:
                 return self.server.context_for(self.token_scope_root).append_conversation(
                     conversation_id=arguments["conversation_id"],
-                    write_prove=arguments["write_prove"],
+                    writer_nonce=arguments["writer_nonce"],
                     entries=arguments["entries"],
                 )
             except KeyError as exc:
@@ -379,7 +379,7 @@ class McpHandlersMixin:
             except PermissionError as exc:
                 raise ApiError(
                     HTTPStatus.FORBIDDEN,
-                    "conversation_write_prove_mismatch",
+                    "conversation_writer_nonce_mismatch",
                     str(exc),
                 ) from None
             except ValueError as exc:
@@ -403,9 +403,9 @@ class McpHandlersMixin:
                         else None
                     ),
                     query=str(arguments.get("query", "")),
-                    sender=(
-                        str(arguments["sender"])
-                        if "sender" in arguments
+                    role=(
+                        str(arguments["role"])
+                        if "role" in arguments
                         else None
                     ),
                     start_sub_id=(
@@ -527,18 +527,35 @@ class McpHandlersMixin:
                     if "conversation_id" in arguments
                     else None
                 )
-                changes["write_prove"] = (
-                    str(arguments["write_prove"])
-                    if "write_prove" in arguments
+                changes["writer_nonce"] = (
+                    str(arguments["writer_nonce"])
+                    if "writer_nonce" in arguments
                     else None
                 )
                 changes["conversation_entries"] = arguments.get("conversation_entries")
                 changes["require_conversation"] = True
                 completed_debrief: dict[str, Any] | None = None
                 if changes["plan_status"] == "completed":
-                    with store.plan_update_guard(entry_id, expected_revision) as existing:
+                    with store.plan_completion_transaction(
+                        entry_id, expected_revision
+                    ) as (connection, existing):
                         if existing["status"] == "completed":
                             raise ValueError("plan is already completed")
+                        dry_run_changes = dict(changes)
+                        dry_run_changes["debrief"] = {
+                            "items": [],
+                            "outcome": "no_change",
+                            "memory_refs": [],
+                            "memory_feedback": [],
+                            "memory_conflicts": [],
+                        }
+                        dry_run_changes["actor_id"] = self.token_record.actor_id
+                        store.update_plan(
+                            entry_id,
+                            **dry_run_changes,
+                            _connection=connection,
+                            _dry_run=True,
+                        )
                         completed_debrief = self._apply_memory_debrief(
                             entry_id,
                             str(arguments["taskname"]),
@@ -546,7 +563,11 @@ class McpHandlersMixin:
                         )
                         changes["debrief"] = completed_debrief
                         changes["actor_id"] = self.token_record.actor_id
-                        entry = store.update_plan(entry_id, **changes)
+                        entry = store.update_plan(
+                            entry_id,
+                            **changes,
+                            _connection=connection,
+                        )
                 else:
                     if "debrief" in arguments:
                         raise ValueError(
@@ -565,7 +586,7 @@ class McpHandlersMixin:
             except PermissionError as exc:
                 raise ApiError(
                     HTTPStatus.FORBIDDEN,
-                    "conversation_write_prove_mismatch",
+                    "conversation_writer_nonce_mismatch",
                     str(exc),
                 ) from None
             except RuntimeError as exc:

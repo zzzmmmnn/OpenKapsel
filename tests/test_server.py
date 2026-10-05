@@ -184,8 +184,8 @@ class WorkspaceServerTests(unittest.TestCase):
         return store.create_conversation(
             store.conversation_query(limit=1)[2],
             [
-                {"sender": "user", "content": f"User starts {label}."},
-                {"sender": "ai", "content": f"AI acknowledges {label}."},
+                {"role": "user", "content": f"User starts {label}."},
+                {"role": "ai", "content": f"AI acknowledges {label}."},
             ],
         )
 
@@ -193,8 +193,8 @@ class WorkspaceServerTests(unittest.TestCase):
     def _conversation_plan_fields(conversation: dict, content: str) -> dict:
         return {
             "conversation_id": conversation["conversation_id"],
-            "write_prove": conversation["write_prove"],
-            "conversation_entries": [{"sender": "ai", "content": content}],
+            "writer_nonce": conversation["writer_nonce"],
+            "conversation_entries": [{"role": "ai", "content": content}],
         }
 
     def raw_request(
@@ -994,6 +994,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual([4, 16], memory_capability["recommended_tag_range"])
         self.assertEqual(200, memory_capability["change_message_max_chars"])
         self.assertTrue(memory_capability["helpful_feedback_affects_relevance"])
+        self.assertTrue(memory_capability["plan_completion_context_begin_immediate_before_memory"])
+        self.assertTrue(memory_capability["plan_completion_context_dry_run_before_memory"])
+        self.assertTrue(memory_capability["plan_completion_context_lock_held_through_memory_and_commit"])
+        self.assertTrue(memory_capability["plan_completion_memory_applied_before_context_commit"])
+        self.assertFalse(memory_capability["plan_completion_memory_atomic_with_plan_conversation"])
+        self.assertTrue(memory_capability["plan_completion_memory_repairable_via_revisioned_update_or_archive"])
+        self.assertTrue(memory_capability["plan_completion_retry_should_reconcile_memory_first"])
         self.assertEqual(
             {"items", "outcome", "memory_actions", "memory_feedback", "memory_conflicts"},
             set(memory_capability["plan_debrief_schema"]["required"]),
@@ -3380,8 +3387,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual([], queried["entries"])
 
         initial_entries = [
-            {"sender": "user", "content": "User starts a public Conversation API test."},
-            {"sender": "ai", "content": "AI records the public Conversation API contract."},
+            {"role": "user", "content": "User starts a public Conversation API test."},
+            {"role": "ai", "content": "AI records the public Conversation API contract."},
         ]
         status, rejected = self.request(
             "POST",
@@ -3399,9 +3406,9 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(201, status)
         self.assertEqual(0, created["conversation_id"])
-        self.assertRegex(created["write_prove"], r"^@[A-Za-z0-9]{4}@$")
+        self.assertRegex(created["writer_nonce"], r"^@[A-Za-z0-9]{4}@$")
         self.assertIn("8192", created["instructions"])
-        write_prove = created["write_prove"]
+        writer_nonce = created["writer_nonce"]
 
         status, queried = self.request(
             "GET",
@@ -3410,25 +3417,25 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(1, queried["next_conversation_id"])
         self.assertEqual(2, queried["total"])
-        self.assertTrue(all("write_prove" not in item for item in queried["entries"]))
+        self.assertTrue(all("writer_nonce" not in item for item in queried["entries"]))
 
         status, rejected = self.request(
             "POST",
             base + "/conversation/0/entries",
             {
-                "write_prove": "@zzzz@" if write_prove != "@zzzz@" else "@yyyy@",
-                "entries": [{"sender": "ai", "content": "must not append"}],
+                "writer_nonce": "@zzzz@" if writer_nonce != "@zzzz@" else "@yyyy@",
+                "entries": [{"role": "ai", "content": "must not append"}],
             },
         )
         self.assertEqual(403, status)
-        self.assertEqual("conversation_write_prove_mismatch", rejected["error"]["code"])
+        self.assertEqual("conversation_writer_nonce_mismatch", rejected["error"]["code"])
 
         status, appended = self.request(
             "POST",
             base + "/conversation/0/entries",
             {
-                "write_prove": write_prove,
-                "entries": [{"sender": "user", "content": "User adds one more requirement."}],
+                "writer_nonce": writer_nonce,
+                "entries": [{"role": "user", "content": "User adds one more requirement."}],
             },
         )
         self.assertEqual(201, status)
@@ -3453,8 +3460,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 "arguments": {
                     "conversation_id": 1,
                     "entries": [
-                        {"sender": "user", "content": "User starts the MCP Conversation."},
-                        {"sender": "ai", "content": "AI creates the MCP Conversation."},
+                        {"role": "user", "content": "User starts the MCP Conversation."},
+                        {"role": "ai", "content": "AI creates the MCP Conversation."},
                     ],
                 },
             },
@@ -3462,7 +3469,109 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(mcp_create["result"]["isError"])
         created_mcp = mcp_create["result"]["structuredContent"]
         self.assertEqual(1, created_mcp["conversation_id"])
-        self.assertRegex(created_mcp["write_prove"], r"^@[A-Za-z0-9]{4}@$")
+        self.assertRegex(created_mcp["writer_nonce"], r"^@[A-Za-z0-9]{4}@$")
+
+    def test_plan_completion_dry_run_rejects_conversation_before_memory(self) -> None:
+        record = self.server.tokens.create(
+            name="Completion dry-run workspace",
+            expires_at=None,
+            path_prefix="completion-dry-run-workspace",
+            can_read=True,
+            can_write=True,
+            can_preview=True,
+            shell_mode="none",
+            allowed_commands=(),
+        )
+        endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
+        conversation = self._new_test_conversation(record, "completion dry-run")
+
+        status, plan = self.request(
+            "POST",
+            endpoint("/context"),
+            {
+                "type": "plan",
+                "taskname": "completion-dry-run",
+                "content": "Verify Context dry-run happens before Memory mutation.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the completion dry-run Plan.",
+                ),
+            },
+        )
+        self.assertEqual(201, status)
+
+        store = self.server.context_for(
+            (self.server.config.root / record.path_prefix).resolve()
+        )
+        store.append_conversation(
+            conversation_id=conversation["conversation_id"],
+            writer_nonce=conversation["writer_nonce"],
+            entries=[
+                {
+                    "role": "ai" if sub_id % 2 else "user",
+                    "content": f"Fill Conversation slot {sub_id}.",
+                }
+                for sub_id in range(4, 30)
+            ],
+        )
+        self.assertEqual(
+            29,
+            store.conversation_query(
+                conversation_id=conversation["conversation_id"],
+                full=True,
+                limit=100,
+            )[1],
+        )
+
+        status, before_memory = self.request("GET", endpoint("/memory"))
+        self.assertEqual(200, status)
+        self.assertEqual(0, before_memory["total"])
+
+        status, rejected = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{plan['id']}"),
+            {
+                "taskname": "completion-dry-run",
+                "expected_revision": plan["revision"],
+                "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI completion cannot occupy reserved summary slot 30.",
+                ),
+                "debrief": {
+                    "items": [
+                        {
+                            "content": "This Memory must not be created when Context dry-run fails.",
+                            "tags": ["completion", "dry-run", "conversation", "atomicity"],
+                        }
+                    ],
+                    "outcome": "partial",
+                    "memory_actions": [],
+                    "memory_feedback": [],
+                    "memory_conflicts": [],
+                },
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_context_entry", rejected["error"]["code"])
+        self.assertIn("30", rejected["error"]["message"])
+        self.assertIn("role=summary", rejected["error"]["message"])
+
+        status, after_memory = self.request("GET", endpoint("/memory"))
+        self.assertEqual(200, status)
+        self.assertEqual(0, after_memory["total"])
+
+        current = store.query(entry_id=plan["id"])[0][0]
+        self.assertEqual("in_progress", current["status"])
+        self.assertEqual(plan["revision"], current["revision"])
+        self.assertEqual(
+            29,
+            store.conversation_query(
+                conversation_id=conversation["conversation_id"],
+                full=True,
+                limit=100,
+            )[1],
+        )
 
     def test_workspace_context_messages_queries_and_mcp(self) -> None:
         record = self.server.tokens.create(

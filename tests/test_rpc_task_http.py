@@ -81,8 +81,8 @@ class RpcTaskHTTPTests(unittest.TestCase):
         conversation = store.create_conversation(
             store.conversation_query(limit=1)[2],
             [
-                {"sender": "user", "content": "User starts RPC task execution tests."},
-                {"sender": "ai", "content": "AI will exercise RPC task execution."},
+                {"role": "user", "content": "User starts RPC task execution tests."},
+                {"role": "ai", "content": "AI will exercise RPC task execution."},
             ],
         )
         status, _, raw = self.request(
@@ -93,9 +93,9 @@ class RpcTaskHTTPTests(unittest.TestCase):
                 "taskname": "rpc-task",
                 "content": "Exercise RPC task execution",
                 "conversation_id": conversation["conversation_id"],
-                "write_prove": conversation["write_prove"],
+                "writer_nonce": conversation["writer_nonce"],
                 "conversation_entries": [
-                    {"sender": "ai", "content": "AI creates the RPC task execution Plan."}
+                    {"role": "ai", "content": "AI creates the RPC task execution Plan."}
                 ],
             }),
             self.control(),

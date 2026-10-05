@@ -24,12 +24,12 @@ class PlanCreationTests(unittest.TestCase):
         conversation = self.store.create_conversation(
             self.store.conversation_query(limit=1)[2],
             [
-                {"sender": "user", "content": "Create and verify this Plan."},
-                {"sender": "ai", "content": "I will create and verify the Plan."},
+                {"role": "user", "content": "Create and verify this Plan."},
+                {"role": "ai", "content": "I will create and verify the Plan."},
             ]
         )
         self.conversation_id = conversation["conversation_id"]
-        self.write_prove = conversation["write_prove"]
+        self.writer_nonce = conversation["writer_nonce"]
         self.body = {
             "type": "plan", "taskname": "batch", "content": "Implement one feature",
             "scope_paths": ["src"], "memory_tags": ["feature"],
@@ -45,22 +45,22 @@ class PlanCreationTests(unittest.TestCase):
         payload = copy.deepcopy(self.body if body is None else body)
         if target.database == self.store.database:
             conversation_id = self.conversation_id
-            write_prove = self.write_prove
+            writer_nonce = self.writer_nonce
         else:
             conversation = target.create_conversation(
                 target.conversation_query(limit=1)[2],
                 [
-                    {"sender": "user", "content": "Create this Plan in the other workspace."},
-                    {"sender": "ai", "content": "I will create the Plan in this workspace."},
+                    {"role": "user", "content": "Create this Plan in the other workspace."},
+                    {"role": "ai", "content": "I will create the Plan in this workspace."},
                 ]
             )
             conversation_id = conversation["conversation_id"]
-            write_prove = conversation["write_prove"]
+            writer_nonce = conversation["writer_nonce"]
         payload.setdefault("conversation_id", conversation_id)
-        payload.setdefault("write_prove", write_prove)
+        payload.setdefault("writer_nonce", writer_nonce)
         payload.setdefault(
             "conversation_entries",
-            [{"sender": "ai", "content": "Create this Plan atomically."}],
+            [{"role": "ai", "content": "Create this Plan atomically."}],
         )
         return target.create_plans(payload, actor_id=actor)
 

@@ -18,8 +18,8 @@ from openkapsel.context.conversation import (
     append_conversation,
     normalize_entries,
     validate_conversation_id,
-    validate_write_prove,
-    verify_write_prove,
+    validate_writer_nonce,
+    verify_writer_nonce,
 )
 
 from openkapsel.context.context_store import ContextStore, MAX_CONTEXT_CONTENT_CHARS, PLAN_STATUSES, _utc_now
@@ -65,10 +65,10 @@ def creation_properties() -> dict[str, Any]:
             "minimum": 0,
             "description": "Non-negative Conversation id that owns this Plan creation.",
         },
-        "write_prove": {
+        "writer_nonce": {
             "type": "string",
             "pattern": "^@[A-Za-z0-9]{4}@$",
-            "description": "Six-character write proof in @xxxx@ form; required for Plan creation. It is not an authentication token.",
+            "description": "Six-character writer nonce in @xxxx@ form; required for Plan creation. It is not an authentication token.",
         },
         "conversation_entries": {
             "type": "array",
@@ -78,9 +78,9 @@ def creation_properties() -> dict[str, Any]:
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["sender", "content"],
+                "required": ["role", "content"],
                 "properties": {
-                    "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                    "role": {"type": "string", "enum": ["user", "ai", "summary"]},
                     "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
                 },
             },
@@ -130,7 +130,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "type", "content", "taskname", "status", "plan_id", "scope_paths",
         "memory_tags", "subplans", "request_id", "message",
-        "conversation_id", "write_prove", "conversation_entries",
+        "conversation_id", "writer_nonce", "conversation_entries",
     }
     if ("subplans" in body or "request_id" in body) and set(body) - allowed:
         raise ValueError("plan creation contains unknown fields")
@@ -179,7 +179,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             item["ref"] = ref
         normalized.append(item)
     conversation_id = validate_conversation_id(body.get("conversation_id"))
-    write_prove = validate_write_prove(body.get("write_prove"))
+    writer_nonce = validate_writer_nonce(body.get("writer_nonce"))
     conversation_entries = normalize_entries(body.get("conversation_entries"), minimum=1)
     request = {
         "root": root,
@@ -201,7 +201,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("request_id must contain 1-128 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
     return {
         **request,
-        "write_prove": write_prove,
+        "writer_nonce": writer_nonce,
         "request_id": request_id,
         "fingerprint": hashlib.sha256(encoded).hexdigest(),
         "hint_paths": paths,
@@ -252,10 +252,10 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
         store._ensure_available()
         with closing(store._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            conversation_id = verify_write_prove(
+            conversation_id = verify_writer_nonce(
                 connection,
                 spec["conversation_id"],
-                spec["write_prove"],
+                spec["writer_nonce"],
             )
             if key is not None:
                 previous = connection.execute(
@@ -293,7 +293,7 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
             appended_conversation_entries = append_conversation(
                 connection,
                 conversation_id=conversation_id,
-                write_prove=spec["write_prove"],
+                writer_nonce=spec["writer_nonce"],
                 entries=spec["conversation_entries"],
             )
             now = _utc_now()

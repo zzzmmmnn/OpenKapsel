@@ -23,8 +23,8 @@ class ConversationTests(unittest.TestCase):
     @staticmethod
     def initial_entries(label: str = "conversation") -> list[dict[str, str]]:
         return [
-            {"sender": "user", "content": f"User starts {label}."},
-            {"sender": "ai", "content": f"AI acknowledges {label}."},
+            {"role": "user", "content": f"User starts {label}."},
+            {"role": "ai", "content": f"AI acknowledges {label}."},
         ]
 
     def next_conversation_id(self) -> int:
@@ -42,18 +42,18 @@ class ConversationTests(unittest.TestCase):
             "taskname": "conversation-plan",
             "content": "Implement the requested change.",
             "conversation_id": conversation["conversation_id"],
-            "write_prove": conversation["write_prove"],
+            "writer_nonce": conversation["writer_nonce"],
             "conversation_entries": [
-                {"sender": "ai", "content": "AI creates the implementation Plan."}
+                {"role": "ai", "content": "AI creates the implementation Plan."}
             ],
         }
         body.update(overrides)
         return self.store.create_plans(body, actor_id="actor")
 
-    def test_create_requires_sequential_id_and_stores_plaintext_write_prove(self) -> None:
+    def test_create_requires_sequential_id_and_stores_plaintext_writer_nonce(self) -> None:
         created = self.create_conversation()
         self.assertEqual(0, created["conversation_id"])
-        self.assertRegex(created["write_prove"], r"^@[A-Za-z0-9]{4}@$")
+        self.assertRegex(created["writer_nonce"], r"^@[A-Za-z0-9]{4}@$")
         self.assertEqual(1, self.next_conversation_id())
         self.assertIn("next_conversation_id", created["instructions"])
         self.assertIn("8192", created["instructions"])
@@ -62,11 +62,11 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("must compress the preceding window", created["instructions"])
         with closing(sqlite3.connect(self.store.database)) as connection:
             stored = connection.execute(
-                "SELECT write_prove FROM conversations WHERE id = ?",
+                "SELECT writer_nonce FROM conversations WHERE id = ?",
                 (created["conversation_id"],),
             ).fetchone()[0]
-        self.assertEqual(created["write_prove"], stored)
-        self.assertEqual(["user", "ai"], [item["sender"] for item in created["entries"]])
+        self.assertEqual(created["writer_nonce"], stored)
+        self.assertEqual(["user", "ai"], [item["role"] for item in created["entries"]])
         self.assertEqual([1, 2], [item["sub_id"] for item in created["entries"]])
         self.assertIn("conversation_append", created["instructions"])
 
@@ -77,7 +77,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(2, total)
         self.assertEqual(1, next_id)
         self.assertEqual([2, 1], [item["sub_id"] for item in queried])
-        self.assertTrue(all("write_prove" not in item for item in queried))
+        self.assertTrue(all("writer_nonce" not in item for item in queried))
 
         with self.assertRaisesRegex(ValueError, "next_conversation_id 1"):
             self.store.create_conversation(2, self.initial_entries("skipped id"))
@@ -88,21 +88,21 @@ class ConversationTests(unittest.TestCase):
             self.store.create_conversation(
                 self.next_conversation_id(),
                 [
-                    {"sender": "ai", "content": "wrong first sender"},
-                    {"sender": "user", "content": "wrong second sender"},
+                    {"role": "ai", "content": "wrong first role"},
+                    {"role": "user", "content": "wrong second role"},
                 ]
             )
         with self.assertRaises(ValueError):
             self.store.create_conversation(
                 self.next_conversation_id(),
-                [{"sender": "user", "content": "only one record"}]
+                [{"role": "user", "content": "only one record"}]
             )
         with self.assertRaises(ValueError):
             self.store.create_conversation(
                 self.next_conversation_id(),
                 [
-                    {"sender": "user", "content": "ok"},
-                    {"sender": "ai", "content": "x" * 1001},
+                    {"role": "user", "content": "ok"},
+                    {"role": "ai", "content": "x" * 1001},
                 ]
             )
 
@@ -135,24 +135,24 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(1, next_id)
         self.assertEqual({0}, {item["conversation_id"] for item in entries})
 
-    def test_append_requires_matching_formatted_write_prove(self) -> None:
+    def test_append_requires_matching_formatted_writer_nonce(self) -> None:
         created = self.create_conversation()
         result = self.store.append_conversation(
             conversation_id=created["conversation_id"],
-            write_prove=created["write_prove"],
-            entries=[{"sender": "user", "content": "User changes one requirement."}],
+            writer_nonce=created["writer_nonce"],
+            entries=[{"role": "user", "content": "User changes one requirement."}],
         )
         self.assertEqual(3, result["entries"][0]["sub_id"])
 
-        for write_prove in ("abcd", "@abc@", "@abc!@", "@ABCDE@", "@0000x", "@zzzz@"):
-            if write_prove == created["write_prove"]:
+        for writer_nonce in ("abcd", "@abc@", "@abc!@", "@ABCDE@", "@0000x", "@zzzz@"):
+            if writer_nonce == created["writer_nonce"]:
                 continue
-            with self.subTest(write_prove=write_prove):
+            with self.subTest(writer_nonce=writer_nonce):
                 with self.assertRaises((ValueError, PermissionError)):
                     self.store.append_conversation(
                         conversation_id=created["conversation_id"],
-                        write_prove=write_prove,
-                        entries=[{"sender": "ai", "content": "must not append"}],
+                        writer_nonce=writer_nonce,
+                        entries=[{"role": "ai", "content": "must not append"}],
                     )
         entries, total, _ = self.store.conversation_query(
             conversation_id=created["conversation_id"],
@@ -164,59 +164,59 @@ class ConversationTests(unittest.TestCase):
     def test_every_thirtieth_sub_id_is_required_summary(self) -> None:
         created = self.create_conversation("summary cadence")
         conversation_id = created["conversation_id"]
-        write_prove = created["write_prove"]
+        writer_nonce = created["writer_nonce"]
 
         self.store.append_conversation(
             conversation_id=conversation_id,
-            write_prove=write_prove,
+            writer_nonce=writer_nonce,
             entries=[
-                {"sender": "user" if index % 2 else "ai", "content": f"record {index}"}
+                {"role": "user" if index % 2 else "ai", "content": f"record {index}"}
                 for index in range(3, 30)
             ],
         )
         with self.assertRaisesRegex(ValueError, "30.*summary"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
-                write_prove=write_prove,
-                entries=[{"sender": "ai", "content": "ordinary record cannot occupy 30"}],
+                writer_nonce=writer_nonce,
+                entries=[{"role": "ai", "content": "ordinary record cannot occupy 30"}],
             )
 
         boundary = self.store.append_conversation(
             conversation_id=conversation_id,
-            write_prove=write_prove,
+            writer_nonce=writer_nonce,
             entries=[
-                {"sender": "summary", "content": "S" * 8192},
-                {"sender": "ai", "content": "AI continues after the summary."},
+                {"role": "summary", "content": "S" * 8192},
+                {"role": "ai", "content": "AI continues after the summary."},
             ],
         )
         self.assertEqual([30, 31], [item["sub_id"] for item in boundary["entries"]])
         with self.assertRaisesRegex(ValueError, "8192"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
-                write_prove=write_prove,
-                entries=[{"sender": "summary", "content": "S" * 8193}],
+                writer_nonce=writer_nonce,
+                entries=[{"role": "summary", "content": "S" * 8193}],
             )
 
         self.store.append_conversation(
             conversation_id=conversation_id,
-            write_prove=write_prove,
+            writer_nonce=writer_nonce,
             entries=[
-                {"sender": "user" if index % 2 else "ai", "content": f"record {index}"}
+                {"role": "user" if index % 2 else "ai", "content": f"record {index}"}
                 for index in range(32, 60)
             ],
         )
         with self.assertRaisesRegex(ValueError, "60.*summary"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
-                write_prove=write_prove,
-                entries=[{"sender": "user", "content": "ordinary record cannot occupy 60"}],
+                writer_nonce=writer_nonce,
+                entries=[{"role": "user", "content": "ordinary record cannot occupy 60"}],
             )
         boundary = self.store.append_conversation(
             conversation_id=conversation_id,
-            write_prove=write_prove,
+            writer_nonce=writer_nonce,
             entries=[
-                {"sender": "summary", "content": "Summary of conversation entries 31 through 59."},
-                {"sender": "user", "content": "User continues after the second summary."},
+                {"role": "summary", "content": "Summary of conversation entries 31 through 59."},
+                {"role": "user", "content": "User continues after the second summary."},
             ],
         )
         self.assertEqual([60, 61], [item["sub_id"] for item in boundary["entries"]])
@@ -224,29 +224,29 @@ class ConversationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "summary is only allowed"):
             self.store.append_conversation(
                 conversation_id=conversation_id,
-                write_prove=write_prove,
-                entries=[{"sender": "summary", "content": "not a summary slot"}],
+                writer_nonce=writer_nonce,
+                entries=[{"role": "summary", "content": "not a summary slot"}],
             )
 
     def test_cross_conversation_query_defaults_to_latest_summary_window(self) -> None:
         first = self.create_conversation("first")
         self.store.append_conversation(
             conversation_id=first["conversation_id"],
-            write_prove=first["write_prove"],
+            writer_nonce=first["writer_nonce"],
             entries=[
-                {"sender": "ai" if index % 2 else "user", "content": f"old first {index}"}
+                {"role": "ai" if index % 2 else "user", "content": f"old first {index}"}
                 for index in range(3, 30)
             ]
             + [
-                {"sender": "summary", "content": "latest first summary"},
-                {"sender": "ai", "content": "new first decision"},
+                {"role": "summary", "content": "latest first summary"},
+                {"role": "ai", "content": "new first decision"},
             ],
         )
         second = self.create_conversation("second")
         self.store.append_conversation(
             conversation_id=second["conversation_id"],
-            write_prove=second["write_prove"],
-            entries=[{"sender": "user", "content": "second has no summary yet"}],
+            writer_nonce=second["writer_nonce"],
+            entries=[{"role": "user", "content": "second has no summary yet"}],
         )
 
         recent, recent_total, next_id = self.store.conversation_query(limit=100)
@@ -305,11 +305,11 @@ class ConversationTests(unittest.TestCase):
                     "taskname": "bad-owner",
                     "content": "Must roll back.",
                     "conversation_id": conversation["conversation_id"],
-                    "write_prove": "@zzzz@"
-                    if conversation["write_prove"] != "@zzzz@"
+                    "writer_nonce": "@zzzz@"
+                    if conversation["writer_nonce"] != "@zzzz@"
                     else "@yyyy@",
                     "conversation_entries": [
-                        {"sender": "ai", "content": "This must not be appended."}
+                        {"role": "ai", "content": "This must not be appended."}
                     ],
                 },
                 actor_id="actor",
@@ -333,9 +333,9 @@ class ConversationTests(unittest.TestCase):
             taskname="conversation-plan",
             content="Updated Plan content.",
             conversation_id=conversation["conversation_id"],
-            write_prove=conversation["write_prove"],
+            writer_nonce=conversation["writer_nonce"],
             conversation_entries=[
-                {"sender": "user", "content": "User changed the requested behavior."}
+                {"role": "user", "content": "User changed the requested behavior."}
             ],
             require_conversation=True,
         )
@@ -345,9 +345,9 @@ class ConversationTests(unittest.TestCase):
         # Fill through sub_id 29. Creation used 1-2, Plan create 3, update 4.
         self.store.append_conversation(
             conversation_id=conversation["conversation_id"],
-            write_prove=conversation["write_prove"],
+            writer_nonce=conversation["writer_nonce"],
             entries=[
-                {"sender": "ai" if index % 2 else "user", "content": f"fill {index}"}
+                {"role": "ai" if index % 2 else "user", "content": f"fill {index}"}
                 for index in range(5, 30)
             ],
         )
@@ -358,9 +358,9 @@ class ConversationTests(unittest.TestCase):
                 taskname="conversation-plan",
                 content="Must not commit.",
                 conversation_id=conversation["conversation_id"],
-                write_prove=conversation["write_prove"],
+                writer_nonce=conversation["writer_nonce"],
                 conversation_entries=[
-                    {"sender": "ai", "content": "Cannot occupy summary slot."}
+                    {"role": "ai", "content": "Cannot occupy summary slot."}
                 ],
                 require_conversation=True,
             )
@@ -386,7 +386,7 @@ class ConversationTests(unittest.TestCase):
             "memory_feedback": [],
             "memory_conflicts": [],
         }
-        with self.assertRaisesRegex(ValueError, "sender=ai"):
+        with self.assertRaisesRegex(ValueError, "role=ai"):
             self.store.update_plan(
                 plan["id"],
                 expected_revision=plan["revision"],
@@ -394,9 +394,9 @@ class ConversationTests(unittest.TestCase):
                 plan_status="completed",
                 debrief=debrief,
                 conversation_id=conversation["conversation_id"],
-                write_prove=conversation["write_prove"],
+                writer_nonce=conversation["writer_nonce"],
                 conversation_entries=[
-                    {"sender": "user", "content": "Only user context is not enough to complete."}
+                    {"role": "user", "content": "Only user context is not enough to complete."}
                 ],
                 require_conversation=True,
             )
@@ -419,15 +419,15 @@ class ConversationTests(unittest.TestCase):
             debrief=debrief,
             actor_id="actor",
             conversation_id=conversation["conversation_id"],
-            write_prove=conversation["write_prove"],
+            writer_nonce=conversation["writer_nonce"],
             conversation_entries=[
-                {"sender": "ai", "content": "AI records the completed Plan result."}
+                {"role": "ai", "content": "AI records the completed Plan result."}
             ],
             require_conversation=True,
         )
         self.assertEqual("completed", completed["status"])
         self.assertEqual(2, completed["revision"])
-        self.assertEqual("ai", completed["conversation_entries"][0]["sender"])
+        self.assertEqual("ai", completed["conversation_entries"][0]["role"])
 
     def test_cancel_only_needs_no_conversation_owner_but_cancel_plus_edit_does(self) -> None:
         conversation = self.create_conversation("cancellation")

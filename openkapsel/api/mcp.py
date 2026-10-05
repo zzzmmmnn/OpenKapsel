@@ -180,7 +180,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_create",
         "Create conversation",
-        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns write_prove in @xxxx@ form plus append instructions.",
+        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns writer_nonce in @xxxx@ form plus append instructions.",
         _object_schema(
             {
                 "conversation_id": {
@@ -195,9 +195,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["sender", "content"],
+                    "required": ["role", "content"],
                     "properties": {
-                        "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                        "role": {"type": "string", "enum": ["user", "ai", "summary"]},
                         "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; these per-side context summaries may preserve original wording and need no extra compression when already within limit; summary max 8192 chars and is a compressed aggregate checkpoint"},
                     },
                 },
@@ -211,11 +211,11 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_append",
         "Append conversation",
-        "Atomically append one or more immutable Conversation records using conversation_id plus write_prove. user/ai records are per-side context summaries (max 1000 chars) and may preserve original wording without extra compression when it already fits. Every 30th sub_id is reserved for sender=summary; that checkpoint may be up to 8192 chars and must compress the preceding window while preserving important context.",
+        "Atomically append one or more immutable Conversation records using conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may preserve original wording without extra compression when it already fits. Every 30th sub_id is reserved for role=summary; that checkpoint may be up to 8192 chars and must compress the preceding window while preserving important context.",
         _object_schema(
             {
                 "conversation_id": {"type": "integer", "minimum": 0},
-                "write_prove": {
+                "writer_nonce": {
                     "type": "string",
                     "pattern": "^@[A-Za-z0-9]{4}@$",
                 },
@@ -226,15 +226,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["sender", "content"],
+                    "required": ["role", "content"],
                     "properties": {
-                        "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                        "role": {"type": "string", "enum": ["user", "ai", "summary"]},
                         "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
                     },
                 },
                 },
             },
-            ("conversation_id", "write_prove", "entries"),
+            ("conversation_id", "writer_nonce", "entries"),
         ),
         read_only=False,
         context_message=False,
@@ -247,7 +247,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             {
                 "conversation_id": {"type": "integer", "minimum": 0},
                 "query": {"type": "string", "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "default": ""},
-                "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                "role": {"type": "string", "enum": ["user", "ai", "summary"]},
                 "start_sub_id": {"type": "integer", "minimum": 1},
                 "end_sub_id": {"type": "integer", "minimum": 1},
                 "full": {"type": "boolean", "default": False},
@@ -398,22 +398,22 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "minimum": 0,
                     "description": "Owning non-negative Conversation id. Required for every Plan update except cancellation-only.",
                 },
-                "write_prove": {
+                "writer_nonce": {
                     "type": "string",
                     "pattern": "^@[A-Za-z0-9]{4}@$",
-                    "description": "Owning Conversation write_prove in @xxxx@ form. This is not an authentication token. Required except cancellation-only.",
+                    "description": "Owning Conversation writer_nonce in @xxxx@ form. This is not an authentication token. Required except cancellation-only.",
                 },
                 "conversation_entries": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 100,
-                    "description": "Conversation records committed atomically with the Plan update. Completion must include at least one sender=ai.",
+                    "description": "Conversation records committed atomically with the Plan update. Completion must include at least one role=ai.",
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["sender", "content"],
+                        "required": ["role", "content"],
                         "properties": {
-                            "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                            "role": {"type": "string", "enum": ["user", "ai", "summary"]},
                             "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
                         },
                     },

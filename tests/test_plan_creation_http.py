@@ -24,20 +24,20 @@ class PlanCreationHTTPTests(unittest.TestCase):
         conversation = self.store.create_conversation(
             self.store.conversation_query(limit=1)[2],
             [
-                {"sender": "user", "content": "User requests the feature test Plan."},
-                {"sender": "ai", "content": "AI will create and verify the feature Plan."},
+                {"role": "user", "content": "User requests the feature test Plan."},
+                {"role": "ai", "content": "AI will create and verify the feature Plan."},
             ]
         )
         self.conversation_id = conversation["conversation_id"]
-        self.write_prove = conversation["write_prove"]
+        self.writer_nonce = conversation["writer_nonce"]
         self.body = {
             "type": "plan",
             "taskname": "feature",
             "content": "Implement the feature",
             "conversation_id": self.conversation_id,
-            "write_prove": self.write_prove,
+            "writer_nonce": self.writer_nonce,
             "conversation_entries": [
-                {"sender": "ai", "content": "AI creates this feature Plan batch."}
+                {"role": "ai", "content": "AI creates this feature Plan batch."}
             ],
             "subplans": [
                 {"ref": "code", "content": "Implement", "scope_paths": ["src"]},
@@ -200,9 +200,9 @@ class PlanCreationHTTPTests(unittest.TestCase):
                 "taskname": "singleton",
                 "content": "Conversation-owned singleton",
                 "conversation_id": self.conversation_id,
-                "write_prove": self.write_prove,
+                "writer_nonce": self.writer_nonce,
                 "conversation_entries": [
-                    {"sender": "ai", "content": "AI creates the singleton Plan."}
+                    {"role": "ai", "content": "AI creates the singleton Plan."}
                 ],
             },
         )

@@ -9,11 +9,11 @@ Conversation is the append-only recent-dialogue context used to carry user/AI in
 Each Conversation has two identifiers:
 
 - `conversation_id`: a caller-supplied searchable non-negative integer. IDs start at `0` and must be strictly sequential. Before creating a Conversation, query Conversation history and use the returned `next_conversation_id`; creation rejects any other ID.
-- `write_prove`: a six-character write proof in exact `@xxxx@` form, where the four inner characters are ASCII letters or digits. It is not an authentication token. OpenKapsel stores the original value directly in the Conversation row and returns it from creation so the current session can prove it owns later appends.
+- `writer_nonce`: a six-character writer nonce in exact `@xxxx@` form, where the four inner characters are ASCII letters or digits. It is not an authentication token. OpenKapsel stores the original value directly in the Conversation row and returns it from creation so the current session can prove it owns later appends.
 
-Create a Conversation atomically with at least two complete records. The first record must use `sender: "user"` and the second `sender: "ai"`. Creation may contain additional records and returns an instruction string telling the AI to append materially new context.
+Create a Conversation atomically with at least two complete records. The first record must use `role: "user"` and the second `role: "ai"`. Creation may contain additional records and returns an instruction string telling the AI to append materially new context.
 
-Conversation records are immutable and append-only. Each record has a per-Conversation positive `sub_id`, `sender`, `content`, and timestamp. `sender` is one of `user`, `ai`, or `summary`. `user` and `ai` content is limited to 1,000 characters and represents that side's conversation-context summary. It may preserve important original wording verbatim and does not need to be compressed again when the source already fits within the limit. `summary` content may contain up to 8,192 characters.
+Conversation records are immutable and append-only. Each record has a per-Conversation positive `sub_id`, `role`, `content`, and timestamp. `role` is one of `user`, `ai`, or `summary`. `user` and `ai` content is limited to 1,000 characters and represents that side's conversation-context summary. It may preserve important original wording verbatim and does not need to be compressed again when the source already fits within the limit. `summary` content may contain up to 8,192 characters.
 
 Every `sub_id` divisible by 30 is reserved for the aggregate `summary` checkpoint. After records 1-29 exist, record 30 must compress that preceding window into a summary before an ordinary record can become 31. The same rule gives summary records 60, 90, and so on. A summary cannot occupy another sub-ID. The checkpoint summary must compress the preceding records while retaining their important context.
 
@@ -21,10 +21,10 @@ Cross-Conversation queries return at most 100 records and, by default, consider 
 
 Plan integration is mandatory on public REST/MCP surfaces:
 
-- Plan creation requires `conversation_id`, its `write_prove`, and at least one `conversation_entries` item. The Conversation append, root Plan, and direct sub-Plans are one Context SQLite transaction.
-- Every non-cancellation-only Plan update requires the same write proof and at least one Conversation entry, committed atomically with the Plan revision update.
-- Plan completion additionally requires at least one new `sender: "ai"` Conversation entry and the ordinary completion debrief.
-- A cancellation-only update intentionally requires no `write_prove` or Conversation entry, so another session can close an abandoned Plan after the original session state is lost.
+- Plan creation requires `conversation_id`, its `writer_nonce`, and at least one `conversation_entries` item. The Conversation append, root Plan, and direct sub-Plans are one Context SQLite transaction.
+- Every non-cancellation-only Plan update requires the same writer nonce and at least one Conversation entry, committed atomically with the Plan revision update.
+- Plan completion additionally requires at least one new `role: "ai"` Conversation entry and the ordinary completion debrief.
+- A cancellation-only update intentionally requires no `writer_nonce` or Conversation entry, so another session can close an abandoned Plan after the original session state is lost.
 - Parent and child Plans cannot be moved across Conversations. Legacy Plans with no Conversation can be attached when a valid Conversation-aware update is made.
 
 REST endpoints are `POST /conversation`, `GET /conversation`, and `POST /conversation/<conversation_id>/entries`. MCP exposes `conversation_create`, `conversation_query`, and `conversation_append`.
@@ -54,6 +54,10 @@ Plan creation may also include up to 64 direct `subplans`. The root and every ch
 An optional caller-generated `request_id` makes Plan creation safely retryable for the same workspace and stable actor. The first matching creation returns the new receipt; an identical retry returns the original root/child IDs with `replayed=true` instead of creating duplicates. Reusing the key for different normalized content conflicts. A replay is an immutable creation receipt, not current Plan state, so query the Plan tree after a retry when later edits may have changed status/content. Omitting `request_id` preserves independent-create behavior.
 
 Plan completion requires a debrief containing `items`, `outcome`, `memory_actions`, `memory_feedback`, and `memory_conflicts`. Each `items[]` entry contains one `content` value of 1–256 characters and its own required `tags`; 4–16 specific reusable tags are recommended. Every item directly creates one new long-lived Memory, so multiple items create multiple Memories. Use `items: []` when the Plan produced no new durable fact.
+
+Completion crosses two independent stores but protects the Context side before touching Memory. OpenKapsel first starts `BEGIN IMMEDIATE` on the Plan's Context SQLite database, verifies the current Plan revision, and dry-runs the complete Plan+Conversation update inside a SAVEPOINT. The dry-run is rolled back while the outer Context write transaction remains open, so no competing Context writer can invalidate that successful preflight. OpenKapsel then applies the debrief's Memory create/update/archive work and finally reruns the already-preflighted Plan+Conversation update on the same Context connection before committing the Context transaction.
+
+Memory is still not atomic with Plan+Conversation because it lives in a separate database. If Memory fails, the held Context transaction rolls back and the Plan/Conversation remain unchanged. If Memory succeeds but the final Context write or commit suffers a database/process-level failure, already-written Memory remains valid and can be repaired through normal revisioned `memory_update` or `memory_archive`. Before retrying such a failed completion, query/reconcile those Memory records first: blindly repeating the same `debrief.items` can create duplicate new Memory records.
 
 Context result metadata excludes file bodies, commands, stdin, stdout, stderr, tokens, and Authorization headers. Queries support ID, text, type, status, task name, actor, normalized path, Plan ID, root-only filtering, and cursors. Results are newest first and limited to 200. The Plan-tree endpoint returns flat depth-annotated Plans and attached entries.
 

@@ -18,21 +18,21 @@ The response includes `next_conversation_id`. IDs are non-negative, start at `0`
 {
   "conversation_id": 0,
   "entries": [
-    {"sender": "user", "content": "User wants the reconnect behavior fixed."},
-    {"sender": "ai", "content": "AI will inspect and update the client RPC path."}
+    {"role": "user", "content": "User wants the reconnect behavior fixed."},
+    {"role": "ai", "content": "AI will inspect and update the client RPC path."}
   ]
 }
 ```
 
-`POST /conversation` returns the caller-supplied `conversation_id`, `write_prove` in exact `@xxxx@` form, the created records, and AI instructions. `write_prove` is not an authentication token; OpenKapsel stores its original value directly and later uses it only as the Conversation write proof.
+`POST /conversation` returns the caller-supplied `conversation_id`, `writer_nonce` in exact `@xxxx@` form, the created records, and AI instructions. `writer_nonce` is not an authentication token; OpenKapsel stores its original value directly and later uses it only as the Conversation writer nonce.
 
 Append with `POST /conversation/<conversation_id>/entries`:
 
 ```json
 {
-  "write_prove": "@a1B2@",
+  "writer_nonce": "@a1B2@",
   "entries": [
-    {"sender": "user", "content": "User clarified the timeout must not break heartbeat."}
+    {"role": "user", "content": "User clarified the timeout must not break heartbeat."}
   ]
 }
 ```
@@ -41,7 +41,9 @@ Each record receives an immutable per-Conversation `sub_id`. `user` and `ai` con
 
 `GET /conversation?query=<text>&limit=100` searches across Conversations. By default it searches only each Conversation's newest summary plus records after it. Add `full=true` for complete history. Add `conversation_id=<id>&start_sub_id=<n>&end_sub_id=<n>` for an inclusive range inside one Conversation. The hard result limit is 100, and every query response includes `next_conversation_id` for the next creation call.
 
-Public Plan creation requires `conversation_id`, `write_prove`, and non-empty `conversation_entries`; they are committed atomically with the Plan batch. Every non-cancellation-only Plan update requires the same fields. Completion additionally requires at least one new `sender: "ai"` Conversation record. Cancellation-only deliberately omits the write proof requirement so a lost session does not leave a Plan impossible to close.
+Public Plan creation requires `conversation_id`, `writer_nonce`, and non-empty `conversation_entries`; they are committed atomically with the Plan batch. Every non-cancellation-only Plan update requires the same fields. Completion additionally requires at least one new `role: "ai"` Conversation record. Cancellation-only deliberately omits the writer nonce requirement so a lost session does not leave a Plan impossible to close.
+
+Plan completion locks and preflights Context before Memory. The server starts `BEGIN IMMEDIATE` on the Plan's Context database, dry-runs the complete Plan+Conversation update in a SAVEPOINT, rolls that SAVEPOINT back while retaining the outer write lock, applies Memory mutations, then reruns and commits the Plan+Conversation update on the same Context connection. Memory remains a separate database, so a process/database failure after Memory succeeds but before the final Context commit can still leave Memory ahead of the Plan. That Memory remains revisioned and can be corrected with `memory_update` or `memory_archive`; query/reconcile it before retrying completion because repeating `debrief.items` can create duplicate new Memory records.
 
 ## Find or create a Plan
 
@@ -64,9 +66,9 @@ POST /context
   "scope_paths": ["site"],
   "memory_tags": ["preview"],
   "conversation_id": 123,
-  "write_prove": "@a1B2@",
+  "writer_nonce": "@a1B2@",
   "conversation_entries": [
-    {"sender": "ai", "content": "AI is starting the preview diagnosis Plan."}
+    {"role": "ai", "content": "AI is starting the preview diagnosis Plan."}
   ]
 }
 ```
@@ -90,9 +92,9 @@ fields and creation logic:
   "request_id": "feature-20260921-01",
   "scope_paths": ["src"],
   "conversation_id": 123,
-  "write_prove": "@a1B2@",
+  "writer_nonce": "@a1B2@",
   "conversation_entries": [
-    {"sender": "ai", "content": "AI is creating the feature Plan tree."}
+    {"role": "ai", "content": "AI is creating the feature Plan tree."}
   ],
   "subplans": [
     {"ref": "implementation", "content": "Implement the code."},

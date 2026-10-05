@@ -444,7 +444,7 @@ class ContextStore:
         self,
         *,
         conversation_id: Any,
-        write_prove: Any,
+        writer_nonce: Any,
         entries: Any,
         require_ai: bool = False,
     ) -> dict[str, Any]:
@@ -455,7 +455,7 @@ class ContextStore:
                 created = append_conversation(
                     connection,
                     conversation_id=conversation_id,
-                    write_prove=write_prove,
+                    writer_nonce=writer_nonce,
                     entries=entries,
                     require_ai=require_ai,
                 )
@@ -470,7 +470,7 @@ class ContextStore:
         *,
         conversation_id: int | None = None,
         query: str = "",
-        sender: str | None = None,
+        role: str | None = None,
         start_sub_id: int | None = None,
         end_sub_id: int | None = None,
         full: bool = False,
@@ -483,7 +483,7 @@ class ContextStore:
                     connection,
                     conversation_id=conversation_id,
                     query=query,
-                    sender=sender,
+                    role=role,
                     start_sub_id=start_sub_id,
                     end_sub_id=end_sub_id,
                     full=full,
@@ -604,25 +604,32 @@ class ContextStore:
             )
 
     @contextmanager
-    def plan_update_guard(self, entry_id: int, expected_revision: Any):
-        """Serialize one in-process Plan update and reject stale revisions before side effects."""
+    def plan_completion_transaction(self, entry_id: int, expected_revision: Any):
+        """Hold the Context DB write lock across completion preflight and commit."""
         expected_revision = self._validate_revision(expected_revision)
         with self._lock:
             self._ensure_available()
             with closing(self._connect()) as connection:
-                row = connection.execute(
-                    "SELECT * FROM context_entries WHERE id = ?",
-                    (entry_id,),
-                ).fetchone()
-            if row is None:
-                raise KeyError("context entry does not exist")
-            if row["entry_type"] != "plan":
-                raise ValueError("context entry is not a plan")
-            if int(row["revision"]) != expected_revision:
-                raise RuntimeError(
-                    f"plan revision is {row['revision']}, not {expected_revision}"
-                )
-            yield self._serialize(row)
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    row = connection.execute(
+                        "SELECT * FROM context_entries WHERE id = ?",
+                        (entry_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise KeyError("context entry does not exist")
+                    if row["entry_type"] != "plan":
+                        raise ValueError("context entry is not a plan")
+                    if int(row["revision"]) != expected_revision:
+                        raise RuntimeError(
+                            f"plan revision is {row['revision']}, not {expected_revision}"
+                        )
+                    yield connection, self._serialize(row)
+                except Exception:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
 
     def update_plan(
         self,
@@ -636,9 +643,11 @@ class ContextStore:
         debrief: dict[str, Any] | None = None,
         actor_id: str | None = None,
         conversation_id: int | None = None,
-        write_prove: str | None = None,
+        writer_nonce: str | None = None,
         conversation_entries: Any = None,
         require_conversation: bool = False,
+        _connection: sqlite3.Connection | None = None,
+        _dry_run: bool = False,
     ) -> dict[str, Any]:
         expected_revision = self._validate_revision(expected_revision)
         taskname = self._validate_taskname(taskname)
@@ -656,7 +665,7 @@ class ContextStore:
         )
         conversation_supplied = (
             conversation_id is not None
-            or write_prove is not None
+            or writer_nonce is not None
             or conversation_entries is not None
         )
         append_plan_conversation = not closing_only and (
@@ -665,10 +674,16 @@ class ContextStore:
         if append_plan_conversation:
             if conversation_id is None:
                 raise ValueError("plan create/update requires conversation_id")
-            if write_prove is None:
-                raise ValueError("plan create/update requires write_prove")
+            if writer_nonce is None:
+                raise ValueError("plan create/update requires writer_nonce")
             if conversation_entries is None:
                 raise ValueError("plan create/update requires conversation_entries")
+
+        items: list[dict[str, Any]] = []
+        outcome: str | None = None
+        memory_refs: list[Any] = []
+        memory_feedback: list[Any] = []
+        memory_conflicts: list[Any] = []
         if debrief is not None:
             if plan_status != "completed":
                 raise ValueError("plan debrief is only valid when status is completed")
@@ -689,128 +704,156 @@ class ContextStore:
                 raise ValueError("plan debrief memory_conflicts must be an array")
             if actor_id is not None:
                 actor_id = self._validate_actor_id(actor_id)
+
+        def apply(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = connection.execute(
+                "SELECT * FROM context_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("context entry does not exist")
+            if row["entry_type"] != "plan":
+                raise ValueError("context entry is not a plan")
+            if int(row["revision"]) != expected_revision:
+                raise RuntimeError(
+                    f"plan revision is {row['revision']}, not {expected_revision}"
+                )
+            if debrief is not None:
+                existing_debrief = connection.execute(
+                    "SELECT 1 FROM plan_debriefs WHERE plan_id = ?",
+                    (entry_id,),
+                ).fetchone()
+                if existing_debrief is not None:
+                    raise ValueError("plan already has a completion debrief")
+
+            next_plan_id = row["plan_id"]
+            if plan_id is not _UNSET:
+                next_plan_id = (
+                    None
+                    if plan_id is None
+                    else self._validate_plan_parent(
+                        connection,
+                        plan_id,
+                        child_id=entry_id,
+                    )
+                )
+
+            next_conversation_id = row["conversation_id"]
+            appended_conversation_entries: list[dict[str, Any]] = []
+            if append_plan_conversation:
+                requested_conversation_id = validate_conversation_id(conversation_id)
+                if (
+                    next_conversation_id is not None
+                    and int(next_conversation_id) != requested_conversation_id
+                ):
+                    raise ValueError("plan belongs to a different conversation")
+                if next_plan_id is not None:
+                    parent_row = connection.execute(
+                        "SELECT conversation_id FROM context_entries "
+                        "WHERE id = ? AND entry_type = 'plan'",
+                        (next_plan_id,),
+                    ).fetchone()
+                    if (
+                        parent_row is not None
+                        and parent_row["conversation_id"] is not None
+                        and int(parent_row["conversation_id"]) != requested_conversation_id
+                    ):
+                        raise ValueError("parent plan belongs to a different conversation")
+                appended_conversation_entries = append_conversation(
+                    connection,
+                    conversation_id=requested_conversation_id,
+                    writer_nonce=writer_nonce,
+                    entries=conversation_entries,
+                    require_ai=plan_status == "completed",
+                )
+                next_conversation_id = requested_conversation_id
+
+            next_revision = expected_revision + 1
+            cursor = connection.execute(
+                """
+                UPDATE context_entries
+                SET updated_at = ?, taskname = ?, content = ?, plan_status = ?,
+                    plan_id = ?, conversation_id = ?, revision = ?
+                WHERE id = ? AND entry_type = 'plan' AND revision = ?
+                """,
+                (
+                    _utc_now(),
+                    row["taskname"] if closing_only else taskname,
+                    content if content is not None else row["content"],
+                    plan_status
+                    if plan_status is not None
+                    else (row["plan_status"] or "in_progress"),
+                    next_plan_id,
+                    next_conversation_id,
+                    next_revision,
+                    entry_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("plan revision changed during update")
+
+            if debrief is not None:
+                connection.execute(
+                    """
+                    INSERT INTO plan_debriefs (
+                        plan_id, created_at, actor_id, summary, items_json, outcome,
+                        memory_refs_json, memory_feedback_json, memory_conflicts_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry_id,
+                        _utc_now(),
+                        actor_id,
+                        items[0]["content"] if items else "",
+                        self._encode_json({"items": items}) or "{}",
+                        outcome,
+                        self._encode_json({"items": memory_refs}) or "{}",
+                        self._encode_json({"items": memory_feedback}) or "{}",
+                        self._encode_json({"items": memory_conflicts}) or "{}",
+                    ),
+                )
+
+            updated = connection.execute(
+                "SELECT * FROM context_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+            assert updated is not None
+            payload = self._serialize(updated)
+            if appended_conversation_entries:
+                payload["conversation_entries"] = appended_conversation_entries
+            return payload
+
+        def apply_dry_run(connection: sqlite3.Connection) -> dict[str, Any]:
+            savepoint = "plan_update_dry_run"
+            connection.execute(f"SAVEPOINT {savepoint}")
+            try:
+                payload = apply(connection)
+            except Exception:
+                connection.execute(f"ROLLBACK TO {savepoint}")
+                connection.execute(f"RELEASE {savepoint}")
+                raise
+            connection.execute(f"ROLLBACK TO {savepoint}")
+            connection.execute(f"RELEASE {savepoint}")
+            return payload
+
+        if _connection is not None:
+            return apply_dry_run(_connection) if _dry_run else apply(_connection)
+        if _dry_run:
+            raise ValueError("plan update dry-run requires an active Plan transaction")
+
         with self._lock:
             self._ensure_available()
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute(
-                    "SELECT * FROM context_entries WHERE id = ?",
-                    (entry_id,),
-                ).fetchone()
-                if row is None:
+                try:
+                    payload = apply(connection)
+                except Exception:
                     connection.rollback()
-                    raise KeyError("context entry does not exist")
-                if row["entry_type"] != "plan":
-                    connection.rollback()
-                    raise ValueError("context entry is not a plan")
-                if int(row["revision"]) != expected_revision:
-                    connection.rollback()
-                    raise RuntimeError(
-                        f"plan revision is {row['revision']}, not {expected_revision}"
-                    )
-                if debrief is not None:
-                    existing_debrief = connection.execute(
-                        "SELECT 1 FROM plan_debriefs WHERE plan_id = ?",
-                        (entry_id,),
-                    ).fetchone()
-                    if existing_debrief is not None:
-                        connection.rollback()
-                        raise ValueError("plan already has a completion debrief")
-                next_plan_id = row["plan_id"]
-                if plan_id is not _UNSET:
-                    next_plan_id = (
-                        None
-                        if plan_id is None
-                        else self._validate_plan_parent(
-                            connection,
-                            plan_id,
-                            child_id=entry_id,
-                        )
-                    )
-                next_conversation_id = row["conversation_id"]
-                appended_conversation_entries: list[dict[str, Any]] = []
-                if append_plan_conversation:
-                    requested_conversation_id = validate_conversation_id(conversation_id)
-                    if (
-                        next_conversation_id is not None
-                        and int(next_conversation_id) != requested_conversation_id
-                    ):
-                        raise ValueError("plan belongs to a different conversation")
-                    if next_plan_id is not None:
-                        parent_row = connection.execute(
-                            "SELECT conversation_id FROM context_entries "
-                            "WHERE id = ? AND entry_type = 'plan'",
-                            (next_plan_id,),
-                        ).fetchone()
-                        if (
-                            parent_row is not None
-                            and parent_row["conversation_id"] is not None
-                            and int(parent_row["conversation_id"]) != requested_conversation_id
-                        ):
-                            raise ValueError("parent plan belongs to a different conversation")
-                    appended_conversation_entries = append_conversation(
-                        connection,
-                        conversation_id=requested_conversation_id,
-                        write_prove=write_prove,
-                        entries=conversation_entries,
-                        require_ai=plan_status == "completed",
-                    )
-                    next_conversation_id = requested_conversation_id
-                next_revision = expected_revision + 1
-                cursor = connection.execute(
-                    """
-                    UPDATE context_entries
-                    SET updated_at = ?, taskname = ?, content = ?, plan_status = ?,
-                        plan_id = ?, conversation_id = ?, revision = ?
-                    WHERE id = ? AND entry_type = 'plan' AND revision = ?
-                    """,
-                    (
-                        _utc_now(),
-                        row["taskname"] if closing_only else taskname,
-                        content if content is not None else row["content"],
-                        plan_status
-                        if plan_status is not None
-                        else (row["plan_status"] or "in_progress"),
-                        next_plan_id,
-                        next_conversation_id,
-                        next_revision,
-                        entry_id,
-                        expected_revision,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    connection.rollback()
-                    raise RuntimeError("plan revision changed during update")
-                if debrief is not None:
-                    connection.execute(
-                        """
-                        INSERT INTO plan_debriefs (
-                            plan_id, created_at, actor_id, summary, items_json, outcome,
-                            memory_refs_json, memory_feedback_json, memory_conflicts_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            entry_id,
-                            _utc_now(),
-                            actor_id,
-                            items[0]["content"] if items else "",
-                            self._encode_json({"items": items}) or "{}",
-                            outcome,
-                            self._encode_json({"items": memory_refs}) or "{}",
-                            self._encode_json({"items": memory_feedback}) or "{}",
-                            self._encode_json({"items": memory_conflicts}) or "{}",
-                        ),
-                    )
-                updated = connection.execute(
-                    "SELECT * FROM context_entries WHERE id = ?",
-                    (entry_id,),
-                ).fetchone()
-                connection.commit()
-        assert updated is not None
-        payload = self._serialize(updated)
-        if appended_conversation_entries:
-            payload["conversation_entries"] = appended_conversation_entries
-        return payload
+                    raise
+                else:
+                    connection.commit()
+                    return payload
 
     def plan_debrief(self, plan_id: int) -> dict[str, Any] | None:
         plan_id = self._validate_plan_id_value(plan_id)

@@ -377,6 +377,87 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual(2, current["revision"])
             self.assertEqual(successes[0][2], current["content"])
 
+    def test_plan_completion_transaction_holds_database_write_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            first = ContextStore(workspace)
+            second = ContextStore(workspace)
+            plan_id = first.add(
+                "plan",
+                "Initial completion-lock Plan content",
+                taskname="completion-lock",
+            )
+            initial = first.query(entry_id=plan_id)[0][0]
+            self.assertEqual(1, initial["revision"])
+
+            attempted = threading.Event()
+            outcome: list[tuple[str, str]] = []
+
+            def competing_writer() -> None:
+                attempted.set()
+                try:
+                    second.update_plan(
+                        plan_id,
+                        expected_revision=1,
+                        taskname="competing-writer",
+                        content="Competing writer must wait, then become stale.",
+                    )
+                except Exception as exc:
+                    outcome.append((type(exc).__name__, str(exc)))
+                else:
+                    outcome.append(("ok", "unexpected success"))
+
+            with first.plan_completion_transaction(
+                plan_id, initial["revision"]
+            ) as (connection, locked):
+                self.assertEqual(1, locked["revision"])
+                preview = first.update_plan(
+                    plan_id,
+                    expected_revision=1,
+                    taskname="completion-lock",
+                    content="Dry-run content must roll back.",
+                    _connection=connection,
+                    _dry_run=True,
+                )
+                self.assertEqual(2, preview["revision"])
+                current_inside_transaction = connection.execute(
+                    "SELECT revision, content FROM context_entries WHERE id = ?",
+                    (plan_id,),
+                ).fetchone()
+                self.assertEqual(1, current_inside_transaction["revision"])
+                self.assertEqual(
+                    "Initial completion-lock Plan content",
+                    current_inside_transaction["content"],
+                )
+
+                thread = threading.Thread(target=competing_writer)
+                thread.start()
+                self.assertTrue(attempted.wait(timeout=2))
+                thread.join(timeout=0.2)
+                self.assertTrue(
+                    thread.is_alive(),
+                    "a second ContextStore writer should block on the SQLite write lock",
+                )
+
+                committed = first.update_plan(
+                    plan_id,
+                    expected_revision=1,
+                    taskname="completion-lock",
+                    content="Completion transaction wins.",
+                    _connection=connection,
+                )
+                self.assertEqual(2, committed["revision"])
+
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(1, len(outcome))
+            self.assertEqual("RuntimeError", outcome[0][0])
+            self.assertIn("revision", outcome[0][1])
+
+            current = first.query(entry_id=plan_id)[0][0]
+            self.assertEqual(2, current["revision"])
+            self.assertEqual("Completion transaction wins.", current["content"])
+
     def test_legacy_database_adds_plan_metadata_and_revision_columns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
@@ -422,9 +503,36 @@ class ContextStoreTests(unittest.TestCase):
                     "PRAGMA table_info(context_entries)"
                 )
             }
+            conversation_columns = {
+                row[1]
+                for row in migrated_connection.execute(
+                    "PRAGMA table_info(conversations)"
+                )
+            }
+            conversation_entry_columns = {
+                row[1]
+                for row in migrated_connection.execute(
+                    "PRAGMA table_info(conversation_entries)"
+                )
+            }
             migrated_connection.close()
             self.assertTrue(
-                {"taskname", "plan_status", "plan_id", "revision"} <= migrated_columns
+                {
+                    "taskname",
+                    "plan_status",
+                    "plan_id",
+                    "revision",
+                    "conversation_id",
+                }
+                <= migrated_columns
+            )
+            self.assertEqual(
+                {"id", "created_at", "writer_nonce"},
+                conversation_columns,
+            )
+            self.assertEqual(
+                {"conversation_id", "sub_id", "created_at", "role", "content"},
+                conversation_entry_columns,
             )
             entries, total = store.query(limit=200)
             self.assertEqual(2, total)

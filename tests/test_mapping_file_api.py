@@ -33,8 +33,8 @@ class MappingFileHTTPTests(unittest.TestCase):
         conversation = store.create_conversation(
             store.conversation_query(limit=1)[2],
             [
-                {"sender": "user", "content": "User starts mapped file RPC tests."},
-                {"sender": "ai", "content": "AI will exercise mapped file RPC behavior."},
+                {"role": "user", "content": "User starts mapped file RPC tests."},
+                {"role": "ai", "content": "AI will exercise mapped file RPC behavior."},
             ],
         )
         status, _, raw = self.request(
@@ -45,9 +45,9 @@ class MappingFileHTTPTests(unittest.TestCase):
                 "taskname": "rpc",
                 "content": "Test file RPC",
                 "conversation_id": conversation["conversation_id"],
-                "write_prove": conversation["write_prove"],
+                "writer_nonce": conversation["writer_nonce"],
                 "conversation_entries": [
-                    {"sender": "ai", "content": "AI creates the mapped file RPC Plan."}
+                    {"role": "ai", "content": "AI creates the mapped file RPC Plan."}
                 ],
             }),
             self.headers,

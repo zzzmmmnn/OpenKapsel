@@ -182,8 +182,8 @@ class MappingHTTPTests(unittest.TestCase):
             conversation = store.create_conversation(
                 store.conversation_query(limit=1)[2],
                 [
-                    {"sender": "user", "content": "User starts generic mapping RPC write tests."},
-                    {"sender": "ai", "content": "AI will exercise generic mapping RPC writes."},
+                    {"role": "user", "content": "User starts generic mapping RPC write tests."},
+                    {"role": "ai", "content": "AI will exercise generic mapping RPC writes."},
                 ],
             )
             status, _, raw = self.request(
@@ -193,9 +193,9 @@ class MappingHTTPTests(unittest.TestCase):
                     "taskname": "rpc",
                     "content": "RPC write test",
                     "conversation_id": conversation["conversation_id"],
-                    "write_prove": conversation["write_prove"],
+                    "writer_nonce": conversation["writer_nonce"],
                     "conversation_entries": [
-                        {"sender": "ai", "content": "AI creates the generic mapping RPC write Plan."}
+                        {"role": "ai", "content": "AI creates the generic mapping RPC write Plan."}
                     ],
                 }),
                 control,

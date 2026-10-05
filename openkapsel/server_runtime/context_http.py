@@ -327,7 +327,7 @@ class ContextHttpMixin:
                 self.token_scope_root
             ).append_conversation(
                 conversation_id=conversation_id,
-                write_prove=body.get("write_prove"),
+                writer_nonce=body.get("writer_nonce"),
                 entries=body.get("entries"),
             )
         except KeyError as exc:
@@ -339,7 +339,7 @@ class ContextHttpMixin:
         except PermissionError as exc:
             raise ApiError(
                 HTTPStatus.FORBIDDEN,
-                "conversation_write_prove_mismatch",
+                "conversation_writer_nonce_mismatch",
                 str(exc),
             ) from None
         except ValueError as exc:
@@ -370,7 +370,7 @@ class ContextHttpMixin:
             if "end_sub_id" in query
             else None
         )
-        sender = self._query_one(query, "sender", "").strip() or None
+        role = self._query_one(query, "role", "").strip() or None
         search = self._query_one(query, "query", "")
         full = self._query_bool(query, "full", False)
         limit = self._query_int(
@@ -386,7 +386,7 @@ class ContextHttpMixin:
             ).conversation_query(
                 conversation_id=conversation_id,
                 query=search,
-                sender=sender,
+                role=role,
                 start_sub_id=start_sub_id,
                 end_sub_id=end_sub_id,
                 full=full,
@@ -541,18 +541,35 @@ class ContextHttpMixin:
                 if "conversation_id" in body
                 else None
             )
-            changes["write_prove"] = (
-                str(body["write_prove"])
-                if "write_prove" in body
+            changes["writer_nonce"] = (
+                str(body["writer_nonce"])
+                if "writer_nonce" in body
                 else None
             )
             changes["conversation_entries"] = body.get("conversation_entries")
             changes["require_conversation"] = True
             completed_debrief: dict[str, Any] | None = None
             if plan_status == "completed":
-                with store.plan_update_guard(entry_id, expected_revision) as existing:
+                with store.plan_completion_transaction(
+                    entry_id, expected_revision
+                ) as (connection, existing):
                     if existing["status"] == "completed":
                         raise ValueError("plan is already completed")
+                    dry_run_changes = dict(changes)
+                    dry_run_changes["debrief"] = {
+                        "items": [],
+                        "outcome": "no_change",
+                        "memory_refs": [],
+                        "memory_feedback": [],
+                        "memory_conflicts": [],
+                    }
+                    dry_run_changes["actor_id"] = self.token_record.actor_id
+                    store.update_plan(
+                        entry_id,
+                        **dry_run_changes,
+                        _connection=connection,
+                        _dry_run=True,
+                    )
                     completed_debrief = self._apply_memory_debrief(
                         entry_id,
                         taskname,
@@ -560,7 +577,11 @@ class ContextHttpMixin:
                     )
                     changes["debrief"] = completed_debrief
                     changes["actor_id"] = self.token_record.actor_id
-                    entry = store.update_plan(entry_id, **changes)
+                    entry = store.update_plan(
+                        entry_id,
+                        **changes,
+                        _connection=connection,
+                    )
             else:
                 if "debrief" in body:
                     raise ValueError("plan debrief is only valid when status is completed")
@@ -576,7 +597,7 @@ class ContextHttpMixin:
         except PermissionError as exc:
             raise ApiError(
                 HTTPStatus.FORBIDDEN,
-                "conversation_write_prove_mismatch",
+                "conversation_writer_nonce_mismatch",
                 str(exc),
             ) from None
         except RuntimeError as exc:
