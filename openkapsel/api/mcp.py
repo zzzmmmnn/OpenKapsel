@@ -198,7 +198,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "required": ["sender", "content"],
                     "properties": {
                         "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
-                        "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars and should retain important content, including original text when useful"},
+                        "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; these per-side context summaries may preserve original wording and need no extra compression when already within limit; summary max 8192 chars and is a compressed aggregate checkpoint"},
                     },
                 },
                 },
@@ -211,7 +211,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_append",
         "Append conversation",
-        "Atomically append one or more immutable Conversation records using conversation_id plus write_prove. Every 30th sub_id is reserved for sender=summary; summaries may be up to 8192 chars and should preserve important content without needing to shorten original text.",
+        "Atomically append one or more immutable Conversation records using conversation_id plus write_prove. user/ai records are per-side context summaries (max 1000 chars) and may preserve original wording without extra compression when it already fits. Every 30th sub_id is reserved for sender=summary; that checkpoint may be up to 8192 chars and must compress the preceding window while preserving important context.",
         _object_schema(
             {
                 "conversation_id": {"type": "integer", "minimum": 0},

@@ -37,7 +37,7 @@ Append with `POST /conversation/<conversation_id>/entries`:
 }
 ```
 
-Each record receives an immutable per-Conversation `sub_id`. `user` and `ai` content is limited to 1,000 characters. `summary` may contain up to 8,192 characters. Every `sub_id` divisible by 30 is reserved for `summary`: after 1-29, record 30 must be a summary before an ordinary record can become 31; the next checkpoints are 60, 90, and so on. A summary must retain important context and may preserve original text verbatim; it does not need to be shorter than the source conversation.
+Each record receives an immutable per-Conversation `sub_id`. `user` and `ai` content is limited to 1,000 characters and is that side's conversation-context summary; it may preserve important original wording verbatim and does not need extra compression when the source already fits. `summary` may contain up to 8,192 characters. Every `sub_id` divisible by 30 is reserved for the aggregate `summary` checkpoint: after 1-29, record 30 must compress that preceding window before an ordinary record can become 31; the next checkpoints are 60, 90, and so on.
 
 `GET /conversation?query=<text>&limit=100` searches across Conversations. By default it searches only each Conversation's newest summary plus records after it. Add `full=true` for complete history. Add `conversation_id=<id>&start_sub_id=<n>&end_sub_id=<n>` for an inclusive range inside one Conversation. The hard result limit is 100, and every query response includes `next_conversation_id` for the next creation call.
 

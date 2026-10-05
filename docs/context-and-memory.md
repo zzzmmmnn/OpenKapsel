@@ -13,9 +13,9 @@ Each Conversation has two identifiers:
 
 Create a Conversation atomically with at least two complete records. The first record must use `sender: "user"` and the second `sender: "ai"`. Creation may contain additional records and returns an instruction string telling the AI to append materially new context.
 
-Conversation records are immutable and append-only. Each record has a per-Conversation positive `sub_id`, `sender`, `content`, and timestamp. `sender` is one of `user`, `ai`, or `summary`. `user` and `ai` content is limited to 1,000 characters; `summary` content may contain up to 8,192 characters.
+Conversation records are immutable and append-only. Each record has a per-Conversation positive `sub_id`, `sender`, `content`, and timestamp. `sender` is one of `user`, `ai`, or `summary`. `user` and `ai` content is limited to 1,000 characters and represents that side's conversation-context summary. It may preserve important original wording verbatim and does not need to be compressed again when the source already fits within the limit. `summary` content may contain up to 8,192 characters.
 
-Every `sub_id` divisible by 30 is reserved for `summary`. After records 1-29 exist, record 30 must summarize that window before an ordinary record can become 31. The same rule gives summary records 60, 90, and so on. A summary cannot occupy another sub-ID. Summary content must retain important context; it may preserve or quote original text verbatim and does not need to be shorter than the source conversation.
+Every `sub_id` divisible by 30 is reserved for the aggregate `summary` checkpoint. After records 1-29 exist, record 30 must compress that preceding window into a summary before an ordinary record can become 31. The same rule gives summary records 60, 90, and so on. A summary cannot occupy another sub-ID. The checkpoint summary must compress the preceding records while retaining their important context.
 
 Cross-Conversation queries return at most 100 records and, by default, consider only each Conversation's newest `summary` plus all records after it. Set `full=true` to search complete history. When `conversation_id` is specified, `start_sub_id` and `end_sub_id` select an inclusive range. Query responses also return `next_conversation_id`, which is the only valid ID for the next `conversation_create` call.
 

@@ -901,8 +901,10 @@ class DiscoveryMixin:
                         "senders": ["user", "ai", "summary"],
                         "ordinary_content_max_characters": MAX_CONVERSATION_CONTENT_CHARS,
                         "summary_content_max_characters": MAX_CONVERSATION_SUMMARY_CHARS,
+                        "user_ai_context_may_retain_original_text": True,
+                        "user_ai_context_need_not_be_recompressed_when_within_limit": True,
+                        "summary_is_compressed_aggregate_checkpoint": True,
                         "summary_preserves_important_content": True,
-                        "summary_may_retain_original_text": True,
                         "create_min_entries": 2,
                         "create_first_senders": ["user", "ai"],
                         "summary_sub_ids": "every positive sub_id divisible by 30",
@@ -1492,8 +1494,8 @@ class DiscoveryMixin:
                     "json": {
                         "conversation_id": "<required next_conversation_id from conversation_query; first id is 0>",
                         "entries": [
-                            {"sender": "user", "content": "<user-side conversation summary, max 1000 chars>"},
-                            {"sender": "ai", "content": "<AI-side conversation summary, max 1000 chars>"},
+                            {"sender": "user", "content": "<user-side context summary, max 1000 chars; may retain original wording without extra compression when it fits>"},
+                            {"sender": "ai", "content": "<AI-side context summary, max 1000 chars; may retain original wording without extra compression when it fits>"},
                         ],
                     },
                     "response": {
@@ -1514,7 +1516,7 @@ class DiscoveryMixin:
                             {"sender": "user|ai|summary", "content": "<user/ai max 1000 chars; summary max 8192 chars>"}
                         ],
                     },
-                    "notes": "append-only; entries cannot be modified; every sub_id divisible by 30 is reserved for sender=summary, so after 29 ordinary entries the summary is written as 30 before ordinary entry 31, likewise 60 before 61; summary must retain important content and may preserve original text verbatim without being shorter",
+                    "notes": "append-only; entries cannot be modified; user/ai entries are per-side context summaries and may preserve original wording without extra compression when already within 1000 chars; every sub_id divisible by 30 is reserved for sender=summary, so after 29 ordinary entries the compressed aggregate summary is written as 30 before ordinary entry 31, likewise 60 before 61; summary must compress the preceding window while retaining important context",
                 },
                 "context_query": {
                     "method": "GET",

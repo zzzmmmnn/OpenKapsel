@@ -122,7 +122,7 @@ SECTION_WORKFLOWS = {
     ],
     "context": [
         "Query Conversation history before creation and use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns write_prove.",
-        "Append materially new user/ai context with conversation_id plus write_prove. Every 30th sub_id is a required summary of the preceding window; summary may be up to 8192 characters, must retain important content, and may preserve original text without shortening it. Cross-conversation query defaults to the newest summary plus later entries.",
+        "Append materially new user/ai context with conversation_id plus write_prove. user/ai records are per-side context summaries (max 1000 chars) and may keep original wording without extra compression when it already fits. Every 30th sub_id is a required compressed aggregate summary of the preceding window, up to 8192 characters. Cross-conversation query defaults to the newest summary plus later entries.",
         "Query active root plans first, then create a root plan only when no suitable plan exists.",
         "Plan creation and every non-cancellation-only Plan update atomically append at least one Conversation entry using conversation_id plus write_prove; completion must include at least one ai entry. write_prove is a plaintext write proof, not an authentication token. Cancellation-only remains possible without it.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",

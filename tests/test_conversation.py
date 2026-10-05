@@ -57,7 +57,9 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(1, self.next_conversation_id())
         self.assertIn("next_conversation_id", created["instructions"])
         self.assertIn("8192", created["instructions"])
-        self.assertIn("preserve", created["instructions"])
+        self.assertIn("original wording verbatim", created["instructions"])
+        self.assertIn("does not need extra compression", created["instructions"])
+        self.assertIn("must compress the preceding window", created["instructions"])
         with closing(sqlite3.connect(self.store.database)) as connection:
             stored = connection.execute(
                 "SELECT write_prove FROM conversations WHERE id = ?",
