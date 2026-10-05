@@ -177,6 +177,26 @@ class WorkspaceServerTests(unittest.TestCase):
         self._test_plan_ids[token] = plan_id
         return plan_id
 
+    def _new_test_conversation(self, record, label: str = "test conversation") -> dict:
+        store = self.server.context_for(
+            (self.server.config.root / record.path_prefix).resolve()
+        )
+        return store.create_conversation(
+            store.conversation_query(limit=1)[2],
+            [
+                {"sender": "user", "content": f"User starts {label}."},
+                {"sender": "ai", "content": f"AI acknowledges {label}."},
+            ],
+        )
+
+    @staticmethod
+    def _conversation_plan_fields(conversation: dict, content: str) -> dict:
+        return {
+            "conversation_id": conversation["conversation_id"],
+            "write_prove": conversation["write_prove"],
+            "conversation_entries": [{"sender": "ai", "content": content}],
+        }
+
     def raw_request(
         self,
         method: str,
@@ -383,6 +403,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("signed_envelope_replay", replay["error"]["code"])
 
     def test_signed_get_envelope_dispatches_json_body_with_effective_method(self) -> None:
+        conversation = self._new_test_conversation(
+            self.server.tokens.get("test-token"),
+            "signed-envelope plan",
+        )
         path = self.signed_envelope_path(
             "context",
             "POST",
@@ -391,6 +415,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "type": "plan",
                 "taskname": "signed-envelope",
                 "content": "Create a plan through the GET transport envelope.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the signed-envelope Plan.",
+                ),
             },
         )
         status, raw, _ = self.raw_request("GET", path, authorize=False)
@@ -1074,7 +1102,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "context", "credential", "discovery", "environment",
+                "context", "conversation", "credential", "discovery", "environment",
                 "fs_content", "fs_query", "fs_read", "fs_write",
                 "mapping", "memory", "recycle", "rpc", "schedule",
                 "share", "shell", "task", "transfer", "transport", "upload", "web",
@@ -3333,6 +3361,109 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual("original", target.read_text(encoding="utf-8"))
 
+    def test_conversation_rest_and_mcp_query_first_contract(self) -> None:
+        record = self.server.tokens.create(
+            name="Conversation workspace",
+            expires_at=None,
+            path_prefix="conversation-workspace",
+            can_read=True,
+            can_write=True,
+            can_preview=True,
+            shell_mode="none",
+            allowed_commands=(),
+        )
+        base = f"/kapsel/w/{record.token}"
+
+        status, queried = self.request("GET", base + "/conversation?limit=100")
+        self.assertEqual(200, status)
+        self.assertEqual(0, queried["next_conversation_id"])
+        self.assertEqual([], queried["entries"])
+
+        initial_entries = [
+            {"sender": "user", "content": "User starts a public Conversation API test."},
+            {"sender": "ai", "content": "AI records the public Conversation API contract."},
+        ]
+        status, rejected = self.request(
+            "POST",
+            base + "/conversation",
+            {"conversation_id": 1, "entries": initial_entries},
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_conversation", rejected["error"]["code"])
+        self.assertIn("next_conversation_id 0", rejected["error"]["message"])
+
+        status, created = self.request(
+            "POST",
+            base + "/conversation",
+            {"conversation_id": 0, "entries": initial_entries},
+        )
+        self.assertEqual(201, status)
+        self.assertEqual(0, created["conversation_id"])
+        self.assertRegex(created["write_prove"], r"^@[A-Za-z0-9]{4}@$")
+        self.assertIn("8192", created["instructions"])
+        write_prove = created["write_prove"]
+
+        status, queried = self.request(
+            "GET",
+            base + "/conversation?conversation_id=0&full=true&limit=100",
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(1, queried["next_conversation_id"])
+        self.assertEqual(2, queried["total"])
+        self.assertTrue(all("write_prove" not in item for item in queried["entries"]))
+
+        status, rejected = self.request(
+            "POST",
+            base + "/conversation/0/entries",
+            {
+                "write_prove": "@zzzz@" if write_prove != "@zzzz@" else "@yyyy@",
+                "entries": [{"sender": "ai", "content": "must not append"}],
+            },
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("conversation_write_prove_mismatch", rejected["error"]["code"])
+
+        status, appended = self.request(
+            "POST",
+            base + "/conversation/0/entries",
+            {
+                "write_prove": write_prove,
+                "entries": [{"sender": "user", "content": "User adds one more requirement."}],
+            },
+        )
+        self.assertEqual(201, status)
+        self.assertEqual(3, appended["entries"][0]["sub_id"])
+
+        _, mcp_query, _ = self.mcp_request(
+            record.token,
+            8010,
+            "tools/call",
+            {"name": "conversation_query", "arguments": {"limit": 100}},
+        )
+        self.assertIn("result", mcp_query, mcp_query)
+        self.assertFalse(mcp_query["result"]["isError"])
+        self.assertEqual(1, mcp_query["result"]["structuredContent"]["next_conversation_id"])
+
+        _, mcp_create, _ = self.mcp_request(
+            record.token,
+            8011,
+            "tools/call",
+            {
+                "name": "conversation_create",
+                "arguments": {
+                    "conversation_id": 1,
+                    "entries": [
+                        {"sender": "user", "content": "User starts the MCP Conversation."},
+                        {"sender": "ai", "content": "AI creates the MCP Conversation."},
+                    ],
+                },
+            },
+        )
+        self.assertFalse(mcp_create["result"]["isError"])
+        created_mcp = mcp_create["result"]["structuredContent"]
+        self.assertEqual(1, created_mcp["conversation_id"])
+        self.assertRegex(created_mcp["write_prove"], r"^@[A-Za-z0-9]{4}@$")
+
     def test_workspace_context_messages_queries_and_mcp(self) -> None:
         record = self.server.tokens.create(
             name="Context workspace",
@@ -3347,6 +3478,11 @@ class WorkspaceServerTests(unittest.TestCase):
         endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
         scope = self.root / "context-workspace"
 
+        conversation = self._new_test_conversation(
+            record,
+            "context integration",
+        )
+
         status, root_plan = self.request(
             "POST",
             endpoint("/context"),
@@ -3354,6 +3490,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "type": "plan",
                 "taskname": "context-integration",
                 "content": "Complete the context integration test.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the context integration root Plan.",
+                ),
             },
         )
         self.assertEqual(201, status)
@@ -3369,6 +3509,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "context-integration",
                 "plan_id": root_plan["id"],
                 "content": "Exercise recorded file operations.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the context integration sub-Plan.",
+                ),
             },
         )
         self.assertEqual(201, status)
@@ -3579,6 +3723,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "rest-plan",
                 "plan_id": root_plan["id"],
                 "content": "Exercise the REST plan update endpoint.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the REST Plan update test Plan.",
+                ),
             },
         )
         self.assertEqual(201, status)
@@ -3690,6 +3838,9 @@ class WorkspaceServerTests(unittest.TestCase):
         status, listed, _ = self.mcp_request(record.token, 801, "tools/list", {})
         self.assertEqual(200, status)
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+        self.assertIn("conversation_query", tools)
+        self.assertIn("conversation_create", tools)
+        self.assertIn("conversation_append", tools)
         self.assertIn("context_query", tools)
         self.assertIn("context_add", tools)
         self.assertIn("context_plan_update", tools)
@@ -3719,6 +3870,8 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         for tool_name, tool in tools.items():
             if tool["annotations"]["readOnlyHint"] or tool_name in {
+                "conversation_create",
+                "conversation_append",
                 "context_add",
                 "context_plan_update",
                 "credential_renew",
@@ -3800,6 +3953,10 @@ class WorkspaceServerTests(unittest.TestCase):
                     "taskname": "release-checks",
                     "plan_id": root_plan["id"],
                     "content": "Run the final checks.",
+                    **self._conversation_plan_fields(
+                        conversation,
+                        "AI creates the MCP final-checks Plan.",
+                    ),
                 },
             },
         )
@@ -3829,6 +3986,10 @@ class WorkspaceServerTests(unittest.TestCase):
                     "expected_revision": planned["result"]["structuredContent"]["revision"],
                     "taskname": "release-checks",
                     "status": "completed",
+                    **self._conversation_plan_fields(
+                        conversation,
+                        "AI records completion of the MCP final-checks Plan.",
+                    ),
                     "debrief": {
                         "items": [],
                         "outcome": "succeeded",
@@ -6291,6 +6452,10 @@ class WorkspaceServerTests(unittest.TestCase):
             shell_mode="none",
         )
         endpoint = lambda suffix: f"/kapsel/w/{record.token}{suffix}"
+        conversation = self._new_test_conversation(
+            record,
+            "project Memory integration",
+        )
         status, source_plan = self.request(
             "POST",
             endpoint("/context"),
@@ -6298,6 +6463,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "type": "plan",
                 "taskname": "auth-memory",
                 "content": "Investigate login failures.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the source Memory investigation Plan.",
+                ),
                 "scope_paths": ["frontend/auth"],
                 "memory_tags": ["auth"],
             },
@@ -6343,6 +6512,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "type": "plan",
                 "taskname": "auth-followup",
                 "content": "Change the login page.",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI creates the login follow-up Plan.",
+                ),
                 "scope_paths": ["frontend/auth/login.js"],
                 "memory_tags": ["auth"],
             },
@@ -6396,6 +6569,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "expected_revision": next_plan["revision"] + 1,
                 "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI attempts a stale Plan completion.",
+                ),
                 "debrief": {
                     "items": [
                         {
@@ -6426,6 +6603,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "expected_revision": next_plan["revision"],
                 "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI attempts completion with invalid long Memory.",
+                ),
                 "debrief": {
                     "items": [{"content": "x" * 257, "tags": ["memory"]}],
                     "outcome": "partial",
@@ -6445,6 +6626,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "expected_revision": next_plan["revision"],
                 "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI attempts completion with invalid Memory tags.",
+                ),
                 "debrief": {
                     "items": [{"content": "Validated a concise fact.", "tags": []}],
                     "outcome": "partial",
@@ -6464,6 +6649,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "expected_revision": next_plan["revision"],
                 "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI attempts completion with an unresolved Memory conflict.",
+                ),
                 "debrief": {
                     "items": [
                         {
@@ -6494,6 +6683,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "expected_revision": next_plan["revision"],
                 "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI attempts completion with a stale Memory action.",
+                ),
                 "debrief": {
                     "items": [
                         {
@@ -6547,6 +6740,10 @@ class WorkspaceServerTests(unittest.TestCase):
                 "taskname": "auth-followup",
                 "expected_revision": next_plan["revision"],
                 "status": "completed",
+                **self._conversation_plan_fields(
+                    conversation,
+                    "AI records the successful login lifecycle Plan completion.",
+                ),
                 "debrief": {
                     "items": [
                         {

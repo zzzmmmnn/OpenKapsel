@@ -2,6 +2,47 @@
 
 Context is the workspace operation history and task graph. It is not a session that must be opened. Read `GET /discovery/context` for live limits and the full Plan-debrief schema.
 
+## Conversation
+
+Conversation is the recent user/AI context log that owns new Plans. It is append-only and lives beside Plan state in the Context database.
+
+Before creating one, query history:
+
+```text
+GET /conversation?limit=100
+```
+
+The response includes `next_conversation_id`. IDs are non-negative, start at `0`, and cannot skip; pass that exact value to creation:
+
+```json
+{
+  "conversation_id": 0,
+  "entries": [
+    {"sender": "user", "content": "User wants the reconnect behavior fixed."},
+    {"sender": "ai", "content": "AI will inspect and update the client RPC path."}
+  ]
+}
+```
+
+`POST /conversation` returns the caller-supplied `conversation_id`, `write_prove` in exact `@xxxx@` form, the created records, and AI instructions. `write_prove` is not an authentication token; OpenKapsel stores its original value directly and later uses it only as the Conversation write proof.
+
+Append with `POST /conversation/<conversation_id>/entries`:
+
+```json
+{
+  "write_prove": "@a1B2@",
+  "entries": [
+    {"sender": "user", "content": "User clarified the timeout must not break heartbeat."}
+  ]
+}
+```
+
+Each record receives an immutable per-Conversation `sub_id`. `user` and `ai` content is limited to 1,000 characters. `summary` may contain up to 8,192 characters. Every `sub_id` divisible by 30 is reserved for `summary`: after 1-29, record 30 must be a summary before an ordinary record can become 31; the next checkpoints are 60, 90, and so on. A summary must retain important context and may preserve original text verbatim; it does not need to be shorter than the source conversation.
+
+`GET /conversation?query=<text>&limit=100` searches across Conversations. By default it searches only each Conversation's newest summary plus records after it. Add `full=true` for complete history. Add `conversation_id=<id>&start_sub_id=<n>&end_sub_id=<n>` for an inclusive range inside one Conversation. The hard result limit is 100, and every query response includes `next_conversation_id` for the next creation call.
+
+Public Plan creation requires `conversation_id`, `write_prove`, and non-empty `conversation_entries`; they are committed atomically with the Plan batch. Every non-cancellation-only Plan update requires the same fields. Completion additionally requires at least one new `sender: "ai"` Conversation record. Cancellation-only deliberately omits the write proof requirement so a lost session does not leave a Plan impossible to close.
+
 ## Find or create a Plan
 
 Query active root Plans before starting a mutation-heavy task:
@@ -21,7 +62,12 @@ POST /context
   "taskname": "fix-preview",
   "content": "Diagnose and correct preview loading.",
   "scope_paths": ["site"],
-  "memory_tags": ["preview"]
+  "memory_tags": ["preview"],
+  "conversation_id": 123,
+  "write_prove": "@a1B2@",
+  "conversation_entries": [
+    {"sender": "ai", "content": "AI is starting the preview diagnosis Plan."}
+  ]
 }
 ```
 
@@ -43,6 +89,11 @@ fields and creation logic:
   "content": "Implement and verify the feature.",
   "request_id": "feature-20260921-01",
   "scope_paths": ["src"],
+  "conversation_id": 123,
+  "write_prove": "@a1B2@",
+  "conversation_entries": [
+    {"sender": "ai", "content": "AI is creating the feature Plan tree."}
+  ],
   "subplans": [
     {"ref": "implementation", "content": "Implement the code."},
     {"ref": "verification", "content": "Add regression tests.", "taskname": "feature-tests"}

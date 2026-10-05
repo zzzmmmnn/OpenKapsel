@@ -8,6 +8,8 @@ import sqlite3
 from http import HTTPStatus
 from typing import Any
 
+from openkapsel.context.conversation import MAX_CONVERSATION_QUERY_LIMIT
+
 from openkapsel.context.context_store import (
     MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
     MAX_CONTEXT_QUERY_LIMIT,
@@ -289,6 +291,124 @@ class ContextHttpMixin:
         return entry_id
 
 
+    @staticmethod
+    def _parse_conversation_id(value: str) -> int:
+        try:
+            conversation_id = int(value)
+        except ValueError:
+            conversation_id = -1
+        if conversation_id < 0:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_conversation_id",
+                "conversation id must be a non-negative integer",
+            )
+        return conversation_id
+
+    def _handle_conversation_create(self) -> None:
+        body = self._read_json()
+        try:
+            payload = self.server.context_for(
+                self.token_scope_root
+            ).create_conversation(body.get("conversation_id"), body.get("entries"))
+        except ValueError as exc:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_conversation",
+                str(exc),
+            ) from None
+        self._send_json(HTTPStatus.CREATED, payload)
+
+    def _handle_conversation_append(self, value: str) -> None:
+        conversation_id = self._parse_conversation_id(value)
+        body = self._read_json()
+        try:
+            payload = self.server.context_for(
+                self.token_scope_root
+            ).append_conversation(
+                conversation_id=conversation_id,
+                write_prove=body.get("write_prove"),
+                entries=body.get("entries"),
+            )
+        except KeyError as exc:
+            raise ApiError(
+                HTTPStatus.NOT_FOUND,
+                "conversation_not_found",
+                str(exc.args[0]),
+            ) from None
+        except PermissionError as exc:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "conversation_write_prove_mismatch",
+                str(exc),
+            ) from None
+        except ValueError as exc:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_conversation",
+                str(exc),
+            ) from None
+        self._send_json(HTTPStatus.CREATED, payload)
+
+    def _handle_conversation_query(self, query: dict[str, list[str]]) -> None:
+        self._require_permission(
+            self.token_record.can_read,
+            "read permission is not granted",
+        )
+        conversation_id = (
+            self._query_int(query, "conversation_id", 0, minimum=0)
+            if "conversation_id" in query
+            else None
+        )
+        start_sub_id = (
+            self._query_int(query, "start_sub_id", 0, minimum=1)
+            if "start_sub_id" in query
+            else None
+        )
+        end_sub_id = (
+            self._query_int(query, "end_sub_id", 0, minimum=1)
+            if "end_sub_id" in query
+            else None
+        )
+        sender = self._query_one(query, "sender", "").strip() or None
+        search = self._query_one(query, "query", "")
+        full = self._query_bool(query, "full", False)
+        limit = self._query_int(
+            query,
+            "limit",
+            100,
+            minimum=1,
+            maximum=MAX_CONVERSATION_QUERY_LIMIT,
+        )
+        try:
+            entries, total, next_conversation_id = self.server.context_for(
+                self.token_scope_root
+            ).conversation_query(
+                conversation_id=conversation_id,
+                query=search,
+                sender=sender,
+                start_sub_id=start_sub_id,
+                end_sub_id=end_sub_id,
+                full=full,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_conversation_query",
+                str(exc),
+            ) from None
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "entries": entries,
+                "next_conversation_id": next_conversation_id,
+                "limit": limit,
+                "total": total,
+                "truncated": len(entries) < total,
+            },
+        )
+
     def _handle_context_query(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         entry_id = (
@@ -416,6 +536,18 @@ class ContextHttpMixin:
                         required=True,
                     )
                 )
+            changes["conversation_id"] = (
+                self._parse_conversation_id(str(body["conversation_id"]))
+                if "conversation_id" in body
+                else None
+            )
+            changes["write_prove"] = (
+                str(body["write_prove"])
+                if "write_prove" in body
+                else None
+            )
+            changes["conversation_entries"] = body.get("conversation_entries")
+            changes["require_conversation"] = True
             completed_debrief: dict[str, Any] | None = None
             if plan_status == "completed":
                 with store.plan_update_guard(entry_id, expected_revision) as existing:
@@ -440,6 +572,12 @@ class ContextHttpMixin:
                 HTTPStatus.NOT_FOUND,
                 "context_not_found",
                 str(exc.args[0]),
+            ) from None
+        except PermissionError as exc:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "conversation_write_prove_mismatch",
+                str(exc),
             ) from None
         except RuntimeError as exc:
             raise ApiError(

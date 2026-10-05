@@ -37,6 +37,18 @@ class ContextCreationMixin:
                 entry = entries[0]
         except PlanRequestConflict as exc:
             raise ApiError(HTTPStatus.CONFLICT, exc.code, str(exc)) from None
+        except KeyError as exc:
+            raise ApiError(
+                HTTPStatus.NOT_FOUND,
+                "conversation_not_found",
+                str(exc.args[0]),
+            ) from None
+        except PermissionError as exc:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "conversation_owner_mismatch",
+                str(exc),
+            ) from None
         except ValueError as exc:
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_context_entry", str(exc)) from None
         if entry_type == "plan":

@@ -27,7 +27,31 @@ class MappingFileHTTPTests(unittest.TestCase):
         test_oauth.OAuthHTTPTests.setUp(self)
         self.base = "/kapsel/w/" + self.record.token
         self.headers = {"Authorization": "Bearer " + self.record.control_token, "Content-Type": "application/json"}
-        status, _, raw = self.request("POST", self.base + "/context", json.dumps({"type": "plan", "taskname": "rpc", "content": "Test file RPC"}), self.headers)
+        store = self.server.context_for(
+            (self.server.config.root / self.record.path_prefix).resolve()
+        )
+        conversation = store.create_conversation(
+            store.conversation_query(limit=1)[2],
+            [
+                {"sender": "user", "content": "User starts mapped file RPC tests."},
+                {"sender": "ai", "content": "AI will exercise mapped file RPC behavior."},
+            ],
+        )
+        status, _, raw = self.request(
+            "POST",
+            self.base + "/context",
+            json.dumps({
+                "type": "plan",
+                "taskname": "rpc",
+                "content": "Test file RPC",
+                "conversation_id": conversation["conversation_id"],
+                "write_prove": conversation["write_prove"],
+                "conversation_entries": [
+                    {"sender": "ai", "content": "AI creates the mapped file RPC Plan."}
+                ],
+            }),
+            self.headers,
+        )
         self.assertEqual(201, status, raw)
         self.plan = json.loads(raw)["id"]
         self.export = Path(self.temp.name) / "export"

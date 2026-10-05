@@ -153,7 +153,7 @@ class McpHandlersMixin:
             },
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer fs_edit_text for focused edits. "
-                "Before modifying the workspace, use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Plan reads expose revision; context_plan_update requires the current expected_revision for parent/content/status changes and increments revision on success. Use context_note_replace with an owning plan_id. "
+                "Before modifying the workspace, preserve recent user/AI context in Conversation. Before conversation_create, call conversation_query and use its next_conversation_id exactly; Conversation ids are caller-supplied non-negative integers starting at 0 and cannot skip. Creation atomically requires at least two complete records, first sender=user then sender=ai, and returns write_prove in @xxxx@ form. write_prove is stored as the original value and is a write proof, not an authentication token. Keep it in the current chat/session and use conversation_append for materially new user or AI context. user/ai content is limited to 1000 characters; sender=summary may be up to 8192 characters and must preserve important content, including original text verbatim when useful, without needing to shorten it. Every 30th sub_id is reserved for sender=summary: after 1-29, append the summary as 30 before ordinary record 31; repeat at 60, 90, and so on. Cross-conversation conversation_query defaults to each conversation's newest summary plus later records; use full=true for complete history, and use start_sub_id/end_sub_id when querying one conversation. Then use context_query with type=plan and root_plans=true to find an active root, or use context_add to create a root plan without plan_id. Plan creation requires conversation_id, write_prove, and at least one conversation_entries record committed atomically with the Plan batch. Every non-cancellation-only context_plan_update likewise requires the owning conversation id/write_prove and at least one atomic Conversation record; Plan completion must include at least one sender=ai Conversation record. A cancellation-only Plan update intentionally needs no Conversation write_prove so an abandoned Plan can be closed. When creating a plan, provide scope_paths and memory_tags when known; its response pushes related_memory and previously existing unfinished_root_plans (excluding the new plan). Create a plan with its direct children in one context_add call using subplans; child taskname defaults to the parent and all created Plans use the same Conversation. The response returns child IDs with optional refs. Use a stable request_id to retry the same creation without duplicates. For deeper levels create sub-plans with their parent plan_id. Every modifying tool requires a valid owning plan_id, taskname of at most 32 characters, and message of at most 200 characters. Use context_plan_tree to inspect the hierarchy and attached operations/notes. Reads are recorded only when taskname and message are both supplied; plan_id is optional for recorded reads. Use memory_project and memory_query for long-lived project facts. Memory semantics are one canonical path, content, and tags; new or rewritten content is limited to 256 characters, while legacy longer content remains readable until rewritten. Every new Memory requires at least one tag; prefer 4-16 specific reusable exact-match tags. Use memory_add/memory_update during work, or complete a plan with debrief containing items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each debrief item directly creates one new Memory from content plus tags; multiple items create multiple Memories. The server derives one common path scope for all completion-created Memories from successful writes owned by that Plan. memory_actions only updates or archives existing Memory. memory_feedback lists only Memory that materially helped; omit unhelpful recalls. Every verified memory_conflicts item must update the conflicting Memory content or archive it in the same debrief. Plan reads expose revision; context_plan_update requires the current expected_revision for parent/content/status changes and increments revision on success. Use context_note_replace with an owning plan_id. "
                 "Pass expected_etag to fs_write or fs_edit_text to prevent concurrent overwrites. Uploads only create new files; recycle an existing destination before uploading its replacement. "
                 "Use fs_read_binary and Base64 upload_chunk for small binary chunks; for large files call fs_download or use the raw_transfer URLs returned by upload_create. "
                 "Call web_preview_url when a workspace page should be opened in a browser. "
@@ -212,6 +212,9 @@ class McpHandlersMixin:
             )
 
         context_tools = {
+            "conversation_create",
+            "conversation_append",
+            "conversation_query",
             "context_query",
             "context_plan_tree",
             "context_add",
@@ -348,6 +351,89 @@ class McpHandlersMixin:
             return self._mcp_workspace_credentials(record, rotated=True)
         if name == "discovery":
             return self._mcp_discovery(str(arguments.get("section", "main")))
+        if name == "conversation_create":
+            try:
+                return self.server.context_for(self.token_scope_root).create_conversation(
+                    arguments["conversation_id"],
+                    arguments["entries"],
+                )
+            except ValueError as exc:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_conversation",
+                    str(exc),
+                ) from None
+        if name == "conversation_append":
+            try:
+                return self.server.context_for(self.token_scope_root).append_conversation(
+                    conversation_id=arguments["conversation_id"],
+                    write_prove=arguments["write_prove"],
+                    entries=arguments["entries"],
+                )
+            except KeyError as exc:
+                raise ApiError(
+                    HTTPStatus.NOT_FOUND,
+                    "conversation_not_found",
+                    str(exc.args[0]),
+                ) from None
+            except PermissionError as exc:
+                raise ApiError(
+                    HTTPStatus.FORBIDDEN,
+                    "conversation_write_prove_mismatch",
+                    str(exc),
+                ) from None
+            except ValueError as exc:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_conversation",
+                    str(exc),
+                ) from None
+        if name == "conversation_query":
+            self._require_permission(
+                self.token_record.can_read,
+                "read permission is not granted",
+            )
+            try:
+                entries, total, next_conversation_id = self.server.context_for(
+                    self.token_scope_root
+                ).conversation_query(
+                    conversation_id=(
+                        int(arguments["conversation_id"])
+                        if "conversation_id" in arguments
+                        else None
+                    ),
+                    query=str(arguments.get("query", "")),
+                    sender=(
+                        str(arguments["sender"])
+                        if "sender" in arguments
+                        else None
+                    ),
+                    start_sub_id=(
+                        int(arguments["start_sub_id"])
+                        if "start_sub_id" in arguments
+                        else None
+                    ),
+                    end_sub_id=(
+                        int(arguments["end_sub_id"])
+                        if "end_sub_id" in arguments
+                        else None
+                    ),
+                    full=bool(arguments.get("full", False)),
+                    limit=int(arguments.get("limit", 100)),
+                )
+            except ValueError as exc:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_conversation_query",
+                    str(exc),
+                ) from None
+            return {
+                "entries": entries,
+                "next_conversation_id": next_conversation_id,
+                "limit": int(arguments.get("limit", 100)),
+                "total": total,
+                "truncated": len(entries) < total,
+            }
         if name == "context_query":
             self._require_permission(
                 self.token_record.can_read,
@@ -436,6 +522,18 @@ class McpHandlersMixin:
                 }
                 if "plan_id" in arguments:
                     changes["plan_id"] = arguments["plan_id"]
+                changes["conversation_id"] = (
+                    int(arguments["conversation_id"])
+                    if "conversation_id" in arguments
+                    else None
+                )
+                changes["write_prove"] = (
+                    str(arguments["write_prove"])
+                    if "write_prove" in arguments
+                    else None
+                )
+                changes["conversation_entries"] = arguments.get("conversation_entries")
+                changes["require_conversation"] = True
                 completed_debrief: dict[str, Any] | None = None
                 if changes["plan_status"] == "completed":
                     with store.plan_update_guard(entry_id, expected_revision) as existing:
@@ -463,6 +561,12 @@ class McpHandlersMixin:
                     HTTPStatus.NOT_FOUND,
                     "context_not_found",
                     str(exc.args[0]),
+                ) from None
+            except PermissionError as exc:
+                raise ApiError(
+                    HTTPStatus.FORBIDDEN,
+                    "conversation_write_prove_mismatch",
+                    str(exc),
                 ) from None
             except RuntimeError as exc:
                 raise ApiError(

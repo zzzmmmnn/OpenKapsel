@@ -21,6 +21,15 @@ class PlanCreationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.store = ContextStore(self.root)
+        conversation = self.store.create_conversation(
+            self.store.conversation_query(limit=1)[2],
+            [
+                {"sender": "user", "content": "Create and verify this Plan."},
+                {"sender": "ai", "content": "I will create and verify the Plan."},
+            ]
+        )
+        self.conversation_id = conversation["conversation_id"]
+        self.write_prove = conversation["write_prove"]
         self.body = {
             "type": "plan", "taskname": "batch", "content": "Implement one feature",
             "scope_paths": ["src"], "memory_tags": ["feature"],
@@ -32,7 +41,28 @@ class PlanCreationTests(unittest.TestCase):
         }
 
     def create(self, body=None, actor="actor-a", store=None):
-        return (store or self.store).create_plans(self.body if body is None else body, actor_id=actor)
+        target = store or self.store
+        payload = copy.deepcopy(self.body if body is None else body)
+        if target.database == self.store.database:
+            conversation_id = self.conversation_id
+            write_prove = self.write_prove
+        else:
+            conversation = target.create_conversation(
+                target.conversation_query(limit=1)[2],
+                [
+                    {"sender": "user", "content": "Create this Plan in the other workspace."},
+                    {"sender": "ai", "content": "I will create the Plan in this workspace."},
+                ]
+            )
+            conversation_id = conversation["conversation_id"]
+            write_prove = conversation["write_prove"]
+        payload.setdefault("conversation_id", conversation_id)
+        payload.setdefault("write_prove", write_prove)
+        payload.setdefault(
+            "conversation_entries",
+            [{"sender": "ai", "content": "Create this Plan atomically."}],
+        )
+        return target.create_plans(payload, actor_id=actor)
 
     def count(self):
         return self.store.query(limit=200)[1]

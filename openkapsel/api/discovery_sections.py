@@ -11,7 +11,7 @@ SECTION_ENDPOINTS = {
         "rpc", "mapping", "fs_query", "fs_read", "fs_content", "fs_write",
         "transfer", "recycle", "upload",
     },
-    "context": {"context"},
+    "context": {"context", "conversation"},
     "memory": {"memory"},
     "shell": {"rpc", "mapping", "shell", "task", "environment"},
     "schedules": {"schedule"},
@@ -56,6 +56,8 @@ SECTION_LIMITS = {
         "max_context_query_entries", "max_context_entries", "context_trim_oldest_entries",
         "max_unfinished_root_plan_hints", "max_plan_hint_content_characters",
         "max_operation_message_characters", "max_taskname_characters",
+        "max_conversation_query_entries", "max_conversation_content_characters",
+        "max_conversation_summary_characters",
     },
     "memory": {
         "max_memory_query_entries", "max_memory_content_characters",
@@ -94,7 +96,7 @@ SECTION_LIMITS = {
 SECTION_SUMMARIES = {
     "transport": "GET-only query routing, HMAC calculation, and signed transport envelopes for constrained clients.",
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
-    "context": "Operation history, hierarchical plans, notes, and required mutation context.",
+    "context": "Append-only Conversation summaries plus operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
     "shell": "Generic RPC, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
@@ -119,10 +121,13 @@ SECTION_WORKFLOWS = {
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],
     "context": [
+        "Query Conversation history before creation and use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns write_prove.",
+        "Append materially new user/ai context with conversation_id plus write_prove. Every 30th sub_id is a required summary of the preceding window; summary may be up to 8192 characters, must retain important content, and may preserve original text without shortening it. Cross-conversation query defaults to the newest summary plus later entries.",
         "Query active root plans first, then create a root plan only when no suitable plan exists.",
+        "Plan creation and every non-cancellation-only Plan update atomically append at least one Conversation entry using conversation_id plus write_prove; completion must include at least one ai entry. write_prove is a plaintext write proof, not an authentication token. Cancellation-only remains possible without it.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",
         "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan.",
-        "Reads are not recorded unless taskname and message are supplied; plan completion requires a debrief.",
+        "Reads are not recorded unless taskname and message are supplied; plan completion also requires a debrief.",
     ],
     "memory": [
         "Read project Memory when starting work that depends on durable cross-task facts.",

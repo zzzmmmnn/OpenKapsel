@@ -12,6 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from openkapsel.context.conversation import (
+    append_conversation,
+    create_conversation,
+    initialize_conversation_schema,
+    query_conversations,
+    validate_conversation_id,
+)
+
 from openkapsel.workspace.workspace_layout import CONTEXT_DIRECTORY, ensure_workspace_directory, ensure_workspace_layout
 
 
@@ -91,6 +99,7 @@ class ContextStore:
                                 )
                             ),
                             plan_id INTEGER,
+                            conversation_id INTEGER,
                             revision INTEGER NOT NULL DEFAULT 1
                         )
                         """
@@ -120,6 +129,11 @@ class ContextStore:
                             "ALTER TABLE context_entries "
                             "ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
                         )
+                    if "conversation_id" not in columns:
+                        connection.execute(
+                            "ALTER TABLE context_entries ADD COLUMN conversation_id INTEGER"
+                        )
+                    initialize_conversation_schema(connection)
                     connection.execute(
                         "UPDATE context_entries SET plan_status = 'in_progress' "
                         "WHERE entry_type = 'plan' AND plan_status IS NULL"
@@ -139,6 +153,10 @@ class ContextStore:
                     connection.execute(
                         "CREATE INDEX IF NOT EXISTS context_entries_plan_id_id "
                         "ON context_entries(plan_id, id DESC)"
+                    )
+                    connection.execute(
+                        "CREATE INDEX IF NOT EXISTS context_entries_conversation_id_id "
+                        "ON context_entries(conversation_id, id DESC)"
                     )
                     connection.execute(
                         """
@@ -409,6 +427,69 @@ class ContextStore:
             current = row["plan_id"]
         return plan_id
 
+    def create_conversation(
+        self,
+        conversation_id: Any,
+        entries: Any,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                payload = create_conversation(connection, conversation_id, entries)
+                connection.commit()
+        return payload
+
+    def append_conversation(
+        self,
+        *,
+        conversation_id: Any,
+        write_prove: Any,
+        entries: Any,
+        require_ai: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                created = append_conversation(
+                    connection,
+                    conversation_id=conversation_id,
+                    write_prove=write_prove,
+                    entries=entries,
+                    require_ai=require_ai,
+                )
+                connection.commit()
+        return {
+            "conversation_id": validate_conversation_id(conversation_id),
+            "entries": created,
+        }
+
+    def conversation_query(
+        self,
+        *,
+        conversation_id: int | None = None,
+        query: str = "",
+        sender: str | None = None,
+        start_sub_id: int | None = None,
+        end_sub_id: int | None = None,
+        full: bool = False,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                return query_conversations(
+                    connection,
+                    conversation_id=conversation_id,
+                    query=query,
+                    sender=sender,
+                    start_sub_id=start_sub_id,
+                    end_sub_id=end_sub_id,
+                    full=full,
+                    limit=limit,
+                )
+
     def add(
         self,
         entry_type: str,
@@ -554,6 +635,10 @@ class ContextStore:
         plan_id: int | None | object = _UNSET,
         debrief: dict[str, Any] | None = None,
         actor_id: str | None = None,
+        conversation_id: int | None = None,
+        write_prove: str | None = None,
+        conversation_entries: Any = None,
+        require_conversation: bool = False,
     ) -> dict[str, Any]:
         expected_revision = self._validate_revision(expected_revision)
         taskname = self._validate_taskname(taskname)
@@ -563,6 +648,27 @@ class ContextStore:
             content = self._validate_content(content)
         if plan_status is not None and plan_status not in PLAN_STATUSES:
             raise ValueError("plan status must be in_progress, completed, or cancelled")
+        closing_only = (
+            plan_status == "cancelled"
+            and content is None
+            and plan_id is _UNSET
+            and debrief is None
+        )
+        conversation_supplied = (
+            conversation_id is not None
+            or write_prove is not None
+            or conversation_entries is not None
+        )
+        append_plan_conversation = not closing_only and (
+            require_conversation or conversation_supplied
+        )
+        if append_plan_conversation:
+            if conversation_id is None:
+                raise ValueError("plan create/update requires conversation_id")
+            if write_prove is None:
+                raise ValueError("plan create/update requires write_prove")
+            if conversation_entries is None:
+                raise ValueError("plan create/update requires conversation_entries")
         if debrief is not None:
             if plan_status != "completed":
                 raise ValueError("plan debrief is only valid when status is completed")
@@ -621,22 +727,52 @@ class ContextStore:
                             child_id=entry_id,
                         )
                     )
+                next_conversation_id = row["conversation_id"]
+                appended_conversation_entries: list[dict[str, Any]] = []
+                if append_plan_conversation:
+                    requested_conversation_id = validate_conversation_id(conversation_id)
+                    if (
+                        next_conversation_id is not None
+                        and int(next_conversation_id) != requested_conversation_id
+                    ):
+                        raise ValueError("plan belongs to a different conversation")
+                    if next_plan_id is not None:
+                        parent_row = connection.execute(
+                            "SELECT conversation_id FROM context_entries "
+                            "WHERE id = ? AND entry_type = 'plan'",
+                            (next_plan_id,),
+                        ).fetchone()
+                        if (
+                            parent_row is not None
+                            and parent_row["conversation_id"] is not None
+                            and int(parent_row["conversation_id"]) != requested_conversation_id
+                        ):
+                            raise ValueError("parent plan belongs to a different conversation")
+                    appended_conversation_entries = append_conversation(
+                        connection,
+                        conversation_id=requested_conversation_id,
+                        write_prove=write_prove,
+                        entries=conversation_entries,
+                        require_ai=plan_status == "completed",
+                    )
+                    next_conversation_id = requested_conversation_id
                 next_revision = expected_revision + 1
                 cursor = connection.execute(
                     """
                     UPDATE context_entries
                     SET updated_at = ?, taskname = ?, content = ?, plan_status = ?,
-                        plan_id = ?, revision = ?
+                        plan_id = ?, conversation_id = ?, revision = ?
                     WHERE id = ? AND entry_type = 'plan' AND revision = ?
                     """,
                     (
                         _utc_now(),
-                        taskname,
+                        row["taskname"] if closing_only else taskname,
                         content if content is not None else row["content"],
                         plan_status
                         if plan_status is not None
                         else (row["plan_status"] or "in_progress"),
                         next_plan_id,
+                        next_conversation_id,
                         next_revision,
                         entry_id,
                         expected_revision,
@@ -671,7 +807,10 @@ class ContextStore:
                 ).fetchone()
                 connection.commit()
         assert updated is not None
-        return self._serialize(updated)
+        payload = self._serialize(updated)
+        if appended_conversation_entries:
+            payload["conversation_entries"] = appended_conversation_entries
+        return payload
 
     def plan_debrief(self, plan_id: int) -> dict[str, Any] | None:
         plan_id = self._validate_plan_id_value(plan_id)
@@ -1063,6 +1202,7 @@ class ContextStore:
             "result_summary": row["result_summary"],
             "actor_id": row["actor_id"],
             "plan_id": row["plan_id"],
+            "conversation_id": row["conversation_id"],
         }
         if row["entry_type"] == "operation":
             payload["message"] = row["content"]

@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 from openkapsel.context.memory_contracts import plan_debrief_schema
+from openkapsel.context.conversation import MAX_CONVERSATION_SUMMARY_CHARS
 from openkapsel.context.context_plans import creation_properties
 from openkapsel.auth.tokens import TokenRecord
 from openkapsel import __version__
@@ -177,6 +178,87 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         idempotent=True,
     ),
     _tool(
+        "conversation_create",
+        "Create conversation",
+        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns write_prove in @xxxx@ form plus append instructions.",
+        _object_schema(
+            {
+                "conversation_id": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Required next sequential id from conversation_query.next_conversation_id; first id is 0.",
+                },
+                "entries": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 100,
+                    "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["sender", "content"],
+                    "properties": {
+                        "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                        "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars and should retain important content, including original text when useful"},
+                    },
+                },
+                },
+            },
+            ("conversation_id", "entries"),
+        ),
+        read_only=False,
+        context_message=False,
+    ),
+    _tool(
+        "conversation_append",
+        "Append conversation",
+        "Atomically append one or more immutable Conversation records using conversation_id plus write_prove. Every 30th sub_id is reserved for sender=summary; summaries may be up to 8192 chars and should preserve important content without needing to shorten original text.",
+        _object_schema(
+            {
+                "conversation_id": {"type": "integer", "minimum": 0},
+                "write_prove": {
+                    "type": "string",
+                    "pattern": "^@[A-Za-z0-9]{4}@$",
+                },
+                "entries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["sender", "content"],
+                    "properties": {
+                        "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                        "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
+                    },
+                },
+                },
+            },
+            ("conversation_id", "write_prove", "entries"),
+        ),
+        read_only=False,
+        context_message=False,
+    ),
+    _tool(
+        "conversation_query",
+        "Query conversations",
+        "Search append-only Conversation records and return next_conversation_id for the next required create call. Cross-conversation queries default to each Conversation's newest summary plus later records; set full=true for complete history. With conversation_id, start_sub_id/end_sub_id select a sub-id range.",
+        _object_schema(
+            {
+                "conversation_id": {"type": "integer", "minimum": 0},
+                "query": {"type": "string", "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "default": ""},
+                "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                "start_sub_id": {"type": "integer", "minimum": 1},
+                "end_sub_id": {"type": "integer", "minimum": 1},
+                "full": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+            }
+        ),
+        read_only=True,
+        idempotent=True,
+        context_message=False,
+    ),
+    _tool(
         "context_query",
         "Query workspace context",
         "Query operation, plan, and note records by id, text, actor, or path, newest first.",
@@ -310,6 +392,31 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "status": {
                     "type": "string",
                     "enum": ["in_progress", "completed", "cancelled"],
+                },
+                "conversation_id": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Owning non-negative Conversation id. Required for every Plan update except cancellation-only.",
+                },
+                "write_prove": {
+                    "type": "string",
+                    "pattern": "^@[A-Za-z0-9]{4}@$",
+                    "description": "Owning Conversation write_prove in @xxxx@ form. This is not an authentication token. Required except cancellation-only.",
+                },
+                "conversation_entries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "description": "Conversation records committed atomically with the Plan update. Completion must include at least one sender=ai.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["sender", "content"],
+                        "properties": {
+                            "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                            "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
+                        },
+                    },
                 },
                 "debrief": {
                     **plan_debrief_schema(),
@@ -1063,6 +1170,8 @@ def tools_for(
         "credential_renew",
         "share_query",
         "share_delete",
+        "conversation_create",
+        "conversation_append",
         "context_add",
         "context_plan_update",
         "context_note_replace",
@@ -1076,6 +1185,7 @@ def tools_for(
         readable.update({"fs_read_files", "fs_manifest"})
         readable.update(
             {
+                "conversation_query",
                 "context_query",
                 "context_plan_tree",
                 "memory_query",

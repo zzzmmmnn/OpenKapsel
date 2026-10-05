@@ -21,10 +21,29 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.mcp = "/kapsel/mcp-connect/" + connection["id"] + "/mcp"
         self.secret = connection["secret"]
         self.store = self.server.context_for(self.server.config.root / "project")
-        self.body = {"type": "plan", "taskname": "feature", "content": "Implement the feature", "subplans": [
-            {"ref": "code", "content": "Implement", "scope_paths": ["src"]},
-            {"ref": "tests", "content": "Verify", "memory_tags": ["tests"]},
-        ]}
+        conversation = self.store.create_conversation(
+            self.store.conversation_query(limit=1)[2],
+            [
+                {"sender": "user", "content": "User requests the feature test Plan."},
+                {"sender": "ai", "content": "AI will create and verify the feature Plan."},
+            ]
+        )
+        self.conversation_id = conversation["conversation_id"]
+        self.write_prove = conversation["write_prove"]
+        self.body = {
+            "type": "plan",
+            "taskname": "feature",
+            "content": "Implement the feature",
+            "conversation_id": self.conversation_id,
+            "write_prove": self.write_prove,
+            "conversation_entries": [
+                {"sender": "ai", "content": "AI creates this feature Plan batch."}
+            ],
+            "subplans": [
+                {"ref": "code", "content": "Implement", "scope_paths": ["src"]},
+                {"ref": "tests", "content": "Verify", "memory_tags": ["tests"]},
+            ],
+        }
 
     @property
     def base(self):
@@ -173,7 +192,20 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(201, status, saved)
         self.assertEqual("note", saved["type"])
         self.assertNotIn("subplans", saved)
-        status, singleton = self.rest("POST", "/context", {"type": "plan", "taskname": "old-client", "content": "Legacy singleton"})
+        status, singleton = self.rest(
+            "POST",
+            "/context",
+            {
+                "type": "plan",
+                "taskname": "singleton",
+                "content": "Conversation-owned singleton",
+                "conversation_id": self.conversation_id,
+                "write_prove": self.write_prove,
+                "conversation_entries": [
+                    {"sender": "ai", "content": "AI creates the singleton Plan."}
+                ],
+            },
+        )
         self.assertEqual(201, status, singleton)
         self.assertEqual([], singleton["subplans"])
         self.assertNotIn("replayed", singleton)

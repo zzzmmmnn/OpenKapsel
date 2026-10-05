@@ -75,6 +75,16 @@ class RpcTaskHTTPTests(unittest.TestCase):
         }
 
     def create_plan(self):
+        store = self.server.context_for(
+            (self.server.config.root / self.record.path_prefix).resolve()
+        )
+        conversation = store.create_conversation(
+            store.conversation_query(limit=1)[2],
+            [
+                {"sender": "user", "content": "User starts RPC task execution tests."},
+                {"sender": "ai", "content": "AI will exercise RPC task execution."},
+            ],
+        )
         status, _, raw = self.request(
             "POST",
             self.base + "/context",
@@ -82,6 +92,11 @@ class RpcTaskHTTPTests(unittest.TestCase):
                 "type": "plan",
                 "taskname": "rpc-task",
                 "content": "Exercise RPC task execution",
+                "conversation_id": conversation["conversation_id"],
+                "write_prove": conversation["write_prove"],
+                "conversation_entries": [
+                    {"sender": "ai", "content": "AI creates the RPC task execution Plan."}
+                ],
             }),
             self.control(),
         )

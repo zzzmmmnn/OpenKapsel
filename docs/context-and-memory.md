@@ -2,6 +2,33 @@
 
 [Back to README](../README.md)
 
+## Conversation
+
+Conversation is the append-only recent-dialogue context used to carry user/AI intent across tool calls and Plans. It is stored in the same Context SQLite database as Plans so Plan changes and their required Conversation appends can commit or roll back together.
+
+Each Conversation has two identifiers:
+
+- `conversation_id`: a caller-supplied searchable non-negative integer. IDs start at `0` and must be strictly sequential. Before creating a Conversation, query Conversation history and use the returned `next_conversation_id`; creation rejects any other ID.
+- `write_prove`: a six-character write proof in exact `@xxxx@` form, where the four inner characters are ASCII letters or digits. It is not an authentication token. OpenKapsel stores the original value directly in the Conversation row and returns it from creation so the current session can prove it owns later appends.
+
+Create a Conversation atomically with at least two complete records. The first record must use `sender: "user"` and the second `sender: "ai"`. Creation may contain additional records and returns an instruction string telling the AI to append materially new context.
+
+Conversation records are immutable and append-only. Each record has a per-Conversation positive `sub_id`, `sender`, `content`, and timestamp. `sender` is one of `user`, `ai`, or `summary`. `user` and `ai` content is limited to 1,000 characters; `summary` content may contain up to 8,192 characters.
+
+Every `sub_id` divisible by 30 is reserved for `summary`. After records 1-29 exist, record 30 must summarize that window before an ordinary record can become 31. The same rule gives summary records 60, 90, and so on. A summary cannot occupy another sub-ID. Summary content must retain important context; it may preserve or quote original text verbatim and does not need to be shorter than the source conversation.
+
+Cross-Conversation queries return at most 100 records and, by default, consider only each Conversation's newest `summary` plus all records after it. Set `full=true` to search complete history. When `conversation_id` is specified, `start_sub_id` and `end_sub_id` select an inclusive range. Query responses also return `next_conversation_id`, which is the only valid ID for the next `conversation_create` call.
+
+Plan integration is mandatory on public REST/MCP surfaces:
+
+- Plan creation requires `conversation_id`, its `write_prove`, and at least one `conversation_entries` item. The Conversation append, root Plan, and direct sub-Plans are one Context SQLite transaction.
+- Every non-cancellation-only Plan update requires the same write proof and at least one Conversation entry, committed atomically with the Plan revision update.
+- Plan completion additionally requires at least one new `sender: "ai"` Conversation entry and the ordinary completion debrief.
+- A cancellation-only update intentionally requires no `write_prove` or Conversation entry, so another session can close an abandoned Plan after the original session state is lost.
+- Parent and child Plans cannot be moved across Conversations. Legacy Plans with no Conversation can be attached when a valid Conversation-aware update is made.
+
+REST endpoints are `POST /conversation`, `GET /conversation`, and `POST /conversation/<conversation_id>/entries`. MCP exposes `conversation_create`, `conversation_query`, and `conversation_append`.
+
 ## Context
 
 Each Workspace owns private Context storage under its reserved `.openkapsel` directory. Context is an append-oriented operation history and Plan tracker; it is not a session that must be opened or closed. IDs are auto-incrementing integers.

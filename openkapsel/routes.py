@@ -322,6 +322,20 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         context_operations=(("GET", "sandbox.processes"),), discovery_key="shell",
     ),
     _exact(
+        "conversation_query", ("GET",), "/conversation", "_handle_conversation_query",
+        invocation="query", control_required=True, discovery_key="context",
+    ),
+    _exact(
+        "conversation_create", ("POST",), "/conversation", "_handle_conversation_create",
+        control_required=True, request_body=True, discovery_key="context",
+    ),
+    EndpointSpec(
+        "conversation_append", frozenset(("POST",)),
+        re.compile(r"/conversation/(?P<conversation_id>[^/]+)/entries"),
+        "_handle_conversation_append", invocation="param", parameter="conversation_id",
+        control_required=True, request_body=True, discovery_key="context",
+    ),
+    _exact(
         "context_query", ("GET",), "/context", "_handle_context_query",
         invocation="query", control_required=True, discovery_key="context",
     ),

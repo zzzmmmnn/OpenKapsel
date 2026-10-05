@@ -176,9 +176,28 @@ class MappingHTTPTests(unittest.TestCase):
             self.assertEqual("control_token_required", json.loads(raw)["error"]["code"])
 
             control = {"Authorization": "Bearer " + self.record.control_token, "Content-Type": "application/json"}
+            store = self.server.context_for(
+                (self.server.config.root / self.record.path_prefix).resolve()
+            )
+            conversation = store.create_conversation(
+                store.conversation_query(limit=1)[2],
+                [
+                    {"sender": "user", "content": "User starts generic mapping RPC write tests."},
+                    {"sender": "ai", "content": "AI will exercise generic mapping RPC writes."},
+                ],
+            )
             status, _, raw = self.request(
                 "POST", base + "/context",
-                json.dumps({"type": "plan", "taskname": "rpc", "content": "RPC write test"}),
+                json.dumps({
+                    "type": "plan",
+                    "taskname": "rpc",
+                    "content": "RPC write test",
+                    "conversation_id": conversation["conversation_id"],
+                    "write_prove": conversation["write_prove"],
+                    "conversation_entries": [
+                        {"sender": "ai", "content": "AI creates the generic mapping RPC write Plan."}
+                    ],
+                }),
                 control,
             )
             self.assertEqual(201, status, raw)

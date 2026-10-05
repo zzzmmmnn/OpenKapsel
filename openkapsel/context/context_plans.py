@@ -13,6 +13,15 @@ import re
 from contextlib import closing
 from typing import Any
 
+from openkapsel.context.conversation import (
+    MAX_CONVERSATION_SUMMARY_CHARS,
+    append_conversation,
+    normalize_entries,
+    validate_conversation_id,
+    validate_write_prove,
+    verify_write_prove,
+)
+
 from openkapsel.context.context_store import ContextStore, MAX_CONTEXT_CONTENT_CHARS, PLAN_STATUSES, _utc_now
 from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_SCOPE_PATHS, MAX_MEMORY_TAGS
 
@@ -48,6 +57,31 @@ def creation_properties() -> dict[str, Any]:
                                     "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
                     "memory_tags": {"type": "array", "maxItems": MAX_MEMORY_TAGS,
                                     "items": {"type": "string", "minLength": 1, "maxLength": 64}},
+                },
+            },
+        },
+        "conversation_id": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Non-negative Conversation id that owns this Plan creation.",
+        },
+        "write_prove": {
+            "type": "string",
+            "pattern": "^@[A-Za-z0-9]{4}@$",
+            "description": "Six-character write proof in @xxxx@ form; required for Plan creation. It is not an authentication token.",
+        },
+        "conversation_entries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "One or more append-only Conversation records committed atomically with Plan creation.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["sender", "content"],
+                "properties": {
+                    "sender": {"type": "string", "enum": ["user", "ai", "summary"]},
+                    "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
                 },
             },
         },
@@ -93,7 +127,11 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("batch creation requires type=plan")
     # Legacy singleton REST calls ignored extra attribution fields. New batch/key
     # requests are strict so misspelled plan fields cannot be silently ignored.
-    allowed = {"type", "content", "taskname", "status", "plan_id", "scope_paths", "memory_tags", "subplans", "request_id", "message"}
+    allowed = {
+        "type", "content", "taskname", "status", "plan_id", "scope_paths",
+        "memory_tags", "subplans", "request_id", "message",
+        "conversation_id", "write_prove", "conversation_entries",
+    }
     if ("subplans" in body or "request_id" in body) and set(body) - allowed:
         raise ValueError("plan creation contains unknown fields")
 
@@ -140,7 +178,15 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             refs.add(ref)
             item["ref"] = ref
         normalized.append(item)
-    request = {"root": root, "subplans": normalized}
+    conversation_id = validate_conversation_id(body.get("conversation_id"))
+    write_prove = validate_write_prove(body.get("write_prove"))
+    conversation_entries = normalize_entries(body.get("conversation_entries"), minimum=1)
+    request = {
+        "root": root,
+        "subplans": normalized,
+        "conversation_id": conversation_id,
+        "conversation_entries": conversation_entries,
+    }
     encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PLAN_REQUEST_BYTES:
         raise ValueError(f"combined plan request exceeds {MAX_PLAN_REQUEST_BYTES} UTF-8 bytes")
@@ -153,18 +199,41 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     request_id = body.get("request_id")
     if "request_id" in body and (not isinstance(request_id, str) or not re.fullmatch(REQUEST_ID_PATTERN, request_id)):
         raise ValueError("request_id must contain 1-128 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
-    return {**request, "request_id": request_id, "fingerprint": hashlib.sha256(encoded).hexdigest(),
-            "hint_paths": paths, "hint_tags": tags,
-            "hint_content": "\n".join(item["content"] for item in [root, *normalized])}
+    return {
+        **request,
+        "write_prove": write_prove,
+        "request_id": request_id,
+        "fingerprint": hashlib.sha256(encoded).hexdigest(),
+        "hint_paths": paths,
+        "hint_tags": tags,
+        "hint_content": "\n".join(item["content"] for item in [root, *normalized]),
+    }
 
 
-def _insert_plan(store: ContextStore, connection: Any, node: dict[str, Any], parent: int | None,
-                 actor_id: str | None, now: str) -> dict[str, Any]:
+def _insert_plan(
+    store: ContextStore,
+    connection: Any,
+    node: dict[str, Any],
+    parent: int | None,
+    actor_id: str | None,
+    now: str,
+    conversation_id: int,
+) -> dict[str, Any]:
     metadata = {key: node[key] for key in ("ref", "scope_paths", "memory_tags") if node.get(key)}
     cursor = connection.execute(
-        "INSERT INTO context_entries (created_at, updated_at, entry_type, content, taskname, plan_status, plan_id, actor_id, request_json) "
-        "VALUES (?, ?, 'plan', ?, ?, ?, ?, ?, ?)",
-        (now, now, node["content"], node["taskname"], node["status"], parent, actor_id, store._encode_json(metadata or None)),
+        "INSERT INTO context_entries (created_at, updated_at, entry_type, content, taskname, plan_status, plan_id, conversation_id, actor_id, request_json) "
+        "VALUES (?, ?, 'plan', ?, ?, ?, ?, ?, ?, ?)",
+        (
+            now,
+            now,
+            node["content"],
+            node["taskname"],
+            node["status"],
+            parent,
+            conversation_id,
+            actor_id,
+            store._encode_json(metadata or None),
+        ),
     )
     entry_id = int(cursor.lastrowid)
     store._insert_paths(connection, entry_id, {"path": node["scope_paths"]})
@@ -183,6 +252,11 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
         store._ensure_available()
         with closing(store._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            conversation_id = verify_write_prove(
+                connection,
+                spec["conversation_id"],
+                spec["write_prove"],
+            )
             if key is not None:
                 previous = connection.execute(
                     "SELECT fingerprint, response_json FROM context_plan_requests WHERE actor_id = ? AND request_id = ?",
@@ -205,11 +279,44 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
             parent = spec["root"]["plan_id"]
             if parent is not None:
                 store._validate_plan_parent(connection, parent)
+                parent_row = connection.execute(
+                    "SELECT conversation_id FROM context_entries "
+                    "WHERE id = ? AND entry_type = 'plan'",
+                    (parent,),
+                ).fetchone()
+                if (
+                    parent_row is not None
+                    and parent_row["conversation_id"] is not None
+                    and int(parent_row["conversation_id"]) != conversation_id
+                ):
+                    raise ValueError("parent plan belongs to a different conversation")
+            appended_conversation_entries = append_conversation(
+                connection,
+                conversation_id=conversation_id,
+                write_prove=spec["write_prove"],
+                entries=spec["conversation_entries"],
+            )
             now = _utc_now()
-            root = _insert_plan(store, connection, spec["root"], parent, actor_id, now)
+            root = _insert_plan(
+                store,
+                connection,
+                spec["root"],
+                parent,
+                actor_id,
+                now,
+                conversation_id,
+            )
             children = []
             for index, node in enumerate(spec["subplans"]):
-                entry = _insert_plan(store, connection, node, root["id"], actor_id, now)
+                entry = _insert_plan(
+                    store,
+                    connection,
+                    node,
+                    root["id"],
+                    actor_id,
+                    now,
+                    conversation_id,
+                )
                 child = {
                     field: entry[field]
                     for field in ("id", "plan_id", "taskname", "status", "revision")
@@ -218,7 +325,12 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
                 if "ref" in node:
                     child["ref"] = node["ref"]
                 children.append(child)
-            root.update(subplans=children, scope_paths=spec["root"]["scope_paths"], memory_tags=spec["root"]["memory_tags"])
+            root.update(
+                subplans=children,
+                scope_paths=spec["root"]["scope_paths"],
+                memory_tags=spec["root"]["memory_tags"],
+                conversation_entries=appended_conversation_entries,
+            )
             ids = (root["id"], *(child["id"] for child in children))
             # Protect every member of the just-created batch even at trim limits.
             store._trim_if_needed(connection, protected_ids=ids)

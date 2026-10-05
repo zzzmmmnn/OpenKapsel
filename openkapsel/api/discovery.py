@@ -7,6 +7,11 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote
 
+from openkapsel.context.conversation import (
+    MAX_CONVERSATION_CONTENT_CHARS,
+    MAX_CONVERSATION_QUERY_LIMIT,
+    MAX_CONVERSATION_SUMMARY_CHARS,
+)
 from openkapsel.context.context_store import (
     CONTEXT_TRIM_ENTRIES,
     MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
@@ -455,6 +460,18 @@ class DiscoveryMixin:
                     ),
                 },
             ),
+            "conversation": family(
+                "./conversation",
+                "Append-only user/ai conversation summaries with periodic summary checkpoints.",
+                {
+                    "query": operation("conversation_query"),
+                    "create": operation("conversation_create"),
+                    "append": operation(
+                        "conversation_append",
+                        path="./conversation/<conversation_id>/entries",
+                    ),
+                },
+            ),
             "memory": family(
                 "./memory",
                 "Revisioned project Memory.",
@@ -869,6 +886,37 @@ class DiscoveryMixin:
                         "long_term": ["memory"],
                     },
                     "memory_capability": "capabilities.memory",
+                    "conversation": {
+                        "append_only": True,
+                        "identifier_field": "conversation_id",
+                        "identifier_type": "non-negative integer",
+                        "first_conversation_id": 0,
+                        "caller_supplied_sequential_ids": True,
+                        "create_id_must_equal_next_conversation_id": True,
+                        "write_prove_format": "@xxxx@",
+                        "write_prove_random_part": "exactly four ASCII letters or digits",
+                        "write_prove_stored_plaintext": True,
+                        "write_prove_is_authentication_token": False,
+                        "write_prove_returned_on_create": True,
+                        "senders": ["user", "ai", "summary"],
+                        "ordinary_content_max_characters": MAX_CONVERSATION_CONTENT_CHARS,
+                        "summary_content_max_characters": MAX_CONVERSATION_SUMMARY_CHARS,
+                        "summary_preserves_important_content": True,
+                        "summary_may_retain_original_text": True,
+                        "create_min_entries": 2,
+                        "create_first_senders": ["user", "ai"],
+                        "summary_sub_ids": "every positive sub_id divisible by 30",
+                        "summary_required_before_next_ordinary_entry": True,
+                        "query_max_entries": MAX_CONVERSATION_QUERY_LIMIT,
+                        "cross_conversation_default_window": "newest summary entry plus all later entries for each conversation",
+                        "full_query_supported": True,
+                        "conversation_sub_id_range_supported": True,
+                        "plan_create_requires_write_prove_and_entry": True,
+                        "plan_update_requires_write_prove_and_entry": True,
+                        "plan_complete_requires_ai_entry": True,
+                        "plan_cancel_only_requires_write_prove": False,
+                        "plan_and_conversation_append_atomic": True,
+                    },
                     "plan_statuses": sorted(PLAN_STATUSES),
                     "query_filters": [
                         "id",
@@ -1329,6 +1377,9 @@ class DiscoveryMixin:
                 "max_environment_total_characters": MAX_ENVIRONMENT_TOTAL_CHARS,
                 "max_environment_rc_characters": MAX_ENVIRONMENT_RC_CHARS,
                 "max_context_query_entries": MAX_CONTEXT_QUERY_LIMIT,
+                "max_conversation_query_entries": MAX_CONVERSATION_QUERY_LIMIT,
+                "max_conversation_content_characters": MAX_CONVERSATION_CONTENT_CHARS,
+                "max_conversation_summary_characters": MAX_CONVERSATION_SUMMARY_CHARS,
                 "max_context_entries": MAX_CONTEXT_ENTRIES,
                 "context_trim_oldest_entries": CONTEXT_TRIM_ENTRIES,
                 "max_unfinished_root_plan_hints": MAX_UNFINISHED_ROOT_PLAN_HINTS,
@@ -1427,6 +1478,44 @@ class DiscoveryMixin:
                     },
                     "notes": "removes the complete per-app environment configuration",
                 },
+                "conversation_query": {
+                    "method": "GET",
+                    "url": f"{base}/conversation?conversation_id=<integer>&query=<text>&sender=<user|ai|summary>&start_sub_id=<integer>&end_sub_id=<integer>&full=false&limit=100",
+                    "authentication": "Bearer control token + files.read",
+                    "response": {"next_conversation_id": "required id for the next conversation_create; 0 when no Conversation exists"},
+                    "notes": "limit cannot exceed 100; without conversation_id, full=false searches only each conversation's newest summary plus later entries; full=true searches complete history; start_sub_id/end_sub_id require conversation_id; query before creating a Conversation and pass next_conversation_id to conversation_create",
+                },
+                "conversation_create": {
+                    "method": "POST",
+                    "url": f"{base}/conversation",
+                    "authentication": "Bearer control token",
+                    "json": {
+                        "conversation_id": "<required next_conversation_id from conversation_query; first id is 0>",
+                        "entries": [
+                            {"sender": "user", "content": "<user-side conversation summary, max 1000 chars>"},
+                            {"sender": "ai", "content": "<AI-side conversation summary, max 1000 chars>"},
+                        ],
+                    },
+                    "response": {
+                        "conversation_id": "caller-supplied searchable non-negative sequential integer id",
+                        "write_prove": "six-character @xxxx@ write proof; stored in plaintext as its original value and not an authentication token",
+                        "entries": "created append-only entries with per-conversation sub_id",
+                        "instructions": "mandatory AI usage guidance for later appends and Plan integration",
+                    },
+                    "notes": "creation is atomic; conversation_id must equal the current next_conversation_id (previous maximum + 1, or 0 for the first Conversation); requires at least two complete entries with first sender=user then sender=ai",
+                },
+                "conversation_append": {
+                    "method": "POST",
+                    "url": f"{base}/conversation/<conversation_id>/entries",
+                    "authentication": "Bearer control token",
+                    "json": {
+                        "write_prove": "<required @xxxx@ write proof; not an authentication token>",
+                        "entries": [
+                            {"sender": "user|ai|summary", "content": "<user/ai max 1000 chars; summary max 8192 chars>"}
+                        ],
+                    },
+                    "notes": "append-only; entries cannot be modified; every sub_id divisible by 30 is reserved for sender=summary, so after 29 ordinary entries the summary is written as 30 before ordinary entry 31, likewise 60 before 61; summary must retain important content and may preserve original text verbatim without being shorter",
+                },
                 "context_query": {
                     "method": "GET",
                     "url": f"{base}/context?id=<integer>&query=<text>&type=<operation|plan|note>&status=<status>&taskname=<exact-taskname>&actor_id=<exact-actor-id>&path=<exact-recorded-path>&plan_id=<direct-parent-or-owner>&root_plans=false&before_id=<integer>&limit=100",
@@ -1453,6 +1542,9 @@ class DiscoveryMixin:
                         "memory_tags": ["<optional exact tags used to retrieve related Memory for a plan>"],
                         "subplans": [{"ref": "implementation", "content": "Implement one part; taskname inherits when omitted"}],
                         "request_id": "<optional caller-generated stable retry key; plans only>",
+                        "conversation_id": "<required owning Conversation numeric id for a plan>",
+                        "write_prove": "<required Conversation @xxxx@ write proof for a plan; not an authentication token>",
+                        "conversation_entries": [{"sender": "user|ai|summary", "content": "<at least one append-only entry committed atomically with Plan creation>"}],
                     },
                     "plan_extension_schema": creation_properties(),
                     "response": {
@@ -1466,7 +1558,7 @@ class DiscoveryMixin:
                         "unfinished_root_plans_total": "total matching unfinished root plans",
                         "unfinished_root_plans_truncated": "true when more than 20 unfinished root plans exist",
                     },
-                    "notes": "operation entries are generated automatically by OpenKapsel and cannot be added manually; every created plan response includes related_memory and unfinished_root_plans; the newly created plan is excluded from the hint list; content_preview is capped at 256 characters",
+                    "notes": "operation entries are generated automatically by OpenKapsel and cannot be added manually; Plan creation requires conversation_id, its @xxxx@ write_prove, and at least one Conversation entry, and commits the Conversation append with the Plan batch in one Context SQLite transaction; every created plan response also includes related_memory and unfinished_root_plans; the newly created plan is excluded from the hint list; content_preview is capped at 256 characters",
                 },
                 "context_plan_update": {
                     "method": "PATCH",
@@ -1478,12 +1570,15 @@ class DiscoveryMixin:
                         "plan_id": "<optional new parent plan id; null moves this plan to the root>",
                         "content": "<optional replacement content>",
                         "status": "<optional in_progress, completed, or cancelled>",
+                        "conversation_id": "<required owning Conversation id except cancellation-only>",
+                        "write_prove": "<required owning @xxxx@ write proof except cancellation-only; not an authentication token>",
+                        "conversation_entries": [{"sender": "user|ai|summary", "content": "<at least one entry; completion requires at least one ai entry>"}],
                         "debrief": {
                             **plan_debrief_schema(),
                             "required_when": "status transitions to completed",
                         },
                     },
-                    "notes": "updates the existing plan row only when expected_revision matches; successful updates increment revision; stale revisions fail with 412; completion requires a debrief but does not block unrelated plans; self-parenting and indirect cycles are rejected",
+                    "notes": "updates the existing plan row only when expected_revision matches; every non-cancellation-only update requires the owning conversation_id, @xxxx@ write_prove, and at least one Conversation entry committed atomically with the Plan row; completion additionally requires at least one sender=ai entry and a debrief; cancellation-only needs no write_prove so an abandoned Plan can be closed; stale revisions fail with 412; self-parenting and indirect cycles are rejected",
                 },
                 "context_note_replace": {
                     "method": "PATCH",
@@ -2172,6 +2267,12 @@ class DiscoveryMixin:
             "environment_get": ("Bearer control token", control_authorized),
             "environment_replace": ("Bearer control token", control_authorized),
             "environment_clear": ("Bearer control token", control_authorized),
+            "conversation_query": (
+                "Bearer control token + files.read",
+                control_authorized and read_enabled,
+            ),
+            "conversation_create": ("Bearer control token", control_authorized),
+            "conversation_append": ("Bearer control token", control_authorized),
             "context_query": (
                 "Bearer control token + files.read",
                 control_authorized and read_enabled,
@@ -2272,6 +2373,9 @@ class DiscoveryMixin:
                 "fs_content_put",
                 "fs_mutate",
                 "fs_replace_large",
+                "conversation_query",
+                "conversation_create",
+                "conversation_append",
                 "context_query",
                 "context_plan_tree",
                 "context_add",
