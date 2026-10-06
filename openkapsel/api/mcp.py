@@ -29,7 +29,10 @@ from openkapsel.contract import (
     text_encoding_schema,
     writer_nonce_schema,
 )
-from openkapsel.context.conversation import DEFAULT_RECENT_CONVERSATION_COUNT
+from openkapsel.context.conversation import (
+    DEFAULT_RECENT_CONVERSATION_COUNT,
+    MAX_RECENT_CONVERSATION_PAGES,
+)
 from openkapsel.auth.tokens import TokenRecord
 from openkapsel import __version__
 
@@ -225,12 +228,13 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_query",
         "Query conversations",
-        f"Return Conversation history in one of two modes. Without conversation_id, return the {DEFAULT_RECENT_CONVERSATION_COUNT} newest non-empty Conversation windows as whole groups, each from its newest summary (or sub_id 1) forward. With conversation_id, return the newest at most 100 entries from that Conversation; start_sub_id/end_sub_id first restrict the range, then the newest at most 100 entries in that range are returned.",
+        f"Return Conversation history as grouped conversations in forward reading order. Without conversation_id, page defaults to 1 and returns {DEFAULT_RECENT_CONVERSATION_COUNT} non-empty Conversations ordered by their last entry time, each from its newest summary (or sub_id 1) forward; page is 1-{MAX_RECENT_CONVERSATION_PAGES}. With conversation_id, return the newest at most 100 entries, reordered oldest-to-newest for reading; start_sub_id/end_sub_id first restrict the range. Query output gives each Conversation one UTC date; entries on that date use HH:MM, or HH:MM:SS when a sub_id range is used, and entries on another date include YYYY-MM-DD.",
         _object_schema(
             {
                 "conversation_id": conversation_id_schema(),
                 "start_sub_id": {"type": "integer", "minimum": 1},
                 "end_sub_id": {"type": "integer", "minimum": 1},
+                "page": {"type": "integer", "minimum": 1, "maximum": MAX_RECENT_CONVERSATION_PAGES, "default": 1},
             }
         ),
         read_only=True,

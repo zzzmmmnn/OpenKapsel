@@ -10,6 +10,7 @@ from urllib.parse import quote
 from openkapsel.context.conversation import (
     DEFAULT_RECENT_CONVERSATION_COUNT,
     MAX_CONVERSATION_QUERY_LIMIT,
+    MAX_RECENT_CONVERSATION_PAGES,
     CONVERSATION_SUMMARY_PROMPT_AFTER,
     CONVERSATION_SUMMARY_REQUIRED_AFTER,
 )
@@ -984,8 +985,12 @@ class DiscoveryMixin:
                         "append_returns_summary_status": True,
                         "conversation_id_query_max_entries": MAX_CONVERSATION_QUERY_LIMIT,
                         "cross_conversation_default_count": DEFAULT_RECENT_CONVERSATION_COUNT,
-                        "cross_conversation_default_window": "newest non-empty conversation_ids; each whole window from newest summary entry (or sub_id 1) through latest entry",
+                        "cross_conversation_default_window": "non-empty Conversations ordered by last entry UTC time; each whole window from newest summary entry (or sub_id 1) through latest entry",
+                        "cross_conversation_page_size": DEFAULT_RECENT_CONVERSATION_COUNT,
+                        "cross_conversation_max_pages": MAX_RECENT_CONVERSATION_PAGES,
                         "conversation_sub_id_range_supported": True,
+                        "conversation_query_forward_order": True,
+                        "conversation_query_time_format": "Conversation date YYYY-MM-DD UTC; same-date entries HH:MM, or HH:MM:SS when a sub_id range is used; cross-date entries include YYYY-MM-DD",
                         "plan_create_requires_writer_nonce_and_entry": True,
                         "plan_update_requires_writer_nonce_and_entry": True,
                         "plan_complete_requires_ai_entry": True,
@@ -1552,10 +1557,10 @@ class DiscoveryMixin:
                     "notes": "removes the complete per-app environment configuration",
                 },
                 "conversation_query": {
-                    "url_query": "conversation_id=<integer>&start_sub_id=<integer>&end_sub_id=<integer>",
+                    "url_query": "conversation_id=<integer>&start_sub_id=<integer>&end_sub_id=<integer>&page=<1-10>",
                     "authentication": "Bearer control token + files.read",
                     "response": {"next_conversation_id": "required id for the next conversation_create; 0 when no Conversation exists"},
-                    "notes": f"without conversation_id, return the {DEFAULT_RECENT_CONVERSATION_COUNT} newest non-empty conversation_ids as whole contiguous windows, newest id first and each window ordered from its newest summary (or sub_id 1) forward; with conversation_id, return that Conversation's newest at most {MAX_CONVERSATION_QUERY_LIMIT} entries; start_sub_id/end_sub_id first restrict the range and then the newest at most {MAX_CONVERSATION_QUERY_LIMIT} entries in that range are returned; query before creating a Conversation and pass next_conversation_id to conversation_create",
+                    "notes": f"without conversation_id, page defaults to 1 and returns {DEFAULT_RECENT_CONVERSATION_COUNT} non-empty Conversations ordered by their last entry UTC time; pages are 1-{MAX_RECENT_CONVERSATION_PAGES}; each Conversation is grouped and read oldest-to-newest from its newest summary (or sub_id 1) forward. With conversation_id, return that Conversation's newest at most {MAX_CONVERSATION_QUERY_LIMIT} entries, reordered oldest-to-newest for reading; start_sub_id/end_sub_id first restrict the range. page cannot be combined with conversation_id. Query output gives each Conversation one UTC date; same-date entries use HH:MM, or HH:MM:SS when a sub_id range is used, and cross-date entries include YYYY-MM-DD. Query before creating a Conversation and pass next_conversation_id to conversation_create",
                 },
                 "conversation_create": {
                     "authentication": "Bearer control token",

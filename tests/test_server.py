@@ -3497,7 +3497,9 @@ class WorkspaceServerTests(unittest.TestCase):
         status, queried = self.request("GET", base + "/conversation")
         self.assertEqual(200, status)
         self.assertEqual(0, queried["next_conversation_id"])
-        self.assertEqual([], queried["entries"])
+        self.assertEqual([], queried["conversations"])
+        self.assertEqual(1, queried["page"])
+        self.assertEqual(0, queried["total_conversations"])
         status, rejected_query = self.request("GET", base + "/conversation?limit=100")
         self.assertEqual(400, status)
         self.assertEqual("invalid_conversation_query", rejected_query["error"]["code"])
@@ -3532,8 +3534,10 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual(1, queried["next_conversation_id"])
-        self.assertEqual(2, queried["total"])
-        self.assertTrue(all("writer_nonce" not in item for item in queried["entries"]))
+        self.assertEqual(2, queried["total_entries"])
+        self.assertEqual(1, len(queried["conversations"]))
+        self.assertEqual([1, 2], [item["sub_id"] for item in queried["conversations"][0]["entries"]])
+        self.assertTrue(all("writer_nonce" not in item for item in queried["conversations"][0]["entries"]))
 
         status, rejected = self.request(
             "POST",

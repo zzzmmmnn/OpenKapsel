@@ -16,6 +16,7 @@ from openkapsel.contract import (
 
 MAX_CONVERSATION_QUERY_LIMIT = 100
 DEFAULT_RECENT_CONVERSATION_COUNT = 2
+MAX_RECENT_CONVERSATION_PAGES = 10
 CONVERSATION_SUMMARY_PROMPT_AFTER = 40
 CONVERSATION_SUMMARY_REQUIRED_AFTER = 49
 CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
@@ -303,15 +304,70 @@ def append_conversation(
     return _append_locked(connection, conversation_id, normalized)
 
 
+def _parse_utc_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_query_entry(
+    row: sqlite3.Row,
+    *,
+    conversation_date: str,
+    seconds: bool,
+) -> dict[str, Any]:
+    created_at = _parse_utc_timestamp(str(row["created_at"]))
+    entry_date = created_at.strftime("%Y-%m-%d")
+    entry_time = created_at.strftime("%H:%M:%S" if seconds else "%H:%M")
+    if entry_date != conversation_date:
+        entry_time = f"{entry_date} {entry_time}"
+    return {
+        "sub_id": int(row["sub_id"]),
+        "time": entry_time,
+        "role": row["role"],
+        "content": row["content"],
+    }
+
+
+def _conversation_group(
+    conversation_id: int,
+    updated_at: str,
+    rows: list[sqlite3.Row],
+    *,
+    seconds: bool,
+) -> dict[str, Any]:
+    conversation_date = _parse_utc_timestamp(updated_at).strftime("%Y-%m-%d")
+    return {
+        "conversation_id": conversation_id,
+        "date": conversation_date,
+        "entries": [
+            _format_query_entry(
+                row,
+                conversation_date=conversation_date,
+                seconds=seconds,
+            )
+            for row in rows
+        ],
+    }
+
+
 def query_conversations(
     connection: sqlite3.Connection,
     *,
     conversation_id: int | None = None,
     start_sub_id: int | None = None,
     end_sub_id: int | None = None,
+    page: int = 1,
 ) -> tuple[list[dict[str, Any]], int, int]:
+    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= MAX_RECENT_CONVERSATION_PAGES:
+        raise ValueError(
+            f"conversation page must be between 1 and {MAX_RECENT_CONVERSATION_PAGES}"
+        )
     if conversation_id is not None:
         conversation_id = validate_conversation_id(conversation_id)
+        if page != 1:
+            raise ValueError("page is only available without conversation_id")
     elif start_sub_id is not None or end_sub_id is not None:
         raise ValueError("sub_id ranges require conversation_id")
     for name, value in (("start_sub_id", start_sub_id), ("end_sub_id", end_sub_id)):
@@ -321,15 +377,24 @@ def query_conversations(
         raise ValueError("start_sub_id cannot exceed end_sub_id")
 
     if conversation_id is None:
+        total_conversations = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM conversations AS c "
+                "WHERE EXISTS (SELECT 1 FROM conversation_entries AS e WHERE e.conversation_id = c.id)"
+            ).fetchone()[0]
+        )
         conversation_rows = connection.execute(
-            "SELECT c.id FROM conversations AS c "
-            "WHERE EXISTS (SELECT 1 FROM conversation_entries AS e WHERE e.conversation_id = c.id) "
-            "ORDER BY c.id DESC LIMIT ?",
-            (DEFAULT_RECENT_CONVERSATION_COUNT,),
+            "SELECT c.id, MAX(e.created_at) AS updated_at "
+            "FROM conversations AS c "
+            "JOIN conversation_entries AS e ON e.conversation_id = c.id "
+            "GROUP BY c.id "
+            "ORDER BY updated_at DESC, c.id DESC LIMIT ? OFFSET ?",
+            (DEFAULT_RECENT_CONVERSATION_COUNT, (page - 1) * DEFAULT_RECENT_CONVERSATION_COUNT),
         ).fetchall()
-        rows: list[sqlite3.Row] = []
+        conversations: list[dict[str, Any]] = []
         for conversation_row in conversation_rows:
             selected_id = int(conversation_row["id"])
+            updated_at = str(conversation_row["updated_at"])
             summary_row = connection.execute(
                 "SELECT MAX(sub_id) AS sub_id FROM conversation_entries "
                 "WHERE conversation_id = ? AND role = 'summary'",
@@ -340,24 +405,21 @@ def query_conversations(
                 if summary_row is not None and summary_row["sub_id"] is not None
                 else 1
             )
-            rows.extend(
-                connection.execute(
-                    "SELECT conversation_id, sub_id, created_at, role, content "
-                    "FROM conversation_entries WHERE conversation_id = ? AND sub_id >= ? "
-                    "ORDER BY sub_id ASC",
-                    (selected_id, start_value),
-                ).fetchall()
+            rows = connection.execute(
+                "SELECT sub_id, created_at, role, content "
+                "FROM conversation_entries WHERE conversation_id = ? AND sub_id >= ? "
+                "ORDER BY sub_id ASC",
+                (selected_id, start_value),
+            ).fetchall()
+            conversations.append(
+                _conversation_group(
+                    selected_id,
+                    updated_at,
+                    rows,
+                    seconds=False,
+                )
             )
-        return [
-            {
-                "conversation_id": int(row["conversation_id"]),
-                "sub_id": int(row["sub_id"]),
-                "created_at": row["created_at"],
-                "role": row["role"],
-                "content": row["content"],
-            }
-            for row in rows
-        ], len(rows), next_conversation_id(connection)
+        return conversations, total_conversations, next_conversation_id(connection)
 
     clauses = ["e.conversation_id = ?"]
     values: list[Any] = [conversation_id]
@@ -368,26 +430,31 @@ def query_conversations(
         clauses.append("e.sub_id <= ?")
         values.append(end_sub_id)
     where = " WHERE " + " AND ".join(clauses)
-    total = int(
+    total_entries = int(
         connection.execute(
             "SELECT COUNT(*) FROM conversation_entries AS e" + where,
             values,
         ).fetchone()[0]
     )
     rows = connection.execute(
-        "SELECT e.conversation_id, e.sub_id, e.created_at, e.role, e.content "
-        "FROM conversation_entries AS e"
-        + where
-        + " ORDER BY e.sub_id DESC LIMIT ?",
+        "SELECT sub_id, created_at, role, content FROM ("
+        "SELECT e.sub_id, e.created_at, e.role, e.content "
+        "FROM conversation_entries AS e" + where +
+        " ORDER BY e.sub_id DESC LIMIT ?"
+        ") ORDER BY sub_id ASC",
         [*values, MAX_CONVERSATION_QUERY_LIMIT],
     ).fetchall()
+    updated_row = connection.execute(
+        "SELECT MAX(created_at) AS updated_at FROM conversation_entries WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if updated_row is None or updated_row["updated_at"] is None:
+        return [], total_entries, next_conversation_id(connection)
     return [
-        {
-            "conversation_id": int(row["conversation_id"]),
-            "sub_id": int(row["sub_id"]),
-            "created_at": row["created_at"],
-            "role": row["role"],
-            "content": row["content"],
-        }
-        for row in rows
-    ], total, next_conversation_id(connection)
+        _conversation_group(
+            conversation_id,
+            str(updated_row["updated_at"]),
+            rows,
+            seconds=start_sub_id is not None or end_sub_id is not None,
+        )
+    ], total_entries, next_conversation_id(connection)

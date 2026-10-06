@@ -26,6 +26,10 @@ from openkapsel.api.mcp import (
     tools_for,
     validate_arguments,
 )
+from openkapsel.context.conversation import (
+    DEFAULT_RECENT_CONVERSATION_COUNT,
+    MAX_RECENT_CONVERSATION_PAGES,
+)
 from openkapsel.files.uploads import UploadError
 from openkapsel.auth.tokens import CredentialRenewalNotDue
 
@@ -433,14 +437,18 @@ class McpHandlersMixin:
                 "read permission is not granted",
             )
             try:
-                entries, total, next_conversation_id = self.server.context_for(
+                conversation_id = (
+                    int(arguments["conversation_id"])
+                    if "conversation_id" in arguments
+                    else None
+                )
+                if conversation_id is not None and "page" in arguments:
+                    raise ValueError("page is only available without conversation_id")
+                page = int(arguments.get("page", 1))
+                conversations, total, next_conversation_id = self.server.context_for(
                     self.token_scope_root
                 ).conversation_query(
-                    conversation_id=(
-                        int(arguments["conversation_id"])
-                        if "conversation_id" in arguments
-                        else None
-                    ),
+                    conversation_id=conversation_id,
                     start_sub_id=(
                         int(arguments["start_sub_id"])
                         if "start_sub_id" in arguments
@@ -451,6 +459,7 @@ class McpHandlersMixin:
                         if "end_sub_id" in arguments
                         else None
                     ),
+                    page=page,
                 )
             except ValueError as exc:
                 raise ApiError(
@@ -458,11 +467,23 @@ class McpHandlersMixin:
                     "invalid_conversation_query",
                     str(exc),
                 ) from None
+            if conversation_id is None:
+                return {
+                    "conversations": conversations,
+                    "next_conversation_id": next_conversation_id,
+                    "page": page,
+                    "total_conversations": total,
+                    "has_more": (
+                        page < MAX_RECENT_CONVERSATION_PAGES
+                        and page * DEFAULT_RECENT_CONVERSATION_COUNT < total
+                    ),
+                }
+            returned_entries = sum(len(item["entries"]) for item in conversations)
             return {
-                "entries": entries,
+                "conversations": conversations,
                 "next_conversation_id": next_conversation_id,
-                "total": total,
-                "truncated": len(entries) < total,
+                "total_entries": total,
+                "truncated": returned_entries < total,
             }
         if name == "context_query":
             self._require_permission(

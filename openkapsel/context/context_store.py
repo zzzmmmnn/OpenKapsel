@@ -508,6 +508,7 @@ class ContextStore:
         conversation_id: int | None = None,
         start_sub_id: int | None = None,
         end_sub_id: int | None = None,
+        page: int = 1,
     ) -> tuple[list[dict[str, Any]], int, int]:
         with self._lock:
             self._ensure_available()
@@ -517,6 +518,7 @@ class ContextStore:
                     conversation_id=conversation_id,
                     start_sub_id=start_sub_id,
                     end_sub_id=end_sub_id,
+                    page=page,
                 )
 
     def add(

@@ -8,6 +8,10 @@ import sqlite3
 from http import HTTPStatus
 from typing import Any
 
+from openkapsel.context.conversation import (
+    DEFAULT_RECENT_CONVERSATION_COUNT,
+    MAX_RECENT_CONVERSATION_PAGES,
+)
 from openkapsel.context.context_store import (
     MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
     MAX_CONTEXT_QUERY_LIMIT,
@@ -353,7 +357,7 @@ class ContextHttpMixin:
             self.token_record.can_read,
             "read permission is not granted",
         )
-        unexpected = sorted(set(query) - {"conversation_id", "start_sub_id", "end_sub_id"})
+        unexpected = sorted(set(query) - {"conversation_id", "start_sub_id", "end_sub_id", "page"})
         if unexpected:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
@@ -375,13 +379,27 @@ class ContextHttpMixin:
             if "end_sub_id" in query
             else None
         )
+        if conversation_id is not None and "page" in query:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_conversation_query",
+                "page is only available without conversation_id",
+            )
+        page = self._query_int(
+            query,
+            "page",
+            1,
+            minimum=1,
+            maximum=MAX_RECENT_CONVERSATION_PAGES,
+        )
         try:
-            entries, total, next_conversation_id = self.server.context_for(
+            conversations, total, next_conversation_id = self.server.context_for(
                 self.token_scope_root
             ).conversation_query(
                 conversation_id=conversation_id,
                 start_sub_id=start_sub_id,
                 end_sub_id=end_sub_id,
+                page=page,
             )
         except ValueError as exc:
             raise ApiError(
@@ -389,15 +407,26 @@ class ContextHttpMixin:
                 "invalid_conversation_query",
                 str(exc),
             ) from None
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "entries": entries,
+        if conversation_id is None:
+            payload = {
+                "conversations": conversations,
                 "next_conversation_id": next_conversation_id,
-                "total": total,
-                "truncated": len(entries) < total,
-            },
-        )
+                "page": page,
+                "total_conversations": total,
+                "has_more": (
+                    page < MAX_RECENT_CONVERSATION_PAGES
+                    and page * DEFAULT_RECENT_CONVERSATION_COUNT < total
+                ),
+            }
+        else:
+            returned_entries = sum(len(item["entries"]) for item in conversations)
+            payload = {
+                "conversations": conversations,
+                "next_conversation_id": next_conversation_id,
+                "total_entries": total,
+                "truncated": returned_entries < total,
+            }
+        self._send_json(HTTPStatus.OK, payload)
 
     def _handle_context_query(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
