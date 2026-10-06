@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from openkapsel.api.mcp import ALL_TOOLS, tools_for
-from openkapsel.context.memory_contracts import memory_actions_schema
+from openkapsel.contract import memory_actions_schema
 from openkapsel.routes import ENDPOINTS, discovery_keys, match_endpoint
 from openkapsel.auth.tokens import TokenRecord
 

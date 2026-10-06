@@ -38,6 +38,11 @@ from openkapsel.server import (
     create_server,
 )
 from openkapsel.auth.tokens import PathGrant, TokenStore
+from openkapsel.contract import (
+    mutation_item_example,
+    mutation_item_schema,
+    mutation_operation_contracts,
+)
 from openkapsel.execution.tasks import BoundedOutput
 from openkapsel.files.uploads import UploadRegistry
 from openkapsel.workspace.workspace_images import WorkspaceImage
@@ -807,6 +812,14 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("files", files["section"])
         self.assertIn("fs_query", files["endpoints"])
         self.assertIn("upload", files["endpoints"])
+        mutate = discovery_operation(files, "fs_write", "mutate")
+        self.assertEqual(mutation_item_schema(), mutate["item_schema"])
+        self.assertEqual(mutation_operation_contracts(), mutate["operation_contracts"])
+        self.assertEqual(mutation_item_example(), mutate["item_example"])
+        self.assertEqual(
+            ["expected_etag", "replacements"],
+            mutate["operation_contracts"]["text.replace"]["required"],
+        )
         self.assertNotIn("context", files["endpoints"])
         self.assertNotIn("request_transport", files)
 
@@ -2677,14 +2690,21 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertTrue(mutate_tool["annotations"]["destructiveHint"])
         item_schema = mutate_tool["inputSchema"]["properties"]["items"]["items"]
+        self.assertEqual(mutation_item_schema(), item_schema)
         self.assertEqual(["op", "path"], item_schema["required"])
-        self.assertTrue(item_schema["additionalProperties"])
+        self.assertFalse(item_schema["additionalProperties"])
         item_properties = item_schema["properties"]
         self.assertEqual(
             ["text.replace", "text.insert_before", "text.insert_after", "structured.patch", "file.create", "file.replace", "path.delete"],
             item_properties["op"]["enum"],
         )
-        self.assertEqual({"op", "path", "expected_etag"}, set(item_properties))
+        self.assertTrue(
+            {"expected_etag", "encoding", "content", "match", "expected_count", "replacements", "start_line", "end_line", "start_text", "end_text", "operations", "format"}.issubset(item_properties)
+        )
+        self.assertEqual(
+            ["expected_etag", "replacements"],
+            item_schema["x-openkapsel-operation-contracts"]["text.replace"]["required"],
+        )
         self.assertNotIn("allOf", item_schema)
 
         edit_tool = next(

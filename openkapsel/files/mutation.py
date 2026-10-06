@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openkapsel.contract import MUTATION_MAX_ITEMS, MUTATION_OPERATIONS
 from openkapsel.errors import ApiError
 from openkapsel.files.text_encoding import decode_error, encode_text, text_encoding
 
@@ -21,7 +22,6 @@ from openkapsel.files.text_encoding import decode_error, encode_text, text_encod
 SMALL_FILE_MAX_BYTES = 1 * 1024 * 1024
 STANDARD_FILE_MAX_BYTES = 32 * 1024 * 1024
 LARGE_FILE_WINDOW_MAX_BYTES = 256 * 1024
-MUTATION_MAX_ITEMS = 1000
 MUTATION_MAX_STAGED_BYTES = 256 * 1024 * 1024
 
 
@@ -557,20 +557,12 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
     operation = item.get("op")
     if not isinstance(requested_path, str) or not requested_path:
         raise ApiError(400, "invalid_request", f"items[{index}].path must be a non-empty string")
-    if operation not in {
-        "text.replace",
-        "text.insert_before",
-        "text.insert_after",
-        "structured.patch",
-        "file.create",
-        "file.replace",
-        "path.delete",
-    }:
+    if operation not in MUTATION_OPERATIONS:
+        allowed = ", ".join(MUTATION_OPERATIONS[:-1]) + f" or {MUTATION_OPERATIONS[-1]}"
         raise ApiError(
             400,
             "invalid_request",
-            f"items[{index}].op must be text.replace, text.insert_before, text.insert_after, "
-            "structured.patch, file.create, file.replace or path.delete",
+            f"items[{index}].op must be {allowed}",
         )
     path = handler._resolve_path(requested_path, write=True)
 

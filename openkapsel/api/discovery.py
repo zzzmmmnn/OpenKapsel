@@ -24,7 +24,6 @@ from openkapsel.context.context_store import (
     MAX_UNFINISHED_ROOT_PLAN_HINTS,
     PLAN_STATUSES,
 )
-from openkapsel.context.context_plans import MAX_SUBPLANS, MAX_PLAN_REQUEST_BYTES, MAX_PLAN_REQUESTS, creation_properties
 from openkapsel.execution.cgroups import BUBBLEWRAP_PROCESS_OVERHEAD
 from openkapsel.api.discovery_sections import (
     SECTION_CAPABILITIES,
@@ -57,7 +56,18 @@ from openkapsel.api.mcp import (
     SUPPORTED_PROTOCOL_VERSIONS,
     tools_for,
 )
-from openkapsel.context.memory_contracts import memory_actions_schema, plan_debrief_schema
+from openkapsel.contract import (
+    MAX_PLAN_REQUEST_BYTES,
+    MAX_PLAN_REQUESTS,
+    MAX_SUBPLANS,
+    MEMORY_ACTIONS,
+    memory_actions_schema,
+    mutation_item_example,
+    mutation_item_schema,
+    mutation_operation_contracts,
+    plan_creation_properties,
+    plan_debrief_schema,
+)
 from openkapsel.context.memory_store import (
     MAX_MEMORY_CONTENT_CHARS,
     MAX_MEMORY_QUERY_LIMIT,
@@ -202,6 +212,10 @@ class DiscoveryMixin:
                 body = endpoint.get("body")
             if isinstance(body, dict):
                 item["body_fields"] = sorted(body)
+                if source == "fs_mutate":
+                    item["item_schema"] = mutation_item_schema()
+                    item["operation_contracts"] = mutation_operation_contracts()
+                    item["item_example"] = mutation_item_example()
             headers = endpoint.get("request_headers")
             if not isinstance(headers, dict):
                 headers = endpoint.get("headers")
@@ -1029,7 +1043,7 @@ class DiscoveryMixin:
                     "plan_completion_memory_repairable_via_revisioned_update_or_archive": True,
                     "plan_completion_retry_should_reconcile_memory_first": True,
                     "empty_memory_actions_allowed": True,
-                    "memory_action_enum": ["update", "archive"],
+                    "memory_action_enum": list(MEMORY_ACTIONS),
                     "memory_actions_schema": memory_actions_schema(),
                     "plan_debrief_schema": plan_debrief_schema(),
                     "operation_message_max_characters": MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
@@ -1568,7 +1582,7 @@ class DiscoveryMixin:
                         "writer_nonce": "<required Conversation @xxxx@ writer nonce for a plan; not an authentication token>",
                         "conversation_entries": [{"role": "user|ai|summary", "content": "<at least one append-only entry committed atomically with Plan creation>"}],
                     },
-                    "plan_extension_schema": creation_properties(),
+                    "plan_extension_schema": plan_creation_properties(),
                     "response": {
                         "id": "ID of the newly created top-level plan (or the original ID on retry)",
                         "revision": "current top-level Plan revision; newly created Plans start at 1",
@@ -1802,18 +1816,7 @@ class DiscoveryMixin:
                     "json": {
                         "items": [
                             {
-                                "path": "<file>",
-                                "op": "text.replace | text.insert_before | text.insert_after | structured.patch | file.create | file.replace | path.delete",
-                                "expected_etag": "<exact prior ETag for existing files>",
-                                "start_line": 0,
-                                "end_line": "<optional zero-based inclusive last line; omit for EOF>",
-                                "start_text": "<optional unique full-file marker; range starts at its first character>",
-                                "end_text": "<optional unique full-file marker; range ends after its final character>",
-                                "match": "<exact insertion anchor>",
-                                "content": "<text to insert/create/replace>",
-                                "expected_count": 1,
-                                "replacements": [{"old": "<exact>", "new": "<exact>", "expected_count": 1}],
-                                "operations": [{"op": "replace", "path": "/json/pointer", "value": "<value>"}],
+                                **mutation_item_example(),
                             }
                         ],
                         "dry_run": False,

@@ -5,9 +5,17 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from openkapsel.context.memory_contracts import plan_debrief_schema
+from openkapsel.contract import (
+    MUTATION_MAX_ITEMS,
+    mutation_item_schema,
+    nonnegative_schema,
+    plan_creation_properties,
+    path_schema,
+    plan_debrief_schema,
+    positive_schema,
+    text_encoding_schema,
+)
 from openkapsel.context.conversation import MAX_CONVERSATION_SUMMARY_CHARS
-from openkapsel.context.context_plans import creation_properties
 from openkapsel.auth.tokens import TokenRecord
 from openkapsel import __version__
 
@@ -78,43 +86,10 @@ def _tool(
     }
 
 
-PATH = {
-    "type": "string",
-    "description": "Path relative to the token workspace, or an absolute path inside it or an authorized extra directory.",
-}
-NONNEGATIVE = {"type": "integer", "minimum": 0}
-POSITIVE = {"type": "integer", "minimum": 1}
-from openkapsel.files.text_encoding import ENCODINGS
-TEXT_ENCODING = {"type": "string", "enum": list(ENCODINGS), "default": "utf-8",
-                 "description": "Explicit file encoding; strict conversion. LF/CRLF/CR are preserved literally. UTF-16 requires explicit endian; BOM is preserved as U+FEFF."}
-
-def _mutation_item_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "description": "Mutation item; operation-specific fields are validated by the server.",
-        "properties": {
-            "op": {
-                "type": "string",
-                "enum": [
-                    "text.replace",
-                    "text.insert_before",
-                    "text.insert_after",
-                    "structured.patch",
-                    "file.create",
-                    "file.replace",
-                    "path.delete",
-                ],
-            },
-            "path": PATH,
-            "expected_etag": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Required for existing targets; omit only for file.create.",
-            },
-        },
-        "required": ["op", "path"],
-        "additionalProperties": True,
-    }
+PATH = path_schema()
+NONNEGATIVE = nonnegative_schema()
+POSITIVE = positive_schema()
+TEXT_ENCODING = text_encoding_schema()
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
@@ -345,7 +320,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "type": "string",
                     "description": "plan or note",
                 },
-                **creation_properties(),
+                **plan_creation_properties(),
                 "content": {"type": "string", "minLength": 1},
                 "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
                 "plan_id": {
@@ -831,8 +806,8 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "items": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 1000,
-                    "items": _mutation_item_schema(),
+                    "maxItems": MUTATION_MAX_ITEMS,
+                    "items": mutation_item_schema(),
                     "description": "Mutation items; operation-specific fields and preconditions are validated by the server.",
                 },
                 "dry_run": {"type": "boolean", "default": False},

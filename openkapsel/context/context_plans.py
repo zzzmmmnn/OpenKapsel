@@ -14,7 +14,6 @@ from contextlib import closing
 from typing import Any
 
 from openkapsel.context.conversation import (
-    MAX_CONVERSATION_SUMMARY_CHARS,
     append_conversation,
     conversation_summary_status,
     normalize_entries,
@@ -23,75 +22,21 @@ from openkapsel.context.conversation import (
     verify_writer_nonce,
 )
 
-from openkapsel.context.context_store import ContextStore, MAX_CONTEXT_CONTENT_CHARS, PLAN_STATUSES, _utc_now
-from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_SCOPE_PATHS, MAX_MEMORY_TAGS
-
-MAX_SUBPLANS = 64
-MAX_PLAN_REQUEST_BYTES = 256 * 1024
-MAX_PLAN_REQUESTS = 100_000
-REQUEST_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
-REF_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}"
+from openkapsel.context.context_store import ContextStore, PLAN_STATUSES, _utc_now
+from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_SCOPE_PATHS
+from openkapsel.contract import (
+    MAX_PLAN_REQUEST_BYTES,
+    MAX_PLAN_REQUESTS,
+    MAX_SUBPLANS,
+    PLAN_REF_PATTERN,
+    PLAN_REQUEST_ID_PATTERN,
+)
 
 
 class PlanRequestConflict(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
-
-
-def creation_properties() -> dict[str, Any]:
-    """The same extension schema is published in MCP and REST Discovery."""
-    return {
-        "subplans": {
-            "type": "array", "maxItems": MAX_SUBPLANS,
-            "description": "Direct child plans created atomically with this plan. Root Plan creation requires this field; use [] when there are no direct children. It remains optional when creating a Plan under an existing parent. Children inherit taskname when omitted. No nested subplans or child plan_id; use a later call with a parent ID for deeper levels.",
-            "items": {
-                "type": "object", "additionalProperties": False,
-                "required": ["content"],
-                "properties": {
-                    "ref": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^" + REF_PATTERN + "$",
-                            "description": "Optional unique request-local label, echoed beside the assigned child ID."},
-                    "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONTEXT_CONTENT_CHARS},
-                    "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
-                    "status": {"type": "string", "enum": sorted(PLAN_STATUSES), "default": "in_progress"},
-                    "scope_paths": {"type": "array", "maxItems": MAX_MEMORY_SCOPE_PATHS,
-                                    "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
-                    "memory_tags": {"type": "array", "maxItems": MAX_MEMORY_TAGS,
-                                    "items": {"type": "string", "minLength": 1, "maxLength": 64}},
-                },
-            },
-        },
-        "conversation_id": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Non-negative Conversation id that owns this Plan creation.",
-        },
-        "writer_nonce": {
-            "type": "string",
-            "pattern": "^@[A-Za-z0-9]{4}@$",
-            "description": "Six-character writer nonce in @xxxx@ form; required for Plan creation. It is not an authentication token.",
-        },
-        "conversation_entries": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 100,
-            "description": "One or more append-only Conversation records committed atomically with Plan creation.",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["role", "content"],
-                "properties": {
-                    "role": {"type": "string", "enum": ["user", "ai", "summary"]},
-                    "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
-                },
-            },
-        },
-        "request_id": {
-            "type": "string", "minLength": 1, "maxLength": 128,
-            "pattern": "^" + REQUEST_ID_PATTERN + "$",
-            "description": "Optional caller-generated retry key, scoped to this workspace and stable actor. Reuse only with the same plan request: returns original IDs and replayed=true; changed content is a conflict. Plans only.",
-        },
-    }
 
 
 def _text(value: Any, validator: Any) -> str:
@@ -180,7 +125,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         item = node(child, root["taskname"])
         if "ref" in child:
             ref = child["ref"]
-            if not isinstance(ref, str) or not re.fullmatch(REF_PATTERN, ref):
+            if not isinstance(ref, str) or not re.fullmatch(PLAN_REF_PATTERN, ref):
                 raise ValueError("subplan ref must contain 1-64 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
             if ref in refs:
                 raise ValueError("subplan refs must be unique within this request")
@@ -212,7 +157,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     MemoryStore._validate_scope_paths(paths)
     MemoryStore._validate_tags(tags)
     request_id = body.get("request_id")
-    if "request_id" in body and (not isinstance(request_id, str) or not re.fullmatch(REQUEST_ID_PATTERN, request_id)):
+    if "request_id" in body and (not isinstance(request_id, str) or not re.fullmatch(PLAN_REQUEST_ID_PATTERN, request_id)):
         raise ValueError("request_id must contain 1-128 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
     return {
         **request,
