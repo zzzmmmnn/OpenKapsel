@@ -402,20 +402,20 @@ class ContextStore:
         return row
 
     @classmethod
-    def _validate_plan_parent(
+    def _plan_root(
         cls,
         connection: sqlite3.Connection,
         plan_id: Any,
         *,
         child_id: int | None = None,
-        require_root_in_progress: bool = False,
-    ) -> int:
+    ) -> tuple[int, sqlite3.Row]:
         plan_id = cls._validate_plan_id_value(plan_id)
         cls._require_plan(connection, plan_id)
         if child_id is not None and plan_id == child_id:
             raise ValueError("a plan cannot be its own parent")
         current: int | None = plan_id
         visited: set[int] = set()
+        root_id = plan_id
         root_row: sqlite3.Row | None = None
         while current is not None:
             if child_id is not None and current == child_id:
@@ -430,9 +430,28 @@ class ContextStore:
             ).fetchone()
             if row is None:
                 break
+            root_id = current
             root_row = row
             current = row["plan_id"]
-        if require_root_in_progress and root_row is not None:
+        assert root_row is not None
+        return root_id, root_row
+
+    @classmethod
+    def _validate_plan_parent(
+        cls,
+        connection: sqlite3.Connection,
+        plan_id: Any,
+        *,
+        child_id: int | None = None,
+        require_root_in_progress: bool = False,
+    ) -> int:
+        plan_id = cls._validate_plan_id_value(plan_id)
+        _root_id, root_row = cls._plan_root(
+            connection,
+            plan_id,
+            child_id=child_id,
+        )
+        if require_root_in_progress:
             root_status = root_row["plan_status"] or "in_progress"
             if root_status != "in_progress":
                 raise ValueError(
@@ -530,13 +549,9 @@ class ContextStore:
         if entry_type == "operation" and plan_status is not None:
             raise ValueError("operation context cannot have a plan status")
         if entry_type == "plan":
-            if plan_id is None and plan_status is not None:
-                raise ValueError(
-                    "root plan creation does not accept status; root plans always start in_progress"
-                )
-            plan_status = plan_status or "in_progress"
-            if plan_status not in PLAN_STATUSES:
-                raise ValueError("plan status must be in_progress, completed, or cancelled")
+            if plan_status is not None:
+                raise ValueError("plan creation does not accept status; all plans start in_progress")
+            plan_status = "in_progress"
         elif plan_status is not None:
             raise ValueError("only plan context can have a plan status")
         content = self._validate_content(content)
@@ -781,15 +796,31 @@ class ContextStore:
 
             next_plan_id = row["plan_id"]
             if plan_id is not _UNSET:
-                next_plan_id = (
-                    None
-                    if plan_id is None
-                    else self._validate_plan_parent(
+                current_parent_id = row["plan_id"]
+                if current_parent_id is None:
+                    if plan_id is not None:
+                        raise ValueError("root plan cannot be assigned a parent")
+                    next_plan_id = None
+                else:
+                    current_root_id, _root_row = self._plan_root(
+                        connection,
+                        current_parent_id,
+                        child_id=entry_id,
+                    )
+                    if plan_id is None:
+                        raise ValueError("subplan cannot change its root plan")
+                    next_plan_id = self._validate_plan_parent(
                         connection,
                         plan_id,
                         child_id=entry_id,
                     )
-                )
+                    next_root_id, _next_root_row = self._plan_root(
+                        connection,
+                        next_plan_id,
+                        child_id=entry_id,
+                    )
+                    if next_root_id != current_root_id:
+                        raise ValueError("subplan cannot change its root plan")
 
             next_conversation_id = row["conversation_id"]
             appended_conversation_entries: list[dict[str, Any]] = []

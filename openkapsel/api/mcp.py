@@ -295,7 +295,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_add",
         "Add workspace context",
-        "Append an AI-authored plan or note. Root Plan creation must include subplans, must omit status, and always starts in_progress; use [] when no direct children are needed. Creating a sub-plan under an existing hierarchy requires its root Plan to remain in_progress. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
+        "Append an AI-authored plan or note. Every created Plan starts in_progress and creation never accepts status. Root Plan creation must include subplans; use [] when no direct children are needed. Creating a sub-plan under an existing hierarchy requires its root Plan to remain in_progress. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
         _object_schema(
             {
                 "type": {
@@ -307,9 +307,6 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "taskname": taskname_schema(),
                 "plan_id": plan_id_schema(
                     description="Parent plan for a sub-plan; required owning plan for a note. Omit only for a root plan."
-                ),
-                "status": plan_status_schema(
-                    description="Plan status for a sub-plan created under an existing parent. Root Plan creation must omit status and always starts in_progress; omit for notes."
                 ),
                 "scope_paths": plan_scope_paths_schema(
                     description="Optional workspace-relative paths used to retrieve related Memory when creating a plan."
@@ -326,7 +323,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update a plan in place using its current revision as an optimistic concurrency precondition. Completion is rejected while any descendant Plan is in_progress; completed or cancelled descendants are allowed.",
+        "Update a plan in place using its current revision as an optimistic concurrency precondition. A Plan's root hierarchy is immutable: a root stays root and a sub-plan may only be reparented within the same root. Completion is rejected while any descendant Plan is in_progress; completed or cancelled descendants are allowed.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},
@@ -335,7 +332,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "content": {"type": "string", "minLength": 1},
                 "plan_id": plan_id_schema(
                     nullable=True,
-                    description="Optional new parent plan id; null moves the plan to the root.",
+                    description="Optional new parent within the same root hierarchy. A root Plan stays root; a sub-plan cannot move to another root or become a root.",
                 ),
                 "status": plan_status_schema(),
                 "conversation_id": conversation_id_schema(

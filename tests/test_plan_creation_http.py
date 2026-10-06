@@ -163,25 +163,31 @@ class PlanCreationHTTPTests(unittest.TestCase):
             self.assertTrue(reply["result"]["isError"], reply)
             self.assertEqual(count, self.count())
 
-    def test_root_plan_explicit_status_is_rejected_by_rest_and_mcp(self):
-        for status_value in ("in_progress", "completed", "cancelled"):
-            body = dict(self.body, status=status_value)
-            with self.subTest(protocol="rest", status=status_value):
+    def test_plan_explicit_status_is_rejected_by_rest_and_mcp(self):
+        bodies = [
+            dict(self.body, status="completed"),
+            dict(self.body, subplans=[{"content": "Child", "status": "cancelled"}]),
+        ]
+        for index, body in enumerate(bodies):
+            with self.subTest(protocol="rest", case=index):
                 status, error = self.rest("POST", "/context", body)
                 self.assertEqual(400, status, error)
-                self.assertIn("root plan creation does not accept status", error["error"]["message"])
+                self.assertIn("does not accept status", error["error"]["message"])
                 self.assertEqual(0, self.count())
-            with self.subTest(protocol="mcp", status=status_value):
+            with self.subTest(protocol="mcp", case=index):
                 status, reply = self.mcp_call(
                     "tools/call",
                     {"name": "context_add", "arguments": body},
                 )
                 self.assertEqual(200, status, reply)
-                self.assertTrue(reply["result"]["isError"], reply)
-                self.assertIn(
-                    "root plan creation does not accept status",
-                    reply["result"]["structuredContent"]["error"]["message"],
-                )
+                if index == 0:
+                    self.assertEqual(-32602, reply["error"]["code"])
+                else:
+                    self.assertTrue(reply["result"]["isError"], reply)
+                    self.assertIn(
+                        "does not accept status",
+                        reply["result"]["structuredContent"]["error"]["message"],
+                    )
                 self.assertEqual(0, self.count())
 
     def test_all_invalid_metadata_fails_before_any_plan_is_inserted(self):
@@ -242,8 +248,9 @@ class PlanCreationHTTPTests(unittest.TestCase):
         creation = discovery["capabilities"]["context"]["plan_creation"]
         self.assertTrue(creation["atomic_subplans"])
         self.assertEqual(64, creation["max_direct_subplans"])
-        self.assertTrue(creation["root_status_must_be_omitted"])
-        self.assertEqual("in_progress", creation["root_status_initial"])
+        self.assertTrue(creation["creation_status_must_be_omitted"])
+        self.assertEqual("in_progress", creation["creation_status_initial"])
+        self.assertTrue(creation["subplan_root_immutable"])
         self.assertTrue(creation["subplan_creation_requires_in_progress_root"])
         self.assertTrue(
             discovery["capabilities"]["context"][
@@ -254,11 +261,12 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, listed)
         tool = next(t for t in listed["result"]["tools"] if t["name"] == "context_add")
         schema = tool["inputSchema"]["properties"]
+        self.assertNotIn("status", schema)
         for name, extension in discovery["endpoints"]["context"]["operations"]["add"]["plan_extension_schema"].items():
             self.assertEqual(extension, schema[name])
         self.assertFalse(schema["subplans"]["items"]["additionalProperties"])
         self.assertEqual(["content"], schema["subplans"]["items"]["required"])
-        self.assertIn("Root Plan creation must omit status", schema["status"]["description"])
+        self.assertNotIn("status", schema["subplans"]["items"]["properties"])
         self.assertFalse(tool["annotations"]["idempotentHint"])
 
 

@@ -36,7 +36,7 @@ class PlanCreationTests(unittest.TestCase):
             "subplans": [
                 {"ref": "code", "content": "Implement the code"},
                 {"ref": "tests", "content": "Test it", "taskname": "batch-tests"},
-                {"content": "Review the result", "status": "cancelled"},
+                {"content": "Review the result"},
             ],
         }
 
@@ -76,7 +76,7 @@ class PlanCreationTests(unittest.TestCase):
         self.assertEqual([0, 1, 2], [c["index"] for c in children])
         self.assertEqual(["batch", "batch-tests", "batch"], [c["taskname"] for c in children])
         self.assertEqual(["code", "tests", None], [c.get("ref") for c in children])
-        self.assertEqual(["in_progress", "in_progress", "cancelled"], [c["status"] for c in children])
+        self.assertEqual(["in_progress", "in_progress", "in_progress"], [c["status"] for c in children])
         self.assertTrue(all(c["plan_id"] == result["id"] for c in children))
         self.assertTrue(all("content" not in c and "related_memory" not in c for c in children))
         plans = self.store.plan_tree(result["id"])["plans"]
@@ -102,13 +102,33 @@ class PlanCreationTests(unittest.TestCase):
         self.assertEqual([], one["subplans"])
         self.assertEqual(6, self.count())
 
-    def test_root_creation_rejects_any_explicit_status(self):
+    def test_plan_creation_rejects_any_explicit_status(self):
         for status in ("in_progress", "completed", "cancelled", None):
-            with self.subTest(status=status), self.assertRaisesRegex(
-                ValueError, "root plan creation does not accept status"
+            with self.subTest(kind="root", status=status), self.assertRaisesRegex(
+                ValueError, "plan creation does not accept status"
             ):
                 self.create(dict(self.body, status=status))
             self.assertEqual(0, self.count())
+
+        parent = self.store.add("plan", "Existing root", taskname="existing")
+        for status in ("in_progress", "completed", "cancelled", None):
+            with self.subTest(kind="standalone-subplan", status=status), self.assertRaisesRegex(
+                ValueError, "plan creation does not accept status"
+            ):
+                self.create({
+                    "type": "plan",
+                    "taskname": "child",
+                    "content": "Child",
+                    "plan_id": parent,
+                    "status": status,
+                    "subplans": [],
+                })
+
+        for status in ("in_progress", "completed", "cancelled", None):
+            with self.subTest(kind="atomic-subplan", status=status), self.assertRaisesRegex(
+                ValueError, r"subplans\[0\] does not accept status"
+            ):
+                self.create(dict(self.body, subplans=[{"content": "Child", "status": status}]))
 
     def test_subplan_creation_requires_in_progress_root(self):
         root = self.store.add("plan", "Active root", taskname="root")
@@ -123,10 +143,10 @@ class PlanCreationTests(unittest.TestCase):
             "taskname": "nested",
             "content": "Nested while root is active",
             "plan_id": child,
-            "status": "completed",
-            "subplans": [{"content": "Cancelled child", "status": "cancelled"}],
+            "subplans": [{"content": "Nested child"}],
         })
-        self.assertEqual("completed", created["status"])
+        self.assertEqual("in_progress", created["status"])
+        self.assertEqual(["in_progress"], [item["status"] for item in created["subplans"]])
 
         current = self.store.query(entry_id=root)[0][0]
         self.store.update_plan(
@@ -234,7 +254,7 @@ class PlanCreationTests(unittest.TestCase):
         first = self.create(body)
         explicit = copy.deepcopy(body)
         explicit.update(plan_id=None)
-        explicit["subplans"][0].update(taskname="batch", status="in_progress", scope_paths=[], memory_tags=[])
+        explicit["subplans"][0].update(taskname="batch", scope_paths=[], memory_tags=[])
         replay = self.create(explicit)
         self.assertEqual(first["id"], replay["id"])
         self.assertTrue(replay["replayed"])

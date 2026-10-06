@@ -22,7 +22,7 @@ from openkapsel.context.conversation import (
     verify_writer_nonce,
 )
 
-from openkapsel.context.context_store import ContextStore, PLAN_STATUSES, _utc_now
+from openkapsel.context.context_store import ContextStore, _utc_now
 from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_SCOPE_PATHS
 from openkapsel.contract import (
     MAX_PLAN_REQUEST_BYTES,
@@ -73,8 +73,10 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("batch creation requires type=plan")
     # Legacy singleton REST calls ignored extra attribution fields. New batch/key
     # requests are strict so misspelled plan fields cannot be silently ignored.
+    if "status" in body:
+        raise ValueError("plan creation does not accept status; all plans start in_progress")
     allowed = {
-        "type", "content", "taskname", "status", "plan_id", "scope_paths",
+        "type", "content", "taskname", "plan_id", "scope_paths",
         "memory_tags", "subplans", "request_id", "message",
         "conversation_id", "writer_nonce", "conversation_entries",
     }
@@ -82,11 +84,6 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("plan creation contains unknown fields")
 
     def node(raw: dict[str, Any], inherited_taskname: str | None = None) -> dict[str, Any]:
-        status = raw.get("status", "in_progress")
-        if status is None and inherited_taskname is None:
-            status = "in_progress"  # Existing REST singleton behavior.
-        if not isinstance(status, str) or status not in PLAN_STATUSES:
-            raise ValueError("plan status must be in_progress, completed, or cancelled")
         paths = _plan_scope_paths(raw.get("scope_paths"))
         tags = MemoryStore._validate_tags(raw.get("memory_tags"))
         for value in paths + tags:
@@ -94,7 +91,7 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         return {
             "content": _text(raw.get("content"), ContextStore._validate_content),
             "taskname": _text(raw.get("taskname", inherited_taskname), ContextStore._validate_taskname),
-            "status": status, "scope_paths": paths, "memory_tags": tags,
+            "status": "in_progress", "scope_paths": paths, "memory_tags": tags,
         }
 
     parent = body.get("plan_id")
@@ -102,10 +99,6 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         ContextStore._validate_plan_id_value(parent)
         if parent > 2**63 - 1:
             raise ValueError("plan_id exceeds the database ID range")
-    elif "status" in body:
-        raise ValueError(
-            "root plan creation does not accept status; root plans always start in_progress"
-        )
     root = node(body)
     root["plan_id"] = parent
     if parent is None and "subplans" not in body:
@@ -117,7 +110,11 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"subplans must be an array of at most {MAX_SUBPLANS} direct children")
     normalized, refs = [], set()
     for index, child in enumerate(children):
-        if not isinstance(child, dict) or set(child) - {"ref", "content", "taskname", "status", "scope_paths", "memory_tags"}:
+        if not isinstance(child, dict):
+            raise ValueError(f"subplans[{index}] must be a direct child object with only supported fields")
+        if "status" in child:
+            raise ValueError(f"subplans[{index}] does not accept status; all plans start in_progress")
+        if set(child) - {"ref", "content", "taskname", "scope_paths", "memory_tags"}:
             raise ValueError(f"subplans[{index}] must be a direct child object with only supported fields")
         for field in ("scope_paths", "memory_tags"):
             if field in child and not isinstance(child[field], list):
@@ -132,12 +129,6 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             refs.add(ref)
             item["ref"] = ref
         normalized.append(item)
-    if root["status"] == "completed" and any(
-        child["status"] == "in_progress" for child in normalized
-    ):
-        raise ValueError(
-            "plan completion requires every direct subplan to be completed or cancelled"
-        )
     conversation_id = validate_conversation_id(body.get("conversation_id"))
     writer_nonce = validate_writer_nonce(body.get("writer_nonce"))
     conversation_entries = normalize_entries(body.get("conversation_entries"), minimum=1)

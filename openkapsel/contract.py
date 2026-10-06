@@ -231,8 +231,9 @@ def plan_creation_properties() -> dict[str, Any]:
             "description": (
                 "Direct child plans created atomically with this plan. Root Plan creation requires "
                 "this field; use [] when there are no direct children. It remains optional when "
-                "creating a Plan under an existing parent. Children inherit taskname when omitted. "
-                "No nested subplans or child plan_id; use a later call with a parent ID for deeper levels."
+                "creating a Plan under an existing parent. Every created Plan starts in_progress; "
+                "status is not accepted. Children inherit taskname when omitted. No nested subplans "
+                "or child plan_id; use a later call with a parent ID for deeper levels."
             ),
             "items": {
                 "type": "object",
@@ -252,7 +253,6 @@ def plan_creation_properties() -> dict[str, Any]:
                         "maxLength": MAX_CONTEXT_CONTENT_CHARS,
                     },
                     "taskname": taskname_schema(),
-                    "status": plan_status_schema(default="in_progress"),
                     "scope_paths": plan_scope_paths_schema(),
                     "memory_tags": plan_memory_tags_schema(),
                 },
