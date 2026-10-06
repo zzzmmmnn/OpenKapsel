@@ -66,7 +66,7 @@ Workspace API streams share `limits.max_sse_streams`, `limits.max_sse_streams_pe
 
 ## Runtime libraries and network
 
-The installed libraries and versions are deployment-dependent; read `capabilities.web_app_api.available_libraries` in `discovery/web`. The maintained contract currently includes FastAPI, SQLAlchemy, python-multipart, Jinja2, HTTPX, NumPy, Numba, pandas, Matplotlib, SciPy, cryptography, lxml, Pillow, PyYAML, and Beautiful Soup. Outbound HTTP still requires the token's network permission.
+The installed libraries and versions are deployment-dependent; read `capabilities.web_app_api.available_libraries` in `discovery/web`. The maintained contract currently includes FastAPI, SQLAlchemy, python-multipart, Jinja2, HTTPX, NumPy, Numba, pandas, Matplotlib, SciPy, cryptography, lxml, Pillow, PyYAML, and Beautiful Soup. Load `discovery/network` for the current outbound network permission, mode, domains, and protocols.
 
 ## Managed database
 

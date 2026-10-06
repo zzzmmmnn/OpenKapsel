@@ -29,6 +29,9 @@ The Workspace root returns a compact Discovery index with authentication rules, 
 - `./discovery/files`
 - `./discovery/context`
 - `./discovery/memory`
+- `./discovery/paths`
+- `./discovery/rpc`
+- `./discovery/network`
 - `./discovery/shell`
 - `./discovery/schedules`
 - `./discovery/web`

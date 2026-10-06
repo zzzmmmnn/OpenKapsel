@@ -1,6 +1,6 @@
 # Client-backed directories and execution
 
-Fetch `GET /mapping` before using client-backed paths. It returns each mapping's
+Load `GET /discovery/rpc` for mapping/RPC availability and timeout policy, then fetch `GET /mapping` before using client-backed paths. It returns each mapping's
 human-readable `name`, stable `id`, workspace-relative `path`, `online`,
 `writable`, `mounted`, `mount_references`, `native_mounts_enabled`, and
 advertised client capabilities. Use `name` when addressing mapping RPCs; the
@@ -33,7 +33,7 @@ remaining global limits. Search may return `unavailable_mappings` and
 `truncated=true`; tree/manifest can contain unavailable nodes. These results are
 incomplete, not proof that files do not exist.
 
-The server waits up to `mapping_rpc_timeout_seconds` (90 seconds by default) for
+The server waits up to `mapping_rpc_timeout_seconds` published by `discovery/rpc` (90 seconds by default) for
 one RPC reply. Client transport tolerance defaults to 60 seconds with pings every
 10 seconds. A `mapping_response_too_large` error (413) needs a smaller result
 budget, tree depth or batch; use binary transfer for large payloads. After a

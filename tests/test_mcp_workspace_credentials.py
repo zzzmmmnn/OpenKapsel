@@ -18,8 +18,18 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
     rpc = test_oauth.OAuthHTTPTests.rpc
 
     def call_tool(self, bearer: str, name: str):
+        operation = {"credential_get": "get", "credential_renew": "renew"}[name]
         status, payload = self.rpc(
-            bearer, "tools/call", {"name": name, "arguments": {}}
+            bearer,
+            "tools/call",
+            {
+                "name": "capability_call",
+                "arguments": {
+                    "family": "credential",
+                    "operation": operation,
+                    "args": {},
+                },
+            },
         )
         self.assertEqual(200, status, payload)
         return payload["result"]
@@ -55,11 +65,9 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         bearer = oauth["access_token"]
 
         tools = self.tool_names(bearer)
-        self.assertIn("credential_get", tools)
-        self.assertIn("credential_renew", tools)
-        self.assertTrue(tools["credential_get"]["annotations"]["readOnlyHint"])
-        self.assertFalse(tools["credential_renew"]["annotations"]["readOnlyHint"])
-        self.assertTrue(tools["credential_renew"]["annotations"]["destructiveHint"])
+        self.assertIn("capability_call", tools)
+        self.assertNotIn("credential_get", tools)
+        self.assertNotIn("credential_renew", tools)
 
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         exported = self.assert_current_export(
@@ -108,7 +116,7 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         )
         self.mcp = "/kapsel/mcp-connect/" + conn["id"] + "/mcp"
         bearer = conn["secret"]
-        self.assertIn("credential_get", self.tool_names(bearer))
+        self.assertIn("capability_call", self.tool_names(bearer))
 
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         self.assert_current_export(
@@ -158,11 +166,22 @@ class McpWorkspaceCredentialsTests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         structured = payload["result"]["structuredContent"]
         auth = structured["authentication"]
-        self.assertEqual("credential_get", auth["workspace_credentials"]["export_tool"])
-        self.assertEqual("credential_renew", auth["workspace_credentials"]["renew_tool"])
+        self.assertEqual("capability_call", auth["workspace_credentials"]["tool"])
         self.assertEqual(
-            ["credential_get", "credential_renew"],
-            auth["consent"]["rest_credentials_tools"],
+            {"family": "credential", "operation": "get"},
+            auth["workspace_credentials"]["export"],
+        )
+        self.assertEqual(
+            {"family": "credential", "operation": "renew"},
+            auth["workspace_credentials"]["renew"],
+        )
+        self.assertEqual("capability_call", auth["consent"]["rest_credentials_tool"])
+        self.assertEqual(
+            [
+                {"family": "credential", "operation": "get"},
+                {"family": "credential", "operation": "renew"},
+            ],
+            auth["consent"]["rest_credentials_operations"],
         )
         encoded = json.dumps(structured)
         current = self.server.tokens.get_by_app_id(self.record.app_id)

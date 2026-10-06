@@ -22,6 +22,7 @@ from openkapsel.api.mcp import (
     MCP_PROTOCOL_VERSION,
     PUBLIC_SERVER_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
+    resolve_auxiliary_operation,
     tools_for,
     validate_arguments,
 )
@@ -107,10 +108,15 @@ class McpHandlersMixin:
                 {"jsonrpc": "2.0", "id": request_id, "result": result},
                 redact_linked_secrets=not (
                     method == "tools/call"
-                    and params.get("name") in {
-                        "credential_get",
-                        "credential_renew",
-                    }
+                    and (
+                        params.get("name") in {"credential_get", "credential_renew"}
+                        or (
+                            params.get("name") == "capability_call"
+                            and isinstance(params.get("arguments"), dict)
+                            and params["arguments"].get("family") == "credential"
+                            and params["arguments"].get("operation") in {"get", "renew"}
+                        )
+                    )
                 ),
             )
         except McpError as exc:
@@ -156,8 +162,9 @@ class McpHandlersMixin:
                 "Before modifying the workspace, preserve recent user/AI context in Conversation: query the next conversation_id before creation, retain the returned writer_nonce, and follow summary_status when a summary is requested. "
                 "Query or reuse an active root Plan before writes. Attach every modifying tool to its owning plan_id, taskname, and message; use context_plan_tree for hierarchy. Non-cancellation Plan updates append Conversation context; completion includes role=ai plus the required debrief. Cancellation-only updates may omit writer_nonce. "
                 "For reads, taskname and message are optional and only needed when the read should be recorded. Use Memory for durable cross-task facts and current revisions or ETags whenever a tool schema requires them. "
-                "shell_exec target=auto runs a mapped cwd on its client and other cwd on the server; client failures do not fall back to server. Returned task_id values use the ordinary task tools. "
-                "When connected through MCP authentication, prefer MCP tools. Use credential_get only when portable REST access is needed; MCP credentials remain separate."
+                "Low-frequency Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load discovery/mcp only when their operation schema is needed. "
+                "For shell/exec, target=auto runs a mapped cwd on its client and other cwd on the server; client failures do not fall back. Returned task_id values use family=task operations. "
+                "When connected through MCP authentication, prefer MCP tools. Use capability_call family=credential operation=get only when portable REST access is needed; MCP credentials remain separate."
             ),
         }
 
@@ -185,11 +192,6 @@ class McpHandlersMixin:
         except ValueError as exc:
             raise McpError(-32602, str(exc), {"name": name}) from None
         operation_requirements = {
-            ("schedule_read", "get"): ("schedule_id",),
-            ("schedule_read", "run_list"): ("schedule_id",),
-            ("schedule_read", "run_get"): ("run_id",),
-            ("schedule_write", "create"): ("name", "schedule", "command"),
-            ("schedule_write", "update"): ("schedule_id", "expected_revision"),
             ("fs_edit_text", "replace"): ("old", "new"),
             ("fs_edit_text", "insert_before"): ("match", "content"),
             ("fs_edit_text", "insert_after"): ("match", "content"),
@@ -203,6 +205,52 @@ class McpHandlersMixin:
                 + ", ".join(missing),
                 {"name": name},
             )
+
+        effective_name = name
+        effective_arguments = arguments
+        effective_tool = tool
+        if name == "capability_call":
+            family = str(arguments["family"])
+            operation = str(arguments["operation"])
+            try:
+                effective_tool, effective_name, injected_operation, args_schema = (
+                    resolve_auxiliary_operation(
+                        self.token_record,
+                        self.token_scope_root != self.server.config.root,
+                        family,
+                        operation,
+                    )
+                )
+            except (KeyError, PermissionError):
+                raise McpError(
+                    -32602,
+                    "Unknown or unauthorized capability operation",
+                    {"family": family, "operation": operation},
+                ) from None
+            inner_args = dict(arguments.get("args", {}))
+            try:
+                validate_arguments({"inputSchema": args_schema}, inner_args)
+            except ValueError as exc:
+                raise McpError(
+                    -32602,
+                    str(exc),
+                    {"family": family, "operation": operation},
+                ) from None
+            if injected_operation is not None:
+                inner_args["operation"] = injected_operation
+            inner_properties = effective_tool["inputSchema"]["properties"]
+            for field in ("plan_id", "taskname", "message"):
+                if field in arguments and field in inner_properties:
+                    inner_args[field] = arguments[field]
+            try:
+                validate_arguments(effective_tool, inner_args)
+            except ValueError as exc:
+                raise McpError(
+                    -32602,
+                    str(exc),
+                    {"family": family, "operation": operation},
+                ) from None
+            effective_arguments = inner_args
 
         context_tools = {
             "conversation_create",
@@ -222,23 +270,23 @@ class McpHandlersMixin:
             "credential_get",
             "credential_renew",
         }
-        track_operation = name not in context_tools and name != "rpc_call" and (
-            not tool["annotations"]["readOnlyHint"]
-            or bool(str(arguments.get("message", "")).strip())
-            or bool(str(arguments.get("taskname", "")).strip())
+        track_operation = effective_name not in context_tools and effective_name != "rpc_call" and (
+            not effective_tool["annotations"]["readOnlyHint"]
+            or bool(str(effective_arguments.get("message", "")).strip())
+            or bool(str(effective_arguments.get("taskname", "")).strip())
         )
         try:
             if track_operation:
                 self._begin_context_operation(
-                    f"mcp.{name}",
-                    arguments.get("taskname"),
-                    arguments.get("message"),
-                    arguments.get("plan_id"),
-                    self._context_request_details(arguments),
-                    plan_required=not tool["annotations"]["readOnlyHint"],
+                    f"mcp.{effective_name}",
+                    effective_arguments.get("taskname"),
+                    effective_arguments.get("message"),
+                    effective_arguments.get("plan_id"),
+                    self._context_request_details(effective_arguments),
+                    plan_required=not effective_tool["annotations"]["readOnlyHint"],
                 )
             self._mcp_context_status = HTTPStatus.OK
-            payload = self._execute_mcp_tool(name, arguments)
+            payload = self._execute_mcp_tool(effective_name, effective_arguments)
         except ApiError as exc:
             error: dict[str, Any] = {"code": exc.code, "message": exc.message}
             if exc.details is not None:

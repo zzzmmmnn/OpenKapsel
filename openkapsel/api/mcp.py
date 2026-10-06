@@ -107,7 +107,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "rpc_call",
         "Call RPC plugin",
-        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id for task_get/task_output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
+        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id inspected through capability_call family=task operations get/output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
         _object_schema({
             "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", "description": "Optional workspace mapping name. Omit to execute the RPC family on the server workspace; legacy mapping IDs are also accepted."},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -122,6 +122,28 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             ),
             "message": operation_message_schema(
                 description="Required short reason for a write RPC operation."
+            ),
+        }, ("family", "operation")),
+        read_only=False,
+        context_message=False,
+    ),
+
+    _tool(
+        "capability_call",
+        "Call auxiliary capability",
+        "Call one low-frequency native capability operation by family and operation. Detailed operation_specs are loaded on demand from discovery/mcp. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when the selected operation requires it.",
+        _object_schema({
+            "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+            "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
+            "args": {"type": "object", "default": {}},
+            "plan_id": plan_id_schema(
+                description="Owning Plan id when operation_specs.<operation>.mutation_context is required."
+            ),
+            "taskname": taskname_schema(
+                description="Task grouping name when mutation Context is required, or for optional read recording."
+            ),
+            "message": operation_message_schema(
+                description="Short operation reason when mutation Context is required, or for optional read recording."
             ),
         }, ("family", "operation")),
         read_only=False,
@@ -153,7 +175,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             {
                 "section": {
                     "type": "string",
-                    "enum": ["main", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"],
+                    "enum": ["main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "full"],
                     "default": "main",
                     "description": "Discovery section to return. Use full only for compatibility or comprehensive inspection.",
                 }
@@ -942,7 +964,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "shell_exec",
         "Run shell command",
-        "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server; client failures do not fall back. Returned task_id values use the normal task tools. Client execution uses client-local policy and environment.",
+        "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server; client failures do not fall back. Returned task_id values use capability_call family=task operations. Client execution uses client-local policy and environment.",
         _object_schema(
             {
                 "command": {"type": "string", "minLength": 1},
@@ -974,7 +996,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_get",
         "Get task status",
-        "Poll a server or client task for status, exit code, output, and output cursors; use task_output to continue reading.",
+        "Poll a server or client task for status, exit code, output, and output cursors; use family=task operation=output to continue reading.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=True,
         idempotent=True,
@@ -1041,7 +1063,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_interrupt",
         "Interrupt task",
-        "Request normal termination of a running task. Use task_kill only when immediate forced termination is required.",
+        "Request normal termination of a running task. Use family=task operation=kill only when immediate forced termination is required.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=False,
         destructive=True,
@@ -1057,12 +1079,76 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
 )
 
 
-def tools_for(
-    record: TokenRecord,
-    recycle_enabled: bool,
-    mcp_binary_chunk_bytes: int = 256 * 1024,
-) -> list[dict[str, Any]]:
-    readable = {
+_AUX_CONTEXT_FIELDS = {"plan_id", "taskname", "message"}
+
+# Low-frequency tool definitions remain internal execution contracts. They are
+# no longer advertised individually through tools/list; capability_call selects
+# one operation and Discovery publishes its schema only when requested.
+_AUXILIARY_OPERATION_MAP: dict[
+    str,
+    dict[str, tuple[str, str | None, tuple[str, ...] | None, tuple[str, ...], str]],
+] = {
+    "credential": {
+        "get": ("credential_get", None, (), (), "sync"),
+        "renew": ("credential_renew", None, (), (), "sync"),
+    },
+    "sharing": {
+        "create": ("share_create", None, None, ("path",), "sync"),
+        "query": ("share_query", None, None, ("share_id",), "sync"),
+        "import": ("share_import", None, None, ("share_id", "destination"), "sync"),
+        "delete": ("share_delete", None, None, ("share_id",), "sync"),
+    },
+    "web": {
+        "preview_url": ("web_preview_url", None, None, (), "sync"),
+    },
+    "schedule": {
+        "list": ("schedule_read", "list", (), (), "sync"),
+        "get": ("schedule_read", "get", ("schedule_id",), ("schedule_id",), "sync"),
+        "run_list": (
+            "schedule_read", "run_list", ("schedule_id", "limit"), ("schedule_id",), "sync"
+        ),
+        "run_get": ("schedule_read", "run_get", ("run_id",), ("run_id",), "sync"),
+        "create": (
+            "schedule_write", "create",
+            ("name", "schedule", "command", "cwd", "timeout_seconds", "overlap_policy", "misfire_policy", "run_context"),
+            ("name", "schedule", "command"), "sync",
+        ),
+        "update": (
+            "schedule_write", "update",
+            ("schedule_id", "expected_revision", "name", "schedule", "command", "cwd", "timeout_seconds", "overlap_policy", "misfire_policy", "run_context"),
+            ("schedule_id", "expected_revision"), "sync",
+        ),
+        "delete": ("schedule_control", "delete", ("schedule_id",), ("schedule_id",), "sync"),
+        "execute": ("schedule_control", "execute", ("schedule_id",), ("schedule_id",), "sync"),
+        "pause": ("schedule_control", "pause", ("schedule_id",), ("schedule_id",), "sync"),
+        "resume": ("schedule_control", "resume", ("schedule_id",), ("schedule_id",), "sync"),
+    },
+    "shell": {
+        "exec": ("shell_exec", None, None, ("command",), "task"),
+        "processes": ("sandbox_processes", None, None, (), "sync"),
+    },
+    "task": {
+        "get": ("task_get", None, None, ("task_id",), "sync"),
+        "list": ("task_list", None, None, (), "sync"),
+        "output": ("task_output", None, None, ("task_id",), "sync"),
+        "stdin": ("task_stdin", None, None, ("task_id",), "sync"),
+        "interrupt": ("task_interrupt", None, None, ("task_id",), "sync"),
+        "kill": ("task_kill", None, None, ("task_id",), "sync"),
+    },
+}
+_AUXILIARY_TOOL_NAMES = {
+    entry[0]
+    for operations in _AUXILIARY_OPERATION_MAP.values()
+    for entry in operations.values()
+}
+
+
+def _tool_index() -> dict[str, dict[str, Any]]:
+    return {tool["name"]: tool for tool in ALL_TOOLS}
+
+
+def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[str]:
+    names = {
         "discovery",
         "credential_get",
         "credential_renew",
@@ -1078,79 +1164,116 @@ def tools_for(
         "memory_archive",
     }
     if record.can_read or record.can_write:
-        readable.add("rpc_call")
+        names.add("rpc_call")
     if record.can_read:
-        readable.update({"fs_read_files", "fs_manifest"})
-        readable.update(
-            {
-                "conversation_query",
-                "context_query",
-                "context_plan_tree",
-                "memory_query",
-                "memory_get",
-                "memory_project",
-                "fs_list",
-                "fs_stat",
-                "fs_read_binary",
-                "fs_read_large",
-                "fs_download",
-                "fs_find",
-                "fs_grep",
-                "fs_tree",
-                "share_create",
-            }
-        )
+        names.update({"fs_read_files", "fs_manifest"})
+        names.update({
+            "conversation_query", "context_query", "context_plan_tree",
+            "memory_query", "memory_get", "memory_project",
+            "fs_list", "fs_stat", "fs_read_binary", "fs_read_large", "fs_download",
+            "fs_find", "fs_grep", "fs_tree", "share_create",
+        })
         if record.can_preview:
-            readable.add("web_preview_url")
+            names.add("web_preview_url")
         if recycle_enabled:
-            readable.add("recycle_list")
+            names.add("recycle_list")
     if record.can_write:
-        readable.update(
-            {
-                "fs_write",
-                "fs_edit_text",
-                "fs_mutate",
-                "fs_replace_large",
-                "fs_mkdir",
-                "fs_move",
-                "upload_create",
-                "upload_chunk",
-                "upload_status",
-                "upload_commit",
-                "upload_cancel",
-                "share_import",
-            }
-        )
+        names.update({
+            "fs_write", "fs_edit_text", "fs_mutate", "fs_replace_large", "fs_mkdir",
+            "fs_move", "upload_create", "upload_chunk", "upload_status", "upload_commit",
+            "upload_cancel", "share_import",
+        })
         if recycle_enabled:
-            readable.update({"fs_delete", "recycle_restore"})
+            names.update({"fs_delete", "recycle_restore"})
     if record.can_read or record.can_write:
-        readable.update(
-            {
-                "task_get",
-                "task_list",
-                "task_output",
-                "task_interrupt",
-                "task_kill",
-            }
-        )
+        names.update({"task_get", "task_list", "task_output", "task_interrupt", "task_kill"})
     if record.shell_mode != "none":
-        readable.update(
-            {
-                "shell_exec",
-                "task_stdin",
-            }
-        )
+        names.update({"shell_exec", "task_stdin"})
         if record.can_schedule:
-            readable.update(
-                {
-                    "schedule_read",
-                    "schedule_write",
-                    "schedule_control",
-                }
-            )
+            names.update({"schedule_read", "schedule_write", "schedule_control"})
     if record.shell_mode == "restricted":
-        readable.add("sandbox_processes")
-    selected = [copy.deepcopy(tool) for tool in ALL_TOOLS if tool["name"] in readable]
+        names.add("sandbox_processes")
+    return names
+
+
+def _auxiliary_operation_schema(
+    tool: dict[str, Any],
+    fields: tuple[str, ...] | None,
+    required: tuple[str, ...],
+) -> dict[str, Any]:
+    source = tool["inputSchema"]["properties"]
+    selected = (
+        [name for name in source if name not in _AUX_CONTEXT_FIELDS | {"operation"}]
+        if fields is None
+        else list(fields)
+    )
+    return _object_schema(
+        {name: copy.deepcopy(source[name]) for name in selected},
+        required,
+    )
+
+
+def auxiliary_operations_for(
+    record: TokenRecord,
+    recycle_enabled: bool,
+) -> dict[str, dict[str, Any]]:
+    authorized = _authorized_tool_names(record, recycle_enabled)
+    tools = _tool_index()
+    result: dict[str, dict[str, Any]] = {}
+    for family, operations in _AUXILIARY_OPERATION_MAP.items():
+        specs: dict[str, Any] = {}
+        for operation, (tool_name, _injected_operation, fields, required, execution) in operations.items():
+            if tool_name not in authorized:
+                continue
+            tool = tools[tool_name]
+            write = not tool["annotations"]["readOnlyHint"]
+            mutation_context = all(
+                field in tool["inputSchema"].get("required", [])
+                for field in ("plan_id", "taskname", "message")
+            )
+            specs[operation] = {
+                "description": tool["description"],
+                "input_schema": _auxiliary_operation_schema(tool, fields, required),
+                "write": write,
+                "execution": execution,
+                "mutation_context": mutation_context,
+                "optional_read_context": not write and bool(
+                    _AUX_CONTEXT_FIELDS & tool["inputSchema"]["properties"].keys()
+                ),
+            }
+        if specs:
+            result[family] = {"operation_specs": specs}
+    return result
+
+
+def resolve_auxiliary_operation(
+    record: TokenRecord,
+    recycle_enabled: bool,
+    family: str,
+    operation: str,
+) -> tuple[dict[str, Any], str, str | None, dict[str, Any]]:
+    family_ops = _AUXILIARY_OPERATION_MAP.get(family)
+    if family_ops is None or operation not in family_ops:
+        raise KeyError("unknown auxiliary capability operation")
+    tool_name, injected_operation, fields, required, _execution = family_ops[operation]
+    if tool_name not in _authorized_tool_names(record, recycle_enabled):
+        raise PermissionError("auxiliary capability operation is not authorized")
+    tool = _tool_index()[tool_name]
+    schema = _auxiliary_operation_schema(tool, fields, required)
+    return tool, tool_name, injected_operation, schema
+
+
+
+def tools_for(
+    record: TokenRecord,
+    recycle_enabled: bool,
+    mcp_binary_chunk_bytes: int = 256 * 1024,
+) -> list[dict[str, Any]]:
+    authorized = _authorized_tool_names(record, recycle_enabled)
+    public_names = authorized - _AUXILIARY_TOOL_NAMES
+    if auxiliary_operations_for(record, recycle_enabled):
+        public_names.add("capability_call")
+    selected = [copy.deepcopy(tool) for tool in ALL_TOOLS if tool["name"] in public_names]
     for tool in selected:
         if tool["name"] == "fs_read_binary":
             length = tool["inputSchema"]["properties"]["length"]

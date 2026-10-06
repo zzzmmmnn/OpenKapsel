@@ -320,8 +320,8 @@ class WorkspaceServerTests(unittest.TestCase):
 
         discovery_status, discovery = self.request("GET", self.endpoint())
         self.assertEqual(HTTPStatus.OK, discovery_status)
-        transport_ref = discovery["request_transport"]
-        self.assertEqual("./discovery/transport", transport_ref["discovery_url"])
+        transport_ref = discovery["sections"]["transport"]
+        self.assertEqual("./discovery/transport", transport_ref["url"])
         self.assertNotIn("signed_get_envelope", transport_ref)
 
         transport_status, transport_doc = self.request(
@@ -607,7 +607,8 @@ class WorkspaceServerTests(unittest.TestCase):
 
         tools = self.mcp_request("test-token", 90, "tools/list")[1]["result"]["tools"]
         names = {tool["name"] for tool in tools}
-        self.assertTrue({"schedule_read", "schedule_write", "schedule_control"} <= names)
+        self.assertIn("capability_call", names)
+        self.assertTrue({"schedule_read", "schedule_write", "schedule_control"}.isdisjoint(names))
         self.assertTrue(
             {
                 "list_schedules",
@@ -769,6 +770,44 @@ class WorkspaceServerTests(unittest.TestCase):
                     arguments.setdefault("taskname", "test-task")
                     arguments.setdefault("message", "test MCP operation")
                     params["arguments"] = arguments
+                fixed_aux = {
+                    "credential_get": ("credential", "get"),
+                    "credential_renew": ("credential", "renew"),
+                    "share_create": ("sharing", "create"),
+                    "share_query": ("sharing", "query"),
+                    "share_import": ("sharing", "import"),
+                    "share_delete": ("sharing", "delete"),
+                    "web_preview_url": ("web", "preview_url"),
+                    "shell_exec": ("shell", "exec"),
+                    "sandbox_processes": ("shell", "processes"),
+                    "task_get": ("task", "get"),
+                    "task_list": ("task", "list"),
+                    "task_output": ("task", "output"),
+                    "task_stdin": ("task", "stdin"),
+                    "task_interrupt": ("task", "interrupt"),
+                    "task_kill": ("task", "kill"),
+                }
+                dynamic = fixed_aux.get(name)
+                if name in {"schedule_read", "schedule_write", "schedule_control"}:
+                    source = dict(params["arguments"])
+                    dynamic = ("schedule", str(source.pop("operation")))
+                    params["arguments"] = source
+                if dynamic is not None:
+                    source = dict(params["arguments"])
+                    outer = {
+                        key: source.pop(key)
+                        for key in ("plan_id", "taskname", "message")
+                        if key in source
+                    }
+                    params = {
+                        "name": "capability_call",
+                        "arguments": {
+                            "family": dynamic[0],
+                            "operation": dynamic[1],
+                            "args": source,
+                            **outer,
+                        },
+                    }
             body["params"] = params
         headers = {
             "Content-Type": "application/json",
@@ -789,15 +828,23 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("main", main["section"])
         self.assertEqual(
-            {"transport", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},
+            {"transport", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing", "full"},
             set(main["sections"]),
         )
         self.assertEqual(
-            {"discovery", "credential", "environment"},
+            {"discovery", "credential"},
             set(main["endpoints"]),
         )
-        self.assertEqual([".openkapsel"], main["path_rules"]["private_directories"])
-        self.assertNotIn("mcp", main["capabilities"])
+        self.assertEqual(
+            {
+                "sections": ["context", "memory", "files"],
+                "context_covers": ["conversation", "plan"],
+                "rule": "Load these sections before workspace mutation; section contracts are authoritative.",
+            },
+            main["mutation_core"],
+        )
+        for duplicate in ("request_transport", "path_rules", "capabilities", "limits", "errors"):
+            self.assertNotIn(duplicate, main)
         skill = main["skills"]["openkapsel_rest"]
         self.assertEqual("openkapsel-rest", skill["name"])
         self.assertEqual("none", skill["authentication"])
@@ -841,12 +888,17 @@ class WorkspaceServerTests(unittest.TestCase):
             discovery_operation(payload, "fs_write", "mutate")["method"],
         )
         section_endpoint_sets = []
-        for section_name in ("transport", "files", "context", "memory", "shell", "schedules", "web", "sharing"):
+        for section_name in ("transport", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing"):
             section_status, section_payload = self.request(
                 "GET", self.endpoint(f"/discovery/{section_name}")
             )
             self.assertEqual(200, section_status, section_name)
-            self.assertEqual(skill, section_payload["skills"]["openkapsel_rest"])
+            self.assertEqual("main", section_payload["inherits"])
+            for inherited in (
+                "server_version", "name", "os", "root", "authentication", "token",
+                "skills", "endpoint_defaults", "errors",
+            ):
+                self.assertNotIn(inherited, section_payload, section_name)
             section_endpoint_sets.append(set(section_payload["endpoints"]))
         self.assertEqual(
             set(payload["endpoints"]) - {"discovery", "credential"},
@@ -2608,7 +2660,8 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         names = {item["name"] for item in tools["result"]["tools"]}
-        self.assertIn("sandbox_processes", names)
+        self.assertIn("capability_call", names)
+        self.assertNotIn("sandbox_processes", names)
         status, listed, _ = self.mcp_request(
             record.token,
             42,
@@ -2788,17 +2841,22 @@ class WorkspaceServerTests(unittest.TestCase):
                 "upload_status",
                 "upload_commit",
                 "upload_cancel",
-                "shell_exec",
-                "task_get",
-                "task_list",
-                "task_output",
-                "task_stdin",
-                "task_interrupt",
-                "task_kill",
+                "capability_call",
             }.issubset(names)
         )
         self.assertTrue(
             {"replace_text", "insert_before", "insert_after"}.isdisjoint(names)
+        )
+        self.assertTrue(
+            {
+                "credential_get", "credential_renew",
+                "share_create", "share_query", "share_import", "share_delete",
+                "web_preview_url",
+                "schedule_read", "schedule_write", "schedule_control",
+                "shell_exec", "sandbox_processes",
+                "task_get", "task_list", "task_output", "task_stdin",
+                "task_interrupt", "task_kill",
+            }.isdisjoint(names)
         )
         self.assertNotIn("search_files", names)
         delete_tool = next(tool for tool in listed["result"]["tools"] if tool["name"] == "fs_delete")
@@ -3360,7 +3418,8 @@ class WorkspaceServerTests(unittest.TestCase):
         _, listed, _ = self.mcp_request(token, 300, "tools/list", {})
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
         self.assertIn("fs_download", tools)
-        self.assertIn("web_preview_url", tools)
+        self.assertIn("capability_call", tools)
+        self.assertNotIn("web_preview_url", tools)
         self.assertIn("expected_etag", tools["fs_write"]["inputSchema"]["properties"])
         self.assertNotIn("expected_etag", tools["upload_create"]["inputSchema"]["properties"])
         self.assertNotIn("overwrite", tools["upload_create"]["inputSchema"]["properties"])
@@ -4012,7 +4071,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "conversation_append",
                 "context_add",
                 "context_plan_update",
-                "credential_renew",
+                "capability_call",
                 "rpc_call",
             }:
                 continue
@@ -5394,7 +5453,7 @@ class WorkspaceServerTests(unittest.TestCase):
             allowed_domains=("github.com", ".githubusercontent.com"),
         )
         status, discovery = self.request(
-            "GET", f"/kapsel/w/{record.token}/discovery/shell"
+            "GET", f"/kapsel/w/{record.token}/discovery/network"
         )
         self.assertEqual(200, status)
         self.assertTrue(discovery["capabilities"]["network"])
@@ -6279,7 +6338,7 @@ class WorkspaceServerTests(unittest.TestCase):
         record = next(item for item in self.server.tokens.list() if item.name == "Disk site token")
         self.assertEqual("disk-site", record.path_prefix)
         self.assertEqual("disk-site", record.workspace_image)
-        status, discovery = self.request("GET", f"/kapsel/w/{record.token}/")
+        status, discovery = self.request("GET", f"/kapsel/w/{record.token}/discovery/files")
         self.assertEqual(200, status)
         storage = discovery["limits"]["workspace_storage"]
         self.assertEqual("ext4_image", storage["backend"])

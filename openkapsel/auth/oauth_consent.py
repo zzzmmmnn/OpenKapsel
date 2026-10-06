@@ -34,7 +34,11 @@ def consent_metadata():
             "credential_delivery": "same-origin consent form POST only; never client redirects or token endpoint",
             "oauth_lifetime": "independent of normal control-token renewal",
             "rest_credentials_exportable": True,
-            "rest_credentials_tools": ["credential_get", "credential_renew"]}
+            "rest_credentials_tool": "capability_call",
+            "rest_credentials_operations": [
+                {"family": "credential", "operation": "get"},
+                {"family": "credential", "operation": "renew"},
+            ]}
 
 
 def consent_cookie(headers, name: str) -> str | None:

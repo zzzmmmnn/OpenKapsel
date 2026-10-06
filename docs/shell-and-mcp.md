@@ -6,7 +6,7 @@
 
 ### Execution placement
 
-`POST /shell/exec` and MCP `shell_exec` accept `target: "auto"` (default),
+`POST /shell/exec` and MCP `capability_call` with `family=shell, operation=exec` accept `target: "auto"` (default),
 `"server"`, or `"client"`. Auto routes a `cwd` inside a mapping to that client
 through RPC; other working directories run on the server. Use workspace-relative
 paths such as `laptop/project`. Client requires a mapped cwd; explicit server

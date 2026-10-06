@@ -50,6 +50,7 @@ from openkapsel.api.mcp import (
     PUBLIC_SERVER_VERSION,
     SERVER_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
+    auxiliary_operations_for,
     tools_for,
 )
 from openkapsel.contract import (
@@ -166,7 +167,14 @@ class DiscoveryMixin:
 
     @staticmethod
     def _rest_discovery(payload):
-        """Keep REST/Skill documents free of MCP connection configuration."""
+        """Keep REST Discovery incremental and free of MCP-only configuration.
+
+        The main document is the shared preamble. Section documents are deltas: clients
+        that follow the advertised workflow read main once, then load only the sections
+        needed for the current task. Do not repeat shared authentication, Skill, default,
+        or error metadata in every section.
+        """
+        section = str(payload.get("section", "main"))
         payload.get("endpoints", {}).pop("mcp", None)
         payload.get("authentication", {}).pop("mcp_requires_control_token", None)
         payload.get("limits", {}).pop("max_mcp_binary_chunk_bytes", None)
@@ -181,6 +189,37 @@ class DiscoveryMixin:
                 item.replace("REST or MCP", "REST").replace("REST and MCP", "REST").replace(", MCP,", ",")
                 for item in payload["workflow"] if not item.startswith("MCP ")
             ]
+
+        if section == "main":
+            # Main is an index plus the shared REST preamble. Detailed capability, limit,
+            # path, and error contracts live only in their authoritative sections.
+            for key in ("request_transport", "path_rules", "capabilities", "limits", "errors"):
+                payload.pop(key, None)
+            payload.get("sections", {}).pop("mcp", None)
+            endpoints = payload.get("endpoints", {})
+            for key in list(endpoints):
+                if key not in {"discovery", "credential"}:
+                    endpoints.pop(key)
+            payload["mutation_core"] = {
+                "sections": ["context", "memory", "files"],
+                "context_covers": ["conversation", "plan"],
+                "rule": "Load these sections before workspace mutation; section contracts are authoritative.",
+            }
+            payload["workflow"] = [
+                "Read main once for shared authentication, token, Skill, and endpoint-default metadata.",
+                "Before any workspace mutation, load discovery/context, discovery/memory, and discovery/files; context covers Conversation and Plan.",
+                "Load transport, shell, schedules, web, or sharing only when that capability is needed.",
+                "Use discovery/full only for compatibility or comprehensive inspection.",
+            ]
+        elif section != "full":
+            # Section documents inherit this shared preamble from main. Keep only minimal
+            # routing identity plus section-specific contracts.
+            for key in (
+                "server_version", "name", "os", "root", "authentication",
+                "token", "skills", "endpoint_defaults", "errors",
+            ):
+                payload.pop(key, None)
+            payload["inherits"] = "main"
         return payload
 
     @staticmethod
@@ -563,6 +602,17 @@ class DiscoveryMixin:
             ),
             "context": capabilities["context"]["enabled"],
             "memory": capabilities["memory"]["enabled"],
+            "paths": bool(
+                capabilities["files"]["read"] or capabilities["files"]["write"]
+                or capabilities["shell"] != "none"
+            ),
+            "rpc": bool(
+                capabilities["files"]["read"] or capabilities["files"]["write"]
+            ),
+            "network": bool(
+                capabilities["shell"] != "none" or capabilities["web_preview"]["enabled"]
+            ),
+            "mcp": capabilities["mcp"]["enabled"],
             "shell": bool(
                 capabilities["shell"] != "none"
                 or capabilities["files"]["read"]
@@ -623,6 +673,9 @@ class DiscoveryMixin:
                         "enabled": capabilities["mcp"]["enabled"],
                         "transport": capabilities["mcp"]["transport"],
                         "available_tool_count": len(capabilities["mcp"]["available_tools"]),
+                        "dynamic_tool": capabilities["mcp"]["dynamic_tool"],
+                        "dynamic_families": sorted(capabilities["mcp"]["operation_families"]),
+                        "operation_specs_discovery": "./discovery/mcp",
                     },
                     "extra_paths_redacted": capabilities["extra_paths_redacted"],
                 },
@@ -656,7 +709,7 @@ class DiscoveryMixin:
                     "Before modifying a workspace, create or reuse a Context plan. Every modifying REST or MCP operation requires plan_id, taskname, and a brief message.",
                     "Configure server Shell variables and POSIX initialization with the control-authenticated env endpoint.",
                     "Start ordinary workspace work with discovery/files; use discovery/context and discovery/memory when coordinating or retaining project knowledge.",
-                    "MCP clients should call tools/list for authoritative tool input schemas; discovery returns this compact index by default and accepts a section parameter.",
+                    "MCP clients use tools/list for core tool schemas. Low-frequency native capabilities use capability_call; load discovery/mcp only when their family/operation schemas are needed.",
                     "Use discovery/sharing for temporary cross-workspace transfer by random share ID.",
                 ],
                 "errors": full["errors"],
@@ -669,7 +722,7 @@ class DiscoveryMixin:
         result["summary"] = SECTION_SUMMARIES[section]
         if section == "transport":
             result["request_transport"] = full["request_transport"]
-        if section in {"files", "web", "sharing"}:
+        if section == "paths":
             result["path_rules"] = full["path_rules"]
         capability_names = SECTION_CAPABILITIES[section]
         result["capabilities"] = {
@@ -741,6 +794,11 @@ class DiscoveryMixin:
             ]
             if control_authorized
             else []
+        )
+        mcp_operation_families = (
+            auxiliary_operations_for(self.token_record, recycle_enabled)
+            if control_authorized
+            else {}
         )
         optional_read_context_query = {
             "plan_id": (
@@ -1053,6 +1111,8 @@ class DiscoveryMixin:
                     "supported_protocol_versions": sorted(SUPPORTED_PROTOCOL_VERSIONS),
                     "tools_list_method": "tools/list",
                     "available_tools": mcp_tool_names,
+                    "dynamic_tool": "capability_call",
+                    "operation_families": mcp_operation_families,
                 },
                 "shell": self.token_record.shell_mode if control_authorized else "none",
                 "schedules": {
@@ -2390,10 +2450,11 @@ class DiscoveryMixin:
                 "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
                 "scope": "openkapsel",
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credential/renew.",
-                "rest_access": "OAuth grants use the MCP endpoint directly; credential_get can export the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
+                "rest_access": "OAuth grants use the MCP endpoint directly; capability_call family=credential operation=get exports the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
                 "workspace_credentials": {
-                    "export_tool": "credential_get",
-                    "renew_tool": "credential_renew",
+                    "tool": "capability_call",
+                    "export": {"family": "credential", "operation": "get"},
+                    "renew": {"family": "credential", "operation": "renew"},
                     "renewal_window_seconds": 2 * 24 * 60 * 60,
                     "rotation": "read URL token and control token rotate atomically; old REST credentials become invalid; MCP connection credentials are unchanged",
                 },

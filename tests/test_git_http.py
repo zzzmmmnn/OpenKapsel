@@ -36,7 +36,8 @@ class GitHTTPTests(unittest.TestCase):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             status, payload = self.rpc(secret, "tools/call", {
-                "name": "task_get", "arguments": {"task_id": task_id},
+                "name": "capability_call",
+                "arguments": {"family": "task", "operation": "get", "args": {"task_id": task_id}},
             })
             self.assertEqual(200, status, payload)
             result = payload["result"]["structuredContent"]

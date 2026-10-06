@@ -5,17 +5,18 @@ from __future__ import annotations
 from openkapsel.contract import PLAN_COMPLETION_MEMORY_GUIDANCE
 
 
-SECTION_NAMES = ("transport", "files", "context", "memory", "shell", "schedules", "web", "sharing")
+SECTION_NAMES = ("transport", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing")
 
 SECTION_ENDPOINTS = {
     "transport": {"transport"},
-    "files": {
-        "rpc", "mapping", "fs_query", "fs_read", "fs_content", "fs_write",
-        "transfer", "recycle", "upload",
-    },
+    "files": {"fs_query", "fs_read", "fs_content", "fs_write", "transfer", "recycle", "upload"},
     "context": {"context", "conversation"},
     "memory": {"memory"},
-    "shell": {"rpc", "mapping", "shell", "task", "environment"},
+    "paths": set(),
+    "rpc": {"rpc", "mapping"},
+    "network": set(),
+    "mcp": {"mcp"},
+    "shell": {"shell", "task", "environment"},
     "schedules": {"schedule"},
     "web": {"web"},
     "sharing": {"share"},
@@ -23,23 +24,20 @@ SECTION_ENDPOINTS = {
 
 SECTION_CAPABILITIES = {
     "transport": set(),
-    "files": {
-        "mappings",
-        "files", "recycle", "file_operations", "binary_transfer", "extra_paths",
-        "extra_paths_redacted",
-    },
+    "files": {"files", "recycle", "file_operations", "binary_transfer"},
     "context": {"context"},
     "memory": {"memory"},
+    "paths": {"extra_paths", "extra_paths_redacted"},
+    "rpc": {"mappings"},
+    "network": {"network", "network_mode", "network_domains", "network_protocols"},
+    "mcp": {"mcp"},
     "shell": {
-        "mappings",
         "shell", "shell_sandbox", "shell_sandbox_requested", "sandbox_backends",
         "shell_pid_namespace", "shell_sandbox_image", "shell_sandbox_image_requested",
-        "network", "network_mode", "network_domains",
-        "network_protocols", "shell_outside_workspace", "tasks",
-        "task_control", "process", "environment", "extra_paths", "extra_paths_redacted",
+        "shell_outside_workspace", "tasks", "task_control", "process", "environment",
     },
     "schedules": {"schedules"},
-    "web": {"web_preview", "web_app_api", "network", "network_mode", "network_domains", "network_protocols"},
+    "web": {"web_preview", "web_app_api"},
     "sharing": {"sharing"},
 }
 
@@ -52,7 +50,6 @@ SECTION_LIMITS = {
         "upload_ttl_seconds", "max_incomplete_upload_bytes", "max_text_replace_bytes",
         "max_concurrent_transfers", "max_search_results", "max_search_file_bytes",
         "max_tree_nodes", "max_recursion_depth", "max_batch_file_operations",
-        "mapping_rpc_timeout_seconds", "mapping_provider_idle_timeout_seconds",
     },
     "context": {
         "max_context_query_entries", "max_context_entries", "context_trim_oldest_entries",
@@ -61,10 +58,11 @@ SECTION_LIMITS = {
         "max_conversation_query_entries", "max_conversation_content_characters",
         "max_conversation_summary_characters",
     },
-    "memory": {
-        "max_memory_query_entries", "max_memory_content_characters",
-        "max_operation_message_characters", "max_taskname_characters",
-    },
+    "memory": {"max_memory_query_entries", "max_memory_content_characters"},
+    "paths": set(),
+    "rpc": {"mapping_rpc_timeout_seconds", "mapping_provider_idle_timeout_seconds"},
+    "network": set(),
+    "mcp": set(),
     "shell": {
         "max_task_output_bytes_per_stream", "max_finished_tasks_per_token",
         "finished_task_retention_seconds", "finished_task_storage",
@@ -75,23 +73,19 @@ SECTION_LIMITS = {
         "sandbox_memory_bytes", "sandbox_cpu_percent",
         "max_environment_variables", "max_environment_name_characters",
         "max_environment_value_characters", "max_environment_total_characters",
-        "max_environment_rc_characters", "mapping_rpc_timeout_seconds",
-        "mapping_provider_idle_timeout_seconds",
+        "max_environment_rc_characters",
     },
     "schedules": {
         "min_schedule_interval_minutes", "max_schedules_per_token",
-        "schedule_misfire_grace_seconds", "max_concurrent_shell_tasks",
-        "max_concurrent_shell_tasks_per_token", "max_schedule_runs_per_schedule",
+        "schedule_misfire_grace_seconds", "max_schedule_runs_per_schedule",
         "schedule_run_retention_days",
     },
     "web": {
-        "workspace_storage", "max_request_body_bytes", "max_sse_streams",
-        "max_sse_streams_per_token", "max_sse_duration_seconds",
+        "max_sse_streams", "max_sse_streams_per_token", "max_sse_duration_seconds",
         "http_socket_timeout_seconds",
     },
     "sharing": {
         "share_ttl_seconds", "max_share_entries", "max_share_bytes",
-        "max_recursion_depth", "max_tree_nodes", "max_concurrent_transfers",
     },
 }
 
@@ -100,6 +94,10 @@ SECTION_SUMMARIES = {
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Append-only Conversation summaries plus operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
+    "paths": "Shared workspace path, private-directory, and authorized extra-path rules.",
+    "rpc": "Shared mapping inventory and generic RPC routing used by files and Shell workflows.",
+    "network": "Shared network availability, mode, domain policy, and protocols for Shell and web applications.",
+    "mcp": "On-demand operation contracts for low-frequency native MCP capability families.",
     "shell": "Generic RPC, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
@@ -119,7 +117,8 @@ SECTION_WORKFLOWS = {
         "Use /fs/read/<operation> for text, multi-file, or bounded large-file reads; keep /fs/content for raw Range streaming.",
         "Use /fs/write/<operation> for mutate, guarded large-range replace, mkdir, move, and asynchronous copy.",
         "Resumable uploads use explicit operation routes under /upload: create, status, chunk, commit, and cancel.",
-        "Use generic RPC family=archive for archive list/read; archive-specific REST wrappers are not exposed.",
+        "Use generic RPC family=archive for archive list/read; load discovery/rpc only when RPC or client mappings are needed.",
+        "Load discovery/paths only when absolute paths, extra directories, private-directory rules, or path-boundary behavior matters.",
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],
     "context": [
@@ -134,30 +133,47 @@ SECTION_WORKFLOWS = {
     "memory": [
         "Read project Memory when starting work that depends on durable cross-task facts.",
         "Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable. New Memory requires at least one indexed tag; prefer 4-16 specific reusable tags.",
+        "Mutation taskname/message limits are shared with Context and are published in discovery/context.",
         PLAN_COMPLETION_MEMORY_GUIDANCE,
     ],
+    "paths": [
+        "Relative paths are resolved from the token workspace; absolute paths are accepted only inside the workspace or an authorized extra directory.",
+        "Use this section as the single authority for symlink escape, private-directory, and extra-path visibility rules.",
+    ],
+    "rpc": [
+        "Load this section only when using client mappings or generic RPC families such as archive or git.",
+        "Mapping inventory and RPC timeout policy are shared by file and Shell workflows and are defined here once.",
+    ],
+    "network": [
+        "Load this section only when Shell or workspace web behavior depends on outbound network availability, mode, domains, or protocols.",
+    ],
+    "mcp": [
+        "Keep Conversation, Plan, Memory, File, discovery, rpc_call, and capability_call schemas in the ordinary tools/list response.",
+        "Before capability_call, read this section and select family/operation from operation_families; pass only input_schema fields inside args.",
+        "When mutation_context=true, pass plan_id, taskname, and message outside args. Read operations may optionally use those outer fields when optional_read_context=true.",
+    ],
     "shell": [
-        "Use generic RPC family=git for Git reads and mutations on the server or a mapping. Read operations are synchronous and bounded; write operations run as tasks and require mutation Context.",
+        "Use generic RPC family=git for Git reads and mutations on the server or a mapping; load discovery/rpc for mapping and RPC routing contracts. Read operations are synchronous and bounded; write operations run as tasks and require mutation Context.",
         "Use the env endpoint to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization; writes require mutation Context.",
         "Start asynchronous Shell tasks, then poll status or read output incrementally; use SSE when the client supports it.",
         "Send stdin only to interactive tasks. Interrupt normally before using force-kill.",
-        "Restricted Shell runs inside the configured sandbox and token resource limits; inspect sandbox processes when available.",
+        "Restricted Shell runs inside the configured sandbox and token resource limits; inspect sandbox processes when available. Load discovery/network only when network policy matters.",
     ],
     "schedules": [
         "Create schedules only when background execution is needed; use run-now for an explicit immediate execution.",
         "Use interval minutes of at least 3, a once timestamp at least 3 minutes ahead, or strict six-field cron with an explicit second and IANA timezone.",
         "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically.",
-        "Pause before editing operational intent and use expected_revision for updates. Schedule run records link to Shell task IDs; load discovery/shell only when task output or control details are needed.",
+        "Pause before editing operational intent and use expected_revision for updates. Schedule run records link to Shell task IDs; concurrency and task-control limits live in discovery/shell.",
     ],
     "web": [
-        "Use the independent preview URL for static files and relative browser assets.",
+        "Use the independent preview URL for static files and relative browser assets. Load discovery/files for workspace storage/request-size limits and discovery/paths for path-boundary rules.",
         "A directory named api delegates that application subtree to its FastAPI app.py; each app owns private managed database storage.",
         "Use a GET StreamingResponse with media type text/event-stream for live updates; send periodic SSE comments below the published upstream idle timeout and let EventSource reconnect when the duration limit closes a stream.",
-        "Implement application users, sessions, CSRF, and roles inside the workspace application; OpenKapsel does not provide them.",
+        "Implement application users, sessions, CSRF, and roles inside the workspace application; OpenKapsel does not provide them. Load discovery/network only when application network policy matters.",
     ],
     "sharing": [
         "Create a share from exactly one file or directory inside the source token workspace.",
         "The recipient can inspect by share ID without a workspace token, then imports with its own destination control token.",
-        "Imports never overwrite, and shares expire or are evicted according to the published limits.",
+        "Imports never overwrite, and shares expire or are evicted according to the published limits. Shared tree/transfer limits and path rules live in discovery/files and discovery/paths.",
     ],
 }

@@ -144,16 +144,27 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         credentials, _, _ = self.authorize()
         status, listing = self.rpc(credentials["access_token"], "tools/list")
         self.assertEqual(200, status, listing)
-        run = next(tool for tool in listing["result"]["tools"] if tool["name"] == "shell_exec")
-        self.assertEqual(["auto", "server", "client"], run["inputSchema"]["properties"]["target"]["enum"])
+        names = {tool["name"] for tool in listing["result"]["tools"]}
+        self.assertIn("capability_call", names)
+        self.assertNotIn("shell_exec", names)
+        status, discovery = self.rpc(credentials["access_token"], "tools/call", {
+            "name": "discovery", "arguments": {"section": "mcp"}})
+        self.assertEqual(200, status, discovery)
+        run_schema = discovery["result"]["structuredContent"]["capabilities"]["mcp"]["operation_families"]["shell"]["operation_specs"]["exec"]["input_schema"]
+        self.assertEqual(["auto", "server", "client"], run_schema["properties"]["target"]["enum"])
         status, response = self.rpc(credentials["access_token"], "tools/call", {
-            "name": "shell_exec", "arguments": {"command": "printf mcp-client", "cwd": "laptop", "target": "auto",
-                                               "plan_id": self.plan, "taskname": "rpc", "message": "Test MCP routing"}})
+            "name": "capability_call", "arguments": {
+                "family": "shell", "operation": "exec",
+                "args": {"command": "printf mcp-client", "cwd": "laptop", "target": "auto"},
+                "plan_id": self.plan, "taskname": "rpc", "message": "Test MCP routing"}})
         self.assertEqual(200, status, response)
         result = response["result"]["structuredContent"]
         self.assertEqual("client", result["location"])
         self.finished(result["task_id"])
-        status, response = self.rpc(credentials["access_token"], "tools/call", {"name": "task_get", "arguments": {"task_id": result["task_id"]}})
+        status, response = self.rpc(credentials["access_token"], "tools/call", {
+            "name": "capability_call",
+            "arguments": {"family": "task", "operation": "get", "args": {"task_id": result["task_id"]}},
+        })
         self.assertEqual("mcp-client", response["result"]["structuredContent"]["stdout"])
 
 

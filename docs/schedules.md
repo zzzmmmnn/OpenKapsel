@@ -34,7 +34,7 @@ The focused Discovery document at `GET /discovery/schedules` is authoritative. R
 - `GET /schedule/run/list/<schedule_id>`
 - `GET /schedule/run/<run_id>`
 
-MCP exposes the same lifecycle through three grouped tools: `schedule_read` (`list`, `get`, `run_list`, `run_get`), `schedule_write` (`create`, `update`), and `schedule_control` (`delete`, `execute`, `pause`, `resume`). `tools/list` is authoritative for the current argument schemas.
+MCP exposes the same lifecycle through `capability_call` with `family=schedule`. Operations are `list`, `get`, `run_list`, `run_get`, `create`, `update`, `delete`, `execute`, `pause`, and `resume`. Load `discovery/mcp` on demand for the current operation schemas; they are intentionally omitted from the initial `tools/list` payload.
 
 Creation and every modifying action requires ordinary `plan_id`, `taskname`, and `message` Context. The creation values also become each run's automatic Context unless a complete `run_context` is supplied. Updates require `expected_revision`; a supplied `run_context` replaces future-run attribution as one unit.
 

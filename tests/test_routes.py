@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from openkapsel.api.mcp import ALL_TOOLS, tools_for
+from openkapsel.api.mcp import ALL_TOOLS, auxiliary_operations_for, tools_for
 from openkapsel.contract import (
     memory_actions_schema,
     memory_content_schema,
@@ -199,7 +199,7 @@ class EndpointContractTests(unittest.TestCase):
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")
         section = tool["inputSchema"]["properties"]["section"]
         self.assertEqual(
-            {"main", "files", "context", "memory", "shell", "schedules", "web", "sharing", "full"},
+            {"main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "full"},
             set(section["enum"]),
         )
 
@@ -212,17 +212,16 @@ class EndpointContractTests(unittest.TestCase):
                 True,
             )
         }
-        self.assertTrue({"schedule_read", "schedule_write", "schedule_control"} <= names)
-        disabled = {
-            tool["name"]
-            for tool in tools_for(
-                TokenRecord(**base, shell_mode="restricted", can_schedule=False),
-                True,
-            )
-        }
-        self.assertTrue(
-            {"schedule_read", "schedule_write", "schedule_control"}.isdisjoint(disabled)
-        )
+        self.assertIn("capability_call", names)
+        self.assertTrue({"schedule_read", "schedule_write", "schedule_control"}.isdisjoint(names))
+        enabled_record = TokenRecord(**base, shell_mode="restricted", can_schedule=True)
+        schedule_ops = auxiliary_operations_for(enabled_record, True)["schedule"]["operation_specs"]
+        self.assertTrue({"list", "get", "create", "update", "delete", "execute"} <= set(schedule_ops))
+
+        disabled_record = TokenRecord(**base, shell_mode="restricted", can_schedule=False)
+        disabled = {tool["name"] for tool in tools_for(disabled_record, True)}
+        self.assertIn("capability_call", disabled)
+        self.assertNotIn("schedule", auxiliary_operations_for(disabled_record, True))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Shell tasks, streaming I/O, and process inspection
 
-Read `GET /discovery/shell` before use. It states whether Shell is `none`, `restricted`, or `full`, the active sandbox backend, network access, task limits, timeout limits, and cgroup availability.
+Read `GET /discovery/shell` before use. It states whether Shell is `none`, `restricted`, or `full`, the active sandbox backend, task limits, timeout limits, and cgroup availability. Load `GET /discovery/network` only when network policy matters, and `GET /discovery/rpc` only when using generic RPC or client mappings.
 
 Restricted Shell and full Shell have different boundaries. Restricted Shell is confined by its configured backend, mounts, network setting, and available cgroup limits. Full Shell runs as the OpenKapsel service user and is not constrained by token path grants or the network flag.
 
