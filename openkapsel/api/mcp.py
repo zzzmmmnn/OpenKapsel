@@ -6,11 +6,9 @@ import copy
 from typing import Any
 
 from openkapsel.contract import (
-    MAX_CONVERSATION_SUMMARY_CHARS,
     MUTATION_MAX_ITEMS,
     conversation_entries_schema,
     conversation_id_schema,
-    conversation_role_schema,
     memory_content_schema,
     memory_id_schema,
     memory_path_schema,
@@ -227,16 +225,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_query",
         "Query conversations",
-        f"Search append-only Conversation records and return next_conversation_id for the next required create call. With no filters and full=false, return the {DEFAULT_RECENT_CONVERSATION_COUNT} newest Conversation windows as whole contiguous groups: newest conversation_id first, and within each group from its newest summary (or sub_id 1) forward in sub_id order. limit never splits a default Conversation window. Set full=true for complete-history entry search. With conversation_id, start_sub_id/end_sub_id select a sub-id range.",
+        f"Return Conversation history in one of two modes. Without conversation_id, return the {DEFAULT_RECENT_CONVERSATION_COUNT} newest non-empty Conversation windows as whole groups, each from its newest summary (or sub_id 1) forward. With conversation_id, return the newest at most 100 entries from that Conversation; start_sub_id/end_sub_id first restrict the range, then the newest at most 100 entries in that range are returned.",
         _object_schema(
             {
                 "conversation_id": conversation_id_schema(),
-                "query": {"type": "string", "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "default": ""},
-                "role": conversation_role_schema(),
                 "start_sub_id": {"type": "integer", "minimum": 1},
                 "end_sub_id": {"type": "integer", "minimum": 1},
-                "full": {"type": "boolean", "default": False},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100, "description": "Maximum returned entries; default recent-window mode never splits a Conversation window."},
             }
         ),
         read_only=True,

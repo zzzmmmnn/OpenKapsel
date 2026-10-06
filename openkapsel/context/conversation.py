@@ -307,15 +307,9 @@ def query_conversations(
     connection: sqlite3.Connection,
     *,
     conversation_id: int | None = None,
-    query: str = "",
-    role: str | None = None,
     start_sub_id: int | None = None,
     end_sub_id: int | None = None,
-    full: bool = False,
-    limit: int = 100,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    if not 1 <= limit <= MAX_CONVERSATION_QUERY_LIMIT:
-        raise ValueError(f"conversation limit must be between 1 and {MAX_CONVERSATION_QUERY_LIMIT}")
     if conversation_id is not None:
         conversation_id = validate_conversation_id(conversation_id)
     elif start_sub_id is not None or end_sub_id is not None:
@@ -325,24 +319,15 @@ def query_conversations(
             raise ValueError(f"{name} must be a positive integer")
     if start_sub_id is not None and end_sub_id is not None and start_sub_id > end_sub_id:
         raise ValueError("start_sub_id cannot exceed end_sub_id")
-    if role is not None and role not in CONVERSATION_ROLES:
-        raise ValueError("conversation role must be user, ai, or summary")
-    if not isinstance(query, str):
-        raise ValueError("conversation query must be a string")
-    query = query.strip()
-    if len(query) > MAX_CONVERSATION_SUMMARY_CHARS:
-        raise ValueError(f"conversation query exceeds {MAX_CONVERSATION_SUMMARY_CHARS} characters")
 
-    # The unfiltered default is a context-restore query, not an entry search. Keep each
-    # Conversation window intact so unrelated entries from different Conversations are
-    # never interleaved or partially returned.
-    if conversation_id is None and not full and not query and role is None:
+    if conversation_id is None:
         conversation_rows = connection.execute(
-            "SELECT id FROM conversations ORDER BY id DESC LIMIT ?",
+            "SELECT c.id FROM conversations AS c "
+            "WHERE EXISTS (SELECT 1 FROM conversation_entries AS e WHERE e.conversation_id = c.id) "
+            "ORDER BY c.id DESC LIMIT ?",
             (DEFAULT_RECENT_CONVERSATION_COUNT,),
         ).fetchall()
-        windows: list[list[sqlite3.Row]] = []
-        total = 0
+        rows: list[sqlite3.Row] = []
         for conversation_row in conversation_rows:
             selected_id = int(conversation_row["id"])
             summary_row = connection.execute(
@@ -350,25 +335,19 @@ def query_conversations(
                 "WHERE conversation_id = ? AND role = 'summary'",
                 (selected_id,),
             ).fetchone()
-            start_sub_id_value = (
+            start_value = (
                 int(summary_row["sub_id"])
                 if summary_row is not None and summary_row["sub_id"] is not None
                 else 1
             )
-            rows = connection.execute(
-                "SELECT conversation_id, sub_id, created_at, role, content "
-                "FROM conversation_entries WHERE conversation_id = ? AND sub_id >= ? "
-                "ORDER BY sub_id ASC",
-                (selected_id, start_sub_id_value),
-            ).fetchall()
-            windows.append(rows)
-            total += len(rows)
-
-        selected_rows: list[sqlite3.Row] = []
-        for rows in windows:
-            if len(selected_rows) + len(rows) > limit:
-                break
-            selected_rows.extend(rows)
+            rows.extend(
+                connection.execute(
+                    "SELECT conversation_id, sub_id, created_at, role, content "
+                    "FROM conversation_entries WHERE conversation_id = ? AND sub_id >= ? "
+                    "ORDER BY sub_id ASC",
+                    (selected_id, start_value),
+                ).fetchall()
+            )
         return [
             {
                 "conversation_id": int(row["conversation_id"]),
@@ -377,35 +356,18 @@ def query_conversations(
                 "role": row["role"],
                 "content": row["content"],
             }
-            for row in selected_rows
-        ], total, next_conversation_id(connection)
+            for row in rows
+        ], len(rows), next_conversation_id(connection)
 
-    clauses: list[str] = []
-    values: list[Any] = []
-    if conversation_id is not None:
-        clauses.append("e.conversation_id = ?")
-        values.append(conversation_id)
-    elif not full:
-        clauses.append(
-            "e.sub_id >= COALESCE(("
-            "SELECT MAX(s.sub_id) FROM conversation_entries AS s "
-            "WHERE s.conversation_id = e.conversation_id AND s.role = 'summary'"
-            "), 1)"
-        )
-    if role is not None:
-        clauses.append("e.role = ?")
-        values.append(role)
+    clauses = ["e.conversation_id = ?"]
+    values: list[Any] = [conversation_id]
     if start_sub_id is not None:
         clauses.append("e.sub_id >= ?")
         values.append(start_sub_id)
     if end_sub_id is not None:
         clauses.append("e.sub_id <= ?")
         values.append(end_sub_id)
-    if query:
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        clauses.append("e.content LIKE ? ESCAPE '\\'")
-        values.append(f"%{escaped}%")
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    where = " WHERE " + " AND ".join(clauses)
     total = int(
         connection.execute(
             "SELECT COUNT(*) FROM conversation_entries AS e" + where,
@@ -416,8 +378,8 @@ def query_conversations(
         "SELECT e.conversation_id, e.sub_id, e.created_at, e.role, e.content "
         "FROM conversation_entries AS e"
         + where
-        + " ORDER BY e.created_at DESC, e.conversation_id DESC, e.sub_id DESC LIMIT ?",
-        [*values, limit],
+        + " ORDER BY e.sub_id DESC LIMIT ?",
+        [*values, MAX_CONVERSATION_QUERY_LIMIT],
     ).fetchall()
     return [
         {

@@ -8,8 +8,6 @@ import sqlite3
 from http import HTTPStatus
 from typing import Any
 
-from openkapsel.context.conversation import MAX_CONVERSATION_QUERY_LIMIT
-
 from openkapsel.context.context_store import (
     MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
     MAX_CONTEXT_QUERY_LIMIT,
@@ -355,6 +353,13 @@ class ContextHttpMixin:
             self.token_record.can_read,
             "read permission is not granted",
         )
+        unexpected = sorted(set(query) - {"conversation_id", "start_sub_id", "end_sub_id"})
+        if unexpected:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_conversation_query",
+                "unsupported conversation query parameter(s): " + ", ".join(unexpected),
+            )
         conversation_id = (
             self._query_int(query, "conversation_id", 0, minimum=0)
             if "conversation_id" in query
@@ -370,27 +375,13 @@ class ContextHttpMixin:
             if "end_sub_id" in query
             else None
         )
-        role = self._query_one(query, "role", "").strip() or None
-        search = self._query_one(query, "query", "")
-        full = self._query_bool(query, "full", False)
-        limit = self._query_int(
-            query,
-            "limit",
-            100,
-            minimum=1,
-            maximum=MAX_CONVERSATION_QUERY_LIMIT,
-        )
         try:
             entries, total, next_conversation_id = self.server.context_for(
                 self.token_scope_root
             ).conversation_query(
                 conversation_id=conversation_id,
-                query=search,
-                role=role,
                 start_sub_id=start_sub_id,
                 end_sub_id=end_sub_id,
-                full=full,
-                limit=limit,
             )
         except ValueError as exc:
             raise ApiError(
@@ -403,7 +394,6 @@ class ContextHttpMixin:
             {
                 "entries": entries,
                 "next_conversation_id": next_conversation_id,
-                "limit": limit,
                 "total": total,
                 "truncated": len(entries) < total,
             },

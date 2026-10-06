@@ -22,7 +22,7 @@ class PlanCreationTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.store = ContextStore(self.root)
         conversation = self.store.create_conversation(
-            self.store.conversation_query(limit=1)[2],
+            self.store.conversation_query()[2],
             [
                 {"role": "user", "content": "Create and verify this Plan."},
                 {"role": "ai", "content": "I will create and verify the Plan."},
@@ -48,7 +48,7 @@ class PlanCreationTests(unittest.TestCase):
             writer_nonce = self.writer_nonce
         else:
             conversation = target.create_conversation(
-                target.conversation_query(limit=1)[2],
+                target.conversation_query()[2],
                 [
                     {"role": "user", "content": "Create this Plan in the other workspace."},
                     {"role": "ai", "content": "I will create the Plan in this workspace."},

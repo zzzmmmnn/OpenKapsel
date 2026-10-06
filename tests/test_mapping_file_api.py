@@ -31,7 +31,7 @@ class MappingFileHTTPTests(unittest.TestCase):
             (self.server.config.root / self.record.path_prefix).resolve()
         )
         conversation = store.create_conversation(
-            store.conversation_query(limit=1)[2],
+            store.conversation_query()[2],
             [
                 {"role": "user", "content": "User starts mapped file RPC tests."},
                 {"role": "ai", "content": "AI will exercise mapped file RPC behavior."},

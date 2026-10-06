@@ -506,12 +506,8 @@ class ContextStore:
         self,
         *,
         conversation_id: int | None = None,
-        query: str = "",
-        role: str | None = None,
         start_sub_id: int | None = None,
         end_sub_id: int | None = None,
-        full: bool = False,
-        limit: int = 100,
     ) -> tuple[list[dict[str, Any]], int, int]:
         with self._lock:
             self._ensure_available()
@@ -519,12 +515,8 @@ class ContextStore:
                 return query_conversations(
                     connection,
                     conversation_id=conversation_id,
-                    query=query,
-                    role=role,
                     start_sub_id=start_sub_id,
                     end_sub_id=end_sub_id,
-                    full=full,
-                    limit=limit,
                 )
 
     def add(

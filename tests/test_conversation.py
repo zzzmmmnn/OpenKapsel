@@ -28,7 +28,7 @@ class ConversationTests(unittest.TestCase):
         ]
 
     def next_conversation_id(self) -> int:
-        return self.store.conversation_query(limit=1)[2]
+        return self.store.conversation_query()[2]
 
     def create_conversation(self, label: str = "conversation") -> dict:
         return self.store.create_conversation(
@@ -73,7 +73,6 @@ class ConversationTests(unittest.TestCase):
 
         queried, total, next_id = self.store.conversation_query(
             conversation_id=created["conversation_id"],
-            full=True,
         )
         self.assertEqual(2, total)
         self.assertEqual(1, next_id)
@@ -109,8 +108,8 @@ class ConversationTests(unittest.TestCase):
 
     def test_concurrent_create_accepts_only_the_current_next_id_once(self) -> None:
         other = ContextStore(self.root)
-        self.assertEqual(0, self.store.conversation_query(limit=1)[2])
-        self.assertEqual(0, other.conversation_query(limit=1)[2])
+        self.assertEqual(0, self.store.conversation_query()[2])
+        self.assertEqual(0, other.conversation_query()[2])
         barrier = threading.Barrier(2)
 
         def attempt(store: ContextStore, label: str):
@@ -131,7 +130,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(1, sum(kind == "error" for kind, _ in results))
         rejected = next(value for kind, value in results if kind == "error")
         self.assertIn("next_conversation_id 1", rejected)
-        entries, total, next_id = self.store.conversation_query(full=True, limit=100)
+        entries, total, next_id = self.store.conversation_query(conversation_id=0)
         self.assertEqual(2, total)
         self.assertEqual(1, next_id)
         self.assertEqual({0}, {item["conversation_id"] for item in entries})
@@ -157,7 +156,6 @@ class ConversationTests(unittest.TestCase):
                     )
         entries, total, _ = self.store.conversation_query(
             conversation_id=created["conversation_id"],
-            full=True,
         )
         self.assertEqual(3, total)
         self.assertEqual([3, 2, 1], [item["sub_id"] for item in entries])
@@ -241,13 +239,23 @@ class ConversationTests(unittest.TestCase):
         self.assertFalse(resumed["summary_status"]["recommended"])
         self.assertEqual(91, resumed["summary_status"]["source_start_sub_id"])
 
-    def test_cross_conversation_query_returns_two_recent_whole_windows(self) -> None:
+    def test_conversation_query_recent_windows_and_fixed_range_cap(self) -> None:
         first = self.create_conversation("first")
         self.store.append_conversation(
             conversation_id=first["conversation_id"],
             writer_nonce=first["writer_nonce"],
             entries=[{"role": "user", "content": "oldest conversation detail"}],
         )
+        with closing(sqlite3.connect(self.store.database)) as connection:
+            connection.executemany(
+                "INSERT INTO conversation_entries (conversation_id, sub_id, created_at, role, content) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (first["conversation_id"], sub_id, f"2026-01-01T00:00:{sub_id % 60:02d}+00:00", "ai", f"bulk {sub_id}")
+                    for sub_id in range(4, 124)
+                ],
+            )
+            connection.commit()
 
         second = self.create_conversation("second")
         self.store.append_conversation(
@@ -269,57 +277,50 @@ class ConversationTests(unittest.TestCase):
             entries=[{"role": "user", "content": "latest conversation detail"}],
         )
 
-        recent, recent_total, next_id = self.store.conversation_query(limit=100)
-        self.assertEqual(3, next_id)
+        with closing(sqlite3.connect(self.store.database)) as connection:
+            connection.execute(
+                "INSERT INTO conversations (id, created_at, writer_nonce) VALUES (?, ?, ?)",
+                (3, "2026-01-01T00:10:00+00:00", "@e000@"),
+            )
+            connection.commit()
+
+        recent, recent_total, next_id = self.store.conversation_query()
+        self.assertEqual(4, next_id)
         self.assertEqual(6, recent_total)
         self.assertEqual(
             [third["conversation_id"]] * 3 + [second["conversation_id"]] * 3,
             [item["conversation_id"] for item in recent],
         )
-        third_rows = [item for item in recent if item["conversation_id"] == third["conversation_id"]]
-        second_rows = [item for item in recent if item["conversation_id"] == second["conversation_id"]]
-        self.assertEqual([1, 2, 3], [item["sub_id"] for item in third_rows])
-        self.assertEqual([5, 6, 7], [item["sub_id"] for item in second_rows])
+        self.assertEqual([1, 2, 3], [item["sub_id"] for item in recent[:3]])
+        self.assertEqual([5, 6, 7], [item["sub_id"] for item in recent[3:]])
         self.assertNotIn(first["conversation_id"], {item["conversation_id"] for item in recent})
+        self.assertNotIn(3, {item["conversation_id"] for item in recent})
 
-        bounded, bounded_total, bounded_next_id = self.store.conversation_query(limit=4)
-        self.assertEqual(6, bounded_total)
-        self.assertEqual(3, bounded_next_id)
-        self.assertEqual(
-            [third["conversation_id"]] * 3,
-            [item["conversation_id"] for item in bounded],
+        latest, latest_total, latest_next = self.store.conversation_query(
+            conversation_id=first["conversation_id"],
         )
-        self.assertEqual([1, 2, 3], [item["sub_id"] for item in bounded])
-
-        too_small, too_small_total, _ = self.store.conversation_query(limit=2)
-        self.assertEqual([], too_small)
-        self.assertEqual(6, too_small_total)
-
-        full, full_total, full_next_id = self.store.conversation_query(full=True, limit=100)
-        self.assertEqual(13, full_total)
-        self.assertEqual(3, full_next_id)
-        self.assertEqual(3, len([x for x in full if x["conversation_id"] == first["conversation_id"]]))
+        self.assertEqual(123, latest_total)
+        self.assertEqual(4, latest_next)
+        self.assertEqual(100, len(latest))
+        self.assertEqual(list(range(123, 23, -1)), [item["sub_id"] for item in latest])
 
         ranged, ranged_total, ranged_next_id = self.store.conversation_query(
-            conversation_id=second["conversation_id"],
-            start_sub_id=4,
-            end_sub_id=7,
-            limit=100,
+            conversation_id=first["conversation_id"],
+            start_sub_id=10,
+            end_sub_id=120,
         )
-        self.assertEqual(4, ranged_total)
-        self.assertEqual(3, ranged_next_id)
-        self.assertEqual([7, 6, 5, 4], [item["sub_id"] for item in ranged])
+        self.assertEqual(111, ranged_total)
+        self.assertEqual(4, ranged_next_id)
+        self.assertEqual(100, len(ranged))
+        self.assertEqual(list(range(120, 20, -1)), [item["sub_id"] for item in ranged])
 
         with self.assertRaises(ValueError):
             self.store.conversation_query(start_sub_id=2)
-        with self.assertRaises(ValueError):
-            self.store.conversation_query(limit=101)
 
     def test_plan_creation_and_conversation_append_are_atomic(self) -> None:
         conversation = self.create_conversation("plan create")
         before, before_total, _ = self.store.conversation_query(
             conversation_id=conversation["conversation_id"],
-            full=True,
         )
         plan = self.create_plan(conversation)
         self.assertEqual(conversation["conversation_id"], plan["conversation_id"])
@@ -328,7 +329,6 @@ class ConversationTests(unittest.TestCase):
 
         entries, total, _ = self.store.conversation_query(
             conversation_id=conversation["conversation_id"],
-            full=True,
         )
         self.assertEqual(before_total + 1, total)
 
@@ -354,8 +354,7 @@ class ConversationTests(unittest.TestCase):
             total,
             self.store.conversation_query(
                 conversation_id=conversation["conversation_id"],
-                full=True,
-            )[1],
+                )[1],
         )
 
     def test_plan_update_rolls_back_when_conversation_append_fails(self) -> None:
@@ -406,9 +405,7 @@ class ConversationTests(unittest.TestCase):
             49,
             self.store.conversation_query(
                 conversation_id=conversation["conversation_id"],
-                full=True,
-                limit=100,
-            )[1],
+                )[1],
         )
 
     def test_plan_completion_requires_ai_entry_atomically(self) -> None:
@@ -442,8 +439,7 @@ class ConversationTests(unittest.TestCase):
             3,
             self.store.conversation_query(
                 conversation_id=conversation["conversation_id"],
-                full=True,
-            )[1],
+                )[1],
         )
 
         completed = self.store.update_plan(
@@ -499,7 +495,6 @@ class ConversationTests(unittest.TestCase):
         parent = self.create_plan(first)
         before = self.store.conversation_query(
             conversation_id=second["conversation_id"],
-            full=True,
         )[1]
         with self.assertRaisesRegex(ValueError, "different conversation"):
             self.create_plan(second, plan_id=parent["id"])
@@ -508,8 +503,7 @@ class ConversationTests(unittest.TestCase):
             before,
             self.store.conversation_query(
                 conversation_id=second["conversation_id"],
-                full=True,
-            )[1],
+                )[1],
         )
 
 

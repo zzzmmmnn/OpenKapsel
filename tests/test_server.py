@@ -189,7 +189,7 @@ class WorkspaceServerTests(unittest.TestCase):
             (self.server.config.root / record.path_prefix).resolve()
         )
         return store.create_conversation(
-            store.conversation_query(limit=1)[2],
+            store.conversation_query()[2],
             [
                 {"role": "user", "content": f"User starts {label}."},
                 {"role": "ai", "content": f"AI acknowledges {label}."},
@@ -3494,10 +3494,13 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         base = f"/kapsel/w/{record.token}"
 
-        status, queried = self.request("GET", base + "/conversation?limit=100")
+        status, queried = self.request("GET", base + "/conversation")
         self.assertEqual(200, status)
         self.assertEqual(0, queried["next_conversation_id"])
         self.assertEqual([], queried["entries"])
+        status, rejected_query = self.request("GET", base + "/conversation?limit=100")
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_conversation_query", rejected_query["error"]["code"])
 
         initial_entries = [
             {"role": "user", "content": "User starts a public Conversation API test."},
@@ -3525,7 +3528,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, queried = self.request(
             "GET",
-            base + "/conversation?conversation_id=0&full=true&limit=100",
+            base + "/conversation?conversation_id=0",
         )
         self.assertEqual(200, status)
         self.assertEqual(1, queried["next_conversation_id"])
@@ -3558,7 +3561,7 @@ class WorkspaceServerTests(unittest.TestCase):
             record.token,
             8010,
             "tools/call",
-            {"name": "conversation_query", "arguments": {"limit": 100}},
+            {"name": "conversation_query", "arguments": {}},
         )
         self.assertIn("result", mcp_query, mcp_query)
         self.assertFalse(mcp_query["result"]["isError"])
@@ -3632,9 +3635,7 @@ class WorkspaceServerTests(unittest.TestCase):
             49,
             store.conversation_query(
                 conversation_id=conversation["conversation_id"],
-                full=True,
-                limit=100,
-            )[1],
+                )[1],
         )
 
         status, before_memory = self.request("GET", endpoint("/memory"))
@@ -3682,9 +3683,7 @@ class WorkspaceServerTests(unittest.TestCase):
             49,
             store.conversation_query(
                 conversation_id=conversation["conversation_id"],
-                full=True,
-                limit=100,
-            )[1],
+                )[1],
         )
 
     def test_workspace_context_messages_queries_and_mcp(self) -> None:

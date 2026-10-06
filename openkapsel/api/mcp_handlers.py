@@ -441,12 +441,6 @@ class McpHandlersMixin:
                         if "conversation_id" in arguments
                         else None
                     ),
-                    query=str(arguments.get("query", "")),
-                    role=(
-                        str(arguments["role"])
-                        if "role" in arguments
-                        else None
-                    ),
                     start_sub_id=(
                         int(arguments["start_sub_id"])
                         if "start_sub_id" in arguments
@@ -457,8 +451,6 @@ class McpHandlersMixin:
                         if "end_sub_id" in arguments
                         else None
                     ),
-                    full=bool(arguments.get("full", False)),
-                    limit=int(arguments.get("limit", 100)),
                 )
             except ValueError as exc:
                 raise ApiError(
@@ -469,7 +461,6 @@ class McpHandlersMixin:
             return {
                 "entries": entries,
                 "next_conversation_id": next_conversation_id,
-                "limit": int(arguments.get("limit", 100)),
                 "total": total,
                 "truncated": len(entries) < total,
             }

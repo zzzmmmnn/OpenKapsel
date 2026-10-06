@@ -22,7 +22,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.secret = connection["secret"]
         self.store = self.server.context_for(self.server.config.root / "project")
         conversation = self.store.create_conversation(
-            self.store.conversation_query(limit=1)[2],
+            self.store.conversation_query()[2],
             [
                 {"role": "user", "content": "User requests the feature test Plan."},
                 {"role": "ai", "content": "AI will create and verify the feature Plan."},
