@@ -36,6 +36,11 @@ class StaticMcpTests(unittest.TestCase):
         self.assertEqual(401, self.rpc(current.control_token, "tools/list")[0])
         status, result = self.rpc(conn["secret"], "tools/call", {"name": "discovery", "arguments": {}})
         self.assertEqual(200, status)
+        main = result["result"]["structuredContent"]
+        self.assertNotIn("authentication", main)
+        self.assertNotIn("skills", main)
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "discovery", "arguments": {"section": "authentication"}})
+        self.assertEqual(200, status)
         text = json.dumps(result)
         self.assertIn("static_mcp", text)
         for credential in (current.token, current.control_token, current.preview_token, conn["secret"]):

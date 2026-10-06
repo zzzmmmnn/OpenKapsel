@@ -166,7 +166,7 @@ class McpHandlersMixin:
                 "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context before planning or modifying anything. "
                 "Query or reuse an active root Plan before writes and load relevant Memory when durable cross-task facts matter. "
                 "Attach every modifying tool to its owning plan_id, taskname, and message; reads are recorded only when taskname and message are supplied. "
-                "Low-frequency Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load discovery/mcp only when their operation schema is needed."
+                "Low-frequency Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load the matching Discovery section for operation schemas (Shell and Task share discovery/shell)."
             ),
         }
 
@@ -571,8 +571,6 @@ class McpHandlersMixin:
                         else None
                     ),
                 }
-                if "plan_id" in arguments:
-                    changes["plan_id"] = arguments["plan_id"]
                 changes["conversation_id"] = (
                     int(arguments["conversation_id"])
                     if "conversation_id" in arguments

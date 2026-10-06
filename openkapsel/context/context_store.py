@@ -674,7 +674,6 @@ class ContextStore:
         taskname: str,
         content: str | None = None,
         plan_status: str | None = None,
-        plan_id: int | None | object = _UNSET,
         debrief: dict[str, Any] | None = None,
         actor_id: str | None = None,
         conversation_id: int | None = None,
@@ -686,8 +685,8 @@ class ContextStore:
     ) -> dict[str, Any]:
         expected_revision = self._validate_revision(expected_revision)
         taskname = self._validate_taskname(taskname)
-        if content is None and plan_status is None and plan_id is _UNSET and debrief is None:
-            raise ValueError("plan update requires content, status, or plan_id")
+        if content is None and plan_status is None and debrief is None:
+            raise ValueError("plan update requires content or status")
         if content is not None:
             content = self._validate_content(content)
         if plan_status is not None and plan_status not in PLAN_STATUSES:
@@ -695,7 +694,6 @@ class ContextStore:
         closing_only = (
             plan_status == "cancelled"
             and content is None
-            and plan_id is _UNSET
             and debrief is None
         )
         conversation_supplied = (
@@ -788,34 +786,6 @@ class ContextStore:
                 if existing_debrief is not None:
                     raise ValueError("plan already has a completion debrief")
 
-            next_plan_id = row["plan_id"]
-            if plan_id is not _UNSET:
-                current_parent_id = row["plan_id"]
-                if current_parent_id is None:
-                    if plan_id is not None:
-                        raise ValueError("root plan cannot be assigned a parent")
-                    next_plan_id = None
-                else:
-                    current_root_id, _root_row = self._plan_root(
-                        connection,
-                        current_parent_id,
-                        child_id=entry_id,
-                    )
-                    if plan_id is None:
-                        raise ValueError("subplan cannot change its root plan")
-                    next_plan_id = self._validate_plan_parent(
-                        connection,
-                        plan_id,
-                        child_id=entry_id,
-                    )
-                    next_root_id, _next_root_row = self._plan_root(
-                        connection,
-                        next_plan_id,
-                        child_id=entry_id,
-                    )
-                    if next_root_id != current_root_id:
-                        raise ValueError("subplan cannot change its root plan")
-
             next_conversation_id = row["conversation_id"]
             appended_conversation_entries: list[dict[str, Any]] = []
             if append_plan_conversation:
@@ -825,18 +795,6 @@ class ContextStore:
                     and int(next_conversation_id) != requested_conversation_id
                 ):
                     raise ValueError("plan belongs to a different conversation")
-                if next_plan_id is not None:
-                    parent_row = connection.execute(
-                        "SELECT conversation_id FROM context_entries "
-                        "WHERE id = ? AND entry_type = 'plan'",
-                        (next_plan_id,),
-                    ).fetchone()
-                    if (
-                        parent_row is not None
-                        and parent_row["conversation_id"] is not None
-                        and int(parent_row["conversation_id"]) != requested_conversation_id
-                    ):
-                        raise ValueError("parent plan belongs to a different conversation")
                 appended_conversation_entries = append_conversation(
                     connection,
                     conversation_id=requested_conversation_id,
@@ -851,7 +809,7 @@ class ContextStore:
                 """
                 UPDATE context_entries
                 SET updated_at = ?, taskname = ?, content = ?, plan_status = ?,
-                    plan_id = ?, conversation_id = ?, revision = ?
+                    conversation_id = ?, revision = ?
                 WHERE id = ? AND entry_type = 'plan' AND revision = ?
                 """,
                 (
@@ -861,7 +819,6 @@ class ContextStore:
                     plan_status
                     if plan_status is not None
                     else (row["plan_status"] or "in_progress"),
-                    next_plan_id,
                     next_conversation_id,
                     next_revision,
                     entry_id,

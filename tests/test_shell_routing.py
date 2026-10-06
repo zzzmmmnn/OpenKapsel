@@ -148,9 +148,15 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.assertIn("capability_call", names)
         self.assertNotIn("shell_exec", names)
         status, discovery = self.rpc(credentials["access_token"], "tools/call", {
-            "name": "discovery", "arguments": {"section": "mcp"}})
+            "name": "discovery", "arguments": {"section": "shell"}})
         self.assertEqual(200, status, discovery)
-        run_schema = discovery["result"]["structuredContent"]["capabilities"]["mcp"]["operation_families"]["shell"]["operation_specs"]["exec"]["input_schema"]
+        structured = discovery["result"]["structuredContent"]
+        self.assertEqual({"shell", "task"}, set(structured["capabilities"]["mcp"]["operation_families"]))
+        self.assertNotIn("skills", structured)
+        self.assertNotIn("authentication", structured)
+        self.assertNotIn("errors", structured)
+        self.assertNotIn("endpoints", structured)
+        run_schema = structured["capabilities"]["mcp"]["operation_families"]["shell"]["operation_specs"]["exec"]["input_schema"]
         self.assertEqual(["auto", "server", "client"], run_schema["properties"]["target"]["enum"])
         status, response = self.rpc(credentials["access_token"], "tools/call", {
             "name": "capability_call", "arguments": {

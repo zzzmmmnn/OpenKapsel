@@ -229,7 +229,7 @@ class OAuthHTTPTests(unittest.TestCase):
         status, payload = self.rpc(token["access_token"], "tools/list")
         self.assertEqual(200, status, payload)
         self.assertIn("tools", payload["result"])
-        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "discovery", "arguments": {}})
+        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "discovery", "arguments": {"section": "authentication"}})
         self.assertEqual(200, status)
         text = json.dumps(payload)
         self.assertIn("oauth2", text)

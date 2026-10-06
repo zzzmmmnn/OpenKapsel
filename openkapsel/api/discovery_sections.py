@@ -9,7 +9,16 @@ from openkapsel.context.conversation import (
 )
 
 
-SECTION_NAMES = ("transport", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing")
+SECTION_NAMES = ("transport", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors")
+
+
+SECTION_MCP_FAMILIES = {
+    "authentication": {"credential"},
+    "shell": {"shell", "task"},
+    "schedules": {"schedule"},
+    "web": {"web"},
+    "sharing": {"sharing"},
+}
 
 SECTION_ENDPOINTS = {
     "transport": {"transport"},
@@ -24,6 +33,8 @@ SECTION_ENDPOINTS = {
     "schedules": {"schedule"},
     "web": {"web"},
     "sharing": {"share"},
+    "authentication": {"credential"},
+    "errors": set(),
 }
 
 SECTION_CAPABILITIES = {
@@ -43,6 +54,8 @@ SECTION_CAPABILITIES = {
     "schedules": {"schedules"},
     "web": {"web_preview", "web_app_api"},
     "sharing": {"sharing"},
+    "authentication": set(),
+    "errors": set(),
 }
 
 SECTION_LIMITS = {
@@ -91,6 +104,8 @@ SECTION_LIMITS = {
     "sharing": {
         "share_ttl_seconds", "max_share_entries", "max_share_bytes",
     },
+    "authentication": set(),
+    "errors": set(),
 }
 
 SECTION_SUMMARIES = {
@@ -101,11 +116,13 @@ SECTION_SUMMARIES = {
     "paths": "Shared workspace path, private-directory, and authorized extra-path rules.",
     "rpc": "Shared mapping inventory and generic RPC routing used by files and Shell workflows.",
     "network": "Shared network availability, mode, domain policy, and protocols for Shell and web applications.",
-    "mcp": "On-demand operation contracts for low-frequency native MCP capability families.",
-    "shell": "Generic RPC, Shell tasks, streaming input/output, termination, processes, and sandbox limits.",
+    "mcp": "MCP core-tool and capability_call dispatcher metadata; operation schemas live in their capability sections.",
+    "shell": "Shell execution and Task polling/output/input/control together with sandbox and task limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
     "sharing": "Temporary ID-addressed transfer of one file or directory between workspaces.",
+    "authentication": "Credential inspection and renewal; load only when authentication state or rotation is needed.",
+    "errors": "Shared API error envelope and error-code reference.",
 }
 
 SECTION_WORKFLOWS = {
@@ -151,7 +168,7 @@ SECTION_WORKFLOWS = {
     ],
     "mcp": [
         "Keep Conversation, Plan, Memory, File, discovery, rpc_call, and capability_call schemas in the ordinary tools/list response.",
-        "Before capability_call, read this section and select family/operation from operation_families; pass only input_schema fields inside args.",
+        "capability_call operation schemas are published in the matching capability section, not here: shell also covers task; schedules, web, sharing, and authentication each own their family schemas.",
         "When mutation_context=true, pass plan_id, taskname, and message outside args. Read operations may optionally use those outer fields when optional_read_context=true.",
     ],
     "shell": [
@@ -177,5 +194,11 @@ SECTION_WORKFLOWS = {
         "Create a share from exactly one file or directory inside the source token workspace.",
         "The recipient can inspect by share ID without a workspace token, then imports with its own destination control token.",
         "Imports never overwrite, and shares expire or are evicted according to the published limits. Shared tree/transfer limits and path rules live in discovery/files and discovery/paths.",
+    ],
+    "authentication": [
+        "Load this section only when credential state, expiry, or renewal is needed.",
+    ],
+    "errors": [
+        "Load this section only when an API error needs interpretation; normal capability pages omit the shared error catalog.",
     ],
 }

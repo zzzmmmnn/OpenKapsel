@@ -27,56 +27,36 @@ class ContextStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.add("plan", "Too long task name", taskname="x" * 33)
 
-    def test_plan_creation_status_and_root_membership_are_immutable(self) -> None:
+    def test_plan_creation_status_and_parent_are_immutable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = ContextStore(Path(raw))
-            root_a = store.add("plan", "Root A", taskname="hierarchy")
-            root_b = store.add("plan", "Root B", taskname="hierarchy")
-            left = store.add("plan", "Left", taskname="hierarchy", plan_id=root_a)
-            right = store.add("plan", "Right", taskname="hierarchy", plan_id=root_a)
-            leaf = store.add("plan", "Leaf", taskname="hierarchy", plan_id=left)
+            root = store.add("plan", "Root", taskname="hierarchy")
+            parent = store.add("plan", "Parent", taskname="hierarchy", plan_id=root)
+            leaf = store.add("plan", "Leaf", taskname="hierarchy", plan_id=parent)
 
             with self.assertRaisesRegex(ValueError, "plan creation does not accept status"):
                 store.add(
                     "plan",
                     "Invalid child status",
                     taskname="hierarchy",
-                    plan_id=root_a,
+                    plan_id=root,
                     plan_status="completed",
                 )
 
             current = store.query(entry_id=leaf)[0][0]
-            moved = store.update_plan(
+            updated = store.update_plan(
                 leaf,
                 expected_revision=current["revision"],
                 taskname="hierarchy",
-                plan_id=right,
+                content="Leaf updated",
             )
-            self.assertEqual(right, moved["plan_id"])
-
-            current = store.query(entry_id=leaf)[0][0]
-            with self.assertRaisesRegex(ValueError, "subplan cannot change its root plan"):
+            self.assertEqual(parent, updated["plan_id"])
+            with self.assertRaises(TypeError):
                 store.update_plan(
                     leaf,
-                    expected_revision=current["revision"],
+                    expected_revision=updated["revision"],
                     taskname="hierarchy",
-                    plan_id=root_b,
-                )
-            with self.assertRaisesRegex(ValueError, "subplan cannot change its root plan"):
-                store.update_plan(
-                    leaf,
-                    expected_revision=current["revision"],
-                    taskname="hierarchy",
-                    plan_id=None,
-                )
-
-            root_current = store.query(entry_id=root_a)[0][0]
-            with self.assertRaisesRegex(ValueError, "root plan cannot be assigned a parent"):
-                store.update_plan(
-                    root_a,
-                    expected_revision=root_current["revision"],
-                    taskname="hierarchy",
-                    plan_id=root_b,
+                    plan_id=root,
                 )
 
     def test_unfinished_root_plan_hints_are_compact_and_exclude_subplans(self) -> None:
@@ -303,14 +283,6 @@ class ContextStoreTests(unittest.TestCase):
                 child_operation_id,
                 {item["id"] for item in tree["entries"]},
             )
-            hierarchy_root_current = store.query(entry_id=hierarchy_root)[0][0]
-            with self.assertRaisesRegex(ValueError, "root plan cannot be assigned a parent"):
-                store.update_plan(
-                    hierarchy_root,
-                    expected_revision=hierarchy_root_current["revision"],
-                    taskname="context-feature",
-                    plan_id=child_plan_id,
-                )
             with self.assertRaises(ValueError):
                 store.query(limit=201)
             with self.assertRaises(ValueError):

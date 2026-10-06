@@ -138,7 +138,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "capability_call",
         "Call auxiliary capability",
-        "Call one low-frequency native capability operation by family and operation. Detailed operation_specs are loaded on demand from discovery/mcp. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when the selected operation requires it.",
+        "Call one low-frequency native capability operation by family and operation. Load operation_specs on demand from the matching Discovery capability section: shell also owns task; schedules, web, sharing, and authentication own their families. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when required.",
         _object_schema({
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -182,7 +182,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             {
                 "section": {
                     "type": "string",
-                    "enum": ["main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "full"],
+                    "enum": ["main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"],
                     "default": "main",
                     "description": "Discovery section to return. Use full only for compatibility or comprehensive inspection.",
                 }
@@ -349,17 +349,13 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update a plan in place using its current revision as an optimistic concurrency precondition. A Plan's root hierarchy is immutable: a root stays root and a sub-plan may only be reparented within the same root. Completion is rejected while any descendant Plan is in_progress; completed or cancelled descendants are allowed.",
+        "Update a plan in place using its current revision as an optimistic concurrency precondition. Plan parentage is fixed at creation and cannot be changed by updates. Completion is rejected while any descendant Plan is in_progress; completed or cancelled descendants are allowed.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},
                 "expected_revision": revision_schema(),
                 "taskname": taskname_schema(),
                 "content": {"type": "string", "minLength": 1},
-                "plan_id": plan_id_schema(
-                    nullable=True,
-                    description="Optional new parent within the same root hierarchy. A root Plan stays root; a sub-plan cannot move to another root or become a root.",
-                ),
                 "status": plan_status_schema(),
                 "conversation_id": conversation_id_schema(
                     description="Owning Conversation id. Required for every Plan update except cancellation-only."

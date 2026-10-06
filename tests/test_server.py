@@ -830,13 +830,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("main", main["section"])
         self.assertEqual(
-            {"transport", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing", "full"},
+            {"transport", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"},
             set(main["sections"]),
         )
-        self.assertEqual(
-            {"discovery", "credential"},
-            set(main["endpoints"]),
-        )
+        self.assertEqual({"discovery"}, set(main["endpoints"]))
         self.assertEqual(
             {
                 "sections": ["context", "memory", "files"],
@@ -871,6 +868,21 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertNotIn("context", files["endpoints"])
         self.assertNotIn("request_transport", files)
+
+        status, authentication = self.request(
+            "GET", self.endpoint("/discovery/authentication")
+        )
+        self.assertEqual(200, status)
+        self.assertIn("authentication", authentication)
+        self.assertIn("token", authentication)
+        self.assertEqual({"credential"}, set(authentication["endpoints"]))
+        self.assertNotIn("errors", authentication)
+
+        status, errors = self.request("GET", self.endpoint("/discovery/errors"))
+        self.assertEqual(200, status)
+        self.assertIn("errors", errors)
+        self.assertNotIn("authentication", errors)
+        self.assertEqual({}, errors["endpoints"])
 
         status, missing_section = self.request(
             "GET", self.endpoint("/discovery/unknown")
@@ -2891,21 +2903,29 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(discovery["result"]["isError"])
         workspace_payload = discovery["result"]["structuredContent"]
         self.assertNotIn(token, json.dumps(discovery["result"], ensure_ascii=False))
-        self.assertNotIn("control_token", workspace_payload["authentication"])
         self.assertEqual("main", workspace_payload["section"])
         self.assertIn("files", workspace_payload["sections"])
-        self.assertNotIn("fs_write", workspace_payload["endpoints"])
+        self.assertNotIn("authentication", workspace_payload)
+        self.assertNotIn("skills", workspace_payload)
+        self.assertNotIn("endpoints", workspace_payload)
+        self.assertNotIn("errors", workspace_payload)
+        self.assertNotIn("limits", workspace_payload)
+        self.assertNotIn("request_transport", workspace_payload)
+        self.assertNotIn("path_rules", workspace_payload)
+        status, shell_discovery, _ = self.mcp_request(
+            token,
+            201,
+            "tools/call",
+            {"name": "discovery", "arguments": {"section": "shell"}},
+        )
+        self.assertEqual(200, status)
+        shell_payload = shell_discovery["result"]["structuredContent"]
         self.assertEqual(
-            "directory",
-            workspace_payload["limits"]["workspace_storage"]["backend"],
+            {"shell", "task"},
+            set(shell_payload["capabilities"]["mcp"]["operation_families"]),
         )
-        self.assertFalse(
-            workspace_payload["limits"]["workspace_storage"]["hard_quota_enforced"]
-        )
-        self.assertEqual(
-            "https://ws.example.test" + self.mcp_endpoint(token),
-            workspace_payload["endpoints"]["mcp"]["path"],
-        )
+        for omitted in ("authentication", "skills", "errors", "endpoints"):
+            self.assertNotIn(omitted, shell_payload)
 
         _, invalid_section, _ = self.mcp_request(
             token,
@@ -2925,6 +2945,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(discovery["result"]["isError"])
         workspace_payload = discovery["result"]["structuredContent"]
         self.assertEqual("full", workspace_payload["section"])
+        self.assertNotIn("skills", workspace_payload)
         self.assertNotIn(token, json.dumps(discovery["result"], ensure_ascii=False))
         self.assertEqual(
             "https://preview.ws.example.test/"
@@ -3969,6 +3990,20 @@ class WorkspaceServerTests(unittest.TestCase):
             "context_plan_revision_required",
             missing_plan_revision["error"]["code"],
         )
+
+        status, parent_change = self.request(
+            "PATCH",
+            endpoint(f"/context/plans/{rest_plan['id']}"),
+            {
+                "taskname": "rest-plan",
+                "expected_revision": rest_plan["revision"],
+                "plan_id": sub_plan["id"],
+                "status": "cancelled",
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_context_entry", parent_change["error"]["code"])
+        self.assertIn("fixed at Plan creation", parent_change["error"]["message"])
 
         status, rest_plan_updated = self.request(
             "PATCH",

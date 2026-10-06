@@ -27,6 +27,7 @@ from openkapsel.api.discovery_sections import (
     SECTION_CAPABILITIES,
     SECTION_ENDPOINTS,
     SECTION_LIMITS,
+    SECTION_MCP_FAMILIES,
     SECTION_NAMES,
     SECTION_SUMMARIES,
     SECTION_WORKFLOWS,
@@ -146,7 +147,7 @@ class DiscoveryMixin:
             ),
         }
 
-    def _discovery(self, section: str | None = None) -> dict[str, Any]:
+    def _discovery_payload(self, section: str | None = None) -> dict[str, Any]:
         requested = "main" if section in {None, "", "main"} else str(section)
         if requested != "full" and requested not in SECTION_NAMES and requested != "main":
             raise ApiError(
@@ -158,14 +159,13 @@ class DiscoveryMixin:
         if requested == "full":
             full["section"] = "full"
             full["index_url"] = "../../"
-            result = full
-        elif requested == "main":
-            result = self._main_discovery(full)
-        else:
-            result = self._section_discovery(full, requested)
-        if getattr(self, "oauth_connection_id", None) or getattr(self, "static_mcp_connection_id", None):
-            return result
-        return self._rest_discovery(result)
+            return full
+        if requested == "main":
+            return self._main_discovery(full)
+        return self._section_discovery(full, requested)
+
+    def _discovery(self, section: str | None = None) -> dict[str, Any]:
+        return self._rest_discovery(self._discovery_payload(section))
 
     @staticmethod
     def _rest_discovery(payload):
@@ -200,7 +200,7 @@ class DiscoveryMixin:
             payload.get("sections", {}).pop("mcp", None)
             endpoints = payload.get("endpoints", {})
             for key in list(endpoints):
-                if key not in {"discovery", "credential"}:
+                if key != "discovery":
                     endpoints.pop(key)
             payload["bootstrap"] = [
                 "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context.",
@@ -219,10 +219,14 @@ class DiscoveryMixin:
         elif section != "full":
             # Section documents inherit this shared preamble from main. Keep only minimal
             # routing identity plus section-specific contracts.
-            for key in (
-                "server_version", "name", "os", "root", "authentication",
-                "token", "skills", "endpoint_defaults", "errors",
-            ):
+            keys = [
+                "server_version", "name", "os", "root", "skills", "endpoint_defaults",
+            ]
+            if section != "authentication":
+                keys.extend(["authentication", "token"])
+            if section != "errors":
+                keys.append("errors")
+            for key in keys:
                 payload.pop(key, None)
             payload["inherits"] = "main"
         return payload
@@ -585,17 +589,21 @@ class DiscoveryMixin:
         }
 
     def _discovery_common(self, full: dict[str, Any], section: str) -> dict[str, Any]:
-        return {
-            key: full[key]
-            for key in (
-                "protocol", "server_version", "name", "os", "root",
-                "authentication", "token", "skills", "endpoint_defaults",
-            )
-        } | {
+        result = {
+            "protocol": full["protocol"],
             "section": section,
             "index_url": "../../" if section != "main" else "./",
             "full_url": "./discovery/full" if section == "main" else "./full",
         }
+        if section == "main":
+            result.update({
+                key: full[key]
+                for key in (
+                    "server_version", "name", "os", "root", "authentication",
+                    "token", "skills", "endpoint_defaults",
+                )
+            })
+        return result
 
     def _main_discovery(self, full: dict[str, Any]) -> dict[str, Any]:
         capabilities = full["capabilities"]
@@ -626,6 +634,8 @@ class DiscoveryMixin:
             "schedules": capabilities["schedules"]["enabled"],
             "web": capabilities["web_preview"]["enabled"],
             "sharing": capabilities["sharing"]["enabled"],
+            "authentication": True,
+            "errors": True,
         }
         for name in SECTION_NAMES:
             sections[name] = {
@@ -680,7 +690,11 @@ class DiscoveryMixin:
                         "available_tool_count": len(capabilities["mcp"]["available_tools"]),
                         "dynamic_tool": capabilities["mcp"]["dynamic_tool"],
                         "dynamic_families": sorted(capabilities["mcp"]["operation_families"]),
-                        "operation_specs_discovery": "./discovery/mcp",
+                        "operation_specs_discovery": {
+                            family: f"./discovery/{section}"
+                            for section, families in SECTION_MCP_FAMILIES.items()
+                            for family in sorted(families)
+                        },
                     },
                     "extra_paths_redacted": capabilities["extra_paths_redacted"],
                 },
@@ -714,7 +728,7 @@ class DiscoveryMixin:
                     "Before modifying a workspace, create or reuse a Context plan. Every modifying REST or MCP operation requires plan_id, taskname, and a brief message.",
                     "Configure server Shell variables and POSIX initialization with the control-authenticated env endpoint.",
                     "Start ordinary workspace work with discovery/files; use discovery/context and discovery/memory when coordinating or retaining project knowledge.",
-                    "MCP clients use tools/list for core tool schemas. Low-frequency native capabilities use capability_call; load discovery/mcp only when their family/operation schemas are needed.",
+                    "MCP clients use tools/list for core tool schemas. capability_call operation schemas live in their matching capability sections; shell and task share discovery/shell.",
                     "Use discovery/sharing for temporary cross-workspace transfer by random share ID.",
                 ],
                 "errors": full["errors"],
@@ -744,7 +758,31 @@ class DiscoveryMixin:
             key: value for key, value in full["endpoints"].items() if key in endpoint_names
         }
         result["workflow"] = SECTION_WORKFLOWS[section]
-        result["errors"] = full["errors"]
+        if section == "authentication":
+            result["authentication"] = full["authentication"]
+            result["token"] = full["token"]
+        if section == "errors":
+            result["errors"] = full["errors"]
+        family_names = SECTION_MCP_FAMILIES.get(section, set())
+        if family_names:
+            all_families = full["capabilities"]["mcp"].get("operation_families", {})
+            selected = {
+                name: all_families[name]
+                for name in sorted(family_names)
+                if name in all_families
+            }
+            if selected:
+                result["capabilities"]["mcp"] = {
+                    "dynamic_tool": "capability_call",
+                    "operation_families": selected,
+                }
+        if section == "mcp" and "mcp" in result["capabilities"]:
+            result["capabilities"]["mcp"].pop("operation_families", None)
+            result["capabilities"]["mcp"]["family_discovery"] = {
+                family: f"../{owner}"
+                for owner, families in SECTION_MCP_FAMILIES.items()
+                for family in sorted(families)
+            }
         if section == "shell":
             result["task_states"] = full["task_states"]
         return result
@@ -1634,7 +1672,6 @@ class DiscoveryMixin:
                     "json": {
                         "taskname": "<required task grouping name>",
                         "expected_revision": "<required current positive Plan revision>",
-                        "plan_id": "<optional new parent within the same root hierarchy; roots stay root and sub-plans cannot change root>",
                         "content": "<optional replacement content>",
                         "status": "<optional in_progress, completed, or cancelled>",
                         "conversation_id": "<required owning Conversation id except cancellation-only>",
@@ -1645,7 +1682,7 @@ class DiscoveryMixin:
                             "required_when": "status transitions to completed",
                         },
                     },
-                    "notes": "updates only when expected_revision matches; every non-cancellation-only update requires the owning conversation_id, returned writer_nonce, and at least one Conversation entry. A root stays root; a sub-plan may change parent only within its existing root. Completion additionally requires at least one role=ai entry plus debrief and is rejected while any descendant Plan remains in_progress. cancellation-only needs no writer_nonce; stale revisions fail with 412; self-parenting and indirect cycles are rejected",
+                    "notes": "updates only when expected_revision matches; every non-cancellation-only update requires the owning conversation_id, returned writer_nonce, and at least one Conversation entry. Plan parentage is fixed at creation and cannot be updated. Completion additionally requires at least one role=ai entry plus debrief and is rejected while any descendant Plan remains in_progress. cancellation-only needs no writer_nonce; stale revisions fail with 412",
                 },
                 "context_note_replace": {
                     "authentication": "Bearer control token",
@@ -2428,12 +2465,42 @@ class DiscoveryMixin:
         return payload
 
     def _mcp_discovery(self, section: str = "main") -> dict[str, Any]:
-        """Return Discovery metadata without echoing the capability token into MCP logs."""
-        payload = self._discovery(section)
-        base = self._base_path()
-        payload["authentication"]["control_authorized"] = True
+        """Return MCP-focused Discovery without REST-only bootstrap metadata."""
+        payload = self._discovery_payload(section)
+        payload.pop("skills", None)
+        payload.pop("endpoint_defaults", None)
+        if isinstance(payload.get("workflow"), list):
+            payload["workflow"] = [
+                item for item in payload["workflow"]
+                if "Skill" not in item
+            ]
+        if section == "main":
+            for key in (
+                "request_transport", "path_rules", "limits", "errors",
+                "server_version", "name", "os", "root",
+            ):
+                payload.pop(key, None)
+            mcp_capability = payload.get("capabilities", {}).get("mcp")
+            payload["capabilities"] = (
+                {"mcp": mcp_capability} if isinstance(mcp_capability, dict) else {}
+            )
+            payload["workflow"] = [
+                "Core tool schemas come from tools/list.",
+                "capability_call operation schemas live in the matching Discovery section; Shell and Task share discovery/shell.",
+                "Load only the section needed for the current capability; use discovery/full only for comprehensive inspection.",
+            ]
+        include_auth = section in {"authentication", "full"}
+        if not include_auth:
+            payload.pop("authentication", None)
+            payload.pop("token", None)
+        if section != "full":
+            payload.pop("endpoints", None)
+        authentication = payload.get("authentication")
+        if isinstance(authentication, dict):
+            authentication["control_authorized"] = True
         payload["index_url"] = "./"
         payload["full_url"] = "./discovery/full"
+
         web = payload.get("endpoints", {}).get("web")
         if isinstance(web, dict):
             if self.server.config.preview_base_url:
@@ -2449,47 +2516,60 @@ class DiscoveryMixin:
                 api = operations.get("api")
                 if isinstance(api, dict):
                     api["path"] = f"{preview_root}/<app-path>/api/<route>"
+
         cid = getattr(self, "oauth_connection_id", None)
         static_cid = getattr(self, "static_mcp_connection_id", None)
+        connection_auth: dict[str, Any] | None = None
         if cid or static_cid:
-            payload["authentication"] = {
+            connection_auth = {
                 "mode": "oauth2",
                 "control_authorized": True,
                 "authorization": "Authorization: Bearer <OAUTH_ACCESS_TOKEN>",
-                "resource": self._oauth_resource(cid) if cid else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp',
+                "resource": (
+                    self._oauth_resource(cid)
+                    if cid
+                    else self._public_base_url().rstrip('/') + '/mcp-connect/' + static_cid + '/mcp'
+                ),
                 "scope": "openkapsel",
                 "renewal": "The MCP client refreshes OAuth credentials through the token endpoint; do not call credential/renew.",
-                "rest_access": "OAuth grants use the MCP endpoint directly; capability_call family=credential operation=get exports the linked configuration's portable REST workspace URL and control token when cross-platform REST access is needed.",
+                "rest_access": "capability_call family=credential operation=get exports portable REST workspace credentials when needed.",
                 "workspace_credentials": {
                     "tool": "capability_call",
                     "export": {"family": "credential", "operation": "get"},
                     "renew": {"family": "credential", "operation": "renew"},
-                    "renewal_window_seconds": 2 * 24 * 60 * 60,
-                    "rotation": "read URL token and control token rotate atomically; old REST credentials become invalid; MCP connection credentials are unchanged",
                 },
             }
             if cid:
-                payload["authentication"]["consent"] = consent_metadata()
+                connection_auth["consent"] = consent_metadata()
             if static_cid:
                 conn = self.server.static_mcp.get(static_cid)
-                payload["authentication"].update(
-                    mode="static_mcp", authorization="Authorization: Bearer <MCP_CONNECTION_SECRET>",
+                connection_auth.update(
+                    mode="static_mcp",
+                    authorization="Authorization: Bearer <MCP_CONNECTION_SECRET>",
                     expires_at=conn["expires_at"],
-                    renewal="An administrator can extend this Static MCP connection's own expiration; workspace REST credential renewal is separate.",
-                    rest_access="This MCP credential can export or renew the linked configuration's portable REST workspace URL and control token through MCP tools.",
+                    renewal="An administrator can extend this Static MCP connection expiration; REST credential renewal is separate.",
+                    rest_access="This MCP credential can export or renew portable REST workspace credentials through capability_call.",
                 )
-            payload.get("endpoints", {}).pop("credential", None)
-            if "mcp" in payload.get("endpoints", {}):
-                payload["endpoints"]["mcp"]["path"] = payload["authentication"]["resource"]
-            payload.get("token", {}).pop("credentials_expires_at", None)
+            if include_auth:
+                payload["authentication"] = connection_auth
+                payload.pop("token", None)
+            if section == "full":
+                if "mcp" in payload.get("endpoints", {}):
+                    payload["endpoints"]["mcp"]["path"] = connection_auth["resource"]
+                payload.get("endpoints", {}).pop("credential", None)
             mcp_capability = payload.get("capabilities", {}).get("mcp")
             if isinstance(mcp_capability, dict):
-                mcp_capability["authentication"] = "Bearer MCP connection secret" if static_cid else "Bearer OAuth access token"
-            # Existing REST examples may be nested inside Discovery sections.
-            # Do not let their capability URLs escape through OAuth tool results.
+                mcp_capability["authentication"] = (
+                    "Bearer MCP connection secret" if static_cid else "Bearer OAuth access token"
+                )
+
             def redact(value):
                 if isinstance(value, str):
-                    for secret in (self.token_record.token, self.token_record.control_token, self.token_record.preview_token):
+                    for secret in (
+                        self.token_record.token,
+                        self.token_record.control_token,
+                        self.token_record.preview_token,
+                    ):
                         value = value.replace(secret, "<redacted>")
                     return value
                 if isinstance(value, list):
@@ -2497,5 +2577,6 @@ class DiscoveryMixin:
                 if isinstance(value, dict):
                     return {key: redact(item) for key, item in value.items()}
                 return value
+
             payload = redact(payload)
         return payload

@@ -514,6 +514,12 @@ class ContextHttpMixin:
     def _handle_context_plan_update(self, value: str) -> None:
         entry_id = self._parse_context_entry_id(value)
         body = self._read_json()
+        if "plan_id" in body:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_context_entry",
+                "plan_id is fixed at Plan creation and cannot be updated",
+            )
         taskname = self._required_string(body, "taskname")
         expected_revision = body.get("expected_revision")
         if (
@@ -546,15 +552,6 @@ class ContextHttpMixin:
                 "content": content,
                 "plan_status": plan_status,
             }
-            if "plan_id" in body:
-                changes["plan_id"] = (
-                    None
-                    if body["plan_id"] is None
-                    else self._parse_operation_plan_id(
-                        body["plan_id"],
-                        required=True,
-                    )
-                )
             changes["conversation_id"] = (
                 self._parse_conversation_id(str(body["conversation_id"]))
                 if "conversation_id" in body

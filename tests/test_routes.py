@@ -168,6 +168,7 @@ class EndpointContractTests(unittest.TestCase):
             {"id", "expected_revision", "taskname"},
             set(update_plan["inputSchema"]["required"]),
         )
+        self.assertNotIn("plan_id", update_plan["inputSchema"]["properties"])
         actual = update_plan["inputSchema"]["properties"]["debrief"]["properties"]
         self.assertEqual(memory_actions_schema(), actual["memory_actions"])
 
@@ -230,7 +231,7 @@ class EndpointContractTests(unittest.TestCase):
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")
         section = tool["inputSchema"]["properties"]["section"]
         self.assertEqual(
-            {"main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "full"},
+            {"main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"},
             set(section["enum"]),
         )
 
