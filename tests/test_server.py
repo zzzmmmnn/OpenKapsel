@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
+from openkapsel.api.mcp import PUBLIC_SERVER_VERSION
 from openkapsel.auth.security import (
     LEGACY_PASSWORD_SALT,
     hash_password,
@@ -1159,7 +1160,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(4, payload["limits"]["max_finished_tasks_per_token"])
         self.assertEqual(60 * 60, payload["limits"]["finished_task_retention_seconds"])
         self.assertEqual("disk", payload["limits"]["finished_task_storage"])
-        self.assertEqual("1", payload["server_version"])
+        self.assertEqual(PUBLIC_SERVER_VERSION, payload["server_version"])
         self.assertEqual(
             f"https://preview.ws.example.test/"
             f"{self.server.tokens.get('test-token').preview_token}/"
@@ -2714,7 +2715,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(headers["Content-Type"].startswith("application/json"))
         self.assertEqual("2025-11-25", initialized["result"]["protocolVersion"])
         self.assertEqual({"listChanged": False}, initialized["result"]["capabilities"]["tools"])
-        self.assertEqual("1", initialized["result"]["serverInfo"]["version"])
+        self.assertEqual(PUBLIC_SERVER_VERSION, initialized["result"]["serverInfo"]["version"])
         self.assertNotIn("@xxxx@", json.dumps(initialized))
 
         notification = json.dumps(
