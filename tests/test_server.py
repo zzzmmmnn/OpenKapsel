@@ -2950,6 +2950,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(called["result"]["isError"])
         self.assertEqual("hello.txt", called["result"]["structuredContent"]["entries"][0]["name"])
+        self.assertEqual(
+            json.dumps(called["result"]["structuredContent"], ensure_ascii=False, separators=(",", ":")),
+            called["result"]["content"][0]["text"],
+        )
 
         status, made_dir, _ = self.mcp_request(
             token,
@@ -3470,6 +3474,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(
             "etag_mismatch",
             rejected["result"]["structuredContent"]["error"]["code"],
+        )
+        self.assertEqual(
+            json.dumps(rejected["result"]["structuredContent"]["error"], ensure_ascii=False, separators=(",", ":")),
+            rejected["result"]["content"][0]["text"],
         )
         self.assertEqual("original", target.read_text(encoding="utf-8"))
 

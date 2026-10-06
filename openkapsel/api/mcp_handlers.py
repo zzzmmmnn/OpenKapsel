@@ -293,7 +293,7 @@ class McpHandlersMixin:
             if context_id is not None:
                 error["context_id"] = context_id
             return {
-                "content": [{"type": "text", "text": json.dumps(error, ensure_ascii=False)}],
+                "content": [{"type": "text", "text": json.dumps(error, ensure_ascii=False, separators=(",", ":"))}],
                 "structuredContent": {"error": error},
                 "isError": True,
             }
@@ -316,7 +316,7 @@ class McpHandlersMixin:
         if context_id is not None:
             payload = dict(payload)
             payload["context_id"] = context_id
-        text_result = json.dumps(payload, ensure_ascii=False, indent=2)
+        text_result = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return {
             "content": [{"type": "text", "text": text_result}],
             "structuredContent": payload,
