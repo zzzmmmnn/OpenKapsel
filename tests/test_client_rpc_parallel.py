@@ -240,6 +240,12 @@ class ClientRpcParallelTests(unittest.TestCase):
             self.assertTrue(self.threads[-1].is_alive())
             self.assertFalse(session.pending)
             self.assertEqual([], session.call("task_list", {}))
+            # task_list may have replied before its client worker reaches its
+            # finally block, so let that transient worker finish before
+            # asserting that only the timed-out SSH work remains active.
+            deadline = time.monotonic() + 1
+            while self.runtime.rpc_active > 1 and time.monotonic() < deadline:
+                time.sleep(.01)
             # The server frees only the timed-out request slot. Client work
             # remains active until it finishes, without retrying the operation.
             self.assertEqual(1, self.runtime.rpc_active)
