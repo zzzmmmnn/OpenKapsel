@@ -338,7 +338,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_add",
         "Add workspace context",
-        "Append an AI-authored plan or note. Root Plan creation must include subplans; use [] when no direct children are needed. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
+        "Append an AI-authored plan or note. Root Plan creation must include subplans, must omit status, and always starts in_progress; use [] when no direct children are needed. Creating a sub-plan under an existing hierarchy requires its root Plan to remain in_progress. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
         _object_schema(
             {
                 "type": {
@@ -356,7 +356,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "status": {
                     "type": "string",
                     "enum": ["in_progress", "completed", "cancelled"],
-                    "description": "Plan status; omit for notes and defaults to in_progress for plans.",
+                    "description": "Plan status for a sub-plan created under an existing parent. Root Plan creation must omit status and always starts in_progress; omit for notes.",
                 },
                 "scope_paths": {
                     "type": "array",
@@ -377,7 +377,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update a plan in place using its current revision as an optimistic concurrency precondition. Completion is rejected until every descendant Plan is completed.",
+        "Update a plan in place using its current revision as an optimistic concurrency precondition. Completion is rejected while any descendant Plan is in_progress; completed or cancelled descendants are allowed.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},

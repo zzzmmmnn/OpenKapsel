@@ -406,6 +406,7 @@ class ContextStore:
         plan_id: Any,
         *,
         child_id: int | None = None,
+        require_root_in_progress: bool = False,
     ) -> int:
         plan_id = cls._validate_plan_id_value(plan_id)
         cls._require_plan(connection, plan_id)
@@ -413,6 +414,7 @@ class ContextStore:
             raise ValueError("a plan cannot be its own parent")
         current: int | None = plan_id
         visited: set[int] = set()
+        root_row: sqlite3.Row | None = None
         while current is not None:
             if child_id is not None and current == child_id:
                 raise ValueError("plan parent would create a cycle")
@@ -420,12 +422,20 @@ class ContextStore:
                 raise ValueError("existing plan hierarchy contains a cycle")
             visited.add(current)
             row = connection.execute(
-                "SELECT plan_id FROM context_entries WHERE id = ? AND entry_type = 'plan'",
+                "SELECT plan_id, plan_status FROM context_entries "
+                "WHERE id = ? AND entry_type = 'plan'",
                 (current,),
             ).fetchone()
             if row is None:
                 break
+            root_row = row
             current = row["plan_id"]
+        if require_root_in_progress and root_row is not None:
+            root_status = root_row["plan_status"] or "in_progress"
+            if root_status != "in_progress":
+                raise ValueError(
+                    "subplan creation requires the root plan to be in_progress"
+                )
         return plan_id
 
     def create_conversation(
@@ -518,6 +528,10 @@ class ContextStore:
         if entry_type == "operation" and plan_status is not None:
             raise ValueError("operation context cannot have a plan status")
         if entry_type == "plan":
+            if plan_id is None and plan_status is not None:
+                raise ValueError(
+                    "root plan creation does not accept status; root plans always start in_progress"
+                )
             plan_status = plan_status or "in_progress"
             if plan_status not in PLAN_STATUSES:
                 raise ValueError("plan status must be in_progress, completed, or cancelled")
@@ -538,7 +552,11 @@ class ContextStore:
                 connection.execute("BEGIN IMMEDIATE")
                 if plan_id is not None:
                     if entry_type == "plan":
-                        plan_id = self._validate_plan_parent(connection, plan_id)
+                        plan_id = self._validate_plan_parent(
+                            connection,
+                            plan_id,
+                            require_root_in_progress=True,
+                        )
                     else:
                         plan_id = self._validate_plan_id_value(plan_id)
                         self._require_plan(connection, plan_id)
@@ -739,7 +757,7 @@ class ContextStore:
                     )
                     SELECT id, COALESCE(plan_status, 'in_progress') AS plan_status
                     FROM descendants
-                    WHERE COALESCE(plan_status, 'in_progress') != 'completed'
+                    WHERE COALESCE(plan_status, 'in_progress') = 'in_progress'
                     ORDER BY id ASC
                     LIMIT 1
                     """,
@@ -747,7 +765,7 @@ class ContextStore:
                 ).fetchone()
                 if incomplete_descendant is not None:
                     raise ValueError(
-                        "plan completion requires every descendant plan to be completed; "
+                        "plan completion requires every descendant plan to be completed or cancelled; "
                         f"plan {incomplete_descendant['id']} is "
                         f"{incomplete_descendant['plan_status']}"
                     )

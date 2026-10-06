@@ -152,12 +152,16 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             "status": status, "scope_paths": paths, "memory_tags": tags,
         }
 
-    root = node(body)
     parent = body.get("plan_id")
     if parent is not None:
         ContextStore._validate_plan_id_value(parent)
         if parent > 2**63 - 1:
             raise ValueError("plan_id exceeds the database ID range")
+    elif "status" in body:
+        raise ValueError(
+            "root plan creation does not accept status; root plans always start in_progress"
+        )
+    root = node(body)
     root["plan_id"] = parent
     if parent is None and "subplans" not in body:
         raise ValueError(
@@ -184,10 +188,10 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             item["ref"] = ref
         normalized.append(item)
     if root["status"] == "completed" and any(
-        child["status"] != "completed" for child in normalized
+        child["status"] == "in_progress" for child in normalized
     ):
         raise ValueError(
-            "plan completion requires every direct subplan to be completed"
+            "plan completion requires every direct subplan to be completed or cancelled"
         )
     conversation_id = validate_conversation_id(body.get("conversation_id"))
     writer_nonce = validate_writer_nonce(body.get("writer_nonce"))
@@ -289,7 +293,11 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
                     raise PlanRequestConflict("context_request_limit", "workspace plan request ledger is full; existing request IDs remain replayable")
             parent = spec["root"]["plan_id"]
             if parent is not None:
-                store._validate_plan_parent(connection, parent)
+                store._validate_plan_parent(
+                    connection,
+                    parent,
+                    require_root_in_progress=True,
+                )
                 parent_row = connection.execute(
                     "SELECT conversation_id FROM context_entries "
                     "WHERE id = ? AND entry_type = 'plan'",

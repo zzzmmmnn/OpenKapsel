@@ -102,25 +102,50 @@ class PlanCreationTests(unittest.TestCase):
         self.assertEqual([], one["subplans"])
         self.assertEqual(6, self.count())
 
-    def test_completed_parent_requires_completed_subplans(self):
-        with self.assertRaisesRegex(ValueError, "every direct subplan"):
-            self.create({
-                "type": "plan",
-                "taskname": "done",
-                "content": "Completed parent",
-                "status": "completed",
-                "subplans": [{"content": "Pending child"}],
-            })
+    def test_root_creation_rejects_any_explicit_status(self):
+        for status in ("in_progress", "completed", "cancelled", None):
+            with self.subTest(status=status), self.assertRaisesRegex(
+                ValueError, "root plan creation does not accept status"
+            ):
+                self.create(dict(self.body, status=status))
+            self.assertEqual(0, self.count())
 
+    def test_subplan_creation_requires_in_progress_root(self):
+        root = self.store.add("plan", "Active root", taskname="root")
+        child = self.store.add(
+            "plan",
+            "Existing child",
+            taskname="root",
+            plan_id=root,
+        )
         created = self.create({
             "type": "plan",
-            "taskname": "done",
-            "content": "Completed parent",
+            "taskname": "nested",
+            "content": "Nested while root is active",
+            "plan_id": child,
             "status": "completed",
-            "subplans": [{"content": "Completed child", "status": "completed"}],
+            "subplans": [{"content": "Cancelled child", "status": "cancelled"}],
         })
         self.assertEqual("completed", created["status"])
-        self.assertEqual("completed", created["subplans"][0]["status"])
+
+        current = self.store.query(entry_id=root)[0][0]
+        self.store.update_plan(
+            root,
+            expected_revision=current["revision"],
+            taskname="root",
+            plan_status="cancelled",
+        )
+        for parent in (root, child):
+            with self.subTest(parent=parent), self.assertRaisesRegex(
+                ValueError, "root plan to be in_progress"
+            ):
+                self.create({
+                    "type": "plan",
+                    "taskname": "blocked",
+                    "content": "Must not be created",
+                    "plan_id": parent,
+                    "subplans": [],
+                })
 
     def test_invalid_children_metadata_and_payload_are_all_or_nothing(self):
         malformed = [None, {}, ["child"], [{"content": " "}], [{"content": "x", "taskname": "x" * 33}],
@@ -208,7 +233,7 @@ class PlanCreationTests(unittest.TestCase):
         body = dict(self.body, request_id="normalized")
         first = self.create(body)
         explicit = copy.deepcopy(body)
-        explicit.update(status="in_progress", plan_id=None)
+        explicit.update(plan_id=None)
         explicit["subplans"][0].update(taskname="batch", status="in_progress", scope_paths=[], memory_tags=[])
         replay = self.create(explicit)
         self.assertEqual(first["id"], replay["id"])

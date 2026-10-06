@@ -209,11 +209,24 @@ class ContextStoreTests(unittest.TestCase):
             grouped, total = store.query(taskname="context-feature", limit=200)
             self.assertEqual(4, total)
             self.assertEqual(replacement["id"], grouped[0]["id"])
+            with self.assertRaisesRegex(ValueError, "root plan to be in_progress"):
+                store.add(
+                    "plan",
+                    "Must not extend a completed root",
+                    taskname="context-feature",
+                    plan_id=plan_id,
+                )
+
+            hierarchy_root = store.add(
+                "plan",
+                "Separate active hierarchy",
+                taskname="context-feature",
+            )
             child_plan_id = store.add(
                 "plan",
                 "Implement the API layer",
                 taskname="context-feature",
-                plan_id=plan_id,
+                plan_id=hierarchy_root,
             )
             child_operation_id = store.add(
                 "operation",
@@ -228,17 +241,21 @@ class ContextStoreTests(unittest.TestCase):
             direct, total = store.query(plan_id=child_plan_id)
             self.assertEqual(1, total)
             self.assertEqual(child_operation_id, direct[0]["id"])
-            tree = store.plan_tree(plan_id, max_depth=8, limit=200)
-            self.assertEqual([plan_id, child_plan_id], [item["id"] for item in tree["plans"]])
+            tree = store.plan_tree(hierarchy_root, max_depth=8, limit=200)
+            self.assertEqual(
+                [hierarchy_root, child_plan_id],
+                [item["id"] for item in tree["plans"]],
+            )
             self.assertEqual([0, 1], [item["depth"] for item in tree["plans"]])
             self.assertIn(
                 child_operation_id,
                 {item["id"] for item in tree["entries"]},
             )
+            hierarchy_root_current = store.query(entry_id=hierarchy_root)[0][0]
             with self.assertRaisesRegex(ValueError, "cycle"):
                 store.update_plan(
-                    plan_id,
-                    expected_revision=updated["revision"],
+                    hierarchy_root,
+                    expected_revision=hierarchy_root_current["revision"],
                     taskname="context-feature",
                     plan_id=child_plan_id,
                 )
@@ -458,7 +475,7 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual(2, current["revision"])
             self.assertEqual("Completion transaction wins.", current["content"])
 
-    def test_plan_completion_requires_completed_descendants(self) -> None:
+    def test_plan_completion_requires_no_in_progress_descendants(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = ContextStore(Path(raw))
             root = store.add("plan", "Root", taskname="hierarchy")
@@ -484,13 +501,26 @@ class ContextStoreTests(unittest.TestCase):
                     debrief=debrief,
                 )
 
-            with self.assertRaisesRegex(ValueError, "every descendant plan"):
+            with self.assertRaisesRegex(ValueError, "completed or cancelled"):
                 complete(root)
-            with self.assertRaisesRegex(ValueError, "every descendant plan"):
-                complete(child)
 
-            complete(grandchild)
-            complete(child)
+            child_current = store.query(entry_id=child)[0][0]
+            store.update_plan(
+                child,
+                expected_revision=child_current["revision"],
+                taskname="hierarchy",
+                plan_status="cancelled",
+            )
+            with self.assertRaisesRegex(ValueError, "completed or cancelled"):
+                complete(root)
+
+            grandchild_current = store.query(entry_id=grandchild)[0][0]
+            store.update_plan(
+                grandchild,
+                expected_revision=grandchild_current["revision"],
+                taskname="hierarchy",
+                plan_status="cancelled",
+            )
             completed = complete(root)
             self.assertEqual("completed", completed["status"])
 
