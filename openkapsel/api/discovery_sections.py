@@ -122,16 +122,14 @@ SECTION_WORKFLOWS = {
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],
     "context": [
-        "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context before planning or modifying anything. Before creating a new Conversation, use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns writer_nonce.",
+        "Before creating a new Conversation, use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns writer_nonce.",
         "Append materially new user/ai context with conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may keep original wording without extra compression when it already fits. Summary cadence is dynamic: after 40 user/ai entries since the newest summary, append responses recommend summary via summary_status; after 49, another user/ai entry is blocked until summary is appended. The summary covers from the newest summary itself (or sub_id 1) through the latest entry. Cross-conversation query defaults to the newest summary plus later entries.",
-        "Query active root plans first, then create a root plan only when no suitable plan exists.",
         "Plan creation and every non-cancellation-only Plan update append at least one Conversation entry using conversation_id plus the writer_nonce returned by conversation_create; completion must include at least one ai entry. Cancellation-only remains possible without writer_nonce.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",
         "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan.",
         "Reads are not recorded unless taskname and message are supplied; plan completion also requires a debrief.",
     ],
     "memory": [
-        "Read project Memory when starting work that depends on durable cross-task facts.",
         "Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable. New Memory requires at least one indexed tag; prefer 4-16 specific reusable tags.",
         "Mutation taskname/message limits are shared with Context and are published in discovery/context.",
         PLAN_COMPLETION_MEMORY_GUIDANCE,

@@ -42,6 +42,8 @@ from openkapsel.contract import (
     mutation_item_example,
     mutation_item_schema,
     mutation_operation_contracts,
+    path_schema,
+    text_encoding_schema,
 )
 from openkapsel.execution.tasks import BoundedOutput
 from openkapsel.files.uploads import UploadRegistry
@@ -2740,7 +2742,24 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertTrue(mutate_tool["annotations"]["destructiveHint"])
         item_schema = mutate_tool["inputSchema"]["properties"]["items"]["items"]
-        self.assertEqual(mutation_item_schema(), item_schema)
+        expected_item_schema = mutation_item_schema()
+        shared_descriptions = {
+            path_schema()["description"],
+            text_encoding_schema()["description"],
+        }
+
+        def compact_descriptions(value):
+            if isinstance(value, dict):
+                if value.get("description") in shared_descriptions:
+                    value.pop("description", None)
+                for child in value.values():
+                    compact_descriptions(child)
+            elif isinstance(value, list):
+                for child in value:
+                    compact_descriptions(child)
+
+        compact_descriptions(expected_item_schema)
+        self.assertEqual(expected_item_schema, item_schema)
         self.assertEqual(["op", "path"], item_schema["required"])
         self.assertFalse(item_schema["additionalProperties"])
         item_properties = item_schema["properties"]

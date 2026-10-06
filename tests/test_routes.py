@@ -9,7 +9,9 @@ from openkapsel.contract import (
     memory_id_schema,
     memory_path_schema,
     memory_tags_schema,
+    path_schema,
     revision_schema,
+    text_encoding_schema,
 )
 from openkapsel.routes import (
     ENDPOINTS,
@@ -194,6 +196,35 @@ class EndpointContractTests(unittest.TestCase):
         self.assertEqual(memory_content_schema(), update_props["content"])
         self.assertEqual(memory_tags_schema(), update_props["tags"])
         self.assertEqual(memory_path_schema(), update_props["path"])
+
+    def test_public_mcp_tools_omit_repeated_shared_schema_descriptions(self) -> None:
+        record = TokenRecord(
+            token="full", name="test", created_at="2026-01-01T00:00:00+00:00",
+            can_read=True, can_write=True, can_preview=True, shell_mode="full", can_schedule=True,
+        )
+        tools = tools_for(record, True)
+        omitted = {path_schema()["description"], text_encoding_schema()["description"]}
+
+        def descriptions(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("description"), str):
+                    yield value["description"]
+                for child in value.values():
+                    yield from descriptions(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from descriptions(child)
+
+        public_descriptions = {
+            description
+            for tool in tools
+            for description in descriptions(tool["inputSchema"])
+        }
+        self.assertTrue(omitted.isdisjoint(public_descriptions))
+        self.assertEqual("string", next(tool for tool in tools if tool["name"] == "fs_write")["inputSchema"]["properties"]["path"]["type"])
+        encoding = next(tool for tool in tools if tool["name"] == "fs_write")["inputSchema"]["properties"]["encoding"]
+        self.assertEqual(text_encoding_schema()["enum"], encoding["enum"])
+        self.assertEqual("utf-8", encoding["default"])
 
     def test_discovery_exposes_discovery_sections(self) -> None:
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")

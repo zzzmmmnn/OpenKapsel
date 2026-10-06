@@ -211,11 +211,8 @@ class DiscoveryMixin:
                 "rule": "Load these sections before workspace mutation; section contracts are authoritative.",
             }
             payload["workflow"] = [
-                "Read main once for shared authentication, token, Skill, and endpoint-default metadata.",
-                "On first use, query the most recent Conversation before planning or modifying the workspace.",
-                "Before any workspace mutation, load discovery/context, discovery/memory, and discovery/files; context covers Conversation and Plan.",
-                "Load transport, shell, schedules, web, or sharing only when that capability is needed.",
-                "Use discovery/full only for compatibility or comprehensive inspection.",
+                "Read main once for shared authentication, token, Skill, endpoint-default metadata, bootstrap order, and mutation-core section requirements.",
+                "Load optional sections only when their capability is needed; use discovery/full only for compatibility or comprehensive inspection.",
             ]
         elif section != "full":
             # Section documents inherit this shared preamble from main. Keep only minimal

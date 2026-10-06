@@ -94,6 +94,11 @@ PATH = path_schema()
 NONNEGATIVE = nonnegative_schema()
 POSITIVE = positive_schema()
 TEXT_ENCODING = text_encoding_schema()
+_MCP_SHARED_SCHEMA_DESCRIPTIONS = {
+    PATH.get("description"),
+    TEXT_ENCODING.get("description"),
+}
+_MCP_SHARED_SCHEMA_DESCRIPTIONS.discard(None)
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
@@ -1264,6 +1269,17 @@ def resolve_auxiliary_operation(
 
 
 
+def _compact_public_schema_descriptions(value: Any) -> None:
+    if isinstance(value, dict):
+        if value.get("description") in _MCP_SHARED_SCHEMA_DESCRIPTIONS:
+            value.pop("description", None)
+        for child in value.values():
+            _compact_public_schema_descriptions(child)
+    elif isinstance(value, list):
+        for child in value:
+            _compact_public_schema_descriptions(child)
+
+
 def tools_for(
     record: TokenRecord,
     recycle_enabled: bool,
@@ -1275,6 +1291,7 @@ def tools_for(
         public_names.add("capability_call")
     selected = [copy.deepcopy(tool) for tool in ALL_TOOLS if tool["name"] in public_names]
     for tool in selected:
+        _compact_public_schema_descriptions(tool["inputSchema"])
         if tool["name"] == "fs_read_binary":
             length = tool["inputSchema"]["properties"]["length"]
             length["maximum"] = mcp_binary_chunk_bytes
