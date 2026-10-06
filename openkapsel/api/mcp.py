@@ -945,7 +945,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "shell_exec",
         "Run shell command",
-        "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server. Never falls back on client errors. Use the returned task_id with normal task tools. Client Shell uses its own execution/sandbox policy, not server limits or environment; output is combined. Native Windows uses cmd.exe, POSIX/Podman uses /bin/sh.",
+        "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server; client failures do not fall back. Returned task_id values use the normal task tools. Client execution uses client-local policy and environment.",
         _object_schema(
             {
                 "command": {"type": "string", "minLength": 1},
@@ -977,7 +977,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_get",
         "Get task status",
-        "Poll a server or client task for status, exit code and output. Client stdout/stderr are combined in stdout; the initial 64 KiB includes stdout_next_offset. Use task_output with that cursor for the remaining bytes.",
+        "Poll a server or client task for status, exit code, output, and output cursors; use task_output to continue reading.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=True,
         idempotent=True,
@@ -1000,7 +1000,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "sandbox_processes",
         "List sandbox processes",
-        "List processes in this token's restricted-shell cgroup and return aggregate PID, memory, CPU, and OOM counters.",
+        "List restricted Shell processes and aggregate resource usage.",
         _object_schema(
             {
                 "offset": {**NONNEGATIVE, "default": 0},
@@ -1013,7 +1013,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_output",
         "Read incremental task output",
-        "Read task output from byte cursors, optionally waiting for new output. Server tasks have separate stdout and stderr. Client tasks combine both streams in stdout (output_combined=true); stderr is empty. Advance each returned next_offset. Client retained output is capped at 2 MiB.",
+        "Read task output from byte cursors, optionally waiting for new output. Client output may be combined in stdout; advance the returned next offsets.",
         _object_schema(
             {
                 "task_id": {"type": "string"},
@@ -1029,7 +1029,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_stdin",
         "Send task input",
-        "Write UTF-8 or Base64 input to an interactive server or client task and optionally close stdin. A client task accepts at most 16 KiB per call (server tasks: 256 KiB). Data and close=true may be sent together.",
+        "Send UTF-8 or Base64 input to an interactive task and optionally close stdin; data and close=true may be sent together.",
         _object_schema(
             {
                 "task_id": {"type": "string"},
@@ -1044,7 +1044,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_interrupt",
         "Interrupt task",
-        "Interrupt a running task. Server tasks receive SIGTERM and escalate to SIGKILL after a grace period; client tasks receive SIGINT on POSIX/Podman or CTRL_BREAK on native Windows. Use task_kill for immediate force termination.",
+        "Request normal termination of a running task. Use task_kill only when immediate forced termination is required.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=False,
         destructive=True,
@@ -1052,7 +1052,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "task_kill",
         "Force-kill task",
-        "Force-kill a running task. Server and POSIX/Podman client tasks receive SIGKILL; native Windows client tasks use taskkill /T /F. This does not wait for graceful termination.",
+        "Force-stop a running task immediately.",
         _object_schema({"task_id": {"type": "string"}}, ("task_id",)),
         read_only=False,
         destructive=True,

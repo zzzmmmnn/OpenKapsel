@@ -21,7 +21,6 @@ from openkapsel.context.context_store import (
     MAX_PLAN_HINT_CONTENT_CHARS,
     MAX_UNFINISHED_ROOT_PLAN_HINTS,
 )
-from openkapsel.execution.cgroups import BUBBLEWRAP_PROCESS_OVERHEAD
 from openkapsel.api.discovery_sections import (
     SECTION_CAPABILITIES,
     SECTION_ENDPOINTS,
@@ -545,7 +544,7 @@ class DiscoveryMixin:
         return {
             key: full[key]
             for key in (
-                "protocol", "server_version", "name", "os", "root", "cwd",
+                "protocol", "server_version", "name", "os", "root",
                 "authentication", "token", "skills", "endpoint_defaults",
             )
         } | {
@@ -655,7 +654,7 @@ class DiscoveryMixin:
                     "Skill-capable REST clients should inspect skills.openkapsel_rest and may install its token-free SHA-256-verified archive or read the linked SKILL.md remotely before loading detailed endpoint contracts.",
                     "Read only the relevant discovery section before acting; use discovery/full only for compatibility or comprehensive inspection.",
                     "Before modifying a workspace, create or reuse a Context plan. Every modifying REST or MCP operation requires plan_id, taskname, and a brief message.",
-                    "Configure app-identity-scoped Shell variables and POSIX initialization with the control-authenticated env endpoint; configured values are injected into full, Bubblewrap, and Podman Shell tasks without appearing in launcher arguments.",
+                    "Configure server Shell variables and POSIX initialization with the control-authenticated env endpoint.",
                     "Start ordinary workspace work with discovery/files; use discovery/context and discovery/memory when coordinating or retaining project knowledge.",
                     "MCP clients should call tools/list for authoritative tool input schemas; discovery returns this compact index by default and accepts a section parameter.",
                     "Use discovery/sharing for temporary cross-workspace transfer by random share ID.",
@@ -763,15 +762,12 @@ class DiscoveryMixin:
             "name": self.server.config.name,
             "os": {"name": os.name, "platform": os.uname().sysname, "release": os.uname().release},
             "root": str(self.token_scope_root),
-            "cwd": str(self.token_scope_root),
             "authentication": {
                 "url_token": "read-only workspace capability",
                 "control": "Authorization: Bearer <CONTROL_TOKEN>",
                 "control_authorized": control_authorized,
-                "control_token": "<redacted>",
                 "mcp_requires_control_token": True,
-                "read_token_expires_at": self.token_record.credentials_expires_at,
-                "control_token_expires_at": self.token_record.credentials_expires_at,
+                "credentials_expires_at": self.token_record.credentials_expires_at,
                 "preview_token_expires_at": self.token_record.expires_at,
                 "preview_token_uses_workspace_lifetime": True,
                 "self_renewal": {
@@ -870,9 +866,7 @@ class DiscoveryMixin:
             },
             "token": {
                 "name": self.token_record.name,
-                "expires_at": self.token_record.expires_at,
                 "workspace_expires_at": self.token_record.expires_at,
-                "credentials_expires_at": self.token_record.credentials_expires_at,
                 "path_scope": self.token_record.path_prefix,
                 "workspace_image": self.token_record.workspace_image,
             },
@@ -1089,13 +1083,9 @@ class DiscoveryMixin:
                         if control_authorized
                         else False
                     ),
-                    "scope": "stable app_id within this token record",
-                    "shared_by_tokens_for_same_workspace": False,
-                    "credential_rotation_preserves_configuration": True,
-                    "injected_into": ["full", "bubblewrap", "podman"],
+                    "scope": "workspace app identity",
+                    "applies_to_server_shell": True,
                     "posix_rc": True,
-                    "service_environment_inherited": False,
-                    "values_in_launcher_arguments": False,
                     "reserved_names": sorted(RESERVED_ENVIRONMENT_NAMES),
                     "reserved_prefixes": ["OPENKAPSEL_"],
                 },
@@ -1349,8 +1339,6 @@ class DiscoveryMixin:
                     "resource_limits": (
                         control_authorized and self.token_record.shell_mode == "restricted"
                     ),
-                    "cgroup_v2_available": self.server.cgroups.available,
-                    "unavailable_reason": self.server.cgroups.unavailable_reason or None,
                 },
             },
             "limits": {
@@ -1424,7 +1412,6 @@ class DiscoveryMixin:
                 "sandbox_max_processes": (
                     self.token_record.sandbox_max_processes if control_authorized else None
                 ),
-                "bubblewrap_process_overhead": BUBBLEWRAP_PROCESS_OVERHEAD,
                 "sandbox_memory_bytes": (
                     self.token_record.sandbox_memory_mb * 1024 * 1024
                     if control_authorized
@@ -1488,7 +1475,7 @@ class DiscoveryMixin:
                         "taskname": "required task grouping name",
                         "message": "required short operation message",
                     },
-                    "notes": "atomically replaces the complete app-identity-scoped environment configuration; values are injected into full, Bubblewrap, and Podman Shell tasks; reserved launcher and proxy variables are rejected",
+                    "notes": "replaces the complete server Shell environment configuration; reserved launcher and proxy variables are rejected",
                 },
                 "environment_clear": {
                     "authentication": "Bearer control token",
@@ -1906,9 +1893,9 @@ class DiscoveryMixin:
                 },
                 "shell_exec": {
                     "target_values": ["auto", "server", "client"],
-                    "native_dependencies": "Server tasks acquire the cwd mapping automatically. Declare other workspace mapping names/IDs with mount_mappings; command text is not inspected. FastAPI uses api/mappings.json with the same field. Native mounts are leased for the process lifetime, not per HTTP request.",
+                    "native_dependencies": "Server tasks acquire the cwd mapping automatically; declare other mapping dependencies with mount_mappings because command text is not inspected.",
                     "routing": "Default auto uses client RPC when cwd is inside a mapping; otherwise server. Explicit server executes on server even for a mapped cwd; client requires a mapped cwd. Command text is never inspected for cd. Offline/denied/old clients fail closed, never fall back.",
-                    "client_contract": "Requires Shell permission, caller write, writable mapping with allow_exec, and client execution.enabled + shell_command. Client local sandbox/limits apply; server /env is not injected. Null/omitted timeout uses client maximum. Native Windows: cmd.exe; POSIX/Podman: /bin/sh. Combined output appears in stdout. Use returned task_id with /task/get, /task/output, /task/stream, /task/stdin, /task/interrupt, and DELETE /task/<task_id>; stdin max 16384 bytes. Task status includes stdout_next_offset for the initial 64 KiB; continue via output byte cursors. Client tasks survive reconnect, not client process exit.",
+                    "client_contract": "Client execution requires an executable writable mapping, uses client-local policy/environment, never falls back to server, and returns an ordinary task_id. Client tasks survive reconnect but not client process exit.",
                     "json": {
                         "command": "<shell command>",
                         "target": "auto",
@@ -2043,15 +2030,15 @@ class DiscoveryMixin:
                 },
                 "task_interrupt": {
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
-                    "notes": "server tasks receive SIGTERM then SIGKILL after a two-second grace period; POSIX client tasks receive SIGINT and native Windows client tasks receive CTRL_BREAK",
+                    "notes": "requests normal task termination; use task_kill when forced termination is required",
                 },
                 "task_kill": {
                     "request_headers": {"OpenKapsel-Plan-Id": "<required owning plan id>", "OpenKapsel-Taskname": "<required task grouping name>", "OpenKapsel-Message": "<required brief operation summary>"},
-                    "notes": "server and POSIX client tasks are force-killed; native Windows client tasks use taskkill /T /F",
+                    "notes": "force-stops the task immediately",
                 },
                 "sandbox_processes": {
                     "url_query": "offset=0&limit=100",
-                    "notes": "lists host-visible processes inside this token's restricted-shell cgroup, with aggregate CPU, memory, PID, and OOM counters",
+                    "notes": "lists restricted Shell processes with aggregate resource usage",
                     "query": {
                         "offset": 0,
                         "limit": 100,
@@ -2089,7 +2076,7 @@ class DiscoveryMixin:
                 "For cross-workspace transfer, share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
                 "Run tests or builds with shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
                 "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id; use run-now instead of creating sub-three-minute schedules.",
-                "Use GET, PUT, or DELETE env to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization. PUT and DELETE require mutation Context; secrets are injected without appearing in sandbox launcher arguments.",
+                "Use GET, PUT, or DELETE env to inspect, replace, or clear server Shell variables and POSIX initialization. PUT and DELETE require mutation Context.",
                 "For restricted Shell, inspect this token's live sandbox processes and aggregate resource usage with sandbox_processes.",
                 "Use task_interrupt for normal termination; reserve task_kill for an unresponsive task that must stop immediately.",
             ],
@@ -2153,9 +2140,8 @@ class DiscoveryMixin:
                     "ssh": {"version": 2, "fallback": "none", "privileged": True,
                             "sync_operations": ["profiles", "status", "close", "stat", "listdir", "read"],
                             "task_operations": ["exec", "upload", "download"],
-                            "connection_reuse": "opaque process-scoped connection_id; 60-second default idle timeout after active operations finish",
-                            "proxy_types": ["socks4", "socks5", "http", "https"],
-                            "dependency": "Paramiko is required for SSH; python-socks is additionally required by SOCKS4/SOCKS5 proxy profiles; credentials remain client-local"},
+                            "connection_reuse": "reuse the returned connection_id; idle connections expire after 60 seconds",
+                            "proxy_types": ["socks4", "socks5", "http", "https"]},
                 },
             },
         }
@@ -2377,7 +2363,6 @@ class DiscoveryMixin:
         payload = self._discovery(section)
         base = self._base_path()
         payload["authentication"]["control_authorized"] = True
-        payload["authentication"]["control_token"] = "<redacted>"
         payload["index_url"] = "./"
         payload["full_url"] = "./discovery/full"
         web = payload.get("endpoints", {}).get("web")

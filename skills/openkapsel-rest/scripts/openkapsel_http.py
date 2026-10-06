@@ -158,7 +158,7 @@ def ensure_fresh_credentials(credentials: Credentials) -> Credentials:
         authentication = payload.get("authentication")
         if not isinstance(authentication, dict):
             raise RuntimeError("OpenKapsel Discovery does not publish credential expiration")
-        expiry_text = authentication.get("control_token_expires_at")
+        expiry_text = authentication.get("credentials_expires_at")
         if not isinstance(expiry_text, str) or not expiry_text:
             raise RuntimeError("OpenKapsel Discovery does not publish credential expiration")
         credentials = credentials.updated(credentials_expires_at=expiry_text)

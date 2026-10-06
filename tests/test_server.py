@@ -875,8 +875,8 @@ class WorkspaceServerTests(unittest.TestCase):
             {"output", "done", "reconnect", "error"},
             set(op("task", "stream")["events"]),
         )
-        self.assertIn("CTRL_BREAK", op("task", "interrupt")["description"])
-        self.assertIn("taskkill /T /F", op("task", "kill")["description"])
+        self.assertIn("normal task termination", op("task", "interrupt")["description"])
+        self.assertIn("force-stops", op("task", "kill")["description"])
         self.assertEqual("POST", op("share", "create")["method"])
         self.assertEqual("GET", op("share", "query")["method"])
         self.assertEqual(86400, payload["limits"]["share_ttl_seconds"])
@@ -1105,10 +1105,8 @@ class WorkspaceServerTests(unittest.TestCase):
         environment = payload["capabilities"]["environment"]
         self.assertTrue(environment["enabled"])
         self.assertFalse(environment["configured"])
-        self.assertEqual("stable app_id within this token record", environment["scope"])
-        self.assertEqual(["full", "bubblewrap", "podman"], environment["injected_into"])
-        self.assertFalse(environment["service_environment_inherited"])
-        self.assertFalse(environment["values_in_launcher_arguments"])
+        self.assertEqual("workspace app identity", environment["scope"])
+        self.assertTrue(environment["applies_to_server_shell"])
         self.assertIn("PATH", environment["reserved_names"])
         self.assertEqual(["OPENKAPSEL_"], environment["reserved_prefixes"])
         self.assertEqual(256, payload["limits"]["max_environment_variables"])
@@ -1309,21 +1307,13 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         discovery = json.loads(raw)
         self.assertFalse(discovery["authentication"]["control_authorized"])
-        self.assertEqual("<redacted>", discovery["authentication"]["control_token"])
+        self.assertNotIn("control_token", discovery["authentication"])
         self.assertEqual(
             record.credentials_expires_at,
-            discovery["authentication"]["read_token_expires_at"],
-        )
-        self.assertEqual(
-            record.credentials_expires_at,
-            discovery["authentication"]["control_token_expires_at"],
+            discovery["authentication"]["credentials_expires_at"],
         )
         self.assertEqual(record.expires_at, discovery["authentication"]["preview_token_expires_at"])
         self.assertTrue(discovery["authentication"]["preview_token_uses_workspace_lifetime"])
-        self.assertEqual(
-            record.credentials_expires_at,
-            discovery["token"]["credentials_expires_at"],
-        )
         self.assertNotIn(record.control_token, raw.decode("utf-8"))
         self.assertTrue(discovery["capabilities"]["files"]["read"])
         self.assertFalse(discovery["capabilities"]["files"]["write"])
@@ -2824,6 +2814,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(discovery["result"]["isError"])
         workspace_payload = discovery["result"]["structuredContent"]
         self.assertNotIn(token, json.dumps(discovery["result"], ensure_ascii=False))
+        self.assertNotIn("control_token", workspace_payload["authentication"])
         self.assertEqual("main", workspace_payload["section"])
         self.assertIn("files", workspace_payload["sections"])
         self.assertNotIn("fs_write", workspace_payload["endpoints"])
@@ -5366,13 +5357,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(discovery["capabilities"]["network"])
         self.assertEqual(
             record.credentials_expires_at,
-            discovery["authentication"]["read_token_expires_at"],
+            discovery["authentication"]["credentials_expires_at"],
         )
-        self.assertEqual(
-            record.credentials_expires_at,
-            discovery["authentication"]["control_token_expires_at"],
-        )
-        self.assertEqual(record.credentials_expires_at, discovery["token"]["credentials_expires_at"])
         self.assertEqual(
             [{"path": str(admin_read_only.resolve()), "read_only": True}],
             discovery["capabilities"]["extra_paths"],

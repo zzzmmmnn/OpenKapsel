@@ -100,7 +100,7 @@ class SkillCredentialConfigTests(unittest.TestCase):
                     200,
                     {"Content-Type": "application/json"},
                     json.dumps(
-                        {"authentication": {"control_token_expires_at": due}}
+                        {"authentication": {"credentials_expires_at": due}}
                     ).encode(),
                 ),
                 openkapsel_http.HttpResult(
