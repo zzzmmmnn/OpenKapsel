@@ -458,6 +458,42 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual(2, current["revision"])
             self.assertEqual("Completion transaction wins.", current["content"])
 
+    def test_plan_completion_requires_completed_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = ContextStore(Path(raw))
+            root = store.add("plan", "Root", taskname="hierarchy")
+            child = store.add("plan", "Child", taskname="hierarchy", plan_id=root)
+            grandchild = store.add(
+                "plan", "Grandchild", taskname="hierarchy", plan_id=child
+            )
+            debrief = {
+                "items": [],
+                "outcome": "succeeded",
+                "memory_refs": [],
+                "memory_feedback": [],
+                "memory_conflicts": [],
+            }
+
+            def complete(plan_id: int) -> dict:
+                current = store.query(entry_id=plan_id)[0][0]
+                return store.update_plan(
+                    plan_id,
+                    expected_revision=current["revision"],
+                    taskname="hierarchy",
+                    plan_status="completed",
+                    debrief=debrief,
+                )
+
+            with self.assertRaisesRegex(ValueError, "every descendant plan"):
+                complete(root)
+            with self.assertRaisesRegex(ValueError, "every descendant plan"):
+                complete(child)
+
+            complete(grandchild)
+            complete(child)
+            completed = complete(root)
+            self.assertEqual("completed", completed["status"])
+
     def test_legacy_database_adds_plan_metadata_and_revision_columns(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"

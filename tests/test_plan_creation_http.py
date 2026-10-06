@@ -192,19 +192,24 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(201, status, saved)
         self.assertEqual("note", saved["type"])
         self.assertNotIn("subplans", saved)
+        singleton_body = {
+            "type": "plan",
+            "taskname": "singleton",
+            "content": "Conversation-owned singleton",
+            "conversation_id": self.conversation_id,
+            "writer_nonce": self.writer_nonce,
+            "conversation_entries": [
+                {"role": "ai", "content": "AI creates the singleton Plan."}
+            ],
+        }
+        status, missing = self.rest("POST", "/context", singleton_body)
+        self.assertEqual(400, status, missing)
+        self.assertIn("root plan creation requires subplans", missing["error"]["message"])
+
         status, singleton = self.rest(
             "POST",
             "/context",
-            {
-                "type": "plan",
-                "taskname": "singleton",
-                "content": "Conversation-owned singleton",
-                "conversation_id": self.conversation_id,
-                "writer_nonce": self.writer_nonce,
-                "conversation_entries": [
-                    {"role": "ai", "content": "AI creates the singleton Plan."}
-                ],
-            },
+            dict(singleton_body, subplans=[]),
         )
         self.assertEqual(201, status, singleton)
         self.assertEqual([], singleton["subplans"])

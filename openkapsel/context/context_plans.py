@@ -44,7 +44,7 @@ def creation_properties() -> dict[str, Any]:
     return {
         "subplans": {
             "type": "array", "maxItems": MAX_SUBPLANS,
-            "description": "Optional direct child plans created atomically with this plan. Children inherit taskname when omitted. No nested subplans or child plan_id; use a later call with a parent ID for deeper levels.",
+            "description": "Direct child plans created atomically with this plan. Root Plan creation requires this field; use [] when there are no direct children. It remains optional when creating a Plan under an existing parent. Children inherit taskname when omitted. No nested subplans or child plan_id; use a later call with a parent ID for deeper levels.",
             "items": {
                 "type": "object", "additionalProperties": False,
                 "required": ["content"],
@@ -159,6 +159,10 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
         if parent > 2**63 - 1:
             raise ValueError("plan_id exceeds the database ID range")
     root["plan_id"] = parent
+    if parent is None and "subplans" not in body:
+        raise ValueError(
+            "root plan creation requires subplans; use [] when there are no direct child plans"
+        )
     children = body.get("subplans", [])
     if not isinstance(children, list) or len(children) > MAX_SUBPLANS:
         raise ValueError(f"subplans must be an array of at most {MAX_SUBPLANS} direct children")
@@ -179,6 +183,12 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             refs.add(ref)
             item["ref"] = ref
         normalized.append(item)
+    if root["status"] == "completed" and any(
+        child["status"] != "completed" for child in normalized
+    ):
+        raise ValueError(
+            "plan completion requires every direct subplan to be completed"
+        )
     conversation_id = validate_conversation_id(body.get("conversation_id"))
     writer_nonce = validate_writer_nonce(body.get("writer_nonce"))
     conversation_entries = normalize_entries(body.get("conversation_entries"), minimum=1)

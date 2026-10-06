@@ -90,6 +90,7 @@ class RpcTaskHTTPTests(unittest.TestCase):
             self.base + "/context",
             json.dumps({
                 "type": "plan",
+                "subplans": [],
                 "taskname": "rpc-task",
                 "content": "Exercise RPC task execution",
                 "conversation_id": conversation["conversation_id"],

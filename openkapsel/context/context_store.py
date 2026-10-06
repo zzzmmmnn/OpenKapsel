@@ -724,6 +724,33 @@ class ContextStore:
                 raise RuntimeError(
                     f"plan revision is {row['revision']}, not {expected_revision}"
                 )
+            if plan_status == "completed":
+                incomplete_descendant = connection.execute(
+                    """
+                    WITH RECURSIVE descendants(id, plan_status) AS (
+                        SELECT id, plan_status
+                        FROM context_entries
+                        WHERE entry_type = 'plan' AND plan_id = ?
+                        UNION
+                        SELECT child.id, child.plan_status
+                        FROM context_entries AS child
+                        JOIN descendants AS parent ON child.plan_id = parent.id
+                        WHERE child.entry_type = 'plan'
+                    )
+                    SELECT id, COALESCE(plan_status, 'in_progress') AS plan_status
+                    FROM descendants
+                    WHERE COALESCE(plan_status, 'in_progress') != 'completed'
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    (entry_id,),
+                ).fetchone()
+                if incomplete_descendant is not None:
+                    raise ValueError(
+                        "plan completion requires every descendant plan to be completed; "
+                        f"plan {incomplete_descendant['id']} is "
+                        f"{incomplete_descendant['plan_status']}"
+                    )
             if debrief is not None:
                 existing_debrief = connection.execute(
                     "SELECT 1 FROM plan_debriefs WHERE plan_id = ?",

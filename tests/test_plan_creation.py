@@ -92,10 +92,35 @@ class PlanCreationTests(unittest.TestCase):
         result = self.create(body)
         self.assertEqual(parent, result["plan_id"])
         self.assertEqual(5, len(self.store.plan_tree(parent)["plans"]))
-        for children in ({}, {"subplans": []}):
-            one = self.create({"content": "Singleton", "taskname": "single", **children})
-            self.assertEqual([], one["subplans"])
-        self.assertEqual(7, self.count())
+        with self.assertRaisesRegex(ValueError, "root plan creation requires subplans"):
+            self.create({"content": "Missing list", "taskname": "single"})
+        one = self.create({
+            "content": "Singleton",
+            "taskname": "single",
+            "subplans": [],
+        })
+        self.assertEqual([], one["subplans"])
+        self.assertEqual(6, self.count())
+
+    def test_completed_parent_requires_completed_subplans(self):
+        with self.assertRaisesRegex(ValueError, "every direct subplan"):
+            self.create({
+                "type": "plan",
+                "taskname": "done",
+                "content": "Completed parent",
+                "status": "completed",
+                "subplans": [{"content": "Pending child"}],
+            })
+
+        created = self.create({
+            "type": "plan",
+            "taskname": "done",
+            "content": "Completed parent",
+            "status": "completed",
+            "subplans": [{"content": "Completed child", "status": "completed"}],
+        })
+        self.assertEqual("completed", created["status"])
+        self.assertEqual("completed", created["subplans"][0]["status"])
 
     def test_invalid_children_metadata_and_payload_are_all_or_nothing(self):
         malformed = [None, {}, ["child"], [{"content": " "}], [{"content": "x", "taskname": "x" * 33}],

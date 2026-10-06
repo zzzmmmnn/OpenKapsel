@@ -413,6 +413,7 @@ class WorkspaceServerTests(unittest.TestCase):
             nonce="Ef56Gh78",
             body={
                 "type": "plan",
+                "subplans": [],
                 "taskname": "signed-envelope",
                 "content": "Create a plan through the GET transport envelope.",
                 **self._conversation_plan_fields(
@@ -3498,6 +3499,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint("/context"),
             {
                 "type": "plan",
+                "subplans": [],
                 "taskname": "completion-dry-run",
                 "content": "Verify Context dry-run happens before Memory mutation.",
                 **self._conversation_plan_fields(
@@ -3605,6 +3607,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint("/context"),
             {
                 "type": "plan",
+                "subplans": [],
                 "taskname": "context-integration",
                 "content": "Complete the context integration test.",
                 **self._conversation_plan_fields(
@@ -6578,6 +6581,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint("/context"),
             {
                 "type": "plan",
+                "subplans": [],
                 "taskname": "atomic-memory",
                 "content": "Verify Plan completion Memory mutations are atomic.",
                 **self._conversation_plan_fields(
@@ -6697,6 +6701,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint("/context"),
             {
                 "type": "plan",
+                "subplans": [],
                 "taskname": "auth-memory",
                 "content": "Investigate login failures.",
                 **self._conversation_plan_fields(
@@ -6746,6 +6751,7 @@ class WorkspaceServerTests(unittest.TestCase):
             endpoint("/context"),
             {
                 "type": "plan",
+                "subplans": [],
                 "taskname": "auth-followup",
                 "content": "Change the login page.",
                 **self._conversation_plan_fields(

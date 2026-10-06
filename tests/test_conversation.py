@@ -41,6 +41,7 @@ class ConversationTests(unittest.TestCase):
             "type": "plan",
             "taskname": "conversation-plan",
             "content": "Implement the requested change.",
+            "subplans": [],
             "conversation_id": conversation["conversation_id"],
             "writer_nonce": conversation["writer_nonce"],
             "conversation_entries": [
@@ -316,6 +317,7 @@ class ConversationTests(unittest.TestCase):
                     "type": "plan",
                     "taskname": "bad-owner",
                     "content": "Must roll back.",
+                    "subplans": [],
                     "conversation_id": conversation["conversation_id"],
                     "writer_nonce": "@zzzz@"
                     if conversation["writer_nonce"] != "@zzzz@"

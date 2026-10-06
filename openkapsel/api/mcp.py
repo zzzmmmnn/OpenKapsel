@@ -338,7 +338,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_add",
         "Add workspace context",
-        "Append an AI-authored plan or note. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
+        "Append an AI-authored plan or note. Root Plan creation must include subplans; use [] when no direct children are needed. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
         _object_schema(
             {
                 "type": {
@@ -377,7 +377,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update a plan in place using its current revision as an optimistic concurrency precondition.",
+        "Update a plan in place using its current revision as an optimistic concurrency precondition. Completion is rejected until every descendant Plan is completed.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},

@@ -142,8 +142,10 @@ in its Context `request` field, so refs can also be recovered using the Plan tre
 
 Nested `subplans`, child `plan_id`, and arbitrary child fields are rejected.
 For deeper levels, a later call may supply an existing parent `plan_id`, thereby
-creating a new sub-plan with its own direct children. Omitting `subplans` or using
-`[]` creates one plan as before. Notes do not accept `subplans` or `request_id`.
+creating a new sub-plan with its own direct children. Root Plan creation requires
+`subplans`; use `[]` when there are no direct children. Sub-plan creation under
+an existing parent may omit `subplans`. Notes do not accept `subplans` or
+`request_id`.
 
 Content and taskname retain their existing per-entry limits. The combined
 normalized creation request is bounded to 256 KiB of UTF-8 JSON. There may be at

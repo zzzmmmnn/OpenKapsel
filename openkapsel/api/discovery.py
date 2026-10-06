@@ -960,6 +960,8 @@ class DiscoveryMixin:
                     "plan_creation_returns_unfinished_root_plans": True,
                     "plan_creation": {
                         "atomic_subplans": True, "max_direct_subplans": MAX_SUBPLANS,
+                        "root_plan_requires_subplans_array": True,
+                        "empty_root_subplans_allowed": True,
                         "max_normalized_request_bytes": MAX_PLAN_REQUEST_BYTES,
                         "child_taskname_inherits": True, "nested_subplans": False,
                         "child_refs": "optional unique request-local labels echoed beside IDs",
@@ -1014,6 +1016,7 @@ class DiscoveryMixin:
                     "plan_creation_pushes_related_memory": True,
                     "plan_relevance_inputs": ["content", "scope_paths", "memory_tags"],
                     "plan_completion_requires_debrief": True,
+                    "plan_completion_requires_completed_descendants": True,
                     "plan_completion_context_begin_immediate_before_memory": True,
                     "plan_completion_context_dry_run_before_memory": True,
                     "plan_completion_context_lock_held_through_memory_and_commit": True,
