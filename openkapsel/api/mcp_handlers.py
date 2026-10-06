@@ -159,7 +159,7 @@ class McpHandlersMixin:
             },
             "instructions": (
                 "Paths are relative to this token's child workspace. Prefer fs_edit_text for focused edits. "
-                "Before modifying the workspace, preserve recent user/AI context in Conversation: query the next conversation_id before creation, retain the returned writer_nonce, and follow summary_status when a summary is requested. "
+                "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context before planning or modifying anything. Before creating a new Conversation, query next_conversation_id, retain the returned writer_nonce, and follow summary_status when a summary is requested. "
                 "Query or reuse an active root Plan before writes. Attach every modifying tool to its owning plan_id, taskname, and message; use context_plan_tree for hierarchy. Non-cancellation Plan updates append Conversation context; completion includes role=ai plus the required debrief. Cancellation-only updates may omit writer_nonce. "
                 "For reads, taskname and message are optional and only needed when the read should be recorded. Use Memory for durable cross-task facts and current revisions or ETags whenever a tool schema requires them. "
                 "Low-frequency Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load discovery/mcp only when their operation schema is needed. "

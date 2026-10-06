@@ -200,6 +200,11 @@ class DiscoveryMixin:
             for key in list(endpoints):
                 if key not in {"discovery", "credential"}:
                     endpoints.pop(key)
+            payload["bootstrap"] = [
+                "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context.",
+                "Then query active root Plans and reuse the relevant Plan when possible.",
+                "Load relevant Memory before starting work that depends on durable cross-task facts.",
+            ]
             payload["mutation_core"] = {
                 "sections": ["context", "memory", "files"],
                 "context_covers": ["conversation", "plan"],
@@ -207,6 +212,7 @@ class DiscoveryMixin:
             }
             payload["workflow"] = [
                 "Read main once for shared authentication, token, Skill, and endpoint-default metadata.",
+                "On first use, query the most recent Conversation before planning or modifying the workspace.",
                 "Before any workspace mutation, load discovery/context, discovery/memory, and discovery/files; context covers Conversation and Plan.",
                 "Load transport, shell, schedules, web, or sharing only when that capability is needed.",
                 "Use discovery/full only for compatibility or comprehensive inspection.",
