@@ -12,6 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from openkapsel.contract import (
+    MAX_CONTEXT_CONTENT_CHARS,
+    MAX_CONTEXT_OPERATION_MESSAGE_CHARS,
+    MAX_CONTEXT_TASKNAME_CHARS,
+    PLAN_STATUSES,
+)
 from openkapsel.context.conversation import (
     append_conversation,
     conversation_summary_status,
@@ -27,13 +33,9 @@ from openkapsel.workspace.workspace_layout import CONTEXT_DIRECTORY, ensure_work
 CONTEXT_DATABASE = "context.sqlite3"
 CONTEXT_TYPES = {"operation", "plan", "note"}
 OPERATION_STATUSES = {"running", "succeeded", "failed"}
-PLAN_STATUSES = {"in_progress", "completed", "cancelled"}
 MAX_CONTEXT_ENTRIES = 100_000
 CONTEXT_TRIM_ENTRIES = 1_000
 MAX_CONTEXT_QUERY_LIMIT = 200
-MAX_CONTEXT_CONTENT_CHARS = 32_768
-MAX_CONTEXT_OPERATION_MESSAGE_CHARS = 200
-MAX_CONTEXT_TASKNAME_CHARS = 32
 MAX_CONTEXT_ACTOR_ID_CHARS = 256
 MAX_CONTEXT_PATH_CHARS = 4_096
 CONTEXT_PATH_KEYS = {"path", "source", "destination", "cwd"}

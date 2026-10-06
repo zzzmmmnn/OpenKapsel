@@ -3,8 +3,21 @@ from __future__ import annotations
 import unittest
 
 from openkapsel.api.mcp import ALL_TOOLS, tools_for
-from openkapsel.contract import memory_actions_schema
-from openkapsel.routes import ENDPOINTS, discovery_keys, match_endpoint
+from openkapsel.contract import (
+    memory_actions_schema,
+    memory_content_schema,
+    memory_id_schema,
+    memory_path_schema,
+    memory_tags_schema,
+    revision_schema,
+)
+from openkapsel.routes import (
+    ENDPOINTS,
+    discovery_keys,
+    discovery_route_metadata,
+    endpoint_route_template,
+    match_endpoint,
+)
 from openkapsel.auth.tokens import TokenRecord
 
 
@@ -116,6 +129,31 @@ class EndpointContractTests(unittest.TestCase):
         self.assertIsNone(match_endpoint("GET", "/mapping/abcdefghijklmnopqrstuvwx/tasks"))
         self.assertIsNone(match_endpoint("POST", "/mapping/abcdefghijklmnopqrstuvwx/tasks/task_abc/kill"))
 
+    def test_public_route_metadata_is_derived_from_dispatch_contracts(self) -> None:
+        for endpoint in ENDPOINTS:
+            with self.subTest(endpoint=endpoint.name):
+                route = endpoint_route_template(endpoint.name)
+                self.assertIsInstance(route, str)
+                self.assertTrue(route.startswith("/"))
+                self.assertNotIn("(?P<", route)
+
+        self.assertEqual(
+            {"method": "POST", "route": "/fs/write/mutate"},
+            discovery_route_metadata("fs_mutate"),
+        )
+        self.assertEqual(
+            {
+                "method": "GET, PATCH, or DELETE",
+                "methods": ["GET", "PATCH", "DELETE"],
+                "route": "/memory/<memory_id>",
+            },
+            discovery_route_metadata("memory_item"),
+        )
+        self.assertEqual(
+            {"method": "POST", "route": "/rpc/<family>/<operation>"},
+            discovery_route_metadata("server_rpc"),
+        )
+
     def test_every_routed_endpoint_has_a_discovery_key(self) -> None:
         self.assertEqual(
             {endpoint.discovery_key for endpoint in ENDPOINTS},
@@ -143,6 +181,19 @@ class EndpointContractTests(unittest.TestCase):
             {"action", "memory_id", "expected_revision", "content", "tags", "path"},
             set(update["properties"]),
         )
+
+    def test_memory_tools_reuse_shared_primitives_without_opaque_id_format_noise(self) -> None:
+        by_name = {tool["name"]: tool for tool in ALL_TOOLS}
+        get_props = by_name["memory_get"]["inputSchema"]["properties"]
+        self.assertEqual(memory_id_schema(), get_props["memory_id"])
+        self.assertNotIn("pattern", get_props["memory_id"])
+
+        update_props = by_name["memory_update"]["inputSchema"]["properties"]
+        self.assertEqual(memory_id_schema(), update_props["memory_id"])
+        self.assertEqual(revision_schema(), update_props["expected_revision"])
+        self.assertEqual(memory_content_schema(), update_props["content"])
+        self.assertEqual(memory_tags_schema(), update_props["tags"])
+        self.assertEqual(memory_path_schema(), update_props["path"])
 
     def test_discovery_exposes_discovery_sections(self) -> None:
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")

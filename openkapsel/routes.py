@@ -17,6 +17,7 @@ class EndpointSpec:
     methods: frozenset[str]
     pattern: Pattern[str]
     handler: str
+    route_template: str | None = None
     invocation: Invocation = "none"
     parameter: str | None = None
     control_required: bool = False
@@ -48,6 +49,7 @@ def _exact(
         methods=frozenset(methods),
         pattern=re.compile(re.escape(route)),
         handler=handler,
+        route_template=route,
         **kwargs,
     )
 
@@ -63,12 +65,12 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         request_body=True, context_mode="deferred", context_operations=(("POST", "fs.transfer.control"), ("GET", "fs.transfer.get")), discovery_key="transfer"),
     EndpointSpec("server_rpc", frozenset(("POST",)),
         re.compile(r"/rpc/(?P<target>[a-z][a-z0-9_]{0,31}/[a-z][a-z0-9_]{0,31})"),
-        "_handle_server_rpc", invocation="param", parameter="target",
+        "_handle_server_rpc", route_template="/rpc/<family>/<operation>", invocation="param", parameter="target",
         request_body=True, transfer_slot=True, discovery_key="rpc"),
     _exact("mapping_list", ("GET",), "/mapping", "_handle_mapping_list", discovery_key="mapping"),
     EndpointSpec("mapping_rpc", frozenset(("POST",)),
         re.compile(r"/mapping/(?P<target>[A-Za-z0-9][A-Za-z0-9_-]{0,63}/rpc/[a-z][a-z0-9_]{0,31}/[a-z][a-z0-9_]{0,31})"),
-        "_handle_mapping_rpc", invocation="param", parameter="target",
+        "_handle_mapping_rpc", route_template="/mapping/<mapping_name>/rpc/<family>/<operation>", invocation="param", parameter="target",
         request_body=True, transfer_slot=True, discovery_key="rpc"),
     _exact(
         "credential_renew", ("POST",), "/credential/renew", "_handle_credential_renew",
@@ -346,7 +348,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     EndpointSpec(
         "context_plan_tree", frozenset(("GET",)),
         re.compile(r"/context/plans/(?P<context_id>[^/]+)/tree"),
-        "_handle_context_plan_tree", invocation="param_query", parameter="context_id",
+        "_handle_context_plan_tree", route_template="/context/plans/<plan_id>/tree", invocation="param_query", parameter="context_id",
         control_required=True, discovery_key="context",
     ),
     EndpointSpec(
@@ -434,6 +436,96 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="task",
     ),
 )
+
+
+def _pattern_route_template(pattern: str) -> str:
+    """Convert named regex groups to compact public <name> route placeholders."""
+    result: list[str] = []
+    index = 0
+    while index < len(pattern):
+        marker = pattern.find("(?P<", index)
+        if marker < 0:
+            result.append(pattern[index:])
+            break
+        result.append(pattern[index:marker])
+        name_end = pattern.find(">", marker + 4)
+        if name_end < 0:
+            result.append(pattern[marker:])
+            break
+        name = pattern[marker + 4:name_end]
+        depth = 1
+        cursor = name_end + 1
+        escaped = False
+        in_class = False
+        while cursor < len(pattern) and depth:
+            char = pattern[cursor]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "[":
+                in_class = True
+            elif char == "]" and in_class:
+                in_class = False
+            elif not in_class and char == "(":
+                depth += 1
+            elif not in_class and char == ")":
+                depth -= 1
+            cursor += 1
+        if depth:
+            result.append(pattern[marker:])
+            break
+        result.append(f"<{name}>")
+        index = cursor
+    route = "".join(result)
+    if route.endswith("/?"):
+        route = route[:-2]
+    return route
+
+
+_DISCOVERY_ROUTE_ALIASES: dict[str, tuple[str, ...]] = {
+    "memory_item": ("memory_item", "memory_item_mutate"),
+    "mcp": ("mcp_post",),
+}
+
+_ENDPOINTS_BY_NAME = {endpoint.name: endpoint for endpoint in ENDPOINTS}
+_METHOD_ORDER = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
+
+
+def endpoint_route_template(name: str) -> str | None:
+    endpoint = _ENDPOINTS_BY_NAME.get(name)
+    if endpoint is None:
+        return None
+    return endpoint.route_template or _pattern_route_template(endpoint.pattern.pattern)
+
+
+def discovery_route_metadata(name: str) -> dict[str, object] | None:
+    """Return canonical route/method metadata for one Discovery endpoint."""
+    route_names = _DISCOVERY_ROUTE_ALIASES.get(name, (name,))
+    endpoints = [_ENDPOINTS_BY_NAME[item] for item in route_names if item in _ENDPOINTS_BY_NAME]
+    if not endpoints:
+        return None
+    templates = {endpoint_route_template(endpoint.name) for endpoint in endpoints}
+    templates.discard(None)
+    if len(templates) != 1:
+        return None
+    methods = [
+        method
+        for method in _METHOD_ORDER
+        if any(method in endpoint.methods for endpoint in endpoints)
+    ]
+    if not methods:
+        return None
+    if len(methods) == 1:
+        method_label = methods[0]
+    elif len(methods) == 2:
+        method_label = f"{methods[0]} or {methods[1]}"
+    else:
+        method_label = ", ".join(methods[:-1]) + f", or {methods[-1]}"
+    result: dict[str, object] = {"method": method_label, "route": next(iter(templates))}
+    if len(methods) > 1:
+        result["methods"] = methods
+    return result
 
 
 def match_endpoint(method: str, route: str) -> tuple[EndpointSpec, re.Match[str]] | None:

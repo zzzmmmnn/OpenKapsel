@@ -5,10 +5,33 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from openkapsel.context.conversation import MAX_CONVERSATION_SUMMARY_CHARS
-from openkapsel.context.context_store import MAX_CONTEXT_CONTENT_CHARS, PLAN_STATUSES
-from openkapsel.context.memory_store import MAX_MEMORY_SCOPE_PATHS, MAX_MEMORY_TAGS
 from openkapsel.files.text_encoding import ENCODINGS
+
+
+PLAN_STATUSES = frozenset({"in_progress", "completed", "cancelled"})
+MAX_CONTEXT_CONTENT_CHARS = 32_768
+MAX_CONTEXT_OPERATION_MESSAGE_CHARS = 200
+MAX_CONTEXT_TASKNAME_CHARS = 32
+
+MAX_MEMORY_CONTENT_CHARS = 256
+MAX_MEMORY_TAGS = 32
+MAX_MEMORY_SCOPE_PATHS = 64
+MAX_MEMORY_TAG_CHARS = 64
+MAX_MEMORY_PATH_CHARS = 4_096
+MAX_MEMORY_CHANGE_MESSAGE_CHARS = 200
+
+MAX_CONVERSATION_CONTENT_CHARS = 1_000
+MAX_CONVERSATION_SUMMARY_CHARS = 8_192
+MAX_CONVERSATION_BATCH_ENTRIES = 100
+CONVERSATION_ROLES = ("user", "ai", "summary")
+
+PLAN_COMPLETION_MEMORY_GUIDANCE = (
+    "Each debrief.items entry creates one new Memory from content plus tags. "
+    "memory_actions only updates or archives existing Memory; memory_feedback lists only Memory "
+    "that materially helped; every memory_conflicts item must be resolved by updating or archiving "
+    "that Memory in the same debrief. If completion fails ambiguously after Memory may have changed, "
+    "query current Memory before retrying debrief.items to avoid duplicate Memory."
+)
 
 
 _PATH_SCHEMA = {
@@ -47,6 +70,151 @@ def text_encoding_schema() -> dict[str, Any]:
     return copy.deepcopy(_TEXT_ENCODING_SCHEMA)
 
 
+def plan_id_schema(*, nullable: bool = False, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": ["integer", "null"] if nullable else "integer", "minimum": 1}
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def revision_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "integer", "minimum": 1}
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def taskname_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "string", "minLength": 1, "maxLength": MAX_CONTEXT_TASKNAME_CHARS}
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def operation_message_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "string", "minLength": 1, "maxLength": MAX_CONTEXT_OPERATION_MESSAGE_CHARS}
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def plan_status_schema(*, description: str | None = None, default: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "string", "enum": sorted(PLAN_STATUSES)}
+    if default is not None:
+        schema["default"] = default
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def conversation_id_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "integer", "minimum": 0}
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def writer_nonce_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "string", "minLength": 1}
+    schema["description"] = description or (
+        "Opaque writer nonce returned by conversation_create; retain it for that Conversation "
+        "and pass it back unchanged when appending or updating its Plan context."
+    )
+    return schema
+
+
+def conversation_role_schema() -> dict[str, Any]:
+    return {"type": "string", "enum": list(CONVERSATION_ROLES)}
+
+
+def conversation_entry_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["role", "content"],
+        "properties": {
+            "role": conversation_role_schema(),
+            "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_CONVERSATION_SUMMARY_CHARS,
+                "description": (
+                    f"user/ai max {MAX_CONVERSATION_CONTENT_CHARS} chars; "
+                    f"summary max {MAX_CONVERSATION_SUMMARY_CHARS} chars"
+                ),
+            },
+        },
+    }
+
+
+def conversation_entries_schema(
+    *,
+    min_items: int = 1,
+    description: str | None = None,
+) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "array",
+        "minItems": min_items,
+        "maxItems": MAX_CONVERSATION_BATCH_ENTRIES,
+        "items": conversation_entry_schema(),
+    }
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def memory_id_schema() -> dict[str, Any]:
+    return {"type": "string", "minLength": 1}
+
+
+def memory_content_schema() -> dict[str, Any]:
+    return {"type": "string", "minLength": 1, "maxLength": MAX_MEMORY_CONTENT_CHARS}
+
+
+def memory_tags_schema(*, description: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": MAX_MEMORY_TAGS,
+        "description": description or "At least one exact-match tag is required; prefer 4-16 specific reusable tags.",
+        "items": {"type": "string", "minLength": 1, "maxLength": MAX_MEMORY_TAG_CHARS},
+    }
+
+
+def memory_path_schema(*, description: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_MEMORY_PATH_CHARS,
+        "description": description or (
+            "One canonical Memory scope: server:<path>, mapping:<mapping_id>:<path>, or "
+            "storage:<provider_id>:<path>. server:. is the workspace-global root."
+        ),
+    }
+
+
+def plan_scope_paths_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "array",
+        "maxItems": MAX_MEMORY_SCOPE_PATHS,
+        "items": {"type": "string", "minLength": 1, "maxLength": MAX_MEMORY_PATH_CHARS},
+    }
+    if description:
+        schema["description"] = description
+    return schema
+
+
+def plan_memory_tags_schema(*, description: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "array",
+        "maxItems": MAX_MEMORY_TAGS,
+        "items": {"type": "string", "minLength": 1, "maxLength": MAX_MEMORY_TAG_CHARS},
+    }
+    if description:
+        schema["description"] = description
+    return schema
+
+
 MAX_SUBPLANS = 64
 MAX_PLAN_REQUEST_BYTES = 256 * 1024
 MAX_PLAN_REQUESTS = 100_000
@@ -83,60 +251,25 @@ def plan_creation_properties() -> dict[str, Any]:
                         "minLength": 1,
                         "maxLength": MAX_CONTEXT_CONTENT_CHARS,
                     },
-                    "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
-                    "status": {
-                        "type": "string",
-                        "enum": sorted(PLAN_STATUSES),
-                        "default": "in_progress",
-                    },
-                    "scope_paths": {
-                        "type": "array",
-                        "maxItems": MAX_MEMORY_SCOPE_PATHS,
-                        "items": {"type": "string", "minLength": 1, "maxLength": 4096},
-                    },
-                    "memory_tags": {
-                        "type": "array",
-                        "maxItems": MAX_MEMORY_TAGS,
-                        "items": {"type": "string", "minLength": 1, "maxLength": 64},
-                    },
+                    "taskname": taskname_schema(),
+                    "status": plan_status_schema(default="in_progress"),
+                    "scope_paths": plan_scope_paths_schema(),
+                    "memory_tags": plan_memory_tags_schema(),
                 },
             },
         },
-        "conversation_id": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Non-negative Conversation id that owns this Plan creation.",
-        },
-        "writer_nonce": {
-            "type": "string",
-            "pattern": "^@[A-Za-z0-9]{4}@$",
-            "description": (
-                "Six-character writer nonce in @xxxx@ form; required for Plan creation. "
-                "It is not an authentication token."
-            ),
-        },
-        "conversation_entries": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 100,
-            "description": (
-                "One or more append-only Conversation records committed atomically with Plan creation."
-            ),
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["role", "content"],
-                "properties": {
-                    "role": {"type": "string", "enum": ["user", "ai", "summary"]},
-                    "content": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": MAX_CONVERSATION_SUMMARY_CHARS,
-                        "description": "user/ai max 1000 chars; summary max 8192 chars",
-                    },
-                },
-            },
-        },
+        "conversation_id": conversation_id_schema(
+            description="Non-negative Conversation id that owns this Plan creation."
+        ),
+        "writer_nonce": writer_nonce_schema(
+            description=(
+                "Opaque writer nonce returned by conversation_create for this Conversation; "
+                "required for Plan creation and passed unchanged."
+            )
+        ),
+        "conversation_entries": conversation_entries_schema(
+            description="One or more append-only Conversation records committed atomically with Plan creation."
+        ),
         "request_id": {
             "type": "string",
             "minLength": 1,
@@ -369,26 +502,12 @@ def mutation_item_example() -> dict[str, Any]:
     return copy.deepcopy(_MUTATION_ITEM_EXAMPLE)
 
 
-_MEMORY_CONTENT = {"type": "string", "minLength": 1, "maxLength": 256}
-_MEMORY_TAGS = {
-    "type": "array",
-    "minItems": 1,
-    "maxItems": 32,
-    "uniqueItems": True,
-    "description": "At least one exact-match tag is required; prefer 4-16 specific reusable tags.",
-    "items": {"type": "string", "minLength": 1, "maxLength": 64},
-}
-_MEMORY_PATH = {
-    "type": "string",
-    "minLength": 1,
-    "maxLength": 4096,
-    "description": (
-        "One canonical Memory scope: server:<path>, mapping:<mapping_id>:<path>, or "
-        "storage:<provider_id>:<path>. server:. is the workspace-global root."
-    ),
-}
-_MEMORY_ID = {"type": "string", "pattern": "^mem_[A-Za-z0-9_-]+$"}
-_REVISION = {"type": "integer", "minimum": 1}
+_MEMORY_CONTENT = memory_content_schema()
+_MEMORY_TAGS = memory_tags_schema()
+_MEMORY_PATH = memory_path_schema()
+_MEMORY_ID = memory_id_schema()
+_REVISION = revision_schema()
+
 
 
 def _action_object(

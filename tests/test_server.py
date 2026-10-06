@@ -835,6 +835,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("full", payload["section"])
         self.assertLess(len(json.dumps(main)) * 3, len(json.dumps(payload)))
+        self.assertNotIn("@xxxx@", json.dumps(payload))
+        self.assertEqual(
+            "POST",
+            discovery_operation(payload, "fs_write", "mutate")["method"],
+        )
         section_endpoint_sets = []
         for section_name in ("transport", "files", "context", "memory", "shell", "schedules", "web", "sharing"):
             section_status, section_payload = self.request(
@@ -2653,6 +2658,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("2025-11-25", initialized["result"]["protocolVersion"])
         self.assertEqual({"listChanged": False}, initialized["result"]["capabilities"]["tools"])
         self.assertEqual("1", initialized["result"]["serverInfo"]["version"])
+        self.assertNotIn("@xxxx@", json.dumps(initialized))
 
         notification = json.dumps(
             {"jsonrpc": "2.0", "method": "notifications/initialized"}
@@ -2672,6 +2678,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, listed, _ = self.mcp_request(token, 2, "tools/list", {})
         self.assertEqual(200, status)
+        self.assertNotIn("@xxxx@", json.dumps(listed))
         binary_tool = next(
             tool for tool in listed["result"]["tools"] if tool["name"] == "fs_read_binary"
         )

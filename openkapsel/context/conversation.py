@@ -8,12 +8,15 @@ import string
 from datetime import datetime, timezone
 from typing import Any
 
-MAX_CONVERSATION_CONTENT_CHARS = 1000
-MAX_CONVERSATION_SUMMARY_CHARS = 8192
+from openkapsel.contract import (
+    CONVERSATION_ROLES,
+    MAX_CONVERSATION_CONTENT_CHARS,
+    MAX_CONVERSATION_SUMMARY_CHARS,
+)
+
 MAX_CONVERSATION_QUERY_LIMIT = 100
 CONVERSATION_SUMMARY_PROMPT_AFTER = 40
 CONVERSATION_SUMMARY_REQUIRED_AFTER = 49
-CONVERSATION_ROLES = {"user", "ai", "summary"}
 CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
 _CONVERSATION_ALPHABET = string.ascii_letters + string.digits
 

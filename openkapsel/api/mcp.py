@@ -6,16 +6,31 @@ import copy
 from typing import Any
 
 from openkapsel.contract import (
+    MAX_CONVERSATION_SUMMARY_CHARS,
     MUTATION_MAX_ITEMS,
+    conversation_entries_schema,
+    conversation_id_schema,
+    conversation_role_schema,
+    memory_content_schema,
+    memory_id_schema,
+    memory_path_schema,
+    memory_tags_schema,
     mutation_item_schema,
     nonnegative_schema,
-    plan_creation_properties,
+    operation_message_schema,
     path_schema,
+    plan_creation_properties,
     plan_debrief_schema,
+    plan_id_schema,
+    plan_memory_tags_schema,
+    plan_scope_paths_schema,
+    plan_status_schema,
     positive_schema,
+    revision_schema,
+    taskname_schema,
     text_encoding_schema,
+    writer_nonce_schema,
 )
-from openkapsel.context.conversation import MAX_CONVERSATION_SUMMARY_CHARS
 from openkapsel.auth.tokens import TokenRecord
 from openkapsel import __version__
 
@@ -53,20 +68,9 @@ def _tool(
     context_message: bool = True,
 ) -> dict[str, Any]:
     if context_message:
-        schema["properties"]["plan_id"] = {
-            "type": "integer",
-            "minimum": 1,
-        }
-        schema["properties"]["taskname"] = {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 32,
-        }
-        schema["properties"]["message"] = {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200,
-        }
+        schema["properties"]["plan_id"] = plan_id_schema()
+        schema["properties"]["taskname"] = taskname_schema()
+        schema["properties"]["message"] = operation_message_schema()
         if not read_only:
             required = schema.setdefault("required", [])
             for field in ("plan_id", "taskname", "message"):
@@ -110,9 +114,15 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "args": {"type": "object", "default": {}},
             "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 86400, "description": "Optional client task deadline for execution=task; cannot exceed the client max_seconds policy."},
-            "plan_id": {"type": "integer", "minimum": 1, "description": "Required owning Plan id when operation_specs.<operation>.write is true."},
-            "taskname": {"type": "string", "minLength": 1, "maxLength": 32, "description": "Required task grouping name for a write RPC operation."},
-            "message": {"type": "string", "minLength": 1, "maxLength": 200, "description": "Required short reason for a write RPC operation."},
+            "plan_id": plan_id_schema(
+                description="Required owning Plan id when operation_specs.<operation>.write is true."
+            ),
+            "taskname": taskname_schema(
+                description="Required task grouping name for a write RPC operation."
+            ),
+            "message": operation_message_schema(
+                description="Required short reason for a write RPC operation."
+            ),
         }, ("family", "operation")),
         read_only=False,
         context_message=False,
@@ -155,28 +165,16 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_create",
         "Create conversation",
-        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns writer_nonce in @xxxx@ form plus append instructions.",
+        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns an opaque writer_nonce plus append instructions.",
         _object_schema(
             {
-                "conversation_id": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Required next sequential id from conversation_query.next_conversation_id; first id is 0.",
-                },
-                "entries": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 100,
-                    "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["role", "content"],
-                    "properties": {
-                        "role": {"type": "string", "enum": ["user", "ai", "summary"]},
-                        "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; these per-side context summaries may preserve original wording and need no extra compression when already within limit; summary max 8192 chars and is a compressed aggregate checkpoint"},
-                    },
-                },
-                },
+                "conversation_id": conversation_id_schema(
+                    description="Required next sequential id from conversation_query.next_conversation_id; first id is 0."
+                ),
+                "entries": conversation_entries_schema(
+                    min_items=2,
+                    description="Initial Conversation records; the first must be user and the second ai.",
+                ),
             },
             ("conversation_id", "entries"),
         ),
@@ -186,28 +184,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_append",
         "Append conversation",
-        "Atomically append one or more immutable Conversation records using conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may preserve original wording without extra compression when it already fits. summary is dynamic, not tied to a fixed sub_id: after 40 user/ai entries since the newest summary, the response recommends a role=summary over the range beginning at that summary (or sub_id 1); after 49, another user/ai entry is rejected until summary is appended. Responses include summary_status.",
+        "Atomically append one or more immutable Conversation records using conversation_id plus the writer_nonce returned by conversation_create. user/ai records are per-side context summaries (max 1000 chars); summary is the aggregate checkpoint. Responses include summary_status.",
         _object_schema(
             {
-                "conversation_id": {"type": "integer", "minimum": 0},
-                "writer_nonce": {
-                    "type": "string",
-                    "pattern": "^@[A-Za-z0-9]{4}@$",
-                },
-                "entries": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 100,
-                    "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["role", "content"],
-                    "properties": {
-                        "role": {"type": "string", "enum": ["user", "ai", "summary"]},
-                        "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
-                    },
-                },
-                },
+                "conversation_id": conversation_id_schema(),
+                "writer_nonce": writer_nonce_schema(),
+                "entries": conversation_entries_schema(),
             },
             ("conversation_id", "writer_nonce", "entries"),
         ),
@@ -220,9 +202,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Search append-only Conversation records and return next_conversation_id for the next required create call. Cross-conversation queries default to each Conversation's newest summary plus later records; set full=true for complete history. With conversation_id, start_sub_id/end_sub_id select a sub-id range.",
         _object_schema(
             {
-                "conversation_id": {"type": "integer", "minimum": 0},
+                "conversation_id": conversation_id_schema(),
                 "query": {"type": "string", "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "default": ""},
-                "role": {"type": "string", "enum": ["user", "ai", "summary"]},
+                "role": conversation_role_schema(),
                 "start_sub_id": {"type": "integer", "minimum": 1},
                 "end_sub_id": {"type": "integer", "minimum": 1},
                 "full": {"type": "boolean", "default": False},
@@ -322,27 +304,19 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 },
                 **plan_creation_properties(),
                 "content": {"type": "string", "minLength": 1},
-                "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
-                "plan_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Parent plan for a sub-plan; required owning plan for a note. Omit only for a root plan.",
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["in_progress", "completed", "cancelled"],
-                    "description": "Plan status for a sub-plan created under an existing parent. Root Plan creation must omit status and always starts in_progress; omit for notes.",
-                },
-                "scope_paths": {
-                    "type": "array",
-                    "maxItems": 64,
-                    "description": "Optional workspace-relative paths used to retrieve related Memory when creating a plan.",
-                },
-                "memory_tags": {
-                    "type": "array",
-                    "maxItems": 32,
-                    "description": "Optional exact Memory tags used to retrieve related Memory when creating a plan.",
-                },
+                "taskname": taskname_schema(),
+                "plan_id": plan_id_schema(
+                    description="Parent plan for a sub-plan; required owning plan for a note. Omit only for a root plan."
+                ),
+                "status": plan_status_schema(
+                    description="Plan status for a sub-plan created under an existing parent. Root Plan creation must omit status and always starts in_progress; omit for notes."
+                ),
+                "scope_paths": plan_scope_paths_schema(
+                    description="Optional workspace-relative paths used to retrieve related Memory when creating a plan."
+                ),
+                "memory_tags": plan_memory_tags_schema(
+                    description="Optional exact Memory tags used to retrieve related Memory when creating a plan."
+                ),
             },
             ("type", "content", "taskname"),
         ),
@@ -356,43 +330,23 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},
-                "expected_revision": {"type": "integer", "minimum": 1},
-                "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
+                "expected_revision": revision_schema(),
+                "taskname": taskname_schema(),
                 "content": {"type": "string", "minLength": 1},
-                "plan_id": {
-                    "type": ["integer", "null"],
-                    "minimum": 1,
-                    "description": "Optional new parent plan id; null moves the plan to the root.",
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["in_progress", "completed", "cancelled"],
-                },
-                "conversation_id": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Owning non-negative Conversation id. Required for every Plan update except cancellation-only.",
-                },
-                "writer_nonce": {
-                    "type": "string",
-                    "pattern": "^@[A-Za-z0-9]{4}@$",
-                    "description": "Owning Conversation writer_nonce in @xxxx@ form. This is not an authentication token. Required except cancellation-only.",
-                },
-                "conversation_entries": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 100,
-                    "description": "Conversation records committed atomically with the Plan update. Completion must include at least one role=ai.",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["role", "content"],
-                        "properties": {
-                            "role": {"type": "string", "enum": ["user", "ai", "summary"]},
-                            "content": {"type": "string", "minLength": 1, "maxLength": MAX_CONVERSATION_SUMMARY_CHARS, "description": "user/ai max 1000 chars; summary max 8192 chars"},
-                        },
-                    },
-                },
+                "plan_id": plan_id_schema(
+                    nullable=True,
+                    description="Optional new parent plan id; null moves the plan to the root.",
+                ),
+                "status": plan_status_schema(),
+                "conversation_id": conversation_id_schema(
+                    description="Owning Conversation id. Required for every Plan update except cancellation-only."
+                ),
+                "writer_nonce": writer_nonce_schema(
+                    description="Writer nonce returned for the owning Conversation; required except cancellation-only and passed unchanged."
+                ),
+                "conversation_entries": conversation_entries_schema(
+                    description="Conversation records committed atomically with the Plan update. Completion must include at least one role=ai."
+                ),
                 "debrief": {
                     **plan_debrief_schema(),
                     "description": "Required when completing a plan: items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each item directly creates one new long-lived Memory; multiple items create multiple Memories. Each item has 1-256 character content plus tags (prefer 4-16). One path is derived by the server from successful writes owned by the Plan. memory_actions only updates or archives existing Memory.",
@@ -430,7 +384,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Read one Memory by stable memory_id, optionally including its revision history.",
         _object_schema(
             {
-                "memory_id": {"type": "string", "minLength": 1},
+                "memory_id": memory_id_schema(),
                 "include_revisions": {"type": "boolean", "default": False},
                 "revision_limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 100},
             },
@@ -455,27 +409,17 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Create a revisioned project Memory with short content, exact tags, and one optional canonical path.",
         _object_schema(
             {
-                "content": {"type": "string", "minLength": 1, "maxLength": 256},
-                "tags": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 32,
-                    "description": "At least one tag is required; prefer 4-16 specific reusable exact-match tags.",
-                },
-                "path": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4096,
-                    "description": "Optional canonical scope: server:<path>, mapping:<id>:<path>, storage:<id>:<path>; omitted defaults to server:.",
-                },
-                "plan_id": {"type": "integer", "minimum": 1},
-                "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
-                "message": {"type": "string", "minLength": 1, "maxLength": 200},
+                "content": memory_content_schema(),
+                "tags": memory_tags_schema(
+                    description="At least one tag is required; prefer 4-16 specific reusable exact-match tags."
+                ),
+                "path": memory_path_schema(
+                    description="Optional canonical scope; omitted defaults to server:."
+                ),
             },
-            ("content", "tags", "plan_id", "taskname", "message"),
+            ("content", "tags"),
         ),
         read_only=False,
-        context_message=False,
     ),
     _tool(
         "memory_update",
@@ -483,30 +427,16 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Update content, tags, or path of one Memory using its current revision as an optimistic concurrency precondition. Legacy content longer than 256 characters may remain unchanged, but replacement content is limited to 256.",
         _object_schema(
             {
-                "memory_id": {"type": "string", "minLength": 1},
-                "expected_revision": {"type": "integer", "minimum": 1},
-                "content": {"type": "string", "minLength": 1, "maxLength": 256},
-                "tags": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 32,
-                    "description": "At least one tag is required; prefer 4-16 specific reusable exact-match tags.",
-                },
-                "path": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 4096,
-                    "description": "Canonical scope: server:<path>, mapping:<id>:<path>, storage:<id>:<path>; server:. is global.",
-                },
-                "plan_id": {"type": "integer", "minimum": 1},
-                "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
-                "message": {"type": "string", "minLength": 1, "maxLength": 200},
+                "memory_id": memory_id_schema(),
+                "expected_revision": revision_schema(),
+                "content": memory_content_schema(),
+                "tags": memory_tags_schema(),
+                "path": memory_path_schema(),
             },
-            ("memory_id", "expected_revision", "plan_id", "taskname", "message"),
+            ("memory_id", "expected_revision"),
         ),
         read_only=False,
         idempotent=True,
-        context_message=False,
     ),
     _tool(
         "memory_archive",
@@ -514,18 +444,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Soft-delete one Memory while retaining its revision history.",
         _object_schema(
             {
-                "memory_id": {"type": "string", "minLength": 1},
-                "expected_revision": {"type": "integer", "minimum": 1},
-                "plan_id": {"type": "integer", "minimum": 1},
-                "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
-                "message": {"type": "string", "minLength": 1, "maxLength": 200},
+                "memory_id": memory_id_schema(),
+                "expected_revision": revision_schema(),
             },
-            ("memory_id", "expected_revision", "plan_id", "taskname", "message"),
+            ("memory_id", "expected_revision"),
         ),
         read_only=False,
         destructive=True,
         idempotent=True,
-        context_message=False,
     ),
     _tool(
         "context_note_replace",
@@ -534,9 +460,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},
-                "taskname": {"type": "string", "minLength": 1, "maxLength": 32},
+                "taskname": taskname_schema(),
                 "content": {"type": "string", "minLength": 1},
-                "plan_id": {"type": "integer", "minimum": 1},
+                "plan_id": plan_id_schema(),
             },
             ("id", "taskname", "content", "plan_id"),
         ),

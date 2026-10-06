@@ -13,6 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from openkapsel.contract import (
+    MAX_MEMORY_CHANGE_MESSAGE_CHARS,
+    MAX_MEMORY_CONTENT_CHARS,
+    MAX_MEMORY_PATH_CHARS,
+    MAX_MEMORY_SCOPE_PATHS,
+    MAX_MEMORY_TAG_CHARS,
+    MAX_MEMORY_TAGS,
+)
 from openkapsel.random_ids import token_urlsafe_alnum
 from openkapsel.workspace.workspace_layout import CONTEXT_DIRECTORY, ensure_workspace_directory, ensure_workspace_layout
 
@@ -21,12 +29,6 @@ MEMORY_DATABASE = "memory.sqlite3"
 MAX_MEMORY_QUERY_LIMIT = 200
 MAX_MEMORY_REVISION_LIMIT = 200
 MAX_MEMORY_RELATED_CANDIDATES = 2_000
-MAX_MEMORY_CONTENT_CHARS = 256
-MAX_MEMORY_TAGS = 32
-MAX_MEMORY_SCOPE_PATHS = 64
-MAX_MEMORY_TAG_CHARS = 64
-MAX_MEMORY_PATH_CHARS = 4_096
-MAX_MEMORY_CHANGE_MESSAGE_CHARS = 200
 MAX_MEMORY_FEEDBACK_REFS = 20
 LEGACY_DISCARDED_STATUSES = frozenset({"outdated", "superseded", "resolved", "wontfix"})
 
