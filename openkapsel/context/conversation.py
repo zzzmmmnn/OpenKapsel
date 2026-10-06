@@ -15,6 +15,7 @@ from openkapsel.contract import (
 )
 
 MAX_CONVERSATION_QUERY_LIMIT = 100
+DEFAULT_RECENT_CONVERSATION_COUNT = 2
 CONVERSATION_SUMMARY_PROMPT_AFTER = 40
 CONVERSATION_SUMMARY_REQUIRED_AFTER = 49
 CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
@@ -331,6 +332,53 @@ def query_conversations(
     query = query.strip()
     if len(query) > MAX_CONVERSATION_SUMMARY_CHARS:
         raise ValueError(f"conversation query exceeds {MAX_CONVERSATION_SUMMARY_CHARS} characters")
+
+    # The unfiltered default is a context-restore query, not an entry search. Keep each
+    # Conversation window intact so unrelated entries from different Conversations are
+    # never interleaved or partially returned.
+    if conversation_id is None and not full and not query and role is None:
+        conversation_rows = connection.execute(
+            "SELECT id FROM conversations ORDER BY id DESC LIMIT ?",
+            (DEFAULT_RECENT_CONVERSATION_COUNT,),
+        ).fetchall()
+        windows: list[list[sqlite3.Row]] = []
+        total = 0
+        for conversation_row in conversation_rows:
+            selected_id = int(conversation_row["id"])
+            summary_row = connection.execute(
+                "SELECT MAX(sub_id) AS sub_id FROM conversation_entries "
+                "WHERE conversation_id = ? AND role = 'summary'",
+                (selected_id,),
+            ).fetchone()
+            start_sub_id_value = (
+                int(summary_row["sub_id"])
+                if summary_row is not None and summary_row["sub_id"] is not None
+                else 1
+            )
+            rows = connection.execute(
+                "SELECT conversation_id, sub_id, created_at, role, content "
+                "FROM conversation_entries WHERE conversation_id = ? AND sub_id >= ? "
+                "ORDER BY sub_id ASC",
+                (selected_id, start_sub_id_value),
+            ).fetchall()
+            windows.append(rows)
+            total += len(rows)
+
+        selected_rows: list[sqlite3.Row] = []
+        for rows in windows:
+            if len(selected_rows) + len(rows) > limit:
+                break
+            selected_rows.extend(rows)
+        return [
+            {
+                "conversation_id": int(row["conversation_id"]),
+                "sub_id": int(row["sub_id"]),
+                "created_at": row["created_at"],
+                "role": row["role"],
+                "content": row["content"],
+            }
+            for row in selected_rows
+        ], total, next_conversation_id(connection)
 
     clauses: list[str] = []
     values: list[Any] = []

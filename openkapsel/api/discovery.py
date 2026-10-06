@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import quote
 
 from openkapsel.context.conversation import (
+    DEFAULT_RECENT_CONVERSATION_COUNT,
     MAX_CONVERSATION_QUERY_LIMIT,
     CONVERSATION_SUMMARY_PROMPT_AFTER,
     CONVERSATION_SUMMARY_REQUIRED_AFTER,
@@ -982,7 +983,8 @@ class DiscoveryMixin:
                         "summary_window_starts_at_latest_summary_or_one": True,
                         "append_returns_summary_status": True,
                         "query_max_entries": MAX_CONVERSATION_QUERY_LIMIT,
-                        "cross_conversation_default_window": "newest summary entry plus all later entries for each conversation",
+                        "cross_conversation_default_count": DEFAULT_RECENT_CONVERSATION_COUNT,
+                        "cross_conversation_default_window": "newest conversation_ids; each whole window from newest summary entry (or sub_id 1) through latest entry",
                         "full_query_supported": True,
                         "conversation_sub_id_range_supported": True,
                         "plan_create_requires_writer_nonce_and_entry": True,
@@ -1554,7 +1556,7 @@ class DiscoveryMixin:
                     "url_query": "conversation_id=<integer>&query=<text>&role=<user|ai|summary>&start_sub_id=<integer>&end_sub_id=<integer>&full=false&limit=100",
                     "authentication": "Bearer control token + files.read",
                     "response": {"next_conversation_id": "required id for the next conversation_create; 0 when no Conversation exists"},
-                    "notes": "limit cannot exceed 100; without conversation_id, full=false searches only each conversation's newest summary plus later entries; full=true searches complete history; start_sub_id/end_sub_id require conversation_id; query before creating a Conversation and pass next_conversation_id to conversation_create",
+                    "notes": f"limit cannot exceed 100; without conversation_id/query/role and with full=false, return the {DEFAULT_RECENT_CONVERSATION_COUNT} newest conversation_ids as whole contiguous windows, newest id first and each window ordered from its newest summary (or sub_id 1) forward; limit never splits a default window; full=true searches complete history; start_sub_id/end_sub_id require conversation_id; query before creating a Conversation and pass next_conversation_id to conversation_create",
                 },
                 "conversation_create": {
                     "authentication": "Bearer control token",

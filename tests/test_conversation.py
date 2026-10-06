@@ -241,53 +241,74 @@ class ConversationTests(unittest.TestCase):
         self.assertFalse(resumed["summary_status"]["recommended"])
         self.assertEqual(91, resumed["summary_status"]["source_start_sub_id"])
 
-    def test_cross_conversation_query_defaults_to_latest_summary_window(self) -> None:
+    def test_cross_conversation_query_returns_two_recent_whole_windows(self) -> None:
         first = self.create_conversation("first")
         self.store.append_conversation(
             conversation_id=first["conversation_id"],
             writer_nonce=first["writer_nonce"],
-            entries=[
-                {"role": "ai" if index % 2 else "user", "content": f"old first {index}"}
-                for index in range(3, 30)
-            ]
-            + [
-                {"role": "summary", "content": "latest first summary"},
-                {"role": "ai", "content": "new first decision"},
-            ],
+            entries=[{"role": "user", "content": "oldest conversation detail"}],
         )
+
         second = self.create_conversation("second")
         self.store.append_conversation(
             conversation_id=second["conversation_id"],
             writer_nonce=second["writer_nonce"],
-            entries=[{"role": "user", "content": "second has no summary yet"}],
+            entries=[
+                {"role": "user", "content": "old second detail"},
+                {"role": "ai", "content": "old second response"},
+                {"role": "summary", "content": "latest second summary"},
+                {"role": "user", "content": "new second decision"},
+                {"role": "ai", "content": "new second response"},
+            ],
+        )
+
+        third = self.create_conversation("third")
+        self.store.append_conversation(
+            conversation_id=third["conversation_id"],
+            writer_nonce=third["writer_nonce"],
+            entries=[{"role": "user", "content": "latest conversation detail"}],
         )
 
         recent, recent_total, next_id = self.store.conversation_query(limit=100)
-        first_rows = [
-            item for item in recent if item["conversation_id"] == first["conversation_id"]
-        ]
-        second_rows = [
-            item for item in recent if item["conversation_id"] == second["conversation_id"]
-        ]
-        self.assertEqual([31, 30], [item["sub_id"] for item in first_rows])
-        self.assertEqual({1, 2, 3}, {item["sub_id"] for item in second_rows})
-        self.assertEqual(5, recent_total)
-        self.assertEqual(2, next_id)
+        self.assertEqual(3, next_id)
+        self.assertEqual(6, recent_total)
+        self.assertEqual(
+            [third["conversation_id"]] * 3 + [second["conversation_id"]] * 3,
+            [item["conversation_id"] for item in recent],
+        )
+        third_rows = [item for item in recent if item["conversation_id"] == third["conversation_id"]]
+        second_rows = [item for item in recent if item["conversation_id"] == second["conversation_id"]]
+        self.assertEqual([1, 2, 3], [item["sub_id"] for item in third_rows])
+        self.assertEqual([5, 6, 7], [item["sub_id"] for item in second_rows])
+        self.assertNotIn(first["conversation_id"], {item["conversation_id"] for item in recent})
+
+        bounded, bounded_total, bounded_next_id = self.store.conversation_query(limit=4)
+        self.assertEqual(6, bounded_total)
+        self.assertEqual(3, bounded_next_id)
+        self.assertEqual(
+            [third["conversation_id"]] * 3,
+            [item["conversation_id"] for item in bounded],
+        )
+        self.assertEqual([1, 2, 3], [item["sub_id"] for item in bounded])
+
+        too_small, too_small_total, _ = self.store.conversation_query(limit=2)
+        self.assertEqual([], too_small)
+        self.assertEqual(6, too_small_total)
 
         full, full_total, full_next_id = self.store.conversation_query(full=True, limit=100)
-        self.assertEqual(34, full_total)
-        self.assertEqual(2, full_next_id)
-        self.assertEqual(31, len([x for x in full if x["conversation_id"] == first["conversation_id"]]))
+        self.assertEqual(13, full_total)
+        self.assertEqual(3, full_next_id)
+        self.assertEqual(3, len([x for x in full if x["conversation_id"] == first["conversation_id"]]))
 
         ranged, ranged_total, ranged_next_id = self.store.conversation_query(
-            conversation_id=first["conversation_id"],
-            start_sub_id=28,
-            end_sub_id=31,
+            conversation_id=second["conversation_id"],
+            start_sub_id=4,
+            end_sub_id=7,
             limit=100,
         )
         self.assertEqual(4, ranged_total)
-        self.assertEqual(2, ranged_next_id)
-        self.assertEqual([31, 30, 29, 28], [item["sub_id"] for item in ranged])
+        self.assertEqual(3, ranged_next_id)
+        self.assertEqual([7, 6, 5, 4], [item["sub_id"] for item in ranged])
 
         with self.assertRaises(ValueError):
             self.store.conversation_query(start_sub_id=2)

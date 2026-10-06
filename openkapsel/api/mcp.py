@@ -31,6 +31,7 @@ from openkapsel.contract import (
     text_encoding_schema,
     writer_nonce_schema,
 )
+from openkapsel.context.conversation import DEFAULT_RECENT_CONVERSATION_COUNT
 from openkapsel.auth.tokens import TokenRecord
 from openkapsel import __version__
 
@@ -226,7 +227,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_query",
         "Query conversations",
-        "Search append-only Conversation records and return next_conversation_id for the next required create call. Cross-conversation queries default to each Conversation's newest summary plus later records; set full=true for complete history. With conversation_id, start_sub_id/end_sub_id select a sub-id range.",
+        f"Search append-only Conversation records and return next_conversation_id for the next required create call. With no filters and full=false, return the {DEFAULT_RECENT_CONVERSATION_COUNT} newest Conversation windows as whole contiguous groups: newest conversation_id first, and within each group from its newest summary (or sub_id 1) forward in sub_id order. limit never splits a default Conversation window. Set full=true for complete-history entry search. With conversation_id, start_sub_id/end_sub_id select a sub-id range.",
         _object_schema(
             {
                 "conversation_id": conversation_id_schema(),
@@ -235,7 +236,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "start_sub_id": {"type": "integer", "minimum": 1},
                 "end_sub_id": {"type": "integer", "minimum": 1},
                 "full": {"type": "boolean", "default": False},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100, "description": "Maximum returned entries; default recent-window mode never splits a Conversation window."},
             }
         ),
         read_only=True,
