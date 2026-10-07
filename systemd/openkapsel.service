@@ -22,6 +22,11 @@ Delegate=cpu memory pids
 
 # The API process is deliberately non-root. Namespace restrictions are applied
 # by Bubblewrap/RootlessKit to restricted-shell tasks and FastAPI workers.
+# RootlessKit uses newuidmap/newgidmap file capabilities. Keep the parent service
+# free of systemd directives that implicitly force PR_SET_NO_NEW_PRIVS, otherwise
+# those helpers cannot establish the subordinate UID/GID maps. The child
+# sandboxes apply their own namespace, network, and resource restrictions.
+NoNewPrivileges=false
 PrivateTmp=true
 # RootlessKit/slirp4netns needs TUN. Keep a closed device cgroup and allow only
 # that device in addition to systemd's standard API pseudo-devices.
@@ -37,7 +42,6 @@ InaccessiblePaths=/root/.ssh
 # procfs has no ProtectKernelTunables over-mounts. The main process is non-root,
 # workers do not mount sysfs, and each restricted sandbox gets a private procfs.
 ProtectKernelTunables=false
-ProtectKernelModules=true
 # ProtectKernelLogs similarly over-mounts /proc/kmsg and prevents a nested
 # procfs mount. The non-root service and user-namespace workers have no
 # CAP_SYSLOG in the host user namespace, so they cannot read kernel logs.
@@ -46,10 +50,7 @@ ProtectKernelLogs=false
 ProtectControlGroups=false
 ProtectProc=invisible
 ProtectClock=true
-LockPersonality=true
-RestrictRealtime=true
 KeyringMode=private
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

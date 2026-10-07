@@ -46,7 +46,7 @@ from openkapsel.contract import (
     path_schema,
     text_encoding_schema,
 )
-from openkapsel.execution.tasks import BoundedOutput
+from openkapsel.execution.tasks import BoundedOutput, _injected_file_descriptor
 from openkapsel.files.uploads import UploadRegistry
 from openkapsel.workspace.workspace_images import WorkspaceImage
 
@@ -2695,6 +2695,27 @@ class WorkspaceServerTests(unittest.TestCase):
                 owner_token="shutdown-token",
             )
         self.assertEqual("shell_registry_closing", context.exception.code)
+
+    def test_injected_file_descriptor_avoids_rootlesskit_fd_three(self) -> None:
+        class DescriptorThree:
+            @staticmethod
+            def fileno() -> int:
+                return 3
+
+        with patch("openkapsel.execution.tasks.os.dup", return_value=7) as duplicate:
+            descriptor, owned_duplicate = _injected_file_descriptor(DescriptorThree())
+        duplicate.assert_called_once_with(3)
+        self.assertEqual(7, descriptor)
+        self.assertEqual(7, owned_duplicate)
+
+        class DescriptorNine:
+            @staticmethod
+            def fileno() -> int:
+                return 9
+
+        descriptor, owned_duplicate = _injected_file_descriptor(DescriptorNine())
+        self.assertEqual(9, descriptor)
+        self.assertIsNone(owned_duplicate)
 
     def test_sandbox_launcher_command_is_redacted_from_task_stderr(self) -> None:
         target = BoundedOutput(1024 * 1024)

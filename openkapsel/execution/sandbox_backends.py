@@ -144,7 +144,7 @@ class BubblewrapBackend:
             if Path(library_root).exists():
                 argv.extend(["--ro-bind", library_root, library_root])
         for host_path in (
-            "/etc/ssl", "/etc/ca-certificates", "/etc/ld.so.conf.d", "/etc/passwd",
+            "/etc/ssl", "/etc/ca-certificates", "/etc/pki", "/etc/ld.so.conf.d", "/etc/passwd",
             "/etc/group", "/etc/nsswitch.conf", "/etc/hosts", "/etc/services",
             "/etc/protocols", "/etc/gai.conf", "/etc/localtime", "/etc/timezone",
             "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/fonts", "/etc/gitconfig",

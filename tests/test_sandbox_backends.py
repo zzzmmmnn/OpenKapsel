@@ -167,6 +167,38 @@ class PodmanBackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "cannot guarantee"):
                     backend.build_shell(spec)
 
+    def test_bubblewrap_binds_rhel_certificate_store_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "bwrap"
+            rootlesskit = root / "rootlesskit"
+            workspace = root / "workspace"
+            for path in (executable, rootlesskit):
+                path.write_text("#!/bin/sh\n", encoding="utf-8")
+                path.chmod(0o755)
+            workspace.mkdir()
+            spec = SandboxSpec(
+                command="true", cwd=workspace, scope_root=workspace,
+                can_write=True, network_mode="full", allowed_domains=(),
+                proxy_root=root / "proxies", allowed_paths=(), hidden_paths=(),
+                limits=SandboxLimits(64, 256 * 1024 * 1024, 100), owner_token="token",
+            )
+            original_exists = Path.exists
+            def exists(path: Path) -> bool:
+                return str(path) == "/etc/pki" or original_exists(path)
+            with (
+                patch(
+                    "openkapsel.execution.sandbox_backends.apparmor_restricts_user_namespaces",
+                    return_value=False,
+                ),
+                patch("pathlib.Path.exists", autospec=True, side_effect=exists),
+            ):
+                argv = BubblewrapBackend(
+                    executable, rootlesskit, aggregate_resources=False
+                ).build_shell(spec).argv
+            triples = set(zip(argv, argv[1:], argv[2:]))
+            self.assertIn(("--ro-bind", "/etc/pki", "/etc/pki"), triples)
+
     def test_domain_mode_remains_offline_except_for_token_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -86,10 +86,21 @@ class ApiWorkerSandboxTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("ProtectProc=invisible", service)
         self.assertIn("ProtectKernelTunables=false", service)
-        self.assertIn("ProtectKernelModules=true", service)
         self.assertIn("ProtectKernelLogs=false", service)
+        self.assertIn("NoNewPrivileges=false", service)
         self.assertNotIn("ProtectKernelTunables=true", service)
         self.assertNotIn("ProtectKernelLogs=true", service)
+        # RootlessKit's newuidmap/newgidmap helpers rely on filesystem
+        # capabilities. For a non-root systemd service these directives imply
+        # NoNewPrivileges=yes even when `systemctl show` reports the configured
+        # NoNewPrivileges=false value.
+        for directive in (
+            "ProtectKernelModules=true",
+            "LockPersonality=true",
+            "RestrictRealtime=true",
+            "RestrictAddressFamilies=",
+        ):
+            self.assertNotIn(directive, service)
 
     def test_worker_mounts_only_its_app_venv_and_private_proc(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

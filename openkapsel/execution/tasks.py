@@ -28,6 +28,21 @@ from openkapsel.execution.task_history import ArchivedTask, TaskHistoryStore
 
 LOGGER = logging.getLogger("openkapsel")
 RESOLVER_FD_MARKER = "__OPENKAPSEL_RESOLVER_FD__"
+
+
+def _injected_file_descriptor(file_object) -> tuple[int, int | None]:
+    """Return an inheritable-child FD that RootlessKit will not reserve.
+
+    RootlessKit uses descriptor 3 for its parent/child control channel and closes
+    an inherited fd 3 before executing the requested child. Bubblewrap's --file
+    resolver injection therefore needs a duplicate when TemporaryFile happens to
+    allocate descriptor 3. subprocess.Popen(pass_fds=...) handles inheritance.
+    """
+    descriptor = file_object.fileno()
+    if descriptor != 3:
+        return descriptor, None
+    duplicate = os.dup(descriptor)
+    return duplicate, duplicate
 _SANDBOX_STDERR_BUFFER_LIMIT = 256 * 1024
 _SANDBOX_LAUNCHERS = (b"bwrap", b"rootlesskit", b"cgroup_exec.py")
 _SANDBOX_LAUNCH_ARGUMENTS = (
@@ -694,6 +709,7 @@ class TaskRegistry:
 
     def _run(self, task: ShellTask) -> None:
         injected_file = None
+        duplicated_injected_fd = None
         try:
             command: str | tuple[str, ...] = task.argv if task.argv is not None else task.command
             if task.argv is None and task.environment_file is not None:
@@ -706,10 +722,13 @@ class TaskRegistry:
                 injected_file = tempfile.TemporaryFile()
                 injected_file.write(task.stdin_data)
                 injected_file.seek(0)
-                descriptor = injected_file.fileno()
+                descriptor, duplicated_injected_fd = _injected_file_descriptor(injected_file)
                 if task.argv is None:
                     raise RuntimeError("injected files require an argv command")
-                command = tuple(str(descriptor) if item == RESOLVER_FD_MARKER else item for item in task.argv)
+                command = tuple(
+                    str(descriptor) if item == RESOLVER_FD_MARKER else item
+                    for item in task.argv
+                )
                 pass_fds = (descriptor,)
             use_shell = task.argv is None
             executable = "/bin/sh" if use_shell else None
@@ -735,6 +754,9 @@ class TaskRegistry:
                 pass_fds=pass_fds,
                 env=task.process_environment,
             )
+            if duplicated_injected_fd is not None:
+                os.close(duplicated_injected_fd)
+                duplicated_injected_fd = None
             if injected_file is not None:
                 injected_file.close()
                 injected_file = None
@@ -784,6 +806,8 @@ class TaskRegistry:
                 from openkapsel.mapping.mapping_process import release_native_task
                 if not release_native_task(task):
                     LOGGER.error("retaining mapping lease for live process group of task %s", task.id)
+            if duplicated_injected_fd is not None:
+                os.close(duplicated_injected_fd)
             if injected_file is not None:
                 injected_file.close()
             if task.process is not None and task.process.stdin is not None and not task.process.stdin.closed:
