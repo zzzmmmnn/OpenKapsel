@@ -49,7 +49,6 @@ ProtectKernelLogs=false
 # Delegate only this service's subtree so OpenKapsel can create per-Token cgroups.
 ProtectControlGroups=false
 ProtectProc=invisible
-ProtectClock=true
 KeyringMode=private
 
 [Install]

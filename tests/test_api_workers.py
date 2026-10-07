@@ -96,6 +96,7 @@ class ApiWorkerSandboxTests(unittest.TestCase):
         # NoNewPrivileges=false value.
         for directive in (
             "ProtectKernelModules=true",
+            "ProtectClock=true",
             "LockPersonality=true",
             "RestrictRealtime=true",
             "RestrictAddressFamilies=",
