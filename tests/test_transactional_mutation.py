@@ -222,6 +222,42 @@ class TransactionalMutationTests(unittest.TestCase):
         self.assertEqual("old B", (self.root / "b").read_text())
         self.assertTrue(list(self.root.glob(".*.openkapsel-transfer-txn-*")))
 
+    def test_file_create_missing_parent_is_preflight_client_error(self):
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                result = self.call(
+                    "fs_mutate",
+                    {
+                        "items": [
+                            {
+                                "op": "file.create",
+                                "path": "missing-parent/child.txt",
+                                "content": "x",
+                            }
+                        ],
+                        "dry_run": dry_run,
+                    },
+                )
+                self.assertEqual(400, result["status"], result)
+                self.assertEqual("parent_not_found", result["error"]["code"])
+                self.assertFalse((self.root / "missing-parent").exists())
+
+        (self.root / "not-dir").write_text("x", encoding="utf-8")
+        result = self.call(
+            "fs_mutate",
+            {
+                "items": [
+                    {
+                        "op": "file.create",
+                        "path": "not-dir/child.txt",
+                        "content": "x",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(400, result["status"], result)
+        self.assertEqual("not_a_directory", result["error"]["code"])
+
     def test_create_replace_structured_patch_and_dry_run(self):
         (self.root / "whole.txt").write_text("before", encoding="utf-8")
         (self.root / "config.json").write_text(

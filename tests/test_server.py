@@ -4707,6 +4707,24 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual("x x", (self.root / "duplicate.txt").read_text())
 
+    def test_file_create_missing_parent_returns_client_error(self) -> None:
+        plan_id = self._ensure_test_plan("test-token")
+        status, payload = self.mutate(
+            [
+                {
+                    "op": "file.create",
+                    "path": "missing-parent/child.txt",
+                    "content": "x",
+                }
+            ],
+            plan_id=plan_id,
+            taskname="file-create",
+            message="Verify missing parent error mapping",
+        )
+        self.assertEqual(400, status, payload)
+        self.assertEqual("parent_not_found", payload["error"]["code"])
+        self.assertFalse((self.root / "missing-parent").exists())
+
     def test_batch_replace_supports_multiple_original_text_edits_per_file(self) -> None:
         first = self.root / "project" / "batch-first.txt"
         second = self.root / "project" / "batch-second.txt"

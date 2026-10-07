@@ -573,6 +573,22 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
                 "invalid_request",
                 "transactional file.create does not create parent directories; create them explicitly first",
             )
+        try:
+            parent_details = handler._file_stat(path.parent)
+        except ApiError as exc:
+            if exc.code == "path_not_found":
+                raise ApiError(
+                    400,
+                    "parent_not_found",
+                    f"items[{index}] parent directory does not exist",
+                ) from None
+            raise
+        if not stat.S_ISDIR(parent_details.st_mode):
+            raise ApiError(
+                400,
+                "not_a_directory",
+                f"items[{index}] parent path is not a directory",
+            )
         if not _missing(handler, path):
             raise ApiError(409, "path_exists", f"items[{index}] create target already exists")
         content = item.get("content")
