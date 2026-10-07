@@ -957,11 +957,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "schedule_control",
         "Control schedule",
-        "Delete, execute, pause, or resume one schedule.",
+        "End, execute, pause, or resume one schedule. end preserves the schedule and run history; status defaults to stopped and may be stopped or completed.",
         _object_schema(
             {
-                "operation": {"type": "string", "enum": ["delete", "execute", "pause", "resume"]},
+                "operation": {"type": "string", "enum": ["end", "execute", "pause", "resume"]},
                 "schedule_id": {"type": "string"},
+                "status": {"type": "string", "enum": ["stopped", "completed"], "default": "stopped"},
             },
             ("operation", "schedule_id"),
         ),
@@ -1126,7 +1127,7 @@ _AUXILIARY_OPERATION_MAP: dict[
             ("schedule_id", "expected_revision", "name", "schedule", "command", "cwd", "timeout_seconds", "overlap_policy", "misfire_policy", "run_context"),
             ("schedule_id", "expected_revision"), "sync",
         ),
-        "delete": ("schedule_control", "delete", ("schedule_id",), ("schedule_id",), "sync"),
+        "end": ("schedule_control", "end", ("schedule_id", "status"), ("schedule_id",), "sync"),
         "execute": ("schedule_control", "execute", ("schedule_id",), ("schedule_id",), "sync"),
         "pause": ("schedule_control", "pause", ("schedule_id",), ("schedule_id",), "sync"),
         "resume": ("schedule_control", "resume", ("schedule_id",), ("schedule_id",), "sync"),

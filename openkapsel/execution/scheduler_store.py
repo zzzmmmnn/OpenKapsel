@@ -29,7 +29,7 @@ MAX_SCHEDULE_RUNS_PER_SCHEDULE = 50
 SCHEDULE_RUN_RETENTION_DAYS = 30
 MAX_SCHEDULE_LOOKAHEAD_DAYS = 366 * 8
 SCHEDULE_TYPES = {"cron", "interval", "once"}
-SCHEDULE_STATUSES = {"active", "paused", "completed"}
+SCHEDULE_STATUSES = {"active", "paused", "stopped", "completed"}
 OVERLAP_POLICIES = {"skip"}
 MISFIRE_POLICIES = {"skip", "coalesce"}
 RUN_STATUSES = {
@@ -601,7 +601,7 @@ class ScheduleStore:
             if current.status == "completed":
                 connection.rollback()
                 raise ScheduleError(
-                    "a completed once schedule cannot be updated; create a new schedule"
+                    "a completed schedule cannot be updated; create a new schedule"
                 )
             if current.revision != expected_revision:
                 connection.rollback()
@@ -676,9 +676,6 @@ class ScheduleStore:
                     timezone=timing.timezone,
                     next_run_at=timing.next_run_at if current.status == "active" else None,
                 )
-                if current.status == "completed":
-                    values["status"] = "active"
-                    values["next_run_at"] = timing.next_run_at
             updated_at = iso_utc(utc_now())
             connection.execute(
                 """
@@ -718,15 +715,67 @@ class ScheduleStore:
                 connection.rollback()
                 raise KeyError("schedule does not exist")
             record = self._serialize(row)
-            if record.status != "paused":
+            if record.status not in {"paused", "stopped"}:
                 connection.rollback()
-                raise ScheduleError("only a paused schedule can be resumed")
+                raise ScheduleError("only a paused or stopped schedule can be resumed")
+            if record.status == "stopped" and record.type == "once":
+                connection.rollback()
+                raise ScheduleError("a once schedule cannot be resumed after it is stopped")
+            if record.status == "stopped":
+                active_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM schedules WHERE app_id = ? AND status IN ('active', 'paused')",
+                        (app_id,),
+                    ).fetchone()[0]
+                )
+                if active_count >= MAX_ACTIVE_SCHEDULES_PER_APP:
+                    connection.rollback()
+                    raise ScheduleError(
+                        f"an app identity cannot have more than {MAX_ACTIVE_SCHEDULES_PER_APP} active or paused schedules"
+                    )
             timing = self._timing_for(record, utc_now())
             now = iso_utc(utc_now())
             connection.execute(
                 """UPDATE schedules SET status = 'active', next_run_at = ?, updated_at = ?,
                        revision = revision + 1 WHERE schedule_id = ?""",
                 (timing.next_run_at, now, schedule_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM schedules WHERE schedule_id = ?", (schedule_id,)
+            ).fetchone()
+            connection.commit()
+        assert updated is not None
+        return self._serialize(updated)
+
+    def end(
+        self, app_id: str, schedule_id: str, *, status: str
+    ) -> ScheduleRecord:
+        if status not in {"stopped", "completed"}:
+            raise ScheduleError("end status must be stopped or completed")
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM schedules WHERE app_id = ? AND schedule_id = ?",
+                (app_id, schedule_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError("schedule does not exist")
+            current = self._serialize(row)
+            if current.type == "once":
+                connection.rollback()
+                raise ScheduleError("schedule end is only valid for cron or interval schedules")
+            if current.status == "completed" and status != "completed":
+                connection.rollback()
+                raise ScheduleError("a completed schedule cannot be restarted or stopped")
+            if current.status == status:
+                connection.commit()
+                return current
+            now = iso_utc(utc_now())
+            connection.execute(
+                """UPDATE schedules SET status = ?, next_run_at = NULL, updated_at = ?,
+                       revision = revision + 1 WHERE schedule_id = ?""",
+                (status, now, schedule_id),
             )
             updated = connection.execute(
                 "SELECT * FROM schedules WHERE schedule_id = ?", (schedule_id,)
@@ -808,11 +857,12 @@ class ScheduleStore:
                 return None
             record = self._serialize(row)
             if force:
+                if record.status == "stopped":
+                    connection.rollback()
+                    raise ScheduleError("a stopped schedule cannot run; resume it first")
                 if record.status == "completed":
                     connection.rollback()
-                    raise ScheduleError(
-                        "a completed once schedule cannot run again; create a new schedule"
-                    )
+                    raise ScheduleError("a completed schedule cannot run; create a new schedule")
                 if record.running_task_id is not None:
                     connection.rollback()
                     raise ScheduleError("the schedule already has a running task")
@@ -1025,23 +1075,6 @@ class ScheduleStore:
                     "UPDATE schedules SET running_task_id = NULL WHERE running_task_id IS NOT NULL"
                 )
                 return len(runs)
-
-    def delete(self, app_id: str, schedule_id: str) -> None:
-        with self._lock, closing(self._connect()) as connection:
-            with connection:
-                cursor = connection.execute(
-                    """DELETE FROM schedules WHERE app_id = ? AND schedule_id = ?
-                       AND running_task_id IS NULL""",
-                    (app_id, schedule_id),
-                )
-                if cursor.rowcount != 1:
-                    existing = connection.execute(
-                        "SELECT running_task_id FROM schedules WHERE app_id = ? AND schedule_id = ?",
-                        (app_id, schedule_id),
-                    ).fetchone()
-                    if existing is None:
-                        raise KeyError("schedule does not exist")
-                    raise ScheduleError("a running schedule cannot be deleted")
 
     def delete_app(self, app_id: str) -> int:
         with self._lock, closing(self._connect()) as connection:

@@ -30,6 +30,7 @@ class ContextHttpMixin:
     ) -> None:
         """Require messages for mutations and optionally track named reads."""
         self._context_deferred_operation: str | None = None
+        self._context_deferred_plan_in_progress_required = True
         self._context_entry_id: int | None = None
         self._context_operation: str | None = None
         if endpoint is None or endpoint.context_mode == "none":
@@ -39,6 +40,9 @@ class ContextHttpMixin:
             raise RuntimeError(f"endpoint {endpoint.name} has no context operation")
         if endpoint.context_mode == "deferred":
             self._context_deferred_operation = operation
+            self._context_deferred_plan_in_progress_required = (
+                endpoint.context_plan_in_progress_required
+            )
             return
         if endpoint.context_mode == "header":
             message = self._context_header_message() or ""
@@ -50,6 +54,7 @@ class ContextHttpMixin:
                 self._context_header_plan_id(),
                 self._context_request_details(query),
                 plan_required=True,
+                require_plan_in_progress=endpoint.context_plan_in_progress_required,
             )
             return
         message_values = query.get("message", [])
@@ -79,6 +84,7 @@ class ContextHttpMixin:
         request: dict[str, Any] | None = None,
         *,
         plan_required: bool,
+        require_plan_in_progress: bool | None = None,
     ) -> int:
         if not isinstance(taskname, str) or not taskname.strip():
             raise ApiError(
@@ -108,6 +114,9 @@ class ContextHttpMixin:
             plan_id,
             required=plan_required,
         )
+        plan_must_be_in_progress = (
+            plan_required if require_plan_in_progress is None else require_plan_in_progress
+        )
         try:
             entry_id = self.server.context_for(self.token_scope_root).add(
                 "operation",
@@ -118,7 +127,7 @@ class ContextHttpMixin:
                 status="running",
                 plan_id=parsed_plan_id,
                 request=request,
-                require_plan_in_progress=plan_required,
+                require_plan_in_progress=plan_must_be_in_progress,
             )
         except ValueError as exc:
             raise ApiError(
@@ -148,6 +157,9 @@ class ContextHttpMixin:
             body.get("plan_id", self._context_header_plan_id()),
             self._context_request_details(body),
             plan_required=True,
+            require_plan_in_progress=getattr(
+                self, "_context_deferred_plan_in_progress_required", True
+            ),
         )
 
 

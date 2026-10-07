@@ -279,13 +279,21 @@ class McpHandlersMixin:
         )
         try:
             if track_operation:
+                plan_required = not effective_tool["annotations"]["readOnlyHint"]
+                schedule_lifecycle_exception = (
+                    effective_name == "schedule_control"
+                    and str(effective_arguments.get("operation", "")) in {"resume", "end"}
+                )
                 self._begin_context_operation(
                     f"mcp.{effective_name}",
                     effective_arguments.get("taskname"),
                     effective_arguments.get("message"),
                     effective_arguments.get("plan_id"),
                     self._context_request_details(effective_arguments),
-                    plan_required=not effective_tool["annotations"]["readOnlyHint"],
+                    plan_required=plan_required,
+                    require_plan_in_progress=(
+                        plan_required and not schedule_lifecycle_exception
+                    ),
                 )
             self._mcp_context_status = HTTPStatus.OK
             payload = self._execute_mcp_tool(effective_name, effective_arguments)
@@ -916,8 +924,8 @@ class McpHandlersMixin:
                 self._mcp_tool_arguments = {
                     key: value for key, value in arguments.items() if key != "operation"
                 }
-                if operation == "delete":
-                    self._handle_schedule_delete(schedule_id)
+                if operation == "end":
+                    self._handle_schedule_end(schedule_id)
                 elif operation == "execute":
                     self._handle_schedule_run(schedule_id)
                 elif operation == "pause":

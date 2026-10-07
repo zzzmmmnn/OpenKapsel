@@ -150,14 +150,23 @@ class ScheduleHandlersMixin:
         self.server.scheduler.changed()
         self._send_json(HTTPStatus.OK, record.public())
 
-    def _handle_schedule_delete(self, schedule_id: str) -> None:
-        self._read_json()
+    def _handle_schedule_end(self, schedule_id: str) -> None:
+        body = self._read_json()
+        status = body.get("status", "stopped")
+        if not isinstance(status, str):
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_schedule",
+                "status must be stopped or completed",
+            )
         try:
-            self._schedule_store().delete(self.token_record.app_id, schedule_id)
+            record = self._schedule_store().end(
+                self.token_record.app_id, schedule_id, status=status
+            )
         except (ScheduleError, KeyError) as exc:
             raise self._schedule_api_error(exc) from None
         self.server.scheduler.changed()
-        self._send_json(HTTPStatus.OK, {"schedule_id": schedule_id, "deleted": True})
+        self._send_json(HTTPStatus.OK, record.public())
 
     def _handle_schedule_pause(self, schedule_id: str) -> None:
         self._read_json()

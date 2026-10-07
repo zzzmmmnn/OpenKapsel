@@ -89,6 +89,10 @@ class EndpointContractTests(unittest.TestCase):
                 "schedule_resume",
                 {"schedule_id": "schedule_abc"},
             ),
+            ("POST", "/schedule/end/schedule_abc"): (
+                "schedule_end",
+                {"schedule_id": "schedule_abc"},
+            ),
             ("GET", "/schedule/run/list/schedule_abc"): (
                 "schedule_run_list",
                 {"schedule_id": "schedule_abc"},
@@ -235,6 +239,15 @@ class EndpointContractTests(unittest.TestCase):
             set(section["enum"]),
         )
 
+    def test_schedule_end_replaces_hard_delete_and_lifecycle_exceptions_are_narrow(self) -> None:
+        self.assertIsNone(match_endpoint("DELETE", "/schedule/schedule_abc"))
+        resume = next(endpoint for endpoint in ENDPOINTS if endpoint.name == "schedule_resume")
+        end = next(endpoint for endpoint in ENDPOINTS if endpoint.name == "schedule_end")
+        update = next(endpoint for endpoint in ENDPOINTS if endpoint.name == "schedule_update")
+        self.assertFalse(resume.context_plan_in_progress_required)
+        self.assertFalse(end.context_plan_in_progress_required)
+        self.assertTrue(update.context_plan_in_progress_required)
+
     def test_schedule_mcp_tools_require_separate_permission_and_shell(self) -> None:
         base = dict(token="read", name="test", created_at="2026-01-01T00:00:00+00:00")
         names = {
@@ -248,7 +261,7 @@ class EndpointContractTests(unittest.TestCase):
         self.assertTrue({"schedule_read", "schedule_write", "schedule_control"}.isdisjoint(names))
         enabled_record = TokenRecord(**base, shell_mode="restricted", can_schedule=True)
         schedule_ops = auxiliary_operations_for(enabled_record, True)["schedule"]["operation_specs"]
-        self.assertTrue({"list", "get", "create", "update", "delete", "execute"} <= set(schedule_ops))
+        self.assertTrue({"list", "get", "create", "update", "end", "execute"} <= set(schedule_ops))
 
         disabled_record = TokenRecord(**base, shell_mode="restricted", can_schedule=False)
         disabled = {tool["name"] for tool in tools_for(disabled_record, True)}

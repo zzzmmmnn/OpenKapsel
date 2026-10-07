@@ -10,7 +10,7 @@ A token needs both a non-`none` Shell mode and the separate scheduled-task permi
 
 Each dispatched command uses the token's current Shell mode, sandbox backend and image, environment configuration, network policy, additional path grants, cgroup limits, timeout, and ordinary global/per-token task limits. Credentials are never injected into the scheduled process.
 
-Disabling or deleting the token, allowing its workspace lifetime to expire, revoking Shell or schedules permission, or deleting the schedule prevents future dispatch. Expiration or rotation of the short-lived read/control credentials does not stop an otherwise valid schedule.
+Disabling or deleting the token, allowing its workspace lifetime to expire, or revoking Shell or schedules permission prevents future dispatch. Expiration or rotation of the short-lived read/control credentials does not stop an otherwise valid schedule. Recurring schedules are ended non-destructively instead of being individually hard-deleted.
 
 ## Timing contracts
 
@@ -29,18 +29,18 @@ The only overlap policy is `skip`. Misfire policy may be `skip` or `coalesce`: s
 The focused Discovery document at `GET /discovery/schedules` is authoritative. REST routes are:
 
 - `GET|POST /schedule`
-- `GET|PATCH|DELETE /schedule/<schedule_id>`
-- `POST /schedule/{execute,pause,resume}/<schedule_id>`
+- `GET|PATCH /schedule/<schedule_id>`
+- `POST /schedule/{execute,pause,resume,end}/<schedule_id>`
 - `GET /schedule/run/list/<schedule_id>`
 - `GET /schedule/run/<run_id>`
 
-MCP exposes the same lifecycle through `capability_call` with `family=schedule`. Operations are `list`, `get`, `run_list`, `run_get`, `create`, `update`, `delete`, `execute`, `pause`, and `resume`. Load `discovery/mcp` on demand for the current operation schemas; they are intentionally omitted from the initial `tools/list` payload.
+MCP exposes the same lifecycle through `capability_call` with `family=schedule`. Operations are `list`, `get`, `run_list`, `run_get`, `create`, `update`, `end`, `execute`, `pause`, and `resume`. Load `discovery/mcp` on demand for the current operation schemas; they are intentionally omitted from the initial `tools/list` payload.
 
-Creation and every modifying action requires ordinary `plan_id`, `taskname`, and `message` Context. The creation values also become each run's automatic Context unless a complete `run_context` is supplied. Updates require `expected_revision`; a supplied `run_context` replaces future-run attribution as one unit.
+Creation and every modifying action requires `plan_id`, `taskname`, and `message` Context. Ordinary creation/update/control uses an `in_progress` Plan. `resume` and `end` are lifecycle exceptions: their Context may reference an existing completed or cancelled Plan, which allows long-lived recurring schedules to outlive the Plan that created them. The creation values also become each run's automatic Context unless a complete `run_context` is supplied. Automatic recurring dispatch keeps recording `schedule.run` under that configured historical `plan_id` even after the Plan closes. Updates require `expected_revision`; a supplied `run_context` replaces future-run attribution as one unit.
 
-`execute` is the explicit immediate-execution action and does not move the next ordinary occurrence. It still observes overlap and task/sandbox capacity. Pause stops future dispatch but does not terminate an already running task. Delete and update are refused while a run is active.
+`execute` is the explicit immediate-execution action and does not move the next ordinary occurrence. It still observes overlap and task/sandbox capacity. `pause` is temporary. `end` is available only for cron/interval schedules and accepts `status=stopped|completed` (default `stopped`): `stopped` has no next occurrence but may later be resumed, while `completed` is terminal. Neither form removes schedule metadata or retained run history. Ending a schedule does not interrupt an already-running task; use ordinary task control for that.
 
-The scheduler atomically claims an occurrence in its workspace database before starting Shell. A `once` schedule is marked completed in the same transaction, so the command cannot reactivate or rerun that ID; a later execution requires a new schedule and therefore obeys the three-minute minimum again.
+The scheduler atomically claims an occurrence in its workspace database before starting Shell. A `once` schedule is marked `completed` in the same transaction, so the command cannot reactivate or rerun that ID; a later execution requires a new schedule and therefore obeys the three-minute minimum again. For recurring schedules, `stopped` is restartable through `resume`; `completed` is terminal. There is no public single-schedule hard-delete operation.
 
 Run history contains dispatch status, timestamps, exit status, errors, and the ordinary Shell `task_id`. The newest 50 terminal runs per schedule are retained for at most 30 days. Use task endpoints for retained stdout/stderr, streaming, interruption, and force-kill; ordinary task-output retention is shorter and independent.
 

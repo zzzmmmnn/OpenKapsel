@@ -108,6 +108,25 @@ class SchedulerStoreTests(unittest.TestCase):
                     taskname="scheduled-build",
                     message="Run scheduled build",
                 )
+            stopped = store.end(
+                created.app_id, created.schedule_id, status="stopped"
+            )
+            replacement = store.create(
+                "0123456789abcdef",
+                name="replacement",
+                timing=timing,
+                command="true",
+                cwd=".",
+                timeout_seconds=None,
+                overlap_policy="skip",
+                misfire_policy="skip",
+                plan_id=1,
+                taskname="scheduled-build",
+                message="Run replacement build",
+            )
+            self.assertEqual("active", replacement.status)
+            with self.assertRaisesRegex(ScheduleError, "more than 32"):
+                store.resume(stopped.app_id, stopped.schedule_id)
 
     def test_once_is_completed_when_claimed_and_cannot_be_claimed_again(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -141,13 +160,59 @@ class SchedulerStoreTests(unittest.TestCase):
                 store.claim_due(created.schedule_id, now=now + timedelta(minutes=6))
             )
             store.finish_run(claim.run.run_id, status="failed", error="launch failed")
-            with self.assertRaisesRegex(ScheduleError, "cannot run again"):
+            with self.assertRaisesRegex(ScheduleError, "cannot run"):
                 store.claim_due(
                     created.schedule_id,
                     now=now + timedelta(minutes=6),
                     force=True,
                     app_id=created.app_id,
                 )
+
+    def test_recurring_end_preserves_history_and_stopped_can_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ScheduleStore(Path(directory))
+            timing = validate_timing({"type": "interval", "minutes": 3})
+            created = store.create(
+                "0123456789abcdef",
+                name="recurring",
+                timing=timing,
+                command="true",
+                cwd=".",
+                timeout_seconds=None,
+                overlap_policy="skip",
+                misfire_policy="skip",
+                plan_id=1,
+                taskname="recurring",
+                message="Run recurring task",
+            )
+            claim = store.claim_due(
+                created.schedule_id, force=True, app_id=created.app_id
+            )
+            assert claim is not None
+            store.finish_run(claim.run.run_id, status="succeeded", exit_code=0)
+            self.assertEqual(1, len(store.list_runs(created.app_id, created.schedule_id)))
+
+            stopped = store.end(created.app_id, created.schedule_id, status="stopped")
+            self.assertEqual("stopped", stopped.status)
+            self.assertIsNone(stopped.next_run_at)
+            self.assertEqual(1, len(store.list_runs(created.app_id, created.schedule_id)))
+            with self.assertRaisesRegex(ScheduleError, "stopped schedule cannot run"):
+                store.claim_due(
+                    created.schedule_id, force=True, app_id=created.app_id
+                )
+
+            resumed = store.resume(created.app_id, created.schedule_id)
+            self.assertEqual("active", resumed.status)
+            self.assertIsNotNone(resumed.next_run_at)
+
+            completed = store.end(created.app_id, created.schedule_id, status="completed")
+            self.assertEqual("completed", completed.status)
+            self.assertIsNone(completed.next_run_at)
+            self.assertEqual(1, len(store.list_runs(created.app_id, created.schedule_id)))
+            with self.assertRaisesRegex(ScheduleError, "paused or stopped"):
+                store.resume(created.app_id, created.schedule_id)
+            with self.assertRaisesRegex(ScheduleError, "end status"):
+                store.end(created.app_id, created.schedule_id, status="paused")
 
     def test_pause_resume_and_revision_checked_update(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

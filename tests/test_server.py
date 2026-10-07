@@ -618,7 +618,6 @@ class WorkspaceServerTests(unittest.TestCase):
                 "get_schedule",
                 "create_schedule",
                 "update_schedule",
-                "delete_schedule",
                 "run_schedule_now",
                 "pause_schedule",
                 "resume_schedule",
@@ -627,23 +626,24 @@ class WorkspaceServerTests(unittest.TestCase):
             }.isdisjoint(names)
         )
 
-    def test_scheduled_run_rejects_plan_closed_after_schedule_creation(self) -> None:
+    def test_schedule_lifecycle_can_outlive_closed_plan(self) -> None:
         record = self.server.tokens.update("test-token", can_schedule=True)
         plan_id = self._ensure_test_plan("test-token")
         create_status, created = self.request(
             "POST",
             self.endpoint("/schedule"),
             {
-                "name": "close before dispatch",
+                "name": "continue after Plan closes",
                 "schedule": {"type": "interval", "minutes": 3, "timezone": "UTC"},
-                "command": "printf should-not-run",
+                "command": "printf should-run",
                 "cwd": ".",
                 "plan_id": plan_id,
                 "taskname": "scheduler",
-                "message": "Create schedule before closing Plan",
+                "message": "Create recurring schedule before closing Plan",
             },
         )
         self.assertEqual(HTTPStatus.CREATED, create_status)
+        schedule_id = created["schedule_id"]
 
         scope = (self.server.config.root / record.path_prefix).resolve()
         context = self.server.context_for(scope)
@@ -666,20 +666,89 @@ class WorkspaceServerTests(unittest.TestCase):
             require_conversation=False,
         )
 
-        claim = self.server.scheduler.run_now(
-            scope, record.app_id, created["schedule_id"]
-        )
-        run = self.server.schedules_for(scope).get_run(record.app_id, claim.run.run_id)
-        self.assertEqual("failed", run.status)
-        self.assertIsNone(run.task_id)
-        self.assertEqual("plan_id must reference an in_progress plan", run.error)
+        claim = self.server.scheduler.run_now(scope, record.app_id, schedule_id)
+        store = self.server.schedules_for(scope)
+        deadline = time.monotonic() + 3
+        run = store.get_run(record.app_id, claim.run.run_id)
+        while run.status in {"claimed", "running"} and time.monotonic() < deadline:
+            time.sleep(0.02)
+            run = store.get_run(record.app_id, claim.run.run_id)
+        self.assertEqual("succeeded", run.status)
+        self.assertIsNotNone(run.task_id)
+        self.assertIsNone(run.error)
+
         operations, total = context.query(
             entry_type="operation",
             plan_id=plan_id,
             limit=200,
         )
-        self.assertEqual(1, total)  # schedule creation only; dispatch did not add an operation
-        self.assertFalse(any(item.get("operation") == "schedule.run" for item in operations))
+        self.assertEqual(2, total)  # schedule.create plus schedule.run
+        self.assertTrue(any(item.get("operation") == "schedule.run" for item in operations))
+
+        end_status, stopped = self.request(
+            "POST",
+            self.endpoint(f"/schedule/end/{schedule_id}"),
+            {
+                "status": "stopped",
+                "plan_id": plan_id,
+                "taskname": "scheduler",
+                "message": "Stop recurring schedule after Plan completion",
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, end_status)
+        self.assertEqual("stopped", stopped["status"])
+        self.assertIsNone(stopped["next_run_at"])
+
+        resume_status, resumed = self.request(
+            "POST",
+            self.endpoint(f"/schedule/resume/{schedule_id}"),
+            {
+                "plan_id": plan_id,
+                "taskname": "scheduler",
+                "message": "Restart recurring schedule after Plan completion",
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, resume_status)
+        self.assertEqual("active", resumed["status"])
+        self.assertIsNotNone(resumed["next_run_at"])
+
+        def mcp_control(request_id: int, operation: str, **extra) -> dict:
+            status, payload, _ = self.mcp_request(
+                "test-token",
+                request_id,
+                "tools/call",
+                {
+                    "name": "schedule_control",
+                    "arguments": {
+                        "operation": operation,
+                        "schedule_id": schedule_id,
+                        "plan_id": plan_id,
+                        "taskname": "scheduler",
+                        "message": f"{operation} recurring schedule after Plan completion",
+                        **extra,
+                    },
+                },
+            )
+            self.assertEqual(HTTPStatus.OK, status)
+            self.assertFalse(payload["result"]["isError"])
+            return payload["result"]["structuredContent"]
+
+        mcp_stopped = mcp_control(8910, "end", status="stopped")
+        self.assertEqual("stopped", mcp_stopped["status"])
+        mcp_resumed = mcp_control(8911, "resume")
+        self.assertEqual("active", mcp_resumed["status"])
+        mcp_completed = mcp_control(8912, "end", status="completed")
+        self.assertEqual("completed", mcp_completed["status"])
+
+        get_status, retained = self.request("GET", self.endpoint(f"/schedule/{schedule_id}"))
+        self.assertEqual(HTTPStatus.OK, get_status)
+        self.assertEqual("completed", retained["status"])
+        history_status, history = self.request(
+            "GET", self.endpoint(f"/schedule/run/list/{schedule_id}")
+        )
+        self.assertEqual(HTTPStatus.OK, history_status)
+        self.assertGreaterEqual(history["count"], 1)
+        self.assertIn(claim.run.run_id, {item["run_id"] for item in history["runs"]})
 
     def test_grouped_schedule_mcp_tools_dispatch(self) -> None:
         self.server.tokens.update("test-token", can_schedule=True)
@@ -770,12 +839,26 @@ class WorkspaceServerTests(unittest.TestCase):
         request_id += 1
         self.assertIn(run_id, {item["run_id"] for item in runs["runs"]})
 
-        deleted = call(
+        ended = call(
             request_id,
             "schedule_control",
-            {"operation": "delete", "schedule_id": schedule_id},
+            {"operation": "end", "schedule_id": schedule_id, "status": "completed"},
         )
-        self.assertTrue(deleted["deleted"])
+        request_id += 1
+        self.assertEqual("completed", ended["status"])
+        retained = call(
+            request_id,
+            "schedule_read",
+            {"operation": "get", "schedule_id": schedule_id},
+        )
+        request_id += 1
+        self.assertEqual("completed", retained["status"])
+        retained_runs = call(
+            request_id,
+            "schedule_read",
+            {"operation": "run_list", "schedule_id": schedule_id, "limit": 10},
+        )
+        self.assertIn(run_id, {item["run_id"] for item in retained_runs["runs"]})
 
     def mcp_endpoint(self, token):
         record = self.server.tokens.get(token)

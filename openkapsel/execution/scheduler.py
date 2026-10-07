@@ -163,7 +163,7 @@ class SchedulerManager:
                 operation="schedule.run",
                 status="running",
                 plan_id=claim.schedule.plan_id,
-                require_plan_in_progress=True,
+                require_plan_in_progress=claim.schedule.type == "once",
                 request={
                     "schedule_id": claim.schedule.schedule_id,
                     "run_id": claim.run.run_id,

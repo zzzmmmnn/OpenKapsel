@@ -147,7 +147,7 @@ SECTION_WORKFLOWS = {
         f"Append materially new user/ai context with conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may keep original wording without extra compression when it already fits. Summary cadence is dynamic: after 40 user/ai entries since the newest summary, append responses recommend summary via summary_status; after 49, another user/ai entry is blocked until summary is appended. The summary covers from the newest summary itself (or sub_id 1) through the latest entry. Without conversation_id, conversation_query pages through non-empty Conversations by last entry time, {DEFAULT_RECENT_CONVERSATION_COUNT} per page for up to {MAX_RECENT_CONVERSATION_PAGES} pages, and returns each grouped window from its newest summary (or sub_id 1) forward. With conversation_id it returns the newest at most 100 entries, optionally after a sub_id range filter. Returned entries are always in forward reading order.",
         "Plan creation and every non-cancellation-only Plan update append at least one Conversation entry using conversation_id plus the writer_nonce returned by conversation_create; completion must include at least one ai entry. Cancellation-only remains possible without writer_nonce.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",
-        "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan. A mutation owner must be an in_progress Plan; completed or cancelled Plans cannot accept new mutations.",
+        "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan. A mutation owner must normally be an in_progress Plan; schedule resume/end are lifecycle exceptions that may record against a closed historical Plan.",
         "Reads are not recorded unless taskname and message are supplied; plan completion also requires a debrief.",
     ],
     "memory": [
@@ -169,7 +169,7 @@ SECTION_WORKFLOWS = {
     "mcp": [
         "Keep Conversation, Plan, Memory, File, discovery, rpc_call, and capability_call schemas in the ordinary tools/list response.",
         "capability_call operation schemas are published in the matching capability section, not here: shell also covers task; schedules, web, sharing, and authentication each own their family schemas.",
-        "When mutation_context=true, pass plan_id, taskname, and message outside args; plan_id must reference an in_progress Plan. Read operations may optionally use those outer fields when optional_read_context=true.",
+        "When mutation_context=true, pass plan_id, taskname, and message outside args; plan_id normally references an in_progress Plan. Schedule resume/end are the explicit lifecycle exceptions. Read operations may optionally use those outer fields when optional_read_context=true.",
     ],
     "shell": [
         "Use generic RPC family=git for Git reads and mutations on the server or a mapping; load discovery/rpc for mapping and RPC routing contracts. Read operations are synchronous and bounded; write operations run as tasks and require mutation Context.",
@@ -181,7 +181,8 @@ SECTION_WORKFLOWS = {
     "schedules": [
         "Create schedules only when background execution is needed; use run-now for an explicit immediate execution.",
         "Use interval minutes of at least 3, a once timestamp at least 3 minutes ahead, or strict six-field cron with an explicit second and IANA timezone.",
-        "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically. The run Plan must still be in_progress when dispatch occurs; otherwise the run is rejected.",
+        "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically. Recurring dispatch may continue after that stored Plan is completed or cancelled; schedule.run remains historically attached to it.",
+        "Use end to finish a cron/interval without deleting its metadata or run history: stopped may resume later, while completed is terminal. Resume and end require mutation Context but may reference a closed Plan; ordinary create/update still require an in_progress Plan.",
         "Pause before editing operational intent and use expected_revision for updates. Schedule run records link to Shell task IDs; concurrency and task-control limits live in discovery/shell.",
     ],
     "web": [

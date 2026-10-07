@@ -481,7 +481,10 @@ class DiscoveryMixin:
                     "create": operation("schedule_create"),
                     "get": operation("schedule_get"),
                     "update": operation("schedule_update"),
-                    "delete": operation("schedule_delete"),
+                    "end": operation(
+                        "schedule_end",
+                        path="./schedule/end/<schedule_id>",
+                    ),
                     "execute": operation(
                         "schedule_execute",
                         path="./schedule/execute/<schedule_id>",
@@ -1169,6 +1172,13 @@ class DiscoveryMixin:
                     "authentication": "Bearer control token",
                     "separate_permission": True,
                     "types": ["once", "interval", "cron"],
+                    "statuses": ["active", "paused", "stopped", "completed"],
+                    "stopped_is_restartable": True,
+                    "completed_is_terminal": True,
+                    "end_preserves_schedule_and_run_history": True,
+                    "hard_delete_api": False,
+                    "recurring_closed_plan_dispatch_allowed": True,
+                    "resume_and_end_allow_closed_plan_context": True,
                     "cron_fields": ["second", "minute", "hour", "day", "month", "weekday"],
                     "cron_second": "one explicit integer from 0 through 59",
                     "timezone": "IANA timezone name",
@@ -2064,12 +2074,14 @@ class DiscoveryMixin:
                         "message": "<required brief operation summary>",
                     },
                 },
-                "schedule_delete": {
+                "schedule_end": {
                     "json": {
-                        "plan_id": "<required owning plan id>",
+                        "status": "<optional stopped or completed; defaults to stopped>",
+                        "plan_id": "<required lifecycle-operation plan id; may reference a closed plan>",
                         "taskname": "<required task grouping name>",
                         "message": "<required brief operation summary>",
                     },
+                    "notes": "cron/interval only; stopped preserves the schedule and may later resume, completed is terminal; neither mode deletes schedule metadata or retained run history; an already-running task is not interrupted",
                 },
                 "schedule_execute": {
                     "json": {
@@ -2083,7 +2095,8 @@ class DiscoveryMixin:
                     "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
                 },
                 "schedule_resume": {
-                    "json": {"plan_id": "<required>", "taskname": "<required>", "message": "<required>"},
+                    "json": {"plan_id": "<required; may reference a closed plan>", "taskname": "<required>", "message": "<required>"},
+                    "notes": "resume a paused or stopped recurring schedule; stopped schedules recompute their next run; completed schedules cannot resume",
                 },
                 "schedule_run_list": {
                     "url_query": "limit=50",
@@ -2162,7 +2175,7 @@ class DiscoveryMixin:
                 "Before changing the workspace, query context with type=plan&root_plans=true&status=in_progress. Reuse a suitable plan tree or create one root plan by POST /context with type=plan and no plan_id.",
                 "At task start, read memory_project when project-wide knowledge is needed. When creating a plan, provide scope_paths and memory_tags when known; OpenKapsel returns related_memory using path overlap, exact tags, and text relevance.",
                 "Decompose a root plan by creating sub-plans whose plan_id is the parent plan's integer id. Use context_plan_tree to inspect the depth-annotated hierarchy and its attached operations/notes.",
-                "Every modifying REST or MCP operation must provide plan_id, taskname, and a short message. plan_id must identify an in_progress Plan or sub-plan that owns the action; completed or cancelled Plans are rejected before changing the workspace.",
+                "Every modifying REST or MCP operation must provide plan_id, taskname, and a short message. Ordinarily plan_id must identify an in_progress Plan or sub-plan that owns the action; schedule resume/end are narrow lifecycle exceptions and may record against a closed historical Plan, and automatic schedule dispatch records schedule.run under its configured historical plan_id.",
                 "Reads should normally omit taskname, message, and plan_id and are then not recorded. To record a read, provide taskname and message; plan_id is optional but recommended to attach it to the relevant plan.",
                 "Use context_query to filter history by direct plan_id, root plans, text, integer id, exact taskname, anonymous actor_id, or exact recorded path. Plans update in place and move through in_progress, completed, or cancelled; replacing a note creates a newer id and removes the old row.",
                 "Use memory_query for long-lived project knowledge. Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable until rewritten. New Memory requires at least one exact indexed tag; prefer 4-16 specific reusable tags.",
@@ -2183,7 +2196,7 @@ class DiscoveryMixin:
                 "Use fs_mutate path.delete (or MCP fs_delete) for recoverable transactional deletion, recycle_list to inspect deleted items, and recycle_restore to recover them.",
                 "For cross-workspace transfer, share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
                 "Run tests or builds with shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
-                "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id; use run-now instead of creating sub-three-minute schedules.",
+                "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id even after that Plan closes. End recurring schedules non-destructively as stopped (restartable) or completed (terminal); use run-now instead of creating sub-three-minute schedules.",
                 "Use GET, PUT, or DELETE env to inspect, replace, or clear server Shell variables and POSIX initialization. PUT and DELETE require mutation Context.",
                 "For restricted Shell, inspect this token's live sandbox processes and aggregate resource usage with sandbox_processes.",
                 "Use task_interrupt for normal termination; reserve task_kill for an unresponsive task that must stop immediately.",
@@ -2353,7 +2366,7 @@ class DiscoveryMixin:
             "schedule_create": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_get": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_update": ("Bearer control token + schedules + shell", schedules_enabled),
-            "schedule_delete": ("Bearer control token + schedules + shell", schedules_enabled),
+            "schedule_end": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_execute": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_pause": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_resume": ("Bearer control token + schedules + shell", schedules_enabled),
@@ -2428,7 +2441,7 @@ class DiscoveryMixin:
                 "schedule_create",
                 "schedule_get",
                 "schedule_update",
-                "schedule_delete",
+                "schedule_end",
                 "schedule_execute",
                 "schedule_pause",
                 "schedule_resume",

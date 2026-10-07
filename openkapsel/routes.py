@@ -25,6 +25,7 @@ class EndpointSpec:
     transfer_slot: bool = False
     context_mode: ContextMode = "none"
     context_operations: tuple[tuple[str, str], ...] = ()
+    context_plan_in_progress_required: bool = True
     discovery_key: str | None = None
 
     def match(self, method: str, route: str) -> re.Match[str] | None:
@@ -285,7 +286,8 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         re.compile(r"/schedule/resume/(?P<schedule_id>[^/]+)"), "_handle_schedule_resume",
         invocation="param", parameter="schedule_id", control_required=True,
         request_body=True, context_mode="deferred",
-        context_operations=(("POST", "schedule.resume"),), discovery_key="schedule",
+        context_operations=(("POST", "schedule.resume"),),
+        context_plan_in_progress_required=False, discovery_key="schedule",
     ),
     EndpointSpec(
         "schedule_get", frozenset(("GET",)),
@@ -301,11 +303,12 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         context_operations=(("PATCH", "schedule.update"),), discovery_key="schedule",
     ),
     EndpointSpec(
-        "schedule_delete", frozenset(("DELETE",)),
-        re.compile(r"/schedule/(?P<schedule_id>[^/]+)"), "_handle_schedule_delete",
+        "schedule_end", frozenset(("POST",)),
+        re.compile(r"/schedule/end/(?P<schedule_id>[^/]+)"), "_handle_schedule_end",
         invocation="param", parameter="schedule_id", control_required=True,
         request_body=True, context_mode="deferred",
-        context_operations=(("DELETE", "schedule.delete"),), discovery_key="schedule",
+        context_operations=(("POST", "schedule.end"),),
+        context_plan_in_progress_required=False, discovery_key="schedule",
     ),
     EndpointSpec(
         "schedule_run_get", frozenset(("GET",)),
