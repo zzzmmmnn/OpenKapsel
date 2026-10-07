@@ -59,6 +59,46 @@ class ContextStoreTests(unittest.TestCase):
                     plan_id=root,
                 )
 
+    def test_closed_plan_cannot_own_mutations_notes_or_new_subplans(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = ContextStore(Path(raw))
+            root = store.add("plan", "Root", taskname="closed-plan")
+            child = store.add("plan", "Child", taskname="closed-plan", plan_id=root)
+            current = store.query(entry_id=child)[0][0]
+            closed = store.update_plan(
+                child,
+                expected_revision=current["revision"],
+                taskname="closed-plan",
+                plan_status="cancelled",
+            )
+            self.assertEqual("cancelled", closed["status"])
+
+            with self.assertRaisesRegex(ValueError, "in_progress plan"):
+                store.require_in_progress_plan(child)
+            with self.assertRaisesRegex(ValueError, "in_progress plan"):
+                store.add(
+                    "operation",
+                    "blocked write",
+                    taskname="closed-plan",
+                    operation="fs.write",
+                    plan_id=child,
+                    require_plan_in_progress=True,
+                )
+            with self.assertRaisesRegex(ValueError, "in_progress plan"):
+                store.add("note", "blocked note", taskname="closed-plan", plan_id=child)
+            with self.assertRaisesRegex(ValueError, "parent plan to be in_progress"):
+                store.add("plan", "blocked child", taskname="closed-plan", plan_id=child)
+
+            # A recorded read may still reference historical Plan context because it is not a mutation.
+            read_id = store.add(
+                "operation",
+                "historical read",
+                taskname="closed-plan",
+                operation="fs.list",
+                plan_id=child,
+            )
+            self.assertGreater(read_id, 0)
+
     def test_unfinished_root_plan_hints_are_compact_and_exclude_subplans(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch(
             "openkapsel.context.context_store.MAX_UNFINISHED_ROOT_PLAN_HINTS", 1
@@ -166,6 +206,25 @@ class ContextStoreTests(unittest.TestCase):
             combined, total = store.query(actor_id="other-actor", path="src/app.py")
             self.assertEqual(1, total)
             self.assertEqual(moved_id, combined[0]["id"])
+            note_id = store.add(
+                "note",
+                "Initial finding",
+                taskname="context-feature",
+                plan_id=plan_id,
+            )
+            replacement = store.replace_note(
+                note_id,
+                taskname="context-feature",
+                content="Updated finding",
+                plan_id=plan_id,
+            )
+            self.assertGreater(replacement["id"], note_id)
+            removed, total = store.query(entry_id=note_id)
+            self.assertEqual(([], 0), (removed, total))
+            grouped, total = store.query(taskname="context-feature", limit=200)
+            self.assertEqual(4, total)
+            self.assertEqual(replacement["id"], grouped[0]["id"])
+
             exact, total = store.query(entry_id=plan_id)
             self.assertEqual(1, total)
             self.assertEqual("plan", exact[0]["type"])
@@ -223,25 +282,7 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual("mem_example", debrief["memory_refs"][0]["memory_id"])
             self.assertEqual("mem_helpful", debrief["memory_feedback"][0]["memory_id"])
             self.assertEqual("mem_old", debrief["memory_conflicts"][0]["memory_id"])
-            note_id = store.add(
-                "note",
-                "Initial finding",
-                taskname="context-feature",
-                plan_id=plan_id,
-            )
-            replacement = store.replace_note(
-                note_id,
-                taskname="context-feature",
-                content="Updated finding",
-                plan_id=plan_id,
-            )
-            self.assertGreater(replacement["id"], note_id)
-            removed, total = store.query(entry_id=note_id)
-            self.assertEqual(([], 0), (removed, total))
-            grouped, total = store.query(taskname="context-feature", limit=200)
-            self.assertEqual(4, total)
-            self.assertEqual(replacement["id"], grouped[0]["id"])
-            with self.assertRaisesRegex(ValueError, "root plan to be in_progress"):
+            with self.assertRaisesRegex(ValueError, "(parent|root) plan to be in_progress"):
                 store.add(
                     "plan",
                     "Must not extend a completed root",

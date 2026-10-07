@@ -147,12 +147,12 @@ SECTION_WORKFLOWS = {
         f"Append materially new user/ai context with conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may keep original wording without extra compression when it already fits. Summary cadence is dynamic: after 40 user/ai entries since the newest summary, append responses recommend summary via summary_status; after 49, another user/ai entry is blocked until summary is appended. The summary covers from the newest summary itself (or sub_id 1) through the latest entry. Without conversation_id, conversation_query pages through non-empty Conversations by last entry time, {DEFAULT_RECENT_CONVERSATION_COUNT} per page for up to {MAX_RECENT_CONVERSATION_PAGES} pages, and returns each grouped window from its newest summary (or sub_id 1) forward. With conversation_id it returns the newest at most 100 entries, optionally after a sub_id range filter. Returned entries are always in forward reading order.",
         "Plan creation and every non-cancellation-only Plan update append at least one Conversation entry using conversation_id plus the writer_nonce returned by conversation_create; completion must include at least one ai entry. Cancellation-only remains possible without writer_nonce.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",
-        "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan.",
+        "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan. A mutation owner must be an in_progress Plan; completed or cancelled Plans cannot accept new mutations.",
         "Reads are not recorded unless taskname and message are supplied; plan completion also requires a debrief.",
     ],
     "memory": [
         "Memory semantics are one canonical path, content, and tags. New or rewritten content is limited to 256 characters; legacy longer content remains readable. New Memory requires at least one indexed tag; prefer 4-16 specific reusable tags.",
-        "Mutation taskname/message limits are shared with Context and are published in discovery/context.",
+        "Mutation plan_id/taskname/message rules are shared with Context and are published in discovery/context; the owning Plan must be in_progress.",
         PLAN_COMPLETION_MEMORY_GUIDANCE,
     ],
     "paths": [
@@ -169,19 +169,19 @@ SECTION_WORKFLOWS = {
     "mcp": [
         "Keep Conversation, Plan, Memory, File, discovery, rpc_call, and capability_call schemas in the ordinary tools/list response.",
         "capability_call operation schemas are published in the matching capability section, not here: shell also covers task; schedules, web, sharing, and authentication each own their family schemas.",
-        "When mutation_context=true, pass plan_id, taskname, and message outside args. Read operations may optionally use those outer fields when optional_read_context=true.",
+        "When mutation_context=true, pass plan_id, taskname, and message outside args; plan_id must reference an in_progress Plan. Read operations may optionally use those outer fields when optional_read_context=true.",
     ],
     "shell": [
         "Use generic RPC family=git for Git reads and mutations on the server or a mapping; load discovery/rpc for mapping and RPC routing contracts. Read operations are synchronous and bounded; write operations run as tasks and require mutation Context.",
         "Use the env endpoint to inspect, completely replace, or clear app-identity-scoped Shell variables and POSIX initialization; writes require mutation Context.",
-        "Start asynchronous Shell tasks, then poll status or read output incrementally; use SSE when the client supports it.",
+        "Start asynchronous Shell tasks only under an in_progress owning Plan, then poll status or read output incrementally; use SSE when the client supports it.",
         "Send stdin only to interactive tasks. Interrupt normally before using force-kill.",
         "Restricted Shell runs inside the configured sandbox and token resource limits; inspect sandbox processes when available. Load discovery/network only when network policy matters.",
     ],
     "schedules": [
         "Create schedules only when background execution is needed; use run-now for an explicit immediate execution.",
         "Use interval minutes of at least 3, a once timestamp at least 3 minutes ahead, or strict six-field cron with an explicit second and IANA timezone.",
-        "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically.",
+        "Each schedule carries plan_id, taskname, and message so every dispatched run is attached to Context automatically. The run Plan must still be in_progress when dispatch occurs; otherwise the run is rejected.",
         "Pause before editing operational intent and use expected_revision for updates. Schedule run records link to Shell task IDs; concurrency and task-control limits live in discovery/shell.",
     ],
     "web": [

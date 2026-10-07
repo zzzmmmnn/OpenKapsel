@@ -163,12 +163,25 @@ class SchedulerManager:
                 operation="schedule.run",
                 status="running",
                 plan_id=claim.schedule.plan_id,
+                require_plan_in_progress=True,
                 request={
                     "schedule_id": claim.schedule.schedule_id,
                     "run_id": claim.run.run_id,
                     "cwd": claim.schedule.cwd,
                 },
             )
+        except ValueError as exc:
+            LOGGER.info(
+                "scheduled dispatch rejected for %s: %s",
+                claim.schedule.schedule_id,
+                exc,
+            )
+            store.finish_run(
+                claim.run.run_id,
+                status="failed",
+                error=str(exc),
+            )
+            return
         except Exception:
             LOGGER.exception("could not create Context entry for schedule %s", claim.schedule.schedule_id)
             store.finish_run(

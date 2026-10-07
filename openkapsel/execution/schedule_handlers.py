@@ -14,12 +14,9 @@ class ScheduleHandlersMixin:
         plan_id = self._parse_operation_plan_id(value, required=True)
         assert plan_id is not None
         try:
-            self.server.context_for(self.token_scope_root).plan_tree(
-                plan_id, max_depth=0, limit=1
-            )
+            return self.server.context_for(self.token_scope_root).require_in_progress_plan(plan_id)
         except ValueError as exc:
             raise ScheduleError(str(exc)) from None
-        return plan_id
 
     def _require_schedule_permission(self) -> None:
         if not self.token_record.can_schedule:

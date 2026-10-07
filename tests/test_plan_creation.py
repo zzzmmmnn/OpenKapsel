@@ -130,7 +130,7 @@ class PlanCreationTests(unittest.TestCase):
             ):
                 self.create(dict(self.body, subplans=[{"content": "Child", "status": status}]))
 
-    def test_subplan_creation_requires_in_progress_root(self):
+    def test_subplan_creation_requires_in_progress_parent_and_root(self):
         root = self.store.add("plan", "Active root", taskname="root")
         child = self.store.add(
             "plan",
@@ -157,7 +157,7 @@ class PlanCreationTests(unittest.TestCase):
         )
         for parent in (root, child):
             with self.subTest(parent=parent), self.assertRaisesRegex(
-                ValueError, "root plan to be in_progress"
+                ValueError, "(parent|root) plan to be in_progress"
             ):
                 self.create({
                     "type": "plan",

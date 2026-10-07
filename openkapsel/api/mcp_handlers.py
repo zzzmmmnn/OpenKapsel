@@ -717,7 +717,7 @@ class McpHandlersMixin:
             )
             return self.server.memory_for(self.token_scope_root).project()
         if name == "memory_add":
-            plan_id = self._require_existing_plan(arguments.get("plan_id"))
+            plan_id = self._require_in_progress_plan(arguments.get("plan_id"))
             try:
                 return self.server.memory_for(self.token_scope_root).create(
                     content=arguments.get("content"),
@@ -730,7 +730,7 @@ class McpHandlersMixin:
             except (ValueError, RuntimeError) as exc:
                 raise self._memory_error(exc) from None
         if name == "memory_update":
-            plan_id = self._require_existing_plan(arguments.get("plan_id"))
+            plan_id = self._require_in_progress_plan(arguments.get("plan_id"))
             ignored = {
                 "memory_id", "expected_revision", "plan_id", "taskname", "message"
             }
@@ -747,7 +747,7 @@ class McpHandlersMixin:
             except (KeyError, ValueError, RuntimeError) as exc:
                 raise self._memory_error(exc) from None
         if name == "memory_archive":
-            plan_id = self._require_existing_plan(arguments.get("plan_id"))
+            plan_id = self._require_in_progress_plan(arguments.get("plan_id"))
             try:
                 return self.server.memory_for(self.token_scope_root).archive(
                     str(arguments["memory_id"]),

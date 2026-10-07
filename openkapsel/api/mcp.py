@@ -70,7 +70,13 @@ def _tool(
     context_message: bool = True,
 ) -> dict[str, Any]:
     if context_message:
-        schema["properties"]["plan_id"] = plan_id_schema()
+        schema["properties"]["plan_id"] = plan_id_schema(
+            description=(
+                "Owning Plan id; modifying operations require this Plan to be in_progress."
+                if not read_only
+                else "Optional owning Plan id for recorded reads."
+            )
+        )
         schema["properties"]["taskname"] = taskname_schema()
         schema["properties"]["message"] = operation_message_schema()
         if not read_only:
@@ -114,7 +120,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "rpc_call",
         "Call RPC plugin",
-        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id inspected through capability_call family=task operations get/output. write=true operations require write permission and plan_id/taskname/message; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
+        "Call one RPC family operation on the server workspace or a mapping. Omit mapping_id for server execution; for mapped execution pass the workspace mapping name. Legacy mapping IDs remain accepted for compatibility. operation metadata publishes description/input_schema/write/execution. execution=sync returns directly; execution=task returns a task_id inspected through capability_call family=task operations get/output. write=true operations require write permission plus plan_id/taskname/message, and plan_id must reference an in_progress Plan; mapped writes also require a writable mapping. Git fetch/pull/clone require the caller network policy. No server/mapping fallback is attempted after a target is selected.",
         _object_schema({
             "mapping_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", "description": "Optional workspace mapping name. Omit to execute the RPC family on the server workspace; legacy mapping IDs are also accepted."},
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -138,7 +144,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "capability_call",
         "Call auxiliary capability",
-        "Call one low-frequency native capability operation by family and operation. Load operation_specs on demand from the matching Discovery capability section: shell also owns task; schedules, web, sharing, and authentication own their families. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when required.",
+        "Call one low-frequency native capability operation by family and operation. Load operation_specs on demand from the matching Discovery capability section: shell also owns task; schedules, web, sharing, and authentication own their families. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when required, and its plan_id must reference an in_progress Plan.",
         _object_schema({
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -321,7 +327,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_add",
         "Add workspace context",
-        "Append an AI-authored plan or note. Every created Plan starts in_progress and creation never accepts status. Root Plan creation must include subplans; use [] when no direct children are needed. Creating a sub-plan under an existing hierarchy requires its root Plan to remain in_progress. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
+        "Append an AI-authored plan or note. Every created Plan starts in_progress and creation never accepts status. Root Plan creation must include subplans; use [] when no direct children are needed. A sub-plan requires both its direct parent and hierarchy root to remain in_progress; a note requires its owning Plan to be in_progress. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
         _object_schema(
             {
                 "type": {
@@ -332,7 +338,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "content": {"type": "string", "minLength": 1},
                 "taskname": taskname_schema(),
                 "plan_id": plan_id_schema(
-                    description="Parent plan for a sub-plan; required owning plan for a note. Omit only for a root plan."
+                    description="Parent Plan for a sub-plan or owning Plan for a note; the referenced Plan must be in_progress. Omit only for a root Plan."
                 ),
                 "scope_paths": plan_scope_paths_schema(
                     description="Optional workspace-relative paths used to retrieve related Memory when creating a plan."
@@ -481,7 +487,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "id": {"type": "integer", "minimum": 1},
                 "taskname": taskname_schema(),
                 "content": {"type": "string", "minLength": 1},
-                "plan_id": plan_id_schema(),
+                "plan_id": plan_id_schema(
+                    description="Owning Plan id; replacement notes require this Plan to be in_progress."
+                ),
             },
             ("id", "taskname", "content", "plan_id"),
         ),

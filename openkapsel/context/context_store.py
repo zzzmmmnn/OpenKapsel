@@ -402,6 +402,25 @@ class ContextStore:
         return row
 
     @classmethod
+    def _require_in_progress_plan_row(
+        cls,
+        connection: sqlite3.Connection,
+        plan_id: Any,
+    ) -> sqlite3.Row:
+        row = cls._require_plan(connection, plan_id)
+        if (row["plan_status"] or "in_progress") != "in_progress":
+            raise ValueError("plan_id must reference an in_progress plan")
+        return row
+
+    def require_in_progress_plan(self, plan_id: Any) -> int:
+        plan_id = self._validate_plan_id_value(plan_id)
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                self._require_in_progress_plan_row(connection, plan_id)
+        return plan_id
+
+    @classmethod
     def _plan_root(
         cls,
         connection: sqlite3.Connection,
@@ -446,6 +465,9 @@ class ContextStore:
         require_root_in_progress: bool = False,
     ) -> int:
         plan_id = cls._validate_plan_id_value(plan_id)
+        parent_row = cls._require_plan(connection, plan_id)
+        if (parent_row["plan_status"] or "in_progress") != "in_progress":
+            raise ValueError("subplan creation requires the parent plan to be in_progress")
         _root_id, root_row = cls._plan_root(
             connection,
             plan_id,
@@ -533,6 +555,7 @@ class ContextStore:
         plan_status: str | None = None,
         plan_id: int | None = None,
         request: dict[str, Any] | None = None,
+        require_plan_in_progress: bool = False,
     ) -> int:
         if entry_type not in CONTEXT_TYPES:
             raise ValueError("context type must be operation, plan, or note")
@@ -568,6 +591,9 @@ class ContextStore:
                             plan_id,
                             require_root_in_progress=True,
                         )
+                    elif entry_type == "note" or require_plan_in_progress:
+                        plan_id = self._validate_plan_id_value(plan_id)
+                        self._require_in_progress_plan_row(connection, plan_id)
                     else:
                         plan_id = self._validate_plan_id_value(plan_id)
                         self._require_plan(connection, plan_id)
@@ -940,7 +966,7 @@ class ContextStore:
                     if plan_id is None:
                         raise ValueError("notes must reference a plan_id")
                     next_plan_id = self._validate_plan_id_value(plan_id)
-                    self._require_plan(connection, next_plan_id)
+                self._require_in_progress_plan_row(connection, next_plan_id)
                 cursor = connection.execute(
                     """
                     INSERT INTO context_entries (

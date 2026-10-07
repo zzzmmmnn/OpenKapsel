@@ -627,6 +627,60 @@ class WorkspaceServerTests(unittest.TestCase):
             }.isdisjoint(names)
         )
 
+    def test_scheduled_run_rejects_plan_closed_after_schedule_creation(self) -> None:
+        record = self.server.tokens.update("test-token", can_schedule=True)
+        plan_id = self._ensure_test_plan("test-token")
+        create_status, created = self.request(
+            "POST",
+            self.endpoint("/schedule"),
+            {
+                "name": "close before dispatch",
+                "schedule": {"type": "interval", "minutes": 3, "timezone": "UTC"},
+                "command": "printf should-not-run",
+                "cwd": ".",
+                "plan_id": plan_id,
+                "taskname": "scheduler",
+                "message": "Create schedule before closing Plan",
+            },
+        )
+        self.assertEqual(HTTPStatus.CREATED, create_status)
+
+        scope = (self.server.config.root / record.path_prefix).resolve()
+        context = self.server.context_for(scope)
+        current = context.query(entry_id=plan_id)[0][0]
+        context.update_plan(
+            plan_id,
+            expected_revision=current["revision"],
+            taskname="scheduler",
+            plan_status="completed",
+            debrief={
+                "items": [],
+                "outcome": "no_change",
+                "memory_actions": [],
+                "memory_feedback": [],
+                "memory_conflicts": [],
+            },
+            conversation_id=None,
+            writer_nonce=None,
+            conversation_entries=None,
+            require_conversation=False,
+        )
+
+        claim = self.server.scheduler.run_now(
+            scope, record.app_id, created["schedule_id"]
+        )
+        run = self.server.schedules_for(scope).get_run(record.app_id, claim.run.run_id)
+        self.assertEqual("failed", run.status)
+        self.assertIsNone(run.task_id)
+        self.assertEqual("plan_id must reference an in_progress plan", run.error)
+        operations, total = context.query(
+            entry_type="operation",
+            plan_id=plan_id,
+            limit=200,
+        )
+        self.assertEqual(1, total)  # schedule creation only; dispatch did not add an operation
+        self.assertFalse(any(item.get("operation") == "schedule.run" for item in operations))
+
     def test_grouped_schedule_mcp_tools_dispatch(self) -> None:
         self.server.tokens.update("test-token", can_schedule=True)
 
@@ -5004,6 +5058,130 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertFalse(task["sandboxed"])
         self.assertTrue(task["network_access"])
         self.assertEqual(str(published.resolve()), task["stdout"].strip())
+
+    def test_mutations_reject_completed_or_cancelled_plan_ids(self) -> None:
+        plan_id = self._ensure_test_plan("test-token")
+        record = self.server.tokens.get("test-token")
+        store = self.server.context_for(
+            (self.server.config.root / record.path_prefix).resolve()
+        )
+        current = store.query(entry_id=plan_id)[0][0]
+        closed = store.update_plan(
+            plan_id,
+            expected_revision=current["revision"],
+            taskname="test-task",
+            plan_status="cancelled",
+        )
+        self.assertEqual("cancelled", closed["status"])
+
+        status, blocked_file = self.mutate([
+            {"op": "file.create", "path": "closed-plan.txt", "content": "blocked"},
+        ])
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_context_plan", blocked_file["error"]["code"])
+        self.assertIn("in_progress", blocked_file["error"]["message"])
+        self.assertFalse((self.root / "closed-plan.txt").exists())
+
+        status, blocked_shell = self.request(
+            "POST",
+            self.endpoint("/shell/exec"),
+            {"command": "printf should-not-run"},
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_context_plan", blocked_shell["error"]["code"])
+        self.assertIn("in_progress", blocked_shell["error"]["message"])
+
+        status, blocked_memory = self.request(
+            "POST",
+            self.endpoint("/memory"),
+            {
+                "content": "should not be stored",
+                "tags": ["closed-plan"],
+                "plan_id": plan_id,
+                "taskname": "test-task",
+                "message": "blocked memory write",
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_memory_plan", blocked_memory["error"]["code"])
+        self.assertIn("in_progress", blocked_memory["error"]["message"])
+
+        status, blocked_mcp_file, _ = self.mcp_request(
+            "test-token",
+            8801,
+            "tools/call",
+            {
+                "name": "fs_write",
+                "arguments": {
+                    "path": "mcp-closed-plan.txt",
+                    "content": "blocked",
+                    "plan_id": plan_id,
+                    "taskname": "test-task",
+                    "message": "blocked MCP file write",
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(blocked_mcp_file["result"]["isError"])
+        self.assertEqual(
+            "invalid_context_plan",
+            blocked_mcp_file["result"]["structuredContent"]["error"]["code"],
+        )
+        self.assertFalse((self.root / "mcp-closed-plan.txt").exists())
+
+        status, blocked_mcp_memory, _ = self.mcp_request(
+            "test-token",
+            8802,
+            "tools/call",
+            {
+                "name": "memory_add",
+                "arguments": {
+                    "content": "blocked MCP memory",
+                    "tags": ["closed-plan"],
+                    "plan_id": plan_id,
+                    "taskname": "test-task",
+                    "message": "blocked MCP memory write",
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(blocked_mcp_memory["result"]["isError"])
+        self.assertEqual(
+            "invalid_memory_plan",
+            blocked_mcp_memory["result"]["structuredContent"]["error"]["code"],
+        )
+
+        status, blocked_note = self.request(
+            "POST",
+            self.endpoint("/context"),
+            {
+                "type": "note",
+                "content": "should not be attached",
+                "taskname": "test-task",
+                "plan_id": plan_id,
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_context_entry", blocked_note["error"]["code"])
+        self.assertIn("in_progress", blocked_note["error"]["message"])
+
+        self.server.tokens.update("test-token", can_schedule=True)
+        status, blocked_schedule = self.request(
+            "POST",
+            self.endpoint("/schedule"),
+            {
+                "name": "closed plan schedule",
+                "schedule": {"type": "interval", "minutes": 3, "timezone": "UTC"},
+                "command": "printf should-not-run",
+                "cwd": ".",
+                "plan_id": plan_id,
+                "taskname": "test-task",
+                "message": "blocked schedule",
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_context_plan", blocked_schedule["error"]["code"])
+        self.assertIn("in_progress", blocked_schedule["error"]["message"])
 
     def test_shell_is_async_and_returns_output_and_exit_code(self) -> None:
         status, payload = self.request(

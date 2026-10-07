@@ -118,6 +118,7 @@ class ContextHttpMixin:
                 status="running",
                 plan_id=parsed_plan_id,
                 request=request,
+                require_plan_in_progress=plan_required,
             )
         except ValueError as exc:
             raise ApiError(

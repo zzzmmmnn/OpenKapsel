@@ -25,13 +25,11 @@ class MemoryHandlersMixin:
     def _memory_actor_id(self) -> str:
         return self.token_record.actor_id
 
-    def _require_existing_plan(self, value: Any) -> int:
+    def _require_in_progress_plan(self, value: Any) -> int:
         try:
             plan_id = self._parse_operation_plan_id(value, required=True)
-            entries, _ = self.server.context_for(self.token_scope_root).query(entry_id=plan_id)
-            if not entries or entries[0]["type"] != "plan":
-                raise ValueError("plan_id must reference a plan in this workspace")
-            return plan_id
+            assert plan_id is not None
+            return self.server.context_for(self.token_scope_root).require_in_progress_plan(plan_id)
         except ValueError as exc:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
@@ -74,7 +72,7 @@ class MemoryHandlersMixin:
         return candidate
 
     def _memory_change_metadata(self, body: dict[str, Any]) -> tuple[int, str, str]:
-        plan_id = self._require_existing_plan(body.get("plan_id"))
+        plan_id = self._require_in_progress_plan(body.get("plan_id"))
         taskname = self._required_string(body, "taskname")
         if len(taskname) > 32:
             raise ApiError(
