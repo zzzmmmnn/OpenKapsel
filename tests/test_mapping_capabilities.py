@@ -58,6 +58,27 @@ class ClientRpcCapabilityTests(unittest.TestCase):
             self.assertTrue(capabilities["git"]["operation_specs"][operation]["write"])
         self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])
 
+    def test_builtin_entry_object_passes_only_plugin_config_to_probe(self):
+        seen = []
+
+        def probe(_plugin, config):
+            seen.append(config)
+            return "available", None, None
+
+        config = {
+            "rpc": {
+                "git": {"enabled": True, "config": {"mode": "test"}},
+                "archive": False,
+                "file_search": False,
+                "structured": False,
+                "tabular": False,
+            }
+        }
+        with patch("openkapsel.rpc_plugins.git.GitRpcPlugin.probe", autospec=True, side_effect=probe):
+            capabilities = self.capabilities(config)
+        self.assertEqual([{"mode": "test"}], seen)
+        self.assertIn("git", capabilities)
+
     def test_client_can_disable_extensions_but_core_files_remain_available(self):
         with patch(
             "openkapsel.rpc_plugins.git.GitRpcPlugin.probe",
@@ -127,7 +148,7 @@ class ClientRpcCapabilityTests(unittest.TestCase):
                 "      'update': {'description':'Update one value.', 'input_schema': {'type':'object','properties': {'value': {'type':'integer'}}, 'required':['value'], 'additionalProperties':False}, 'write': True}\n"
                 "    }\n"
                 "    read_only=True\n"
-                "    def probe(self, config): return ('available', None, {'kind':'test'})\n"
+                "    def probe(self, config): return ('available', None, {'kind':'test','config':config})\n"
                 "    def dispatch(self, files, operation, args): return {'status':200,'body':{'ok':True}}\n"
                 "    def dispatch_task(self, files, operation, args, task): return {'status':200,'body':{'updated':True}}\n"
                 "plugin=Plugin()\n"
@@ -135,16 +156,17 @@ class ClientRpcCapabilityTests(unittest.TestCase):
             sys.path.insert(0, directory)
             try:
                 importlib.invalidate_caches()
-                disabled_config = {"rpc_plugins": ["vendor_rpc:plugin"]}
+                disabled_config = {"rpc_plugins": {"vendor_rpc:plugin": False}}
                 disabled_registry = load_client_rpc_registry(disabled_config)
                 try:
                     self.assertNotIn("vendor", disabled_registry.capability_map(disabled_config))
                 finally:
                     disabled_registry.close()
-                config = {"rpc_plugins": ["vendor_rpc:plugin"], "rpc": {"vendor": True}}
+                config = {"rpc_plugins": {"vendor_rpc:plugin": {"enabled": True, "config": {"region": "test"}}}}
                 registry = load_client_rpc_registry(config)
                 capabilities = registry.capability_map(config)
                 self.assertEqual("available", capabilities["vendor"]["state"])
+                self.assertEqual({"region": "test"}, capabilities["vendor"]["details"]["config"])
                 self.assertEqual("vendor_rpc:plugin", capabilities["vendor"]["plugin"])
                 self.assertEqual("Inspect vendor metadata.", capabilities["vendor"]["description"])
                 self.assertEqual(
@@ -184,9 +206,13 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         for config in (
             {"rpc": []},
             {"rpc": {"git": "yes"}},
+            {"rpc": {"git": {"config": {}}}},
+            {"rpc": {"git": {"enabled": True, "config": []}}},
             {"rpc": {"future_typo": True}},
             {"rpc_plugins": "vendor:plugin"},
-            {"rpc_plugins": ["missing_separator"]},
+            {"rpc_plugins": {"vendor:plugin": {"config": {}}}},
+            {"rpc_plugins": {"vendor:plugin": {"enabled": True, "config": []}}},
+            {"rpc_plugins": {"missing_separator": True}},
         ):
             with self.subTest(config=config), self.assertRaises((ValueError, ModuleNotFoundError)):
                 self.capabilities(config)

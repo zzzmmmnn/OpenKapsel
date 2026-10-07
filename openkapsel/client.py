@@ -147,6 +147,13 @@ def _create_resources(config, *, protected_paths=()):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")
     ssh_config = config.get("ssh")
+    rpc_config = config.get("rpc")
+    if isinstance(rpc_config, dict):
+        ssh_entry = rpc_config.get("ssh")
+        if isinstance(ssh_entry, dict):
+            ssh_config = ssh_entry.get("config", {}) if ssh_entry.get("enabled") is True else None
+        elif ssh_entry is not True:
+            ssh_config = None
     transport_timeout = config.get("transport_timeout_seconds", 60)
     if (
         isinstance(transport_timeout, bool)

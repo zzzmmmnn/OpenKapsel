@@ -702,5 +702,5 @@ class MappingHandlersMixin:
             "auto_reload": False,
             "transport_timeout_seconds": 60,
             "rpc": {"git": True, "archive": True},
-            "rpc_plugins": [],
+            "rpc_plugins": {},
             "sandbox": True, "proxy": None}, indent=2)

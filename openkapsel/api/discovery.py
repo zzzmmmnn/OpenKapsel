@@ -2222,7 +2222,7 @@ class DiscoveryMixin:
             "rpc": {
                 "states": ["available", "unsupported", "disabled", "offline"],
                 "routing": "Core file RPC is always enabled; rpc.file is not a client setting. Plugin families are advertised only when enabled and runtime-supported; absent families are not callable. Use the mapping name returned by GET /mapping in mapped RPC paths. File and plugin RPC operations never fall back to native mounts.",
-                "configuration": "Client config rpc.<family>=true|false overrides each plugin's default activation. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mapping. execution is sync or task; omitted plugin metadata defaults to sync for reads and task for writes.",
+                "configuration": "Built-in client RPC entries accept true|false shorthand or {enabled,config}; config is passed only to that plugin probe. rpc_plugins is an object keyed by module:object and uses the same value shape, with third-party activation/configuration kept entirely there. SSH compatibility: rpc.ssh=true reads legacy top-level ssh, while expanded rpc.ssh.config is authoritative. Mapping families self-describe with description plus operation_specs.<operation>.description/input_schema/write/execution in GET /mapping.",
                 "families": {
                     "file": {
                         "version": 4, "fallback": None, "operations": sorted(FILE_API_OPERATIONS),

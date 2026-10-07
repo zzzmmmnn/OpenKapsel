@@ -61,7 +61,7 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertNotIn("source_root", config)
         self.assertFalse(config["auto_reload"])
         self.assertEqual({"git": True, "archive": True}, config["rpc"])
-        self.assertEqual([], config["rpc_plugins"])
+        self.assertEqual({}, config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
         base = "/kapsel/w/" + self.record.token
         self.assertNotIn(config["token"].encode(), self.request("GET", base + "/mapping")[2])

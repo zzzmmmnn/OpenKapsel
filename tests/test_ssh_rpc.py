@@ -390,6 +390,26 @@ class SshRpcTests(unittest.TestCase):
         self.assertEqual("dependency_missing", reason)
         self.assertNotIn("secret", repr(details))
 
+    def test_inline_rpc_ssh_config_takes_precedence_over_legacy_top_level(self):
+        legacy = config()
+        inline = {
+            "rpc": {
+                "ssh": {
+                    "enabled": True,
+                    "config": legacy["ssh"],
+                }
+            },
+            "ssh": {"profiles": {"broken": {}}},
+        }
+        with patch("openkapsel.rpc_plugins.ssh._installed", return_value=True):
+            registry = load_client_rpc_registry(inline)
+            try:
+                capabilities = registry.capability_map(inline)
+            finally:
+                registry.close()
+        self.assertEqual("available", capabilities["ssh"]["state"])
+        self.assertEqual(1, capabilities["ssh"]["details"]["profile_count"])
+
     def test_disabled_ssh_does_not_initialize_profile_config(self):
         malformed = {"ssh": {"profiles": {"broken": {}}}}
         registry = load_client_rpc_registry(malformed)

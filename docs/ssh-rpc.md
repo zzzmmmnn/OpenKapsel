@@ -12,7 +12,7 @@ Install the normal client dependencies plus the SSH extra:
 python -m pip install -e '.[client,ssh-rpc]'
 ```
 
-`ssh` is disabled by default and requires `rpc.ssh: true`. Even when enabled, it is advertised in `capabilities.rpc` only after its runtime probe succeeds. If Paramiko is missing or no valid SSH profiles are configured, the family is omitted rather than advertised as `unsupported`. When `rpc.ssh` is absent or false, SSH profile configuration is not initialized.
+`ssh` is disabled by default. Prefer the expanded `rpc.ssh` entry with `enabled: true` and an inline `config` object. Even when enabled, it is advertised in `capabilities.rpc` only after its runtime probe succeeds. If Paramiko is missing or no valid SSH profiles are configured, the family is omitted rather than advertised as `unsupported`. For compatibility, the shorthand `rpc.ssh: true` still reads the legacy top-level `ssh` object. An expanded `rpc.ssh.config` is authoritative and ignores any top-level `ssh` object. When `rpc.ssh` is absent or false, SSH profile configuration is not initialized.
 
 ## Client configuration
 
@@ -25,32 +25,47 @@ SSH profiles belong only in the mapping client configuration. Keep that file out
   "root": "/path/to/local/project",
   "writable": true,
   "rpc": {
-    "ssh": true
-  },
-  "ssh": {
-    "idle_seconds": 60,
-    "connect_timeout_seconds": 15,
-    "max_connections": 8,
-    "max_channels_per_connection": 8,
-    "known_hosts": "/home/me/.ssh/known_hosts",
-    "profiles": {
-      "prod": {
-        "host": "10.0.0.10",
-        "port": 22,
-        "username": "deploy",
-        "key_filename": "/home/me/.ssh/id_ed25519",
-        "host_key_policy": "strict"
-      },
-      "lab": {
-        "host": "192.168.10.44",
-        "username": "atp",
-        "password": "<LOCAL-ONLY-PASSWORD>",
-        "host_key_sha256": "SHA256:<43-character-base64-digest>"
+    "ssh": {
+      "enabled": true,
+      "config": {
+        "idle_seconds": 60,
+        "connect_timeout_seconds": 15,
+        "max_connections": 8,
+        "max_channels_per_connection": 8,
+        "known_hosts": "/home/me/.ssh/known_hosts",
+        "profiles": {
+          "prod": {
+            "host": "10.0.0.10",
+            "port": 22,
+            "username": "deploy",
+            "key_filename": "/home/me/.ssh/id_ed25519",
+            "host_key_policy": "strict"
+          },
+          "lab": {
+            "host": "192.168.10.44",
+            "username": "atp",
+            "password": "<LOCAL-ONLY-PASSWORD>",
+            "host_key_sha256": "SHA256:<43-character-base64-digest>"
+          }
+        }
       }
     }
   }
 }
 ```
+
+
+The legacy split form remains accepted for existing clients:
+
+```json
+{
+  "rpc": {"ssh": true},
+  "ssh": {"profiles": {}}
+}
+```
+
+Only the boolean `true` shorthand activates this fallback. If `rpc.ssh` is an
+expanded object, its inline `config` is used directly.
 
 A profile must have at least one authentication source: `password`, `key_filename`, `allow_agent=true`, or `look_for_keys=true`. A private-key `passphrase` is also client-local. None of these secret values appear in capabilities, RPC inputs, RPC results, or task output unless a remote command itself prints them.
 
@@ -67,8 +82,11 @@ Each SSH profile may optionally set a client-local `proxy` object. Supported can
 
 ```json
 {
-  "ssh": {
-    "profiles": {
+  "rpc": {
+    "ssh": {
+      "enabled": true,
+      "config": {
+        "profiles": {
       "via-socks5": {
         "host": "10.0.0.10",
         "username": "deploy",
@@ -95,6 +113,8 @@ Each SSH profile may optionally set a client-local `proxy` object. Supported can
           "tls_verify": true,
           "ca_file": "/etc/ssl/private/proxy-ca.pem",
           "tls_server_name": "proxy.example"
+        }
+      }
         }
       }
     }

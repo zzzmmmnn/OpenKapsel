@@ -51,7 +51,7 @@ The client opens the selected configuration once and holds an exclusive process-
     "git": true,
     "archive": true
   },
-  "rpc_plugins": [],
+  "rpc_plugins": {},
   "sandbox": true,
   "proxy": "socks5://127.0.0.1:1080"
 }
@@ -103,11 +103,13 @@ always enabled and reports `available`; its version and supported operations
 are still negotiated. Plugin families are advertised only when they are enabled
 and their runtime probe succeeds. A disabled family, or an enabled family whose
 dependency/runtime is unavailable, is omitted from `capabilities.rpc`; the
-server therefore treats it as not advertised. The client configuration can
-override plugin activation with `rpc.<family>: true|false`. The removed
-`rpc.file` key is rejected: delete it from older client configurations before
-starting the updated client. Read/write restrictions remain controlled by the
-caller token, mapping permissions, and client `writable` setting.
+server therefore treats it as not advertised. The client configuration can override a built-in plugin with either the boolean
+shorthand `rpc.<family>: true|false` or the expanded form
+`rpc.<family>: {"enabled": true|false, "config": {...}}`. The `config` object is
+passed only to that plugin's `probe(config)` hook. The removed `rpc.file` key is
+rejected: delete it from older client configurations before starting the updated
+client. Read/write restrictions remain controlled by the caller token, mapping
+permissions, and client `writable` setting.
 
 Built-in `git`, `archive`, `file_search`, `structured`, and `tabular`
 families are enabled by default. `ssh` is opt-in and requires
@@ -117,12 +119,14 @@ Mapping clients advertise RPC capabilities only through `capabilities.rpc`.
 
 Git and Archive are client RPC plugins rather than branches hard-coded into the
 filesystem provider. Built-in plugins are registered explicitly by the client.
-Additional installed packages can be loaded with `rpc_plugins` entries in
-`module:object` form. The object must expose a bounded family name, version,
-family `description`, an `operations` mapping, `probe(config)`, and
-`dispatch(files, operation, args)`. It may expose boolean `default_enabled`;
-third-party plugins that omit it default to opt-in and require
-`rpc.<family>: true`. Every operation declares
+Additional installed packages can be loaded from the `rpc_plugins` object. Each
+key is a `module:object` import spec and each value uses the same boolean or
+`{"enabled": ..., "config": {...}}` form as `rpc`. A false entry is not imported;
+an enabled entry is imported and its `config` object is passed to
+`probe(config)`. Third-party activation/configuration lives entirely under
+`rpc_plugins`; do not repeat the plugin family under `rpc`. The object must expose
+a bounded family name, version, family `description`, an `operations` mapping,
+`probe(config)`, and `dispatch(files, operation, args)`. Every operation declares
 `{description, input_schema, write}`; `write` defaults to `false` and is the
 authoritative mutation declaration for that operation. `input_schema` is a
 bounded JSON object schema. The client publishes both the compatible
@@ -280,7 +284,7 @@ The built-in `structured` and `tabular` families are enabled by default, with op
 
 ## SSH RPC
 
-The built-in `ssh` family is opt-in. Set `rpc.ssh: true`; it is then advertised only when Paramiko is installed and at least one local `ssh.profiles` entry is valid. When SSH is disabled, its profile configuration is not initialized. Connections are owned by the long-lived client runtime, so provider WebSocket reconnects do not discard them. A connection becomes idle only after its last active SSH/SFTP operation ends; the default idle timeout is 60 seconds. Explicit connection IDs are never silently replaced after expiry or transport loss. All SSH operations are privileged (`write=true`) because they use client-local credentials and therefore require control/write authorization, a writable mapping, and Plan Context. See [ssh-rpc.md](ssh-rpc.md).
+The built-in `ssh` family is opt-in. Prefer `rpc.ssh: {"enabled": true, "config": {...}}`; the inline config contains the SSH profiles and settings and is authoritative. For compatibility, `rpc.ssh: true` still reads the legacy top-level `ssh` object. When SSH is disabled, its profile configuration is not initialized. Connections are owned by the long-lived client runtime, so provider WebSocket reconnects do not discard them. A connection becomes idle only after its last active SSH/SFTP operation ends; the default idle timeout is 60 seconds. Explicit connection IDs are never silently replaced after expiry or transport loss. All SSH operations are privileged (`write=true`) because they use client-local credentials and therefore require control/write authorization, a writable mapping, and Plan Context. See [ssh-rpc.md](ssh-rpc.md).
 
 ## Validation status
 

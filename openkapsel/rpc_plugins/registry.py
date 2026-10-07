@@ -41,6 +41,27 @@ class RegisteredPlugin:
     description: str
     default_enabled: bool
     operations: dict[str, dict[str, Any]]
+    configured_enabled: bool | None = None
+    plugin_config: dict[str, Any] | None = None
+    config_owner: str = "rpc"
+
+
+def _entry_settings(value: Any, *, label: str) -> tuple[bool, dict[str, Any]]:
+    if isinstance(value, bool):
+        return value, {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a boolean or an object")
+    unknown = set(value) - {"enabled", "config"}
+    if unknown:
+        raise ValueError(f"unsupported {label} settings: " + ", ".join(sorted(unknown)))
+    if "enabled" not in value or not isinstance(value["enabled"], bool):
+        raise ValueError(f"{label}.enabled must be a boolean")
+    plugin_config = value.get("config", {})
+    if plugin_config is None:
+        plugin_config = {}
+    if not isinstance(plugin_config, dict):
+        raise ValueError(f"{label}.config must be an object")
+    return value["enabled"], plugin_config
 
 
 def _description(value: Any, *, label: str) -> str:
@@ -125,28 +146,44 @@ class ClientRpcRegistry:
     def families(self) -> frozenset[str]:
         return frozenset(self._plugins)
 
-    def register(self, plugin: RpcPlugin, *, source: str) -> None:
+    def register(
+        self, plugin: RpcPlugin, *, source: str, configured_enabled: bool | None = None,
+        plugin_config: dict[str, Any] | None = None, config_owner: str = "rpc",
+    ) -> None:
         plugin, description, default_enabled, operations = _plugin_object(plugin)
         if plugin.family == "file":
             raise ValueError("file is a reserved core RPC family")
         if plugin.family in self._plugins:
             raise ValueError(f"duplicate RPC plugin family: {plugin.family}")
         self._plugins[plugin.family] = RegisteredPlugin(
-            plugin.family, plugin, source, description, default_enabled, operations
+            plugin.family, plugin, source, description, default_enabled, operations,
+            configured_enabled, plugin_config, config_owner,
         )
 
-    def load_import_spec(self, spec: str) -> None:
+    @staticmethod
+    def _split_import_spec(spec: str) -> tuple[str, str]:
         if not isinstance(spec, str) or not spec or spec.count(":") != 1:
-            raise ValueError("rpc_plugins entries must use module:object syntax")
+            raise ValueError("rpc_plugins keys must use module:object syntax")
         module_name, object_name = spec.split(":", 1)
         if not module_name or not object_name or object_name.startswith("_"):
             raise ValueError("invalid RPC plugin import spec")
+        return module_name, object_name
+
+    def load_import_spec(
+        self, spec: str, *, enabled: bool = True, plugin_config: dict[str, Any] | None = None
+    ) -> None:
+        module_name, object_name = self._split_import_spec(spec)
+        if not enabled:
+            return
         module = importlib.import_module(module_name)
         try:
             plugin = getattr(module, object_name)
         except AttributeError:
             raise ValueError(f"RPC plugin object not found: {spec}") from None
-        self.register(plugin, source=spec)
+        self.register(
+            plugin, source=spec, configured_enabled=True, plugin_config=plugin_config or {},
+            config_owner="rpc_plugins",
+        )
 
     def capability_map(self, config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         raw = config.get("rpc", {})
@@ -156,7 +193,10 @@ class ClientRpcRegistry:
             raise ValueError("rpc must be an object")
         if "file" in raw:
             raise ValueError("rpc.file has been removed; remove this key, core file RPC is always enabled")
-        allowed = set(self._plugins)
+        allowed = {
+            family for family, registered in self._plugins.items()
+            if registered.config_owner == "rpc"
+        }
         unknown = set(raw) - allowed
         if unknown:
             raise ValueError("unsupported rpc categories: " + ", ".join(sorted(unknown)))
@@ -170,13 +210,17 @@ class ClientRpcRegistry:
             }
         }
         for family, registered in self._plugins.items():
-            enabled = raw.get(family, registered.default_enabled)
-            if not isinstance(enabled, bool):
-                raise ValueError(f"rpc.{family} must be a boolean")
+            if registered.config_owner == "rpc_plugins":
+                enabled = bool(registered.configured_enabled)
+                plugin_config = registered.plugin_config or {}
+            elif family in raw:
+                enabled, plugin_config = _entry_settings(raw[family], label=f"rpc.{family}")
+            else:
+                enabled, plugin_config = registered.default_enabled, {}
             if not enabled:
                 continue
             plugin = registered.plugin
-            state, reason, details = plugin.probe(config)
+            state, reason, details = plugin.probe(plugin_config)
             if state not in {"available", "unsupported"}:
                 raise ValueError(f"RPC plugin {family} returned invalid probe state")
             if state != "available":
@@ -286,20 +330,35 @@ def load_client_rpc_registry(config: dict[str, Any]) -> ClientRpcRegistry:
     from .ssh import SshRpcPlugin
     registry.register(structured_plugin, source="openkapsel.rpc_plugins.structured:plugin")
     registry.register(tabular_plugin, source="openkapsel.rpc_plugins.tabular:plugin")
-    rpc_config = config.get("rpc")
-    ssh_enabled = isinstance(rpc_config, dict) and rpc_config.get("ssh") is True
+    rpc_config = config.get("rpc", {})
+    if rpc_config is None:
+        rpc_config = {}
+    if not isinstance(rpc_config, dict):
+        raise ValueError("rpc must be an object")
+    ssh_value = rpc_config.get("ssh", False)
+    if isinstance(ssh_value, bool):
+        ssh_enabled = ssh_value
+        ssh_plugin_config = config.get("ssh", {}) if ssh_enabled else {}
+        if ssh_plugin_config is None:
+            ssh_plugin_config = {}
+        if not isinstance(ssh_plugin_config, dict):
+            raise ValueError("ssh must be an object")
+    else:
+        ssh_enabled, ssh_plugin_config = _entry_settings(ssh_value, label="rpc.ssh")
     registry.register(
-        SshRpcPlugin(config if ssh_enabled else {}),
+        SshRpcPlugin({"ssh": ssh_plugin_config} if ssh_enabled else {}),
         source="openkapsel.rpc_plugins.ssh:SshRpcPlugin",
     )
 
-    specs = config.get("rpc_plugins", [])
+    specs = config.get("rpc_plugins", {})
     if specs is None:
-        specs = []
-    if not isinstance(specs, list) or any(not isinstance(item, str) for item in specs):
-        raise ValueError("rpc_plugins must be an array of module:object strings")
+        specs = {}
+    if not isinstance(specs, dict):
+        raise ValueError("rpc_plugins must be an object keyed by module:object")
     if len(specs) > 32:
         raise ValueError("too many rpc_plugins")
-    for spec in specs:
-        registry.load_import_spec(spec)
+    for spec, value in specs.items():
+        registry._split_import_spec(spec)
+        enabled, plugin_config = _entry_settings(value, label=f"rpc_plugins.{spec}")
+        registry.load_import_spec(spec, enabled=enabled, plugin_config=plugin_config)
     return registry

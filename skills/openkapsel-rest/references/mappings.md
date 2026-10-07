@@ -44,13 +44,15 @@ Git and Archive are client RPC plugins with no server/FUSE fallback. Git
 version 2 exposes synchronous reads `status`, `diff`, `diff_stat`, `log`,
 `show`, and `ls_files`, plus task mutations `add`, `commit`, `restore`,
 and `checkout`. Archive version 1 exposes synchronous `list`/`read` plus
-task mutations `create`/`extract`. Client config can independently enable
-`rpc.git` and `rpc.archive`; Git reports `unsupported` when
-enabled but the local `git` executable is missing. Additional trusted client
-plugins can be registered explicitly with `rpc_plugins: ["module:object"]`;
-merely installing a package does not load it.
+task mutations `create`/`extract`. Built-in entries accept boolean shorthand such
+as `rpc.git: true` or the expanded `{"enabled": true, "config": {...}}` form;
+Git reports `unsupported` when enabled but the local `git` executable is missing.
+Additional trusted client plugins are registered in the `rpc_plugins` object,
+keyed by `module:object`, with the same boolean or `{enabled, config}` value
+shape. A false entry is not imported, and merely installing a package does not
+load it.
 
-The built-in SSH family version 1 is different from ordinary read-only data plugins: every SSH operation advertises `write=true` because using a client-local SSH credential is privileged external access. When Paramiko is installed and `ssh.profiles` is configured, it exposes synchronous `profiles`, `status`, `close`, `stat`, `listdir`, and bounded `read`, plus task operations `exec`, `upload`, and `download`. The first operation may pass a profile name and returns a process-scoped `connection_id`; later operations reuse it. An expired, lost, or explicitly closed ID fails distinctly and is never silently reconnected. See [ssh-rpc.md](ssh-rpc.md).
+The built-in SSH family version 2 is different from ordinary read-only data plugins: every SSH operation advertises `write=true` because using a client-local SSH credential is privileged external access. Prefer `rpc.ssh: {"enabled": true, "config": {...}}`; for compatibility only the shorthand `rpc.ssh: true` reads the legacy top-level `ssh` object. When Paramiko is installed and SSH profiles are configured, it exposes synchronous `profiles`, `status`, `close`, `stat`, `listdir`, and bounded `read`, plus task operations `exec`, `upload`, and `download`. The first operation may pass a profile name and returns a process-scoped `connection_id`; later operations reuse it. An expired, lost, or explicitly closed ID fails distinctly and is never silently reconnected. See [ssh-rpc.md](ssh-rpc.md).
 
 Each plugin self-describes the family and every operation. In `GET /mapping`,
 `capabilities.rpc.<family>.description` explains the family and
