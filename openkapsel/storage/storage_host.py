@@ -596,6 +596,7 @@ class HostStorageProviders:
                     "uncertain": True,
                     "uploads_queued": 0,
                     "uploads_in_progress": 0,
+                    "errored_files": 0,
                     "cache_bytes": 0,
                     "reason": str(exc),
                 }
@@ -606,11 +607,12 @@ class HostStorageProviders:
                     "uncertain": True,
                     "uploads_queued": 0,
                     "uploads_in_progress": 0,
+                    "errored_files": 0,
                     "cache_bytes": 0,
                     "reason": "rclone did not report VFS disk cache state",
                 }
             values = {}
-            for key in ("uploadsQueued", "uploadsInProgress", "bytesUsed"):
+            for key in ("uploadsQueued", "uploadsInProgress", "bytesUsed", "erroredFiles"):
                 value = disk.get(key, 0)
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     return {
@@ -624,13 +626,17 @@ class HostStorageProviders:
                 values[key] = value
             queued = values["uploadsQueued"]
             in_progress = values["uploadsInProgress"]
+            errored = values["erroredFiles"]
             return {
                 "pending": bool(queued or in_progress),
-                "uncertain": False,
+                # A drained upload queue does not mean success when cached
+                # files have recorded errors. Fail closed for provider removal.
+                "uncertain": bool(errored),
                 "uploads_queued": queued,
                 "uploads_in_progress": in_progress,
+                "errored_files": errored,
                 "cache_bytes": values["bytesUsed"],
-                "reason": "",
+                "reason": (f"{errored} cached file(s) have upload errors" if errored else ""),
             }
         if not root.exists() or not self._cache_has_files(cache):
             return {
@@ -638,6 +644,7 @@ class HostStorageProviders:
                 "uncertain": False,
                 "uploads_queued": 0,
                 "uploads_in_progress": 0,
+                "errored_files": 0,
                 "cache_bytes": 0,
                 "reason": "",
             }

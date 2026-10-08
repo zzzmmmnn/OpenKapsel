@@ -760,7 +760,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 if current_stat is not None:
                     raise ApiError(HTTPStatus.CONFLICT, "path_exists", "destination already exists")
                 self._check_if_match(current_etag)
-                self._publish_new_upload(parent, temp_name)
+                self._publish_new_upload(parent, temp_name, expected_sha256=actual_sha256)
                 temp_name = ""
                 final_descriptor = parent.open(os.O_RDONLY)
                 try:
@@ -1203,7 +1203,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 latest_stat = parent.lstat()
                 if latest_stat is not None:
                     raise ApiError(HTTPStatus.CONFLICT, "path_exists", "destination already exists")
-                self._publish_new_upload(parent, temp_name)
+                self._publish_new_upload(parent, temp_name, expected_sha256=actual_sha256)
                 temp_name = ""
                 final_descriptor = parent.open(os.O_RDONLY)
                 try:
@@ -1239,14 +1239,78 @@ class FileHandlersMixin(FileOperationSupportMixin):
         self._send_empty(HTTPStatus.NO_CONTENT)
 
     @staticmethod
-    def _publish_new_upload(parent: Any, temp_name: str) -> None:
-        """Atomically publish a temporary file without replacing a destination."""
+    def _publish_vfs_exclusive(parent: Any, temp_name: str, expected_sha256: str) -> None:
+        """Create-only rclone fallback when FUSE cannot do RENAME_NOREPLACE.
+
+        O_EXCL prevents accidental replacement even by concurrent writers, but
+        unlike rename or link, a reader may briefly observe incomplete content.
+        The data has already been uploaded to the private temporary file. Only
+        remove that file after writing and checking the new destination.
+        """
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        created = False
         try:
+            with os.fdopen(os.open(temp_name, flags, dir_fd=parent.fd), "rb") as source:
+                descriptor = os.open(
+                    parent.name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent.fd,
+                )
+                created = True
+                with os.fdopen(descriptor, "wb") as destination:
+                    digest = hashlib.sha256()
+                    while data := source.read(1024 * 1024):
+                        destination.write(data)
+                        digest.update(data)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                if digest.hexdigest() != expected_sha256:
+                    raise OSError(errno.EIO, "staged upload checksum changed during publish")
+            with os.fdopen(os.open(parent.name, flags, dir_fd=parent.fd), "rb") as finished:
+                digest = hashlib.sha256()
+                while data := finished.read(1024 * 1024):
+                    digest.update(data)
+            if digest.hexdigest() != expected_sha256:
+                raise OSError(errno.EIO, "published upload checksum mismatch")
+        except Exception:
+            if created:
+                try:
+                    os.unlink(parent.name, dir_fd=parent.fd)
+                except OSError:
+                    # Do not obscure the underlying failure. A failed delete
+                    # may leave an incomplete destination for manual recovery.
+                    pass
+            raise
+        os.unlink(temp_name, dir_fd=parent.fd)
+
+    def _publish_new_upload(self, parent: Any, temp_name: str, *, expected_sha256: str) -> None:
+        """Publish a staged upload without ever overwriting an existing path.
+
+        Local filesystems use atomic hard-link publication. For rclone FUSE,
+        attempt atomic no-replace rename first. If the driver rejects it,
+        create a destination using O_EXCL and stream already-verified bytes;
+        this fallback is create-only, but not atomically visible to readers.
+        """
+        manager = getattr(self.server, "storage_providers", None)
+        provider = manager.mapping_at_path(parent.path) if manager is not None else None
+        try:
+            if provider is not None:
+                from openkapsel.files.rename_exclusive import rename_exclusive
+                try:
+                    rename_exclusive(temp_name, parent.name, parent.fd, parent.fd)
+                    return
+                except OSError as exc:
+                    if exc.errno not in {
+                        errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP
+                    }:
+                        raise
+                self._publish_vfs_exclusive(parent, temp_name, expected_sha256)
+                return
             os.link(
-                temp_name,
-                parent.name,
-                src_dir_fd=parent.fd,
-                dst_dir_fd=parent.fd,
+                temp_name, parent.name,
+                src_dir_fd=parent.fd, dst_dir_fd=parent.fd,
                 follow_symlinks=False,
             )
         except FileExistsError:

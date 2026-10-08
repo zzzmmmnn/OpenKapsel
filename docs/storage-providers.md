@@ -309,11 +309,24 @@ to OpenKapsel file APIs. The mapping directory name selects that recycle root
 for listing, restoration and purge; root=. selects the server recycle bin.
 Mapped clients retain their own client-side bins.
 
-rclone FUSE may not support hard links or stable virtual inode values through
-rename. Storage Provider file mutations therefore validate relocated file bytes
-rather than assuming the inode is stable. A VFS write-back cache acknowledgment
-is not proof of durable remote storage; backups should not delete their source
-until pending uploads are drained and remote persistence has been verified.
+rclone FUSE may not support hard links, atomic no-replace renames, or stable
+virtual inode values through rename. Storage Provider mutations therefore
+validate relocated file bytes rather than assuming the inode is stable. New
+file uploads first try atomic rename with RENAME_NOREPLACE. On rclone mounts
+that reject this operation, publication uses O_CREAT|O_EXCL on the final
+destination and copies the verified staged file into it. This never replaces
+a pre-existing name, but **does not provide atomic whole-file visibility**:
+readers may observe partially copied bytes, and a process crash can leave an
+incomplete destination. A retry must not overwrite the leftover path; delete
+or recycle it deliberately after inspecting it.
+
+rclone's privileged helper already reads the Unix-socket RC vfs/stats result
+with the internal storage_pending action. It reports queued uploads, active
+uploads, cached error files, and an uncertain flag; this is an internal
+provider-safety query, not a public file API. Queue drain and zero cached
+errors are necessary checks, **not** proof of durable remote storage. Backups
+must not delete their originals until remote persistence and checksums have
+been verified.
 
 ## Lifecycle
 

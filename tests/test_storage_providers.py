@@ -804,6 +804,29 @@ class HostStorageProviderTests(unittest.TestCase):
             self.assertIn("--unix-socket", rc_call)
             self.assertIn("vfs/stats", rc_call)
 
+    def test_pending_errored_files_must_not_report_sync_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, runner = self.make_host(directory)
+            provider_id = "g" * 24
+            host._ensure_provider_dirs(provider_id)
+            runner.rc_stats = {
+                "diskCache": {
+                    "bytesUsed": 128,
+                    "uploadsQueued": 0,
+                    "uploadsInProgress": 0,
+                    "erroredFiles": 2,
+                }
+            }
+            with (
+                patch("openkapsel.storage.storage_host.os.path.ismount", return_value=True),
+                patch("pathlib.Path.is_socket", return_value=True),
+            ):
+                pending = host.pending(provider_id)
+            self.assertFalse(pending["pending"])
+            self.assertTrue(pending["uncertain"])
+            self.assertEqual(2, pending["errored_files"])
+            self.assertIn("upload errors", pending["reason"])
+
     def test_stale_mount_is_detached_before_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             host, runner = self.make_host(directory)
