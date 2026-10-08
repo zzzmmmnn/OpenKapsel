@@ -115,9 +115,9 @@ reduce batch size, character budgets, or traversal depth.
 - `structured.patch`: apply guarded JSON/YAML/TOML `test`, `add`, `replace`, and `remove` operations; exact `expected_etag` is required.
 - `path.delete`: recoverably recycle an existing file or directory; exact `expected_etag` is required. Content size is irrelevant, so large files may be recycled this way.
 
-All items are preflighted before publication. A request may operate only inside one filesystem domain: one workspace, one mapped client export, or one administrator-granted filesystem root. It never splits a transaction across backends. Ordinary commit failures roll back already-published items; if rollback would overwrite content changed concurrently by another writer, OpenKapsel fails closed and preserves recovery artifacts.
+All items are preflighted before publication. A request may operate only inside one filesystem domain: one server workspace, one mapped client export, one Storage Provider mount, or one administrator-granted filesystem root. It never splits a transaction across backends. Ordinary commit failures roll back already-published items; if rollback would overwrite content changed concurrently by another writer, OpenKapsel fails closed and preserves recovery artifacts.
 
-`path.delete` is workspace-local because recycle metadata and restoration belong to that workspace. It rejects the workspace root, Storage Provider mapping roots, duplicate paths, and parent/child overlap with another item. Successful deletes return a `recycle_id` and can be restored through `/recycle/restore`.
+`path.delete` is backend-local: server files go to the server bin, mapped client files to the client bin, and Storage Provider files to that provider mount in .openkapsel/recycle. The delete response includes root for mapped clients and Storage Providers; use the same root selector with recycle_list, recycle_restore and recycle_purge. Each backend restores within its own filesystem. It rejects the workspace root, Storage Provider mapping roots, duplicate paths, and parent/child overlap with another item. Successful deletes return a `recycle_id` and can be restored through `/recycle/restore`.
 
 This is request-level transactionality, not a durable database transaction: v1 does not provide a write-ahead log or guarantee crash recovery across a process or operating-system crash.
 

@@ -848,11 +848,12 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "recycle_list",
         "List recycle items",
-        "List recoverably deleted items from this child workspace.",
+        "List recoverably deleted items in the server, mapped client, or Storage Provider recycle bin.",
         _object_schema(
             {
                 "offset": {**NONNEGATIVE, "default": 0},
                 "limit": {**POSITIVE, "maximum": 5000, "default": 1000},
+                "root": {"type": "string", "default": ".", "description": "'.' for server, or a mapped client/Storage Provider name"},
             }
         ),
         read_only=True,
@@ -861,8 +862,10 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "recycle_restore",
         "Restore recycle item",
-        "Restore a recycle item to its original path. Refuses to overwrite an existing path.",
-        _object_schema({"recycle_id": {"type": "string"}}, ("recycle_id",)),
+        "Restore a recycle item to its original path within the selected backend. Refuses overwrite.",
+        _object_schema({"recycle_id": {"type": "string"},
+                        "root": {"type": "string", "default": ".", "description": "'.' for server, or a mapped client/Storage Provider name"}},
+                       ("recycle_id",)),
         read_only=False,
         destructive=False,
     ),

@@ -303,6 +303,18 @@ provider's read-only/writable policy.
 A single provider may be bound into multiple workspaces. All bindings share the
 same rclone mount and the same bounded provider cache.
 
+Provider file deletion uses a dedicated recycle bin at .openkapsel/recycle
+inside that provider mount, not the server workspace bin. The folder is private
+to OpenKapsel file APIs. The mapping directory name selects that recycle root
+for listing, restoration and purge; root=. selects the server recycle bin.
+Mapped clients retain their own client-side bins.
+
+rclone FUSE may not support hard links or stable virtual inode values through
+rename. Storage Provider file mutations therefore validate relocated file bytes
+rather than assuming the inode is stable. A VFS write-back cache acknowledgment
+is not proof of durable remote storage; backups should not delete their source
+until pending uploads are drained and remote persistence has been verified.
+
 ## Lifecycle
 
 Enabled providers are reconciled when the server starts. The rclone process runs

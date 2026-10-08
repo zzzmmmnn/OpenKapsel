@@ -592,12 +592,39 @@ class MappingHandlersMixin:
                 details,
             ) from None
 
+    def _storage_recycle_bin(self, path):
+        """Return the recycle bin on the Storage Provider's own filesystem."""
+        manager = getattr(self.server, "storage_providers", None)
+        row = manager.mapping_at_path(path) if manager is not None else None
+        if row is None:
+            return None
+        manager.check_path(path, write=True, protect_root=True)
+        from openkapsel.files.recycle import RecycleBin
+        return RecycleBin(manager.mapping_path(row), initialize_layout=False), row["name"]
+
+    def _storage_recycle_named_root(self, name, *, write=False):
+        """Resolve only Storage Provider roots exposed in the token workspace."""
+        if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+            return None
+        manager = getattr(self.server, "storage_providers", None)
+        if manager is None:
+            return None
+        root = self.token_scope_root / name
+        row = manager.mapping_at_path(root)
+        if row is None or manager.mapping_path(row) != root:
+            return None
+        manager.check_path(root, write=write)
+        return root
+
     def _mapped_recycle_root(self, root):
         if root in {"", "."}:
             return None
         if not isinstance(root, str) or "/" in root or "\\" in root:
-            raise ApiError(400, "invalid_recycle_root", "root must be '.' or a mapping name")
-        return next((r for r in self.server.mappings.store.list(self.token_record.path_prefix) if r["name"] == root), None) or self._missing_mapping()
+            raise ApiError(400, "invalid_recycle_root", "root must be '.' or a mapped client/Storage Provider name")
+        row = next((r for r in self.server.mappings.store.list(self.token_record.path_prefix) if r["name"] == root), None)
+        if row is None and self._storage_recycle_named_root(root) is None:
+            self._missing_mapping()
+        return row
 
     def _handle_recycle_purge(self):
         self._require_permission(self.token_record.can_write, "write permission is not granted")
@@ -609,9 +636,11 @@ class MappingHandlersMixin:
         if row:
             result = self._mapping_rpc(row, "recycle_purge", {"recycle_id": rid})
         else:
-            from openkapsel.files.recycle import RecycleError
+            from openkapsel.files.recycle import RecycleBin, RecycleError
+            root = self._storage_recycle_named_root(body.get("root", "."), write=True)
             try:
-                result = self.server.recycle_for(self.token_scope_root).purge(rid)
+                result = (RecycleBin(root, initialize_layout=False).purge(rid) if root is not None
+                          else self.server.recycle_for(self.token_scope_root).purge(rid))
             except RecycleError as exc:
                 raise ApiError(exc.status, exc.code, exc.message) from None
         self._send_json(200, result)
@@ -626,6 +655,12 @@ class MappingHandlersMixin:
             self.server.mappings.check_path(path, write=True, protect_root=True)
             result = self._mapping_rpc(row, "recycle", {"path": path.relative_to(self.server.mappings.mount_path(row)).as_posix()})
             result["root"] = row["name"]
+            return result
+        storage = self._storage_recycle_bin(path)
+        if storage is not None:
+            recycle, name = storage
+            result = recycle.recycle(path)
+            result["root"] = name
             return result
         return self.server.recycle_for(self.token_scope_root).recycle(path)
 

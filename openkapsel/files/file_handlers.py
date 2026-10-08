@@ -36,16 +36,26 @@ class FileHandlersMixin(FileOperationSupportMixin):
     """File-domain methods mixed into the main request handler."""
     def _transaction_recycle(self, source: Path, original: Path) -> dict[str, Any]:
         try:
+            storage = self._storage_recycle_bin(original)
+            if storage is not None:
+                recycle, name = storage
+                result = recycle.recycle(source, original_path=original)
+                result["root"] = name
+                return result
             return self.server.recycle_for(self.token_scope_root).recycle(
-                source,
-                original_path=original,
+                source, original_path=original,
             )
         except RecycleError as exc:
             raise ApiError(exc.status, exc.code, exc.message) from None
 
-    def _transaction_restore_recycle(self, recycle_id: str) -> dict[str, Any]:
+    def _transaction_restore_recycle(self, recycle_id: str, *, root: str | None = None) -> dict[str, Any]:
         try:
-            return self.server.recycle_for(self.token_scope_root).restore(recycle_id)
+            storage_root = self._storage_recycle_named_root(root, write=True) if root else None
+            if root and storage_root is None:
+                raise ApiError(404, "recycle_root_not_found", "Storage Provider recycle root not found")
+            from openkapsel.files.recycle import RecycleBin
+            return (RecycleBin(storage_root, initialize_layout=False).restore(recycle_id) if storage_root is not None
+                    else self.server.recycle_for(self.token_scope_root).restore(recycle_id))
         except RecycleError as exc:
             raise ApiError(exc.status, exc.code, exc.message) from None
 
@@ -985,14 +995,23 @@ class FileHandlersMixin(FileOperationSupportMixin):
         self._require_permission(self.token_record.can_read, "read permission is not granted")
         offset = self._query_int(query, "offset", 0, minimum=0)
         limit = self._query_int(query, "limit", 1000, minimum=1, maximum=5000)
-        row = self._mapped_recycle_root(self._query_one(query, "root", "."))
+        root_name = self._query_one(query, "root", ".")
+        row = self._mapped_recycle_root(root_name)
         if row:
             result = self._mapping_rpc(row, "recycle_list", {"offset": offset, "limit": limit})
             result.update(root=row["name"], offset=offset, limit=limit)
             self._send_json(200, result)
             return
         try:
-            entries, total = self.server.recycle_for(self.token_scope_root).list_items(offset, limit)
+            storage_root = self._storage_recycle_named_root(root_name)
+            if storage_root is None:
+                entries, total = self.server.recycle_for(self.token_scope_root).list_items(offset, limit)
+            else:
+                from openkapsel.files.recycle import RecycleBin
+                from openkapsel.workspace.workspace_layout import INTERNAL_DIRECTORY, RECYCLE_DIRECTORY
+                recycle_path = storage_root / INTERNAL_DIRECTORY / RECYCLE_DIRECTORY
+                entries, total = (RecycleBin(storage_root, initialize_layout=False).list_items(offset, limit)
+                                  if recycle_path.exists() else ([], 0))
         except RecycleError as exc:
             raise ApiError(exc.status, exc.code, exc.message) from None
         self._send_json(
@@ -1010,12 +1029,18 @@ class FileHandlersMixin(FileOperationSupportMixin):
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         body = self._read_json()
         recycle_id = self._required_string(body, "recycle_id")
-        row = self._mapped_recycle_root(body.get("root", "."))
+        root_name = body.get("root", ".")
+        row = self._mapped_recycle_root(root_name)
         if row:
             self._send_json(200, self._mapping_rpc(row, "recycle_restore", {"recycle_id": recycle_id}))
             return
         try:
-            result = self.server.recycle_for(self.token_scope_root).restore(recycle_id)
+            storage_root = self._storage_recycle_named_root(root_name, write=True)
+            if storage_root is None:
+                result = self.server.recycle_for(self.token_scope_root).restore(recycle_id)
+            else:
+                from openkapsel.files.recycle import RecycleBin
+                result = RecycleBin(storage_root, initialize_layout=False).restore(recycle_id)
         except RecycleError as exc:
             raise ApiError(exc.status, exc.code, exc.message) from None
         self._send_json(HTTPStatus.OK, result)

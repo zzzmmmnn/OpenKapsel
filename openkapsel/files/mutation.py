@@ -512,6 +512,10 @@ class MutationPlan:
     published_etag: str | None = None
     backed_up: bool = False
     recycle_id: str | None = None
+    recycle_root: str | None = None
+    relocation_digest: str | None = None
+    relocation_size: int | None = None
+    relocation_mode: int | None = None
 
 
 def _stage_bytes(handler, plan: MutationPlan, transaction_id: str) -> None:
@@ -724,13 +728,42 @@ def _revalidate(handler, plans: list[MutationPlan]) -> None:
             )
 
 
+def _is_storage_provider_path(handler, path: Path) -> bool:
+    manager = getattr(handler.server, "storage_providers", None)
+    return manager is not None and manager.mapping_at_path(path) is not None
+
+
+def _digest_path(handler, path: Path) -> str:
+    digest = hashlib.sha256()
+    with handler._open_binary(path) as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _relocation_verified(handler, plan: MutationPlan, destination: Path, *, after_stat=None) -> bool:
+    """Remote FUSE inode/mtime may change after rename: verify content instead."""
+    details = after_stat or handler._file_stat(destination)
+    if plan.relocation_mode != stat.S_IFMT(details.st_mode):
+        return False
+    if plan.relocation_digest is not None:
+        return (details.st_size == plan.relocation_size
+                and _digest_path(handler, destination) == plan.relocation_digest)
+    # Directories have no stream digest; POSIX rename is confined to the same
+    # backend and their contents cannot safely be compared by inode or mtime.
+    return stat.S_ISDIR(details.st_mode)
+
+
 def _rollback(handler, plans: list[MutationPlan]) -> None:
     failures: list[str] = []
     paths = handler._safe_path_access()
     for plan in reversed(plans):
         try:
             if plan.deleted and plan.recycle_id is not None:
-                handler._transaction_restore_recycle(plan.recycle_id)
+                if plan.recycle_root:
+                    handler._transaction_restore_recycle(plan.recycle_id, root=plan.recycle_root)
+                else:
+                    handler._transaction_restore_recycle(plan.recycle_id)
                 plan.recycle_id = None
                 plan.published = False
                 plan.backed_up = False
@@ -738,7 +771,13 @@ def _rollback(handler, plans: list[MutationPlan]) -> None:
             if plan.published and plan.stage is not None:
                 current = handler._file_stat(plan.path)
                 current_etag = handler._path_etag(plan.path, current)
-                if plan.published_etag is None or current_etag != plan.published_etag:
+                if (_is_storage_provider_path(handler, plan.path)
+                    and stat.S_ISREG(current.st_mode)):
+                    matches = (_digest_path(handler, plan.path)
+                               == hashlib.sha256(plan.data).hexdigest())
+                else:
+                    matches = plan.published_etag is not None and current_etag == plan.published_etag
+                if not matches:
                     failures.append(plan.requested_path)
                     continue
                 paths.rename(plan.path, plan.stage, overwrite=False, create_parents=False)
@@ -760,6 +799,10 @@ def _rollback(handler, plans: list[MutationPlan]) -> None:
 
 def _transaction_domain(handler, path: Path) -> Path:
     """Return the authorized root defining one local transaction domain."""
+    storage = getattr(handler.server, "storage_providers", None)
+    row = storage.mapping_at_path(path) if storage is not None else None
+    if row is not None:
+        return storage.mapping_path(row)
     paths = handler._safe_path_access()
     anchor = getattr(paths, "anchor", None)
     if callable(anchor):
@@ -870,11 +913,19 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                     continue
                 if plan.expected_etag is not None:
                     assert plan.backup is not None
+                    remote = _is_storage_provider_path(handler, plan.path)
+                    if remote:
+                        original = handler._file_stat(plan.path)
+                        plan.relocation_mode = stat.S_IFMT(original.st_mode)
+                        plan.relocation_size = original.st_size
+                        plan.relocation_digest = (_digest_path(handler, plan.path)
+                                                  if stat.S_ISREG(original.st_mode) else None)
                     paths.rename(plan.path, plan.backup, overwrite=False, create_parents=False)
                     plan.backed_up = True
                     backup_details = handler._file_stat(plan.backup)
                     backup_etag = handler._path_etag(plan.backup, backup_details)
-                    if backup_etag != plan.expected_etag:
+                    if (not _relocation_verified(handler, plan, plan.backup, after_stat=backup_details)
+                            if remote else backup_etag != plan.expected_etag):
                         raise ApiError(
                             409,
                             "mutation_precondition_failed",
@@ -900,6 +951,7 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                 if not isinstance(recycle_id, str) or not recycle_id:
                     raise ApiError(500, "invalid_recycle_result", "transactional delete did not return a recycle id")
                 plan.recycle_id = recycle_id
+                plan.recycle_root = recycled.get("root")
                 plan.backed_up = False
         except Exception:
             try:
@@ -921,6 +973,7 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                         "deleted": True,
                         "recycled": True,
                         "recycle_id": plan.recycle_id,
+                        **({"root": plan.recycle_root} if plan.recycle_root else {}),
                     }
                 )
                 continue

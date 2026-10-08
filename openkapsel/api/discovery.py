@@ -1986,16 +1986,17 @@ class DiscoveryMixin:
                     "notes": "moves or renames a file/directory; overwrite is disabled by default",
                 },
                 "recycle_list": {
-                    "url_query": "offset=0&limit=1000",
-                    "notes": "lists recycle items belonging to this token workspace",
+                    "url_query": "root=.&offset=0&limit=1000",
+                    "notes": "selects separate server, mapped client or Storage Provider recycle stores using root",
                     "query": {
+                        "root": ".",
                         "offset": 0,
                         "limit": 1000,
                         **optional_read_context_query,
                     },
                 },
                 "recycle_restore": {
-                    "json": {"recycle_id": "<recycle_id>", "plan_id": "<required owning plan id>", "taskname": "<required task grouping name>", "message": "<required brief operation summary>"},
+                    "json": {"root": ".", "recycle_id": "<recycle_id>", "plan_id": "<required owning plan id>", "taskname": "<required task grouping name>", "message": "<required brief operation summary>"},
                     "notes": "restores to the original path and refuses to overwrite an existing path",
                 },
                 "share_create": {
@@ -2321,7 +2322,7 @@ class DiscoveryMixin:
             },
         }
         payload["endpoints"].update({
-            "recycle_purge": {"body": {"root": ". or mapping name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
+            "recycle_purge": {"body": {"root": ". or mapped client/Storage Provider name", "recycle_id": "entry ID", "confirm": True, "plan_id": "required", "taskname": "required", "message": "required"}, "description": "Permanently delete one recycle entry. Not recoverable; explicit confirm=true required."},
             "fs_copy": {"body": {"source": "source-path", "destination": "destination-path", "plan_id": "required", "taskname": "required", "message": "required"},
                 "description": "Start a bounded, resumable file/directory copy. Destination parent must exist. No overwrite; return 202 and transfer id. Staging remains on destination storage."},
             "file_transfer": {"description": "GET returns progress/state. POST ./fs/transfer/cancel/<id> or ./fs/transfer/resume/<id> requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
@@ -2333,7 +2334,7 @@ class DiscoveryMixin:
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
                 "description": "Invoke one advertised client RPC operation using the mapping name returned by GET /mapping. execution=sync returns the result. execution=task returns 202 plus a unified client task_id immediately; the task survives provider reconnects while the client process remains alive and is polled/controlled through ordinary /task/* routes. Never replay an uncertain write task start. write=false requires read permission; write=true requires control authorization, token write permission, a writable mapping, and Plan Context. No generic RPC operation falls back to server/FUSE."},
         })
-        payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for workspace recycle or root=<mapping-name> for client-local recycle."
+        payload["endpoints"]["recycle_list"]["mapping_root"] = "Query root=. for server recycle or root=<mapping-name> for mapped client/Storage Provider recycle. Each root has a separate bin."
         payload["endpoints"]["recycle_restore"]["mapping_root"] = "JSON root selects the recycle store; default '.'. IDs are scoped by root."
         endpoint_permissions = {
             "recycle_purge": ("Bearer control token + write", control_authorized and self.token_record.can_write),

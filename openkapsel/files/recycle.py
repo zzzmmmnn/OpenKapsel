@@ -37,9 +37,13 @@ class RecycleError(Exception):
 class RecycleBin:
     """Moves deleted paths into the child workspace's private recycle store."""
 
-    def __init__(self, workspace_root: Path):
+    def __init__(self, workspace_root: Path, *, initialize_layout: bool = True):
         self.workspace_root = workspace_root.resolve()
-        self.root = ensure_workspace_layout(self.workspace_root).recycle
+        # Storage Providers only need a recycle directory. Do not create local
+        # SQL, context, scheduler or environment stores on remote backends.
+        self.root = (ensure_workspace_layout(self.workspace_root).recycle
+                     if initialize_layout
+                     else self.workspace_root / INTERNAL_DIRECTORY / RECYCLE_DIRECTORY)
         self._paths = SafePathAccess((self.workspace_root,))
         self._lock = threading.RLock()
         try:
