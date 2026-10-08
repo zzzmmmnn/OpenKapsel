@@ -316,10 +316,23 @@ class HttpSupportMixin:
         if getattr(self, "_capturing_mcp_tool", False):
             self._mcp_tool_response = (status, payload)
             return
+        # The underlying operation and Context history must retain the real
+        # status. Only the final JSON wire representation is normalized to 200.
+        real_status = int(status)
         context_id = self._finalize_context_operation(status, payload)
         if context_id is not None:
             payload = dict(payload)
             payload["context_id"] = context_id
+        response_envelope = getattr(self, "_response_mode_envelope", False) and self.command != "HEAD"
+        if response_envelope:
+            if real_status >= 400:
+                wrapped = {"ok": False, "status": real_status, "error": payload["error"]}
+                if "context_id" in payload:
+                    wrapped["context_id"] = payload["context_id"]
+            else:
+                wrapped = {"ok": True, "status": real_status, "result": payload}
+            payload = wrapped
+            status = HTTPStatus.OK
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -328,8 +341,9 @@ class HttpSupportMixin:
         self.send_header("X-Content-Type-Options", "nosniff")
         for key, value in (headers or {}).items():
             self.send_header(key, value)
-        if status >= 400:
+        if real_status >= 400:
             # Some authorization failures happen before a POST body is read.
+            # Keep this connection safety even when the wire status is 200.
             # Closing the connection prevents unread bytes from being mistaken
             # for the next request on an HTTP/1.1 keep-alive connection.
             self.send_header("Connection", "close")

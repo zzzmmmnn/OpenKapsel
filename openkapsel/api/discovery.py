@@ -927,6 +927,10 @@ class DiscoveryMixin:
                         "DELETE <workspace_url>?req=env&timestamp=<unix-seconds>"
                         "&nonce=<8-alnum>&signature=<base64url-hmac> [optional HTTP body]"
                     ),
+                    "error_envelope": (
+                        "GET <workspace_url>?req=memory&response_mode=envelope"
+                        " [non-2xx JSON errors returned as HTTP 200 with status in body]"
+                    ),
                 },
                 "query_route": {
                     "available": True,
@@ -971,6 +975,21 @@ class DiscoveryMixin:
                     "nonce_replay_scope": "process-local cache bounded to the remaining timestamp acceptance window",
                     "body": "optional URL-encoded UTF-8 JSON object for simple JSON-body endpoints",
                     "response_cache": "no-store",
+                },
+                "response_envelope": {
+                    "available": True,
+                    "query_parameter": "response_mode=envelope",
+                    "scope": "Core Workspace REST/transport JSON responses only (including signed GET and native signed requests); excludes admin, OAuth, public sharing, preview apps, binary/streaming responses, HEAD and upstream rejections",
+                    "authentication": "unchanged; response_mode only changes presentation, never control authorization",
+                    "signature": "include the raw response_mode=envelope query parameter in the existing HMAC input before the final signature field; never append it after signing",
+                    "wire_http_status": 200,
+                    "success_json": {"ok": True, "status": 201, "result": {"example": "original JSON payload"}},
+                    "error_json": {"ok": False, "status": 403, "error": {"code": "permission_denied", "message": "original API error message"}},
+                    "original_status": "status in JSON reflects the real REST status; Context records also use the real status",
+                    "errors_included": "API error responses and generic internal_error; unexpected exceptions are still logged and stack traces are never returned",
+                    "connection_handling": "errors still close HTTP/1.1 connection if the POST body may be unread",
+                    "response_cache": "no-store",
+                    "default_behavior": "without response_mode=envelope, all original statuses and response structures remain unchanged",
                 },
                 "native_signed_envelope": {
                     "available": True,

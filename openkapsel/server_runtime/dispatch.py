@@ -91,6 +91,7 @@ class RequestDispatchMixin:
         self._signed_envelope_active = False
         self._signed_envelope_body = None
         self._signed_envelope_body_reader = None
+        self._response_mode_envelope = False
         self._redact_request_query = False
         self._prepare_context_tracking(None, {})
         try:
@@ -119,6 +120,18 @@ class RequestDispatchMixin:
             if self._dispatch_oauth(method, parsed.path, parsed.query):
                 return
             request_path = self._strip_url_base_path(parsed.path)
+            # This is a response presentation preference, never an authorization
+            # grant. When signed, the literal parameter remains in the raw query
+            # covered by the HMAC until authentication has completed.
+            if request_path.startswith("/w/"):
+                response_modes = parse_qs(parsed.query, keep_blank_values=True).get("response_mode")
+                if response_modes is not None and response_modes != ["envelope"]:
+                    raise ApiError(
+                        HTTPStatus.BAD_REQUEST,
+                        "invalid_response_mode",
+                        "response_mode must appear once with value envelope",
+                    )
+                self._response_mode_envelope = response_modes == ["envelope"] and method != "HEAD"
             if (
                 self.server.config.admin_enabled
                 and method in {"GET", "HEAD"}
@@ -172,6 +185,9 @@ class RequestDispatchMixin:
                 elif "req" in query:
                     route, query = self._decode_query_route(query)
                     query_routed = True
+            # Remove the presentation-only field *after* signed verification,
+            # so the endpoint sees its normal query schema.
+            query.pop("response_mode", None)
             if query_routed and (route == "/web" or route.startswith("/web/")):
                 self._discard_request_body()
                 raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
@@ -229,7 +245,7 @@ class RequestDispatchMixin:
             }
             if exc.details is not None:
                 error_payload["error"]["details"] = exc.details
-            if self._wants_html():
+            if self._wants_html() and not self._response_mode_envelope:
                 self._finalize_context_operation(exc.status, error_payload)
                 self._send_html(
                     exc.status,
@@ -254,7 +270,7 @@ class RequestDispatchMixin:
                     "request_id": request_id,
                 }
             }
-            if self._wants_html():
+            if self._wants_html() and not self._response_mode_envelope:
                 self._finalize_context_operation(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                     error_payload,

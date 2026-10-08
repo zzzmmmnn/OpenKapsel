@@ -494,8 +494,141 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("signed_get_envelope", full_transport["selection"])
         self.assertIn("native_signed_envelope", full_transport["selection"])
         self.assertIn("native_signed_envelope", full_transport)
+        self.assertEqual("response_mode=envelope", full_transport["response_envelope"]["query_parameter"])
+        self.assertEqual(200, full_transport["response_envelope"]["wire_http_status"])
         self.assertEqual(131072, full_transport["hmac_helper"]["max_target_bytes"])
         self.assertEqual(transport, full_transport)
+
+    def test_response_envelope_exposes_json_errors_with_original_status(self) -> None:
+        # A constrained GET client without Authorization can still see the 401 body.
+        path = self.endpoint("?req=memory&response_mode=envelope")
+        status, raw, headers = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(200, status, raw)
+        payload = json.loads(raw)
+        self.assertEqual(False, payload["ok"])
+        self.assertEqual(401, payload["status"])
+        self.assertEqual("control_token_required", payload["error"]["code"])
+        self.assertEqual("no-store", headers.get("Cache-Control"))
+        self.assertEqual("close", headers.get("Connection"))
+
+        ordinary_status, ordinary_raw, _ = self.raw_request(
+            "GET", self.endpoint("?req=memory"), authorize=False
+        )
+        self.assertEqual(401, ordinary_status, ordinary_raw)
+        self.assertIn("error", json.loads(ordinary_raw))
+
+        # If an endpoint returns an error and HTML is requested, the envelope
+        # remains JSON so an HTTP-only client can read it.
+        status, raw, headers = self.raw_request(
+            "GET", self.endpoint("/route-does-not-exist?response_mode=envelope"),
+            headers={"Accept": "text/html"},
+            authorize=False,
+        )
+        self.assertEqual(200, status, raw)
+        self.assertEqual(404, json.loads(raw)["status"])
+        self.assertTrue(headers.get("Content-Type", "").startswith("application/json"))
+
+    def test_response_envelope_signed_errors_and_signature_protection(self) -> None:
+        path = self.signed_envelope_path(
+            "missing/signed/route", "GET", nonce="Rm12No34",
+            query=[("response_mode", "envelope")],
+        )
+        status, raw, _ = self.raw_request("GET", path, authorize=False)
+        self.assertEqual(200, status, raw)
+        payload = json.loads(raw)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(404, payload["status"])
+        self.assertEqual("not_found", payload["error"]["code"])
+
+        tampered = self.signed_envelope_path(
+            "memory", "GET", nonce="Rm12No35",
+            query=[("response_mode", "envelope")],
+        ).replace("response_mode=envelope", "response_mode=other")
+        # Client cannot change the signed response preference without
+        # invalidating the signature (invalid value itself is also rejected).
+        status, raw, _ = self.raw_request("GET", tampered, authorize=False)
+        self.assertEqual(400, status, raw)
+        self.assertEqual("invalid_response_mode", json.loads(raw)["error"]["code"])
+
+        incorrect = self.signed_envelope_path(
+            "memory", "GET", nonce="Rm12No36",
+            query=[("response_mode", "envelope")],
+        )
+        prefix, signature = incorrect.rsplit("=", 1)
+        incorrect = prefix + "=" + ("A" if signature[-1] != "A" else "B") + signature[1:-1]
+        status, raw, _ = self.raw_request("GET", incorrect, authorize=False)
+        self.assertEqual(200, status, raw)
+        self.assertEqual(401, json.loads(raw)["status"])
+        self.assertEqual("invalid_signed_signature", json.loads(raw)["error"]["code"])
+
+    def test_response_envelope_signed_native_post(self) -> None:
+        data = b'{"ignored":true}'
+        path = self.native_signed_path(
+            "POST", "route/does/not/exist", data, nonce="Di12Ap34",
+            query=[("response_mode", "envelope")],
+        )
+        status, raw, _ = self.raw_request(
+            "POST", path, data, {"Content-Type": "application/json"},
+            authorize=False,
+        )
+        self.assertEqual(200, status, raw)
+        wrapped = json.loads(raw)
+        self.assertFalse(wrapped["ok"])
+        self.assertEqual(404, wrapped["status"])
+        self.assertEqual("not_found", wrapped["error"]["code"])
+
+        bad_path = self.native_signed_path(
+            "POST", "conversation", data, nonce="Di12Ap35",
+            query=[("response_mode", "envelope")],
+        )
+        status, raw, _ = self.raw_request(
+            "POST", bad_path, b'{"ignored":false}',
+            {"Content-Type": "application/json"}, authorize=False,
+        )
+        self.assertEqual(200, status, raw)
+        wrapped = json.loads(raw)
+        self.assertFalse(wrapped["ok"])
+        self.assertEqual(401, wrapped["status"])
+        self.assertEqual("invalid_signed_signature", wrapped["error"]["code"])
+
+    def test_response_envelope_preserves_success_result_and_status(self) -> None:
+        initial = {
+            "conversation_id": 0,
+            "entries": [
+                {"role": "user", "content": "User requests response envelope"},
+                {"role": "ai", "content": "AI creates conversation"},
+            ],
+        }
+        status, raw, _ = self.raw_request(
+            "POST", self.endpoint("/conversation?response_mode=envelope"),
+            json.dumps(initial).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(200, status, raw)
+        payload = json.loads(raw)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(201, payload["status"])
+        self.assertEqual(0, payload["result"]["conversation_id"])
+        self.assertRegex(payload["result"]["writer_nonce"], r"^@[A-Za-z0-9]{4}@$" )
+
+        initial["conversation_id"] = 1
+        ordinary_status, ordinary = self.request("POST", self.endpoint("/conversation"), initial)
+        self.assertEqual(201, ordinary_status, ordinary)
+        self.assertEqual(1, ordinary["conversation_id"])
+
+        # Errors triggered by the server must retain a real internal status in
+        # the body and not expose a stack trace.
+        with patch.object(WorkspaceRequestHandler, "_handle_fs_list", side_effect=RuntimeError("secret trace")):
+            with self.assertLogs("openkapsel", level="ERROR"):
+                status, raw, _ = self.raw_request(
+                    "GET", self.endpoint("/fs/query/list?response_mode=envelope")
+                )
+        self.assertEqual(200, status, raw)
+        payload = json.loads(raw)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(500, payload["status"])
+        self.assertEqual("internal_error", payload["error"]["code"])
+        self.assertNotIn("secret trace", raw.decode("utf-8"))
 
     def test_transport_hmac_supports_path_and_req_route_without_authorization(self) -> None:
         key = "helper-secret"
