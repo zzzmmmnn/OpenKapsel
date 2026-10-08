@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import hashlib
 import secrets
 import time
 import traceback
@@ -24,7 +25,7 @@ SIGNED_GET_RESERVED_QUERY = frozenset(
     {"req", "timestamp", "nonce", "body", "http_method", "signature"}
 )
 TRANSPORT_HMAC_MAX_KEY_BYTES = 4096
-TRANSPORT_HMAC_MAX_TARGET_BYTES = 32768
+TRANSPORT_HMAC_MAX_TARGET_BYTES = 131072
 
 class RequestDispatchMixin:
     def version_string(self) -> str:
@@ -89,6 +90,7 @@ class RequestDispatchMixin:
         self.control_authorized = False
         self._signed_envelope_active = False
         self._signed_envelope_body = None
+        self._signed_envelope_body_reader = None
         self._redact_request_query = False
         self._prepare_context_tracking(None, {})
         try:
@@ -153,18 +155,6 @@ class RequestDispatchMixin:
                 route = self._authenticated_route(request_path)
                 if route.rstrip("/") == "/mcp":
                     raise ApiError(404, "not_found", "Create an MCP connection in administration")
-            if (
-                method != "GET"
-                and route in ("", "/")
-                and self._query_ends_with_signature(parsed.query)
-            ):
-                self._signed_envelope_active = True
-                self._discard_request_body()
-                raise ApiError(
-                    HTTPStatus.BAD_REQUEST,
-                    "signed_envelope_get_required",
-                    "signed envelope transport must use an actual HTTP GET request",
-                )
             api_target = self._resolve_web_api_target(route)
             if api_target is not None:
                 self._handle_web_api(method, api_target, parsed.query)
@@ -172,9 +162,11 @@ class RequestDispatchMixin:
             query = parse_qs(parsed.query, keep_blank_values=True)
             effective_method = method
             query_routed = False
-            if method == "GET" and route in ("", "/"):
+            if route in ("", "/"):
                 if self._query_ends_with_signature(parsed.query):
-                    effective_method, route, query = self._decode_signed_get_envelope(parsed.query)
+                    effective_method, route, query = self._decode_signed_get_envelope(
+                        parsed.query, outer_method=method,
+                    )
                     self.command = effective_method
                     query_routed = True
                 elif "req" in query:
@@ -218,7 +210,7 @@ class RequestDispatchMixin:
                     self._discard_request_body()
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
                 endpoint, route_match = matched_endpoint
-                if self._signed_envelope_body is not None and not endpoint.request_body:
+                if self._signed_envelope_body and not endpoint.request_body:
                     self._discard_request_body()
                     raise ApiError(
                         HTTPStatus.BAD_REQUEST,
@@ -332,6 +324,8 @@ class RequestDispatchMixin:
     def _decode_signed_get_envelope(
         self,
         raw_query: str,
+        *,
+        outer_method: str = "GET",
     ) -> tuple[str, str, dict[str, list[str]]]:
         self._signed_envelope_active = True
         if not raw_query.isascii():
@@ -340,32 +334,26 @@ class RequestDispatchMixin:
                 "invalid_signed_envelope",
                 "signed envelope query parameters must use ASCII URL encoding",
             )
-        if self._request_content_length(required=False):
+        if outer_method not in SIGNED_GET_METHODS:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_signed_method", "unsupported HTTP method")
+        native_method = outer_method != "GET"
+        if not native_method and self._request_content_length(required=False):
             self._discard_request_body()
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
                 "signed_envelope_transport_body",
                 "signed GET envelopes carry JSON through the body query parameter",
             )
-
         raw_fields = raw_query.split("&")
         if len(raw_fields) < 2:
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_signed_envelope",
-                "http_method must be penultimate and signature must be final",
-            )
+            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_signed_envelope", "signature must be final")
         last_key, last_separator, _ = raw_fields[-1].partition("=")
         method_key, method_separator, _ = raw_fields[-2].partition("=")
-        if (
-            not last_separator
-            or last_key != "signature"
-            or not method_separator
-            or method_key != "http_method"
-        ):
+        if not last_separator or last_key != "signature":
+            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_signed_envelope", "signature must be final")
+        if not native_method and (not method_separator or method_key != "http_method"):
             raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_signed_envelope",
+                HTTPStatus.BAD_REQUEST, "invalid_signed_envelope",
                 "http_method must be penultimate and signature must be final",
             )
         try:
@@ -388,7 +376,8 @@ class RequestDispatchMixin:
         for key, value in pairs:
             if key in reserved_values:
                 reserved_values[key].append(value)
-        for name in ("req", "timestamp", "nonce", "http_method", "signature"):
+        for name in (("req", "timestamp", "nonce", "signature") if native_method
+                     else ("req", "timestamp", "nonce", "http_method", "signature")):
             if len(reserved_values[name]) != 1:
                 raise ApiError(
                     HTTPStatus.BAD_REQUEST,
@@ -401,20 +390,30 @@ class RequestDispatchMixin:
                 "invalid_signed_envelope",
                 "body must appear at most once",
             )
-        if pairs[-1][0] != "signature" or pairs[-2][0] != "http_method":
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_signed_envelope",
-                "http_method must be penultimate and signature must be final",
-            )
-
-        effective_method = reserved_values["http_method"][0]
-        if effective_method not in SIGNED_GET_METHODS:
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_signed_method",
-                "http_method must be GET, HEAD, POST, PUT, PATCH, or DELETE",
-            )
+        if native_method:
+            if reserved_values["http_method"]:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST, "signed_envelope_get_required",
+                    "http_method is only valid with a signed GET envelope; native requests use the actual HTTP method",
+                )
+            if reserved_values["body"]:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST, "signed_envelope_transport_body",
+                    "native signed requests must send the body as HTTP request bytes",
+                )
+            effective_method = outer_method
+        else:
+            if pairs[-1][0] != "signature" or pairs[-2][0] != "http_method":
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST, "invalid_signed_envelope",
+                    "http_method must be penultimate and signature must be final",
+                )
+            effective_method = reserved_values["http_method"][0]
+            if effective_method not in SIGNED_GET_METHODS:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST, "invalid_signed_method",
+                    "http_method must be GET, HEAD, POST, PUT, PATCH, or DELETE",
+                )
 
         timestamp_text = reserved_values["timestamp"][0]
         if (
@@ -457,10 +456,24 @@ class RequestDispatchMixin:
                 "signature is invalid",
             )
         signed_query = raw_query.rsplit("&", 1)[0]
+        signed_bytes = signed_query.encode("ascii")
+        if native_method:
+            length = self._request_content_length(required=False)
+            if length > self.server.config.max_body_bytes:
+                self.close_connection = True
+                raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body_too_large", "request body is too large")
+            raw_body = self.rfile.read(length)
+            if len(raw_body) != length:
+                self.close_connection = True
+                raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_length", "request body is incomplete")
+            # METHOD/ and the SHA256 of the *exact* body bytes bind both to the HMAC.
+            signed_bytes = (outer_method.encode("ascii") + b"/" + signed_bytes
+                            + b"\n" + hashlib.sha256(raw_body).hexdigest().encode("ascii"))
+            self._signed_envelope_body = raw_body
         expected_signature = base64.urlsafe_b64encode(
             hmac.digest(
                 self.token_record.control_token.encode("utf-8"),
-                signed_query.encode("ascii"),
+                signed_bytes,
                 "sha256",
             )
         ).rstrip(b"=").decode("ascii")

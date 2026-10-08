@@ -51,6 +51,33 @@ class ConversationTests(unittest.TestCase):
         body.update(overrides)
         return self.store.create_plans(body, actor_id="actor")
 
+    def test_create_request_id_replays_nonce_across_store_restart(self) -> None:
+        from openkapsel.context.conversation import ConversationRequestConflict
+        entries = self.initial_entries("idempotent")
+        first = self.store.create_conversation(0, entries, request_id="retry-a", actor_id="actor-a")
+        self.assertFalse(first["replayed"])
+        restarted = ContextStore(self.root)
+        replay = restarted.create_conversation(0, entries, request_id="retry-a", actor_id="actor-a")
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(first["writer_nonce"], replay["writer_nonce"])
+        self.assertEqual(first["entries"], replay["entries"])
+        self.assertEqual(1, restarted.conversation_query()[2])
+        with self.assertRaises(ConversationRequestConflict) as conflict:
+            restarted.create_conversation(0, self.initial_entries("changed"), request_id="retry-a", actor_id="actor-a")
+        self.assertEqual("context_request_conflict", conflict.exception.code)
+        with self.assertRaises(ValueError):
+            restarted.create_conversation(0, entries, request_id="retry-a", actor_id="actor-b")
+        with self.assertRaises(ValueError):
+            restarted.create_conversation(1, entries, request_id="invalid key", actor_id="actor-a")
+        with self.assertRaises(ValueError):
+            restarted.create_conversation(1, entries, request_id="retry-b")
+        with closing(sqlite3.connect(restarted.database)) as connection:
+            connection.execute("DELETE FROM conversations WHERE id = 0")
+            connection.commit()
+        with self.assertRaises(ConversationRequestConflict) as gone:
+            restarted.create_conversation(0, entries, request_id="retry-a", actor_id="actor-a")
+        self.assertEqual("context_request_gone", gone.exception.code)
+
     def test_create_requires_sequential_id_and_stores_plaintext_writer_nonce(self) -> None:
         created = self.create_conversation()
         self.assertEqual(0, created["conversation_id"])

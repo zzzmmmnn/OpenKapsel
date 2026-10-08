@@ -657,7 +657,7 @@ class DiscoveryMixin:
                 "request_transport": {
                     "available": True,
                     "discovery_url": "./discovery/transport",
-                    "summary": "GET-only query routing and signed transport fallback for constrained clients.",
+                    "summary": "Query routing and signed GET or native-method transport for constrained clients.",
                 },
                 "path_rules": {
                     "relative_paths_from": full["path_rules"]["relative_paths_from"],
@@ -894,12 +894,16 @@ class DiscoveryMixin:
                         "and Authorization header"
                     ),
                     "query_route": (
-                        "use only when the client must keep the exact workspace root path "
-                        "but can issue an ordinary GET request"
+                        "use when the client must keep the exact workspace root path "
+                        "but can issue the ordinary HTTP method with the normal Authorization header"
                     ),
                     "signed_get_envelope": (
                         "use only when the client is restricted to GET at the exact workspace "
                         "root and cannot send the required method or Authorization header"
+                    ),
+                    "native_signed_envelope": (
+                        "use when POST/DELETE/PUT/PATCH/HEAD is supported but Authorization headers "
+                        "are unavailable; method is taken from the HTTP request and raw body is signed"
                     ),
                     "hmac_helper": (
                         "use when the client can issue only bare GET requests and cannot compute "
@@ -915,10 +919,18 @@ class DiscoveryMixin:
                         "&nonce=<8-alnum>&body=<url-encoded-json>&http_method=POST"
                         "&signature=<base64url-hmac>"
                     ),
+                    "native_signed_post": (
+                        "POST <workspace_url>?req=context&timestamp=<unix-seconds>"
+                        "&nonce=<8-alnum>&signature=<base64url-hmac> [JSON in HTTP body]"
+                    ),
+                    "native_signed_delete": (
+                        "DELETE <workspace_url>?req=env&timestamp=<unix-seconds>"
+                        "&nonce=<8-alnum>&signature=<base64url-hmac> [optional HTTP body]"
+                    ),
                 },
                 "query_route": {
                     "available": True,
-                    "outer_method": "GET",
+                    "outer_methods": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
                     "scope": "exact workspace root URL only",
                     "req_parameter": "req",
                     "req_format": "relative endpoint route without a leading slash",
@@ -934,11 +946,11 @@ class DiscoveryMixin:
                     "input_encoding": "UTF-8 key and target strings after URL query decoding",
                     "result_encoding": "base64url without padding",
                     "max_key_bytes": 4096,
-                    "max_target_bytes": 32768,
+                    "max_target_bytes": 131072,
                     "side_effects": "none",
                     "response_cache": "no-store",
                     "logging": "OpenKapsel removes the complete query from its access log for both helper entry forms; upstream HTTP infrastructure may still log URLs",
-                    "transport_use": "URL-encode the exact raw signed-envelope query prefix as target, then append the returned result as the final signature parameter without changing that prefix",
+                    "transport_use": "For GET sign the raw query prefix. For native signed requests sign METHOD/ + raw query prefix + newline + lowercase SHA256 hex of exact HTTP body bytes; URL-encode this full message as target.",
                 },
                 "signed_get_envelope": {
                     "available": True,
@@ -958,6 +970,25 @@ class DiscoveryMixin:
                     "nonce_replay": "a nonce cannot be reused for the same credential identity inside the acceptance window",
                     "nonce_replay_scope": "process-local cache bounded to the remaining timestamp acceptance window",
                     "body": "optional URL-encoded UTF-8 JSON object for simple JSON-body endpoints",
+                    "response_cache": "no-store",
+                },
+                "native_signed_envelope": {
+                    "available": True,
+                    "outer_methods": ["POST", "DELETE", "PUT", "PATCH", "HEAD"],
+                    "scope": "exact workspace root URL using req relative endpoint route",
+                    "required_parameters": ["req", "timestamp", "nonce", "signature"],
+                    "http_method_parameter": "omit; physical HTTP method is authoritative",
+                    "body_parameter": "not allowed; send raw HTTP body with Content-Length",
+                    "signature_position": "final query parameter",
+                    "signature_format": "base64url without padding",
+                    "signature_algorithm": "HMAC-SHA256",
+                    "signature_key": "matching control token",
+                    "signed_bytes": "ASCII METHOD/ followed by the exact ASCII query prefix before &signature=, one LF byte, then lowercase hexadecimal SHA256 of the exact raw HTTP body bytes (including SHA256(empty) when no body)",
+                    "body_hash": "lowercase hex SHA-256 of raw HTTP request body; signed but never placed in URL",
+                    "query_encoding": "ASCII; percent-encode UTF-8 query values before signing; never re-encode after signing",
+                    "timestamp_window_seconds": 300,
+                    "nonce_format": "8 ASCII alphanumeric characters, fresh on each signed attempt",
+                    "nonce_replay": "shared credential-identity replay cache with legacy signed GET",
                     "response_cache": "no-store",
                 },
             },
@@ -1010,6 +1041,8 @@ class DiscoveryMixin:
                         "create_id_must_equal_next_conversation_id": True,
                         "writer_nonce_returned_on_create": True,
                         "writer_nonce_usage": "retain the value returned by conversation_create and pass it back unchanged",
+                        "create_request_id": "optional per-actor durable retry key; identical request returns original writer_nonce even after server restart",
+                        "create_request_conflict": "context_request_conflict (409) when request_id is reused with different content",
                         "roles": ["user", "ai", "summary"],
                         "ordinary_content_max_characters": MAX_CONVERSATION_CONTENT_CHARS,
                         "summary_content_max_characters": MAX_CONVERSATION_SUMMARY_CHARS,
@@ -1561,7 +1594,7 @@ class DiscoveryMixin:
                     "authentication": "workspace read URL only; no Authorization header",
                     "query": {
                         "key": "required UTF-8 HMAC key, at most 4096 bytes",
-                        "target": "required UTF-8 target string, at most 32768 bytes",
+                        "target": "required UTF-8 target string, at most 131072 bytes (subject to client/proxy HTTP request-line limits)",
                     },
                     "response": {
                         "algorithm": "HMAC-SHA256",
@@ -1616,6 +1649,7 @@ class DiscoveryMixin:
                     "authentication": "Bearer control token",
                     "json": {
                         "conversation_id": "<required next_conversation_id from conversation_query; first id is 0>",
+                        "request_id": "<optional stable 1-128 ASCII retry key scoped to this actor/workspace>",
                         "entries": [
                             {"role": "user", "content": "<user-side context summary, max 1000 chars; may retain original wording without extra compression when it fits>"},
                             {"role": "ai", "content": "<AI-side context summary, max 1000 chars; may retain original wording without extra compression when it fits>"},
@@ -1623,11 +1657,12 @@ class DiscoveryMixin:
                     },
                     "response": {
                         "conversation_id": "caller-supplied searchable non-negative sequential integer id",
-                        "writer_nonce": "value to retain for this Conversation and pass back unchanged",
+                        "writer_nonce": "value to retain for this Conversation and pass back unchanged, including on request_id replay",
+                        "replayed": "true only when the same request_id and normalized create request were previously committed",
                         "entries": "created append-only entries with per-conversation sub_id",
                         "instructions": "mandatory AI usage guidance for later appends and Plan integration",
                     },
-                    "notes": "creation is atomic; conversation_id must equal the current next_conversation_id (previous maximum + 1, or 0 for the first Conversation); requires at least two complete entries with first role=user then role=ai",
+                    "notes": "creation is atomic; conversation_id must equal the current next_conversation_id except for exact request_id replay (HTTP 200 returning original writer_nonce); requires at least two complete entries with first role=user then role=ai; changed request_id use conflicts (409)",
                 },
                 "conversation_append": {
                     "authentication": "Bearer control token",

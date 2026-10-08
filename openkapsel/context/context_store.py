@@ -485,12 +485,20 @@ class ContextStore:
         self,
         conversation_id: Any,
         entries: Any,
+        *,
+        request_id: str | None = None,
+        actor_id: str | None = None,
     ) -> dict[str, Any]:
+        if actor_id is not None:
+            actor_id = self._validate_actor_id(actor_id)
         with self._lock:
             self._ensure_available()
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                payload = create_conversation(connection, conversation_id, entries)
+                payload = create_conversation(
+                    connection, conversation_id, entries,
+                    request_id=request_id, actor_id=actor_id,
+                )
                 connection.commit()
         return payload
 

@@ -9,6 +9,7 @@ from http import HTTPStatus
 from typing import Any
 
 from openkapsel.context.conversation import (
+    ConversationRequestConflict,
     DEFAULT_RECENT_CONVERSATION_COUNT,
     MAX_RECENT_CONVERSATION_PAGES,
 )
@@ -325,14 +326,20 @@ class ContextHttpMixin:
         try:
             payload = self.server.context_for(
                 self.token_scope_root
-            ).create_conversation(body.get("conversation_id"), body.get("entries"))
+            ).create_conversation(
+                body.get("conversation_id"), body.get("entries"),
+                request_id=body.get("request_id"),
+                actor_id=self.token_record.actor_id,
+            )
+        except ConversationRequestConflict as exc:
+            raise ApiError(HTTPStatus.CONFLICT, exc.code, str(exc)) from None
         except ValueError as exc:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
                 "invalid_conversation",
                 str(exc),
             ) from None
-        self._send_json(HTTPStatus.CREATED, payload)
+        self._send_json(HTTPStatus.OK if payload.get("replayed") else HTTPStatus.CREATED, payload)
 
     def _handle_conversation_append(self, value: str) -> None:
         conversation_id = self._parse_conversation_id(value)

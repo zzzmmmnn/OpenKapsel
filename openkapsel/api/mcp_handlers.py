@@ -407,7 +407,11 @@ class McpHandlersMixin:
                 return self.server.context_for(self.token_scope_root).create_conversation(
                     arguments["conversation_id"],
                     arguments["entries"],
+                    request_id=arguments.get("request_id"),
+                    actor_id=self.token_record.actor_id,
                 )
+            except ConversationRequestConflict as exc:
+                raise ApiError(HTTPStatus.CONFLICT, exc.code, str(exc)) from None
             except ValueError as exc:
                 raise ApiError(
                     HTTPStatus.BAD_REQUEST,

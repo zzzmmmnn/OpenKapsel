@@ -200,7 +200,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_create",
         "Create conversation",
-        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns an opaque writer_nonce plus append instructions.",
+        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns an opaque writer_nonce plus append instructions. Optional request_id makes retries idempotent and replays the original writer_nonce.",
         _object_schema(
             {
                 "conversation_id": conversation_id_schema(
@@ -210,6 +210,11 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     min_items=2,
                     description="Initial Conversation records; the first must be user and the second ai.",
                 ),
+                "request_id": {
+                    "type": "string", "minLength": 1, "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                    "description": "Optional stable retry key for conversation creation. Same actor and identical request returns original writer_nonce and replayed=true; changed request conflicts.",
+                },
             },
             ("conversation_id", "entries"),
         ),

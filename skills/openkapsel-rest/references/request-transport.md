@@ -1,6 +1,6 @@
-# GET-only request transport
+# Signed and GET-only request transport
 
-This fallback is for AI hosts that can issue only `GET` requests to a fixed Workspace base URL. Prefer ordinary REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them. Runtime `GET <workspace_url>/discovery/transport` is authoritative for the current wire contract.
+These fallbacks support AI hosts limited to `GET` or able to send native HTTP methods but not custom Authorization headers. Prefer ordinary REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them. Runtime `GET <workspace_url>/discovery/transport` is authoritative for the current wire contract.
 
 ## Query-route fallback
 
@@ -56,15 +56,37 @@ GET <workspace_url>transport/hmac?key=<url-encoded-key>&target=<url-encoded-targ
 GET <workspace_url>?req=transport/hmac&key=<url-encoded-key>&target=<url-encoded-target>
 ```
 
-`key` and `target` must each appear exactly once. The helper computes `HMAC-SHA256(UTF-8(key), UTF-8(target))` and returns the digest as Base64URL without padding. `key` is limited to 4096 UTF-8 bytes and `target` to 32768 UTF-8 bytes. It does not validate or consume a signed-envelope nonce and has no state-changing side effects.
+`key` and `target` must each appear exactly once. The helper computes `HMAC-SHA256(UTF-8(key), UTF-8(target))` and returns the digest as Base64URL without padding. `key` is limited to 4096 UTF-8 bytes and `target` to 131072 UTF-8 bytes (128 KiB). Actual GET request-line lengths can be lower (often ~64 KiB or less in servers/proxies), so large helper targets may require a different network transport or local HMAC calculation. It does not validate or consume a signed-envelope nonce and has no state-changing side effects.
 
 For a signed envelope, build the exact raw query prefix through `http_method` first, pass that complete prefix as `target`, and use the returned `result` as the final `signature` value without changing the prefix afterward.
 
 This fallback necessarily places the HMAC key, normally the control token, in the request URL. OpenKapsel removes the complete query string from its own access log for both helper forms, returns `Cache-Control: no-store`, and sends `Referrer-Policy: no-referrer`. Reverse proxies, CDNs, browsers, or other upstream HTTP infrastructure may still record the URL, so use this helper only when local HMAC and request headers are unavailable.
 
+## Native signed POST / DELETE (also PUT, PATCH, HEAD)
+
+When the client can issue the actual HTTP method but cannot set `Authorization`, send a signed request to the **exact Workspace root** with `req` specifying the relative endpoint. Do **not** include `http_method` or the GET envelope's `body` query parameter. The HTTP method itself is authoritative, and JSON/binary request bodies travel as normal HTTP body bytes rather than in the URL:
+
+```text
+POST <workspace_url>?req=fs/write/mutate&timestamp=<unix-seconds>&nonce=Ab12Cd34&signature=<base64url-hmac>
+Content-Type: application/json
+Content-Length: <byte-length>
+
+<raw UTF-8 JSON request body>
+```
+
+Build the query prefix *before* `&signature=`, exactly as transmitted. Sign the following byte string using HMAC-SHA256 with the matching control token as key:
+
+```text
+METHOD/ + ASCII(raw_query_prefix) + LF + lowercase_hex(SHA256(exact_raw_HTTP_body_bytes))
+```
+
+For POST the prefix starts `POST/`; for DELETE it starts `DELETE/`. `LF` is one newline byte (`0x0a`); the hash is 64 lowercase ASCII hex digits, **including SHA256 of the empty body** if no bytes are sent. The resulting signature is unpadded base64url. If using `transport/hmac`, pass that entire constructed text as `target` (URL-encoded). Do not append raw body bytes or the HTTP method as unsigned, out-of-band values. Never reformat JSON after hashing. Native requests still use the same 300-second timestamp window and 8-character nonce replay cache as legacy signed GET requests. The endpoint's ordinary content type/body requirements still apply; `Content-Length` is required for nonempty bodies.
+
+This removes the signed GET query-string body size bottleneck for native POST/DELETE while keeping the server's ordinary request-body and reverse proxy limits. Plain query-routing with Authorization headers also works with actual POST/DELETE without an `http_method` query parameter.
+
 ## Server verification
 
-The server accepts the envelope only when all of these conditions hold:
+For the **GET-only envelope**, the server accepts the envelope only when all of these conditions hold:
 
 1. The physical HTTP request is `GET` to the exact Workspace root URL.
 2. `signature` is the final query parameter and appears exactly once.

@@ -79,7 +79,7 @@ def put_stream(handler, path, length, expected_sha256, *, create_parents=False):
                       expected_size=length, expected_sha256=expected_sha256) as output:
             remaining = length
             while remaining:
-                chunk = handler.rfile.read(min(CHUNK_SIZE, remaining))
+                chunk = handler._request_body_reader().read(min(CHUNK_SIZE, remaining))
                 if not chunk:
                     raise ApiError(400, "incomplete_body", "request body ended before Content-Length")
                 output.write(chunk)

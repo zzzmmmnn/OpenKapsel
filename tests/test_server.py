@@ -304,6 +304,147 @@ class WorkspaceServerTests(unittest.TestCase):
         ).rstrip(b"=").decode("ascii")
         return f"/kapsel/w/{token}?{signed_query}&signature={signature}"
 
+    def native_signed_path(
+        self, method: str, req: str, body: bytes = b"", *, nonce: str,
+        query: list[tuple[str, str]] | None = None, token: str = "test-token",
+    ) -> str:
+        pairs = [("req", req), ("timestamp", str(int(time.time()))), ("nonce", nonce)]
+        pairs.extend(query or [])
+        raw_query = urlencode(pairs)
+        signed_bytes = (method.encode("ascii") + b"/" + raw_query.encode("ascii")
+                        + b"\n" + hashlib.sha256(body).hexdigest().encode("ascii"))
+        key = self.server.tokens.get(token).control_token.encode("utf-8")
+        signature = base64.urlsafe_b64encode(hmac.digest(key, signed_bytes, "sha256")).rstrip(b"=").decode("ascii")
+        return f"/kapsel/w/{token}?{raw_query}&signature={signature}"
+
+    def test_conversation_request_id_replays_via_rest_and_mcp(self) -> None:
+        body = {
+            "conversation_id": 0,
+            "request_id": "conversation-replay-001",
+            "entries": [
+                {"role": "user", "content": "User asks to retry"},
+                {"role": "ai", "content": "AI accepts the request"},
+            ],
+        }
+        status, first = self.request("POST", self.endpoint("/conversation"), body)
+        self.assertEqual(201, status, first)
+        self.assertFalse(first["replayed"])
+        status, again = self.request("POST", self.endpoint("/conversation"), body)
+        self.assertEqual(200, status, again)
+        self.assertTrue(again["replayed"])
+        self.assertEqual(first["writer_nonce"], again["writer_nonce"])
+        changed = {**body, "entries": [{"role": "user", "content": "changed"}, body["entries"][1]]}
+        status, rejected = self.request("POST", self.endpoint("/conversation"), changed)
+        self.assertEqual(409, status, rejected)
+        self.assertEqual("context_request_conflict", rejected["error"]["code"])
+        _, mcp_retry, _ = self.mcp_request(
+            "test-token", 9701, "tools/call",
+            {"name": "conversation_create", "arguments": body},
+        )
+        result = mcp_retry["result"]
+        self.assertFalse(result["isError"], result)
+        self.assertTrue(result["structuredContent"]["replayed"])
+        self.assertEqual(first["writer_nonce"], result["structuredContent"]["writer_nonce"])
+
+    def test_native_signed_post_binds_method_body_and_rejects_replay(self) -> None:
+        entries = [
+            {"role": "user", "content": "first"},
+            {"role": "ai", "content": "second"},
+        ]
+        data = json.dumps({"conversation_id": 0, "entries": entries, "request_id": "post-retry"}).encode()
+        url = self.native_signed_path("POST", "conversation", data, nonce="Na12Pb34")
+        status, raw, headers = self.raw_request(
+            "POST", url, data, {"Content-Type": "application/json"}, authorize=False
+        )
+        self.assertEqual(201, status, raw)
+        created = json.loads(raw)
+        self.assertFalse(created["replayed"])
+        self.assertEqual("no-store", headers.get("Cache-Control"))
+        replay_status, raw, _ = self.raw_request("POST", url, data, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(409, replay_status, raw)
+        self.assertEqual("signed_envelope_replay", json.loads(raw)["error"]["code"])
+        retry_url = self.native_signed_path("POST", "conversation", data, nonce="Na12Pb35")
+        retry_status, raw, _ = self.raw_request("POST", retry_url, data, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(200, retry_status, raw)
+        self.assertEqual(created["writer_nonce"], json.loads(raw)["writer_nonce"])
+        altered = data.replace(b"first", b"other")
+        tamper_status, raw, _ = self.raw_request("POST", self.native_signed_path("POST", "conversation", data, nonce="Na12Pb36"), altered, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(401, tamper_status, raw)
+        self.assertEqual("invalid_signed_signature", json.loads(raw)["error"]["code"])
+        method_status, raw, _ = self.raw_request("DELETE", self.native_signed_path("POST", "conversation", data, nonce="Na12Pb37"), authorize=False)
+        self.assertEqual(401, method_status, raw)
+        self.assertEqual("invalid_signed_signature", json.loads(raw)["error"]["code"])
+        expired_url = self.native_signed_path("POST", "conversation", data, nonce="Na12Pb38")
+        wrong_method = expired_url.replace("&signature=", "&http_method=POST&signature=")
+        bad_status, raw, _ = self.raw_request("POST", wrong_method, data, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(400, bad_status, raw)
+
+    def test_unsigned_native_req_routes_with_bearer_control(self) -> None:
+        data = {
+            "conversation_id": 0,
+            "entries": [
+                {"role": "user", "content": "plain query routed post"},
+                {"role": "ai", "content": "plain query routed response"},
+            ],
+        }
+        status, raw, _ = self.raw_request(
+            "POST", self.endpoint("?req=conversation"), json.dumps(data).encode(),
+            {"Content-Type": "application/json"}, authorize=True,
+        )
+        self.assertEqual(201, status, raw)
+        forbidden, raw, _ = self.raw_request(
+            "POST", self.endpoint("?req=conversation"), json.dumps(data).encode(),
+            {"Content-Type": "application/json"}, authorize=False,
+        )
+        self.assertEqual(401, forbidden, raw)
+
+    def test_native_signed_delete_and_large_post_body(self) -> None:
+        # DELETE signs its real JSON body without an http_method query field.
+        plan_id = self._ensure_test_plan("test-token")
+        delete_body = b"{}"
+        delete_url = self.native_signed_path("DELETE", "env", delete_body, nonce="De12Le34")
+        headers = {"OpenKapsel-Plan-Id": str(plan_id), "OpenKapsel-Taskname": "native-signed", "OpenKapsel-Message": "clear test environment", "Content-Type": "application/json"}
+        status, raw, _ = self.raw_request("DELETE", delete_url, delete_body, headers=headers, authorize=False)
+        self.assertEqual(200, status, raw)
+        conversation = self._new_test_conversation(self.server.tokens.get("test-token"), "big-post")
+        item = {"op": "file.create", "path": "native-large.txt", "content": "z" * 80000}
+        data = json.dumps({"items": [item], "plan_id": plan_id, "taskname": "native-signed", "message": "large HTTP body"}).encode()
+        url = self.native_signed_path("POST", "fs/write/mutate", data, nonce="Po12St34")
+        status, raw, _ = self.raw_request("POST", url, data, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(200, status, raw)
+        self.assertEqual("z" * 80000, (self.root / "native-large.txt").read_text())
+
+    def test_native_signed_put_reads_verified_binary_body(self) -> None:
+        plan_id = self._ensure_test_plan("test-token")
+        body = b"\x00\xff\x10\x20" * 16000
+        url = self.native_signed_path("PUT", "fs/content", body, nonce="Pu12Ta34", query=[("path", "native-signed-binary.bin")])
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "OpenKapsel-Plan-Id": str(plan_id),
+            "OpenKapsel-Taskname": "binary-signed",
+            "OpenKapsel-Message": "test signed binary body",
+        }
+        status, raw, _ = self.raw_request("PUT", url, body, headers, authorize=False)
+        self.assertEqual(201, status, raw)
+        self.assertEqual(body, (self.root / "native-signed-binary.bin").read_bytes())
+
+    def test_hmac_helper_accepts_target_up_to_128k_in_handler(self) -> None:
+        from openkapsel.server_runtime.dispatch import RequestDispatchMixin, TRANSPORT_HMAC_MAX_TARGET_BYTES
+        self.assertEqual(131072, TRANSPORT_HMAC_MAX_TARGET_BYTES)
+        class Capture:
+            def _send_json(self, status, data):
+                self.result = status, data
+        capture = Capture()
+        RequestDispatchMixin._handle_transport_hmac(capture, {"key": ["k"], "target": ["x" * 131072]})
+        self.assertEqual(200, capture.result[0])
+        with self.assertRaises(ApiError) as error:
+            RequestDispatchMixin._handle_transport_hmac(capture, {"key": ["k"], "target": ["x" * 131073]})
+        self.assertEqual("transport_hmac_target_too_large", error.exception.code)
+        # A 40 KiB target also passes through the actual HTTP helper endpoint.
+        short_url = self.endpoint("/transport/hmac?" + urlencode({"key": "k", "target": "x" * 40000}))
+        status, raw, _ = self.raw_request("GET", short_url, authorize=False)
+        self.assertEqual(200, status, raw)
+
     def test_workspace_root_req_alias_routes_read_only_get(self) -> None:
         path = self.endpoint(
             "?" + urlencode({"req": "fs/query/list", "path": "project"})
@@ -351,6 +492,9 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("ordinary_rest", full_transport["selection"])
         self.assertIn("query_route", full_transport["selection"])
         self.assertIn("signed_get_envelope", full_transport["selection"])
+        self.assertIn("native_signed_envelope", full_transport["selection"])
+        self.assertIn("native_signed_envelope", full_transport)
+        self.assertEqual(131072, full_transport["hmac_helper"]["max_target_bytes"])
         self.assertEqual(transport, full_transport)
 
     def test_transport_hmac_supports_path_and_req_route_without_authorization(self) -> None:

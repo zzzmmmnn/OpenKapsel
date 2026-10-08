@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 import secrets
 import sqlite3
 import string
@@ -12,6 +14,7 @@ from openkapsel.contract import (
     CONVERSATION_ROLES,
     MAX_CONVERSATION_CONTENT_CHARS,
     MAX_CONVERSATION_SUMMARY_CHARS,
+    PLAN_REQUEST_ID_PATTERN,
 )
 
 MAX_CONVERSATION_QUERY_LIMIT = 100
@@ -19,6 +22,7 @@ DEFAULT_RECENT_CONVERSATION_COUNT = 2
 MAX_RECENT_CONVERSATION_PAGES = 10
 CONVERSATION_SUMMARY_PROMPT_AFTER = 40
 CONVERSATION_SUMMARY_REQUIRED_AFTER = 49
+MAX_CONVERSATION_CREATE_REQUESTS = 100_000
 CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
 _CONVERSATION_ALPHABET = string.ascii_letters + string.digits
 
@@ -35,8 +39,15 @@ CONVERSATION_INSTRUCTIONS = (
     "entries have accumulated since the most recent summary, another user/ai entry is rejected until role=summary "
     "is appended. summary content may be up to 8192 characters and must compress that range while preserving its "
     "important context. Plan creation and non-cancelling Plan updates require this conversation id, its "
-    "writer_nonce, and at least one atomic conversation entry."
+    "writer_nonce, and at least one atomic conversation entry. If creation might be retried, supply a "
+    "stable request_id; a matching retry by the same actor returns the original writer_nonce."
 )
+
+
+class ConversationRequestConflict(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 def _utc_now() -> str:
@@ -72,6 +83,13 @@ def initialize_conversation_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS conversation_entries_role "
         "ON conversation_entries(role, created_at DESC)"
+    )
+    # Stable per-actor retry receipts survive lost responses and server restarts.
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS conversation_create_requests ("
+        "actor_id TEXT NOT NULL, request_id TEXT NOT NULL, "
+        "fingerprint TEXT NOT NULL, response_json TEXT NOT NULL, "
+        "PRIMARY KEY (actor_id, request_id))"
     )
 
 
@@ -268,27 +286,72 @@ def create_conversation(
     connection: sqlite3.Connection,
     conversation_id: Any,
     entries: Any,
+    *,
+    request_id: str | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     conversation_id = validate_conversation_id(conversation_id)
+    normalized = normalize_entries(entries, minimum=2, require_initial_pair=True)
+    fingerprint = None
+    if request_id is not None:
+        if not isinstance(request_id, str) or not re.fullmatch(PLAN_REQUEST_ID_PATTERN, request_id):
+            raise ValueError("request_id must be 1-128 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
+        if not actor_id:
+            raise ValueError("request_id requires a stable actor_id")
+        fingerprint = hashlib.sha256(
+            json.dumps({"conversation_id": conversation_id, "entries": normalized},
+                       ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        previous = connection.execute(
+            "SELECT fingerprint, response_json FROM conversation_create_requests "
+            "WHERE actor_id = ? AND request_id = ?",
+            (actor_id, request_id),
+        ).fetchone()
+        if previous is not None:
+            if previous["fingerprint"] != fingerprint:
+                raise ConversationRequestConflict(
+                    "context_request_conflict", "request_id was already used with a different conversation request"
+                )
+            receipt = json.loads(previous["response_json"])
+            # No nonce is returned if the underlying conversation has been deleted.
+            row = connection.execute(
+                "SELECT writer_nonce FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if row is None or row["writer_nonce"] != receipt["writer_nonce"]:
+                raise ConversationRequestConflict(
+                    "context_request_gone", "original conversation is missing; request_id cannot create a replacement"
+                )
+            return dict(receipt, replayed=True)
+        count = connection.execute("SELECT COUNT(*) FROM conversation_create_requests").fetchone()[0]
+        if count >= MAX_CONVERSATION_CREATE_REQUESTS:
+            raise ConversationRequestConflict(
+                "context_request_limit", "workspace conversation request ledger is full"
+            )
+
     expected_id = next_conversation_id(connection)
     if conversation_id != expected_id:
-        raise ValueError(
-            f"conversation_id must equal next_conversation_id {expected_id}"
-        )
-    normalized = normalize_entries(entries, minimum=2, require_initial_pair=True)
+        raise ValueError(f"conversation_id must equal next_conversation_id {expected_id}")
     writer_nonce = generate_writer_nonce()
     connection.execute(
         "INSERT INTO conversations (id, created_at, writer_nonce) VALUES (?, ?, ?)",
         (conversation_id, _utc_now(), writer_nonce),
     )
     created = _append_locked(connection, conversation_id, normalized)
-    return {
+    result = {
         "conversation_id": conversation_id,
         "writer_nonce": writer_nonce,
         "entries": created,
         "summary_status": conversation_summary_status(connection, conversation_id),
         "instructions": CONVERSATION_INSTRUCTIONS,
     }
+    if request_id is not None:
+        result.update(request_id=request_id, replayed=False)
+        connection.execute(
+            "INSERT INTO conversation_create_requests "
+            "(actor_id, request_id, fingerprint, response_json) VALUES (?, ?, ?, ?)",
+            (actor_id, request_id, fingerprint, json.dumps(result, ensure_ascii=False)),
+        )
+    return result
 
 
 def append_conversation(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import errno
 import hashlib
 import json
@@ -135,6 +137,17 @@ class HttpSupportMixin:
             self.server.transfer_slots.release()
 
 
+    def _request_body_reader(self):
+        """Return verified signed body bytes to raw-stream handlers without rereading socket."""
+        raw = getattr(self, "_signed_envelope_body", None)
+        if raw is None:
+            return self.rfile
+        stream = getattr(self, "_signed_envelope_body_reader", None)
+        if stream is None:
+            stream = io.BytesIO(raw)
+            self._signed_envelope_body_reader = stream
+        return stream
+
     def _read_json(self) -> dict[str, Any]:
         if hasattr(self, "_mcp_tool_arguments"):
             body = self._mcp_tool_arguments
@@ -211,6 +224,8 @@ class HttpSupportMixin:
 
 
     def _discard_request_body(self) -> None:
+        if getattr(self, "_signed_envelope_body", None) is not None:
+            return  # Signed native body was already consumed for HMAC verification.
         length = self._request_content_length(required=False)
         if length == 0:
             return

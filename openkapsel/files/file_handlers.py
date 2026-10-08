@@ -728,7 +728,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     descriptor = None
                     remaining = length
                     while remaining:
-                        chunk = self.rfile.read(min(remaining, self.server.config.transfer_buffer_bytes))
+                        chunk = self._request_body_reader().read(min(remaining, self.server.config.transfer_buffer_bytes))
                         if not chunk:
                             raise ApiError(HTTPStatus.BAD_REQUEST, "incomplete_body", "request body ended before Content-Length")
                         handle.write(chunk)

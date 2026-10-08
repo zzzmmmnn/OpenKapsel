@@ -109,7 +109,7 @@ SECTION_LIMITS = {
 }
 
 SECTION_SUMMARIES = {
-    "transport": "GET-only query routing, HMAC calculation, and signed transport envelopes for constrained clients.",
+    "transport": "Query routing, HMAC helper, and signed GET or native-method envelopes for constrained clients.",
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Append-only Conversation summaries plus operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
@@ -129,7 +129,7 @@ SECTION_WORKFLOWS = {
     "transport": [
         "Prefer ordinary REST paths and Authorization: Bearer <CONTROL_TOKEN> whenever the client supports them.",
         "Use req at the exact workspace root only when the client cannot change the request path.",
-        "Use the signed GET envelope only when the client also cannot send the required HTTP method or Authorization header.",
+        "Use signed GET only for GET-only clients; when the client can send POST or DELETE but not Authorization headers, use the native signed envelope with HTTP body and method-bound HMAC.",
         "If the client also lacks HMAC-SHA256, call transport/hmac or ?req=transport/hmac with URL-encoded key and target, then use the returned base64url-no-padding result as signature.",
         "Generate a fresh random nonce for every signed envelope and never reuse it inside the timestamp acceptance window.",
     ],
@@ -143,7 +143,7 @@ SECTION_WORKFLOWS = {
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],
     "context": [
-        "Before creating a new Conversation, use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns writer_nonce.",
+        "Before creating a new Conversation, use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns writer_nonce. Supply an optional stable request_id to replay the original writer_nonce after a lost create response.",
         f"Append materially new user/ai context with conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may keep original wording without extra compression when it already fits. Summary cadence is dynamic: after 40 user/ai entries since the newest summary, append responses recommend summary via summary_status; after 49, another user/ai entry is blocked until summary is appended. The summary covers from the newest summary itself (or sub_id 1) through the latest entry. Without conversation_id, conversation_query pages through non-empty Conversations by last entry time, {DEFAULT_RECENT_CONVERSATION_COUNT} per page for up to {MAX_RECENT_CONVERSATION_PAGES} pages, and returns each grouped window from its newest summary (or sub_id 1) forward. With conversation_id it returns the newest at most 100 entries, optionally after a sub_id range filter. Returned entries are always in forward reading order.",
         "Plan creation and every non-cancellation-only Plan update append at least one Conversation entry using conversation_id plus the writer_nonce returned by conversation_create; completion must include at least one ai entry. Cancellation-only remains possible without writer_nonce.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",
