@@ -842,7 +842,10 @@ class DiscoveryMixin:
             else []
         )
         mcp_operation_families = (
-            auxiliary_operations_for(self.token_record, recycle_enabled)
+            auxiliary_operations_for(
+                self.token_record, recycle_enabled,
+                self.server.config.mcp_binary_chunk_bytes,
+            )
             if control_authorized
             else {}
         )

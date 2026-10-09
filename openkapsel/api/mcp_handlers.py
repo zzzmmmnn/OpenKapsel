@@ -168,7 +168,7 @@ class McpHandlersMixin:
                 "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context before planning or modifying anything. "
                 "Query or reuse an active root Plan before writes and load relevant Memory when durable cross-task facts matter. "
                 "Attach every modifying tool to its owning plan_id, taskname, and message; reads are recorded only when taskname and message are supplied. "
-                "Low-frequency Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load the matching Discovery section for operation schemas (Shell and Task share discovery/shell)."
+                "Low-frequency File Transfer, Upload, Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load the matching Discovery section for operation schemas (File Transfer and Upload use discovery/files; Shell and Task use discovery/shell)."
             ),
         }
 
@@ -240,6 +240,13 @@ class McpHandlersMixin:
                     str(exc),
                     {"family": family, "operation": operation},
                 ) from None
+            if effective_name == "fs_read_binary":
+                binary_limit = self.server.config.mcp_binary_chunk_bytes
+                if inner_args.get("length", binary_limit) > binary_limit:
+                    raise McpError(-32602, f"length must be <= {binary_limit}")
+                limit_rule = args_schema["properties"]["length"]
+                limit_rule["maximum"] = binary_limit
+                limit_rule["default"] = binary_limit
             if injected_operation is not None:
                 inner_args["operation"] = injected_operation
             inner_properties = effective_tool["inputSchema"]["properties"]

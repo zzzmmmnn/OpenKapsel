@@ -14,6 +14,7 @@ SECTION_NAMES = ("transport", "files", "context", "memory", "paths", "rpc", "net
 
 SECTION_MCP_FAMILIES = {
     "authentication": {"credential"},
+    "files": {"upload", "file_transfer"},
     "shell": {"shell", "task"},
     "schedules": {"schedule"},
     "web": {"web"},
@@ -139,7 +140,8 @@ SECTION_WORKFLOWS = {
         "Use /fs/query/<operation> for list/stat/tree/search/manifest inspection.",
         "Use /fs/read/<operation> for text, multi-file, or bounded large-file reads; keep /fs/content for raw Range streaming.",
         "Use /fs/write/<operation> for mutate, guarded large-range replace, mkdir, move, and asynchronous copy.",
-        "Resumable uploads use explicit operation routes under /upload: create, status, chunk, commit, and cancel.",
+        "MCP binary reads, large-file ranges, guarded large-byte replacement, and raw download URLs use capability_call family=file_transfer (read_binary, read_large, replace_large, download); load discovery/files for schemas.",
+        "MCP resumable uploads use capability_call family=upload with operations create, chunk, status, commit, cancel; load discovery/files for operation schemas. REST uses the corresponding /upload routes.",
         "Use generic RPC family=archive for archive list/read; load discovery/rpc only when RPC or client mappings are needed.",
         "Load discovery/paths only when absolute paths, extra directories, private-directory rules, or path-boundary behavior matters.",
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",

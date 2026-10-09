@@ -1282,6 +1282,11 @@ class WorkspaceServerTests(unittest.TestCase):
                     arguments.setdefault("message", "test MCP operation")
                     params["arguments"] = arguments
                 fixed_aux = {
+                    **{f"upload_{op}": ("upload", op) for op in ("create", "chunk", "status", "commit", "cancel")},
+                    "fs_download": ("file_transfer", "download"),
+                    "fs_read_binary": ("file_transfer", "read_binary"),
+                    "fs_read_large": ("file_transfer", "read_large"),
+                    "fs_replace_large": ("file_transfer", "replace_large"),
                     "credential_get": ("credential", "get"),
                     "credential_renew": ("credential", "renew"),
                     "share_create": ("sharing", "create"),
@@ -3301,19 +3306,14 @@ class WorkspaceServerTests(unittest.TestCase):
         status, listed, _ = self.mcp_request(token, 2, "tools/list", {})
         self.assertEqual(200, status)
         self.assertNotIn("@xxxx@", json.dumps(listed))
-        binary_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "fs_read_binary"
-        )
-        length_schema = binary_tool["inputSchema"]["properties"]["length"]
-        self.assertEqual(self.server.config.mcp_binary_chunk_bytes, length_schema["maximum"])
-        self.assertEqual(self.server.config.mcp_binary_chunk_bytes, length_schema["default"])
-        large_read_tool = next(
-            tool for tool in listed["result"]["tools"] if tool["name"] == "fs_read_large"
-        )
-        self.assertEqual(
-            256 * 1024,
-            large_read_tool["inputSchema"]["properties"]["length"]["maximum"],
-        )
+        names = {item["name"] for item in listed["result"]["tools"]}
+        self.assertTrue({"fs_read_binary", "fs_read_large", "fs_download", "fs_replace_large"}.isdisjoint(names))
+        _, files_result, _ = self.mcp_request(token, 299, "tools/call", {
+            "name": "discovery", "arguments": {"section": "files"},
+        })
+        specs = files_result["result"]["structuredContent"]["capabilities"]["mcp"]["operation_families"]["file_transfer"]["operation_specs"]
+        self.assertEqual({"download", "read_binary", "read_large", "replace_large"}, set(specs))
+        self.assertEqual(256 * 1024, specs["read_large"]["input_schema"]["properties"]["length"]["maximum"])
         mutate_tool = next(
             tool for tool in listed["result"]["tools"] if tool["name"] == "fs_mutate"
         )
@@ -3418,25 +3418,17 @@ class WorkspaceServerTests(unittest.TestCase):
                 "fs_list",
                 "fs_read_files",
                 "fs_stat",
-                "fs_read_binary",
-                "fs_read_large",
                 "fs_find",
                 "fs_grep",
                 "fs_tree",
                 "fs_write",
                 "fs_edit_text",
                 "fs_mutate",
-                "fs_replace_large",
                 "fs_mkdir",
                 "fs_move",
                 "fs_delete",
                 "recycle_list",
                 "recycle_restore",
-                "upload_create",
-                "upload_chunk",
-                "upload_status",
-                "upload_commit",
-                "upload_cancel",
                 "capability_call",
             }.issubset(names)
         )
@@ -4026,12 +4018,21 @@ class WorkspaceServerTests(unittest.TestCase):
 
         _, listed, _ = self.mcp_request(token, 300, "tools/list", {})
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
-        self.assertIn("fs_download", tools)
+        self.assertNotIn("fs_download", tools)
         self.assertIn("capability_call", tools)
         self.assertNotIn("web_preview_url", tools)
         self.assertIn("expected_etag", tools["fs_write"]["inputSchema"]["properties"])
-        self.assertNotIn("expected_etag", tools["upload_create"]["inputSchema"]["properties"])
-        self.assertNotIn("overwrite", tools["upload_create"]["inputSchema"]["properties"])
+        for name in ("upload_create", "upload_chunk", "upload_status", "upload_commit", "upload_cancel"):
+            self.assertNotIn(name, tools)
+        files_status, files_reply, _ = self.mcp_request(
+            token, 299, "tools/call", {"name": "discovery", "arguments": {"section": "files"}},
+        )
+        self.assertEqual(200, files_status)
+        files_doc = files_reply["result"]["structuredContent"]
+        upload_ops = files_doc["capabilities"]["mcp"]["operation_families"]["upload"]["operation_specs"]
+        self.assertEqual({"create", "chunk", "status", "commit", "cancel"}, set(upload_ops))
+        self.assertNotIn("expected_etag", upload_ops["create"]["input_schema"]["properties"])
+        self.assertNotIn("overwrite", upload_ops["create"]["input_schema"]["properties"])
 
         _, metadata, _ = self.mcp_request(
             token,

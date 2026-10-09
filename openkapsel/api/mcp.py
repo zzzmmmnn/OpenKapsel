@@ -1147,6 +1147,19 @@ _AUXILIARY_OPERATION_MAP: dict[
         "pause": ("schedule_control", "pause", ("schedule_id",), ("schedule_id",), "sync"),
         "resume": ("schedule_control", "resume", ("schedule_id",), ("schedule_id",), "sync"),
     },
+    "file_transfer": {
+        "download": ("fs_download", None, None, ("path",), "sync"),
+        "read_binary": ("fs_read_binary", None, None, ("path",), "sync"),
+        "read_large": ("fs_read_large", None, None, ("path", "offset", "length"), "sync"),
+        "replace_large": ("fs_replace_large", None, None, ("path", "offset", "length", "data_base64", "expected_etag", "expected_range_sha256"), "sync"),
+    },
+    "upload": {
+        "create": ("upload_create", None, None, ("path", "size"), "sync"),
+        "chunk": ("upload_chunk", None, None, ("upload_id", "offset", "data_base64"), "sync"),
+        "status": ("upload_status", None, None, ("upload_id",), "sync"),
+        "commit": ("upload_commit", None, None, ("upload_id",), "sync"),
+        "cancel": ("upload_cancel", None, None, ("upload_id",), "sync"),
+    },
     "shell": {
         "exec": ("shell_exec", None, None, ("command",), "task"),
         "processes": ("sandbox_processes", None, None, (), "sync"),
@@ -1240,6 +1253,7 @@ def _auxiliary_operation_schema(
 def auxiliary_operations_for(
     record: TokenRecord,
     recycle_enabled: bool,
+    mcp_binary_chunk_bytes: int = 256 * 1024,
 ) -> dict[str, dict[str, Any]]:
     authorized = _authorized_tool_names(record, recycle_enabled)
     tools = _tool_index()
@@ -1255,9 +1269,15 @@ def auxiliary_operations_for(
                 field in tool["inputSchema"].get("required", [])
                 for field in ("plan_id", "taskname", "message")
             )
+            operation_schema = _auxiliary_operation_schema(tool, fields, required)
+            if tool_name == "fs_read_binary":
+                operation_schema["properties"]["length"].update({
+                    "maximum": mcp_binary_chunk_bytes,
+                    "default": mcp_binary_chunk_bytes,
+                })
             specs[operation] = {
                 "description": tool["description"],
-                "input_schema": _auxiliary_operation_schema(tool, fields, required),
+                "input_schema": operation_schema,
                 "write": write,
                 "execution": execution,
                 "mutation_context": mutation_context,
