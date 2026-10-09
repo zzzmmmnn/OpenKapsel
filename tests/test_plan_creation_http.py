@@ -1,6 +1,8 @@
 """Real REST/MCP batch creation and backward-compatible permission tests."""
 from __future__ import annotations
 
+import copy
+
 import json
 import http.client
 import unittest
@@ -263,6 +265,10 @@ class PlanCreationHTTPTests(unittest.TestCase):
         schema = tool["inputSchema"]["properties"]
         self.assertNotIn("status", schema)
         for name, extension in discovery["endpoints"]["context"]["operations"]["add"]["plan_extension_schema"].items():
+            if name == "conversation_entries":
+                # MCP tools/list omits duplicated prose; Discovery retains the full contract.
+                extension = copy.deepcopy(extension)
+                extension["items"]["properties"]["content"].pop("description", None)
             self.assertEqual(extension, schema[name])
         self.assertFalse(schema["subplans"]["items"]["additionalProperties"])
         self.assertEqual(["content"], schema["subplans"]["items"]["required"])

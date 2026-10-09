@@ -228,8 +228,10 @@ class EndpointContractTests(unittest.TestCase):
         self.assertTrue(omitted.isdisjoint(public_descriptions))
         self.assertEqual("string", next(tool for tool in tools if tool["name"] == "fs_write")["inputSchema"]["properties"]["path"]["type"])
         encoding = next(tool for tool in tools if tool["name"] == "fs_write")["inputSchema"]["properties"]["encoding"]
-        self.assertEqual(text_encoding_schema()["enum"], encoding["enum"])
+        self.assertNotIn("enum", encoding)
+        self.assertEqual("string", encoding["type"])
         self.assertEqual("utf-8", encoding["default"])
+        self.assertIn("utf-8", text_encoding_schema()["enum"])
 
     def test_discovery_exposes_discovery_sections(self) -> None:
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")
