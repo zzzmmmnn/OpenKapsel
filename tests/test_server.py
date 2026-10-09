@@ -4126,7 +4126,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(400, status)
         self.assertEqual("invalid_conversation", rejected["error"]["code"])
-        self.assertIn("next_conversation_id 0", rejected["error"]["message"])
+        self.assertIn("Call conversation_query", rejected["error"]["message"])
 
         status, created = self.request(
             "POST",

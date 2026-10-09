@@ -108,9 +108,9 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual([1, 2], [item["sub_id"] for item in queried[0]["entries"]])
         self.assertTrue(all("writer_nonce" not in item for item in queried[0]["entries"]))
 
-        with self.assertRaisesRegex(ValueError, "next_conversation_id 1"):
+        with self.assertRaisesRegex(ValueError, "Call conversation_query"):
             self.store.create_conversation(2, self.initial_entries("skipped id"))
-        with self.assertRaisesRegex(ValueError, "next_conversation_id 1"):
+        with self.assertRaisesRegex(ValueError, "Call conversation_query"):
             self.store.create_conversation(0, self.initial_entries("duplicate id"))
 
         with self.assertRaises(ValueError):
@@ -158,7 +158,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(1, sum(kind == "ok" for kind, _ in results))
         self.assertEqual(1, sum(kind == "error" for kind, _ in results))
         rejected = next(value for kind, value in results if kind == "error")
-        self.assertIn("next_conversation_id 1", rejected)
+        self.assertIn("Call conversation_query", rejected)
         entries, total, next_id = self.store.conversation_query(conversation_id=0)
         self.assertEqual(2, total)
         self.assertEqual(1, next_id)

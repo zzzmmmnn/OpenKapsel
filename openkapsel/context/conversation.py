@@ -330,7 +330,7 @@ def create_conversation(
 
     expected_id = next_conversation_id(connection)
     if conversation_id != expected_id:
-        raise ValueError(f"conversation_id must equal next_conversation_id {expected_id}")
+        raise ValueError("conversation_id is not the current next_conversation_id. Call conversation_query to retrieve and review existing Conversation history, then use the returned next_conversation_id for conversation_create. Do not retry with a guessed id.")
     writer_nonce = generate_writer_nonce()
     connection.execute(
         "INSERT INTO conversations (id, created_at, writer_nonce) VALUES (?, ?, ?)",
