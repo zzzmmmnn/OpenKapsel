@@ -846,19 +846,12 @@ class DiscoveryMixin:
             if control_authorized
             else {}
         )
+        # Endpoint query examples list parameter names, not repeated guidance.
+        # The complete read-recording rules are published once in Context.
         optional_read_context_query = {
-            "plan_id": (
-                "<optional owning plan id; used only with taskname and message to "
-                "associate the recorded read>"
-            ),
-            "taskname": (
-                "<optional task grouping name; must be supplied together with message "
-                "to record this read>"
-            ),
-            "message": (
-                "<optional brief read summary; must be supplied together with taskname "
-                "to record this read>"
-            ),
+            "plan_id": "<plan_id?>",
+            "taskname": "<taskname?>",
+            "message": "<message?>",
         }
         payload = {
             "protocol": "openkapsel/1",
@@ -1122,6 +1115,10 @@ class DiscoveryMixin:
                     "root_plan_creation_plan_id_omitted": True,
                     "legacy_entries_may_have_null_plan_id": True,
                     "read_taskname_and_message_optional_as_pair": True,
+                    "optional_read_context_query": {
+                        "fields": ["plan_id", "taskname", "message"],
+                        "recording": "Omit all three for ordinary unrecorded reads. To record a read, supply taskname and message together; plan_id optionally attaches it to the owning Plan. Recorded reads require control authorization.",
+                    },
                     "recorded_reads_require_control_token": True,
                     "unmessaged_reads_recorded": False,
                     "plan_updates_in_place": True,

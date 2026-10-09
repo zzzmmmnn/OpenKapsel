@@ -1334,6 +1334,33 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         return status, json.loads(raw.decode("utf-8")), response_headers
 
+    def test_mcp_tools_list_deduplicates_common_plan_guidance(self) -> None:
+        from openkapsel.api.mcp import ALL_TOOLS, _compact_public_schema_descriptions
+        import copy
+
+        tools = copy.deepcopy(ALL_TOOLS)
+        ordinary = []
+        for entry in tools:
+            rule = entry["inputSchema"]["properties"].get("plan_id")
+            if rule and rule.get("description") in {
+                "Owning Plan id; modifying operations require this Plan to be in_progress.",
+                "Optional owning Plan id for recorded reads.",
+            }:
+                ordinary.append(entry["name"])
+            before = copy.deepcopy(entry["inputSchema"])
+            _compact_public_schema_descriptions(entry["inputSchema"])
+            self.assertEqual(before.get("required"), entry["inputSchema"].get("required"))
+        self.assertGreaterEqual(len(ordinary), 40)
+        for entry in tools:
+            if entry["name"] in ordinary:
+                rule = entry["inputSchema"]["properties"]["plan_id"]
+                self.assertEqual("integer", rule["type"])
+                self.assertNotIn("description", rule)
+        # Special Plan fields (e.g. parent Plan, exact query filter) keep their
+        # distinct help text rather than being incorrectly erased.
+        special = next(item for item in tools if item["name"] == "context_add")
+        self.assertIn("Parent Plan", special["inputSchema"]["properties"]["plan_id"]["description"])
+
     def test_discovery_is_self_describing_and_bad_token_is_hidden(self) -> None:
         status, main = self.request("GET", self.endpoint("/"))
         self.assertEqual(200, status)
@@ -1430,6 +1457,14 @@ class WorkspaceServerTests(unittest.TestCase):
 
         def op(family: str, operation: str) -> dict:
             return discovery_operation(payload, family, operation)
+        # Read-only query examples retain their optional Context fields but
+        # share one explanation rather than repeating ~3.4 KiB of prose.
+        read_context = payload["capabilities"]["context"]["optional_read_context_query"]
+        self.assertEqual(["plan_id", "taskname", "message"], read_context["fields"])
+        self.assertIn("taskname and message together", read_context["recording"])
+        # Section builders may normalize endpoint examples; the shared
+        # guidance must still be present in full Discovery.
+        self.assertNotIn("<optional owning plan id; used only with taskname", json.dumps(payload))
         discovery_text = json.dumps(payload, sort_keys=True)
         self.assertIn("./mapping/<mapping_name>/rpc/<family>/<operation>", discovery_text)
         self.assertNotIn("./mapping/<mapping_id>/rpc/", discovery_text)

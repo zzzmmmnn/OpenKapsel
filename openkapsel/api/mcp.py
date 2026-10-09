@@ -107,6 +107,13 @@ _MCP_SHARED_SCHEMA_DESCRIPTIONS = {
     TEXT_ENCODING.get("description"),
 }
 _MCP_SHARED_SCHEMA_DESCRIPTIONS.discard(None)
+# These ownership rules are in MCP initialize instructions and Discovery/context.
+# Do not repeat the same explanatory prose in dozens of tools/list schemas;
+# required fields, JSON types and Plan validation are unchanged.
+_MCP_SHARED_SCHEMA_DESCRIPTIONS.update({
+    "Owning Plan id; modifying operations require this Plan to be in_progress.",
+    "Optional owning Plan id for recorded reads.",
+})
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
