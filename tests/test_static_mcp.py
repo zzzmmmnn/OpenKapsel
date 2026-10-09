@@ -45,7 +45,7 @@ class StaticMcpTests(unittest.TestCase):
         self.assertIn("static_mcp", text)
         for credential in (current.token, current.control_token, current.preview_token, conn["secret"]):
             self.assertNotIn(credential, text)
-        status, result = self.rpc(conn["secret"], "tools/call", {"name": "fs_download", "arguments": {"path": "hello.txt"}})
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "capability_call", "arguments": {"family": "file_transfer", "operation": "download", "args": {"path": "hello.txt"}}})
         self.assertEqual(200, status)
         url = urlsplit(result["result"]["structuredContent"]["transfer"]["url"])
         auth = {"Authorization": "Bearer " + conn["secret"]}
@@ -54,7 +54,7 @@ class StaticMcpTests(unittest.TestCase):
         root = self.server.tokens.scope_root(current)
         plan = self.server.context_for(root).add("plan", "Transfer test", taskname="transfer", actor_id=current.actor_id)
         context = {"plan_id": plan, "taskname": "transfer", "message": "Upload file"}
-        status, result = self.rpc(conn["secret"], "tools/call", {"name": "upload_create", "arguments": {"path": "uploaded.txt", "size": 3, **context}})
+        status, result = self.rpc(conn["secret"], "tools/call", {"name": "capability_call", "arguments": {"family": "upload", "operation": "create", "args": {"path": "uploaded.txt", "size": 3}, **context}})
         self.assertEqual(200, status)
         self.assertFalse(result['result']['isError'], result)
         transfer = result['result']['structuredContent']['raw_transfer']

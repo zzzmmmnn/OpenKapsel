@@ -236,7 +236,7 @@ class OAuthHTTPTests(unittest.TestCase):
         current = self.server.tokens.get_by_app_id(self.record.app_id)
         for secret in (current.token, current.control_token, current.preview_token):
             self.assertNotIn(secret, text)
-        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "fs_download", "arguments": {"path": "hello.txt"}})
+        status, payload = self.rpc(token["access_token"], "tools/call", {"name": "capability_call", "arguments": {"family": "file_transfer", "operation": "download", "args": {"path": "hello.txt"}}})
         transfer = payload["result"]["structuredContent"]["transfer"]["url"]
         self.assertIn("/connect/" + self.cid + "/transfer/", transfer)
         parsed = urlsplit(transfer)
