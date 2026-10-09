@@ -3371,6 +3371,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("description", by_name["memory_update"]["inputSchema"]["properties"]["tags"])
         self.assertNotIn("enum", item_properties["encoding"])
         self.assertIn("utf-8", files_result["result"]["structuredContent"]["capabilities"]["files"]["text_encodings"])
+        self.assertEqual(
+            mutation_operation_contracts(),
+            files_result["result"]["structuredContent"]["capabilities"]["mcp"]["fs_mutate"]["operation_contracts"],
+        )
         self.assertNotIn("allOf", item_schema)
 
         edit_tool = next(

@@ -780,6 +780,12 @@ class DiscoveryMixin:
                     "dynamic_tool": "capability_call",
                     "operation_families": selected,
                 }
+        if section == "files" and "fs_mutate" in full["capabilities"]["mcp"].get("available_tools", []):
+            # fs_mutate's public MCP inputSchema omits this large extension;
+            # publish its operation-specific requirements here on demand.
+            result["capabilities"].setdefault("mcp", {})["fs_mutate"] = {
+                "operation_contracts": mutation_operation_contracts(),
+            }
         if section == "mcp" and "mcp" in result["capabilities"]:
             result["capabilities"]["mcp"].pop("operation_families", None)
             result["capabilities"]["mcp"]["family_discovery"] = {
