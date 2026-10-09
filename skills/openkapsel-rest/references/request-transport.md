@@ -34,7 +34,7 @@ The envelope fields are:
 
 Every core Workspace JSON HTTP **error** now includes a top-level `timestamp` containing the server's current Unix time in **whole seconds**, independent of any `timestamp` in the request. Use this time with a **new 8-character nonce** when signing the next request. `timestamp` is included for `signed_envelope_expired`, `invalid_signed_signature`, and other API errors, even when the signature is rejected.
 
-For hosts such as Dia that only expose bodies on HTTP 2xx, request an ordinary unsigned GET with the response envelope preference and use the readable error (no HMAC, local clock, or additional API needed):
+For clients that only expose response bodies on HTTP 2xx, request an ordinary unsigned GET with the response envelope preference and use the readable error (no HMAC, local clock, or additional API needed):
 
 ```text
 GET <workspace_url>?req=memory&response_mode=envelope
@@ -106,7 +106,7 @@ This removes the signed GET query-string body size bottleneck for native POST/DE
 
 ## Optional HTTP 200 JSON response envelope for constrained clients
 
-Clients such as Dia that suppress non-2xx response bodies can opt into the Workspace API response envelope using `response_mode=envelope` in the URL query. This is a **response-only** preference and does not relax authorization, HMAC validation, nonce replay rules, or write permissions.
+Clients that suppress non-2xx response bodies can opt into the Workspace API response envelope using `response_mode=envelope` in the URL query. This is a **response-only** preference and does not relax authorization, HMAC validation, nonce replay rules, or write permissions.
 
 ```text
 GET <workspace_url>?req=memory&response_mode=envelope
