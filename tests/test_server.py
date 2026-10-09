@@ -3336,6 +3336,9 @@ class WorkspaceServerTests(unittest.TestCase):
                     compact_descriptions(child)
 
         compact_descriptions(expected_item_schema)
+        expected_item_schema.pop("x-openkapsel-operation-contracts", None)
+        expected_item_schema["description"] = "One transactional mutation item; op and path required. Operation-specific rules: discovery/files."
+        expected_item_schema["properties"]["encoding"].pop("enum", None)
         self.assertEqual(expected_item_schema, item_schema)
         self.assertEqual(["op", "path"], item_schema["required"])
         self.assertFalse(item_schema["additionalProperties"])
@@ -3347,10 +3350,27 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(
             {"expected_etag", "encoding", "content", "match", "expected_count", "replacements", "start_line", "end_line", "start_text", "end_text", "operations", "format"}.issubset(item_properties)
         )
-        self.assertEqual(
-            ["expected_etag", "replacements"],
-            item_schema["x-openkapsel-operation-contracts"]["text.replace"]["required"],
-        )
+        self.assertNotIn("x-openkapsel-operation-contracts", item_schema)
+        by_name = {tool["name"]: tool for tool in listed["result"]["tools"]}
+        for tool_name in ("fs_edit_text", "fs_mutate", "fs_read_files", "fs_write"):
+            schema = by_name[tool_name]["inputSchema"]["properties"]
+            encoding = schema["items"]["items"]["properties"]["encoding"] if tool_name == "fs_mutate" else schema["encoding"]
+            self.assertEqual("utf-8", encoding["default"])
+            self.assertNotIn("enum", encoding)
+        for tool_name in ("context_add", "context_plan_update", "conversation_create"):
+            field = "conversation_entries" if tool_name.startswith("context_") else "entries"
+            entry = by_name[tool_name]["inputSchema"]["properties"][field]["items"]
+            if entry is not None:
+                self.assertNotIn("description", entry["properties"]["content"])
+                self.assertEqual(8192, entry["properties"]["content"]["maxLength"])
+        append_entry = by_name["conversation_append"]["inputSchema"]["properties"]["entries"]["items"]
+        self.assertIn("user/ai max", append_entry["properties"]["content"]["description"])
+        debrief_updates = by_name["context_plan_update"]["inputSchema"]["properties"]["debrief"]["properties"]["memory_actions"]["items"]["oneOf"][0]["properties"]
+        self.assertNotIn("description", debrief_updates["tags"])
+        self.assertNotIn("description", debrief_updates["path"])
+        self.assertIn("description", by_name["memory_update"]["inputSchema"]["properties"]["tags"])
+        self.assertNotIn("enum", item_properties["encoding"])
+        self.assertIn("utf-8", files_result["result"]["structuredContent"]["capabilities"]["files"]["text_encodings"])
         self.assertNotIn("allOf", item_schema)
 
         edit_tool = next(

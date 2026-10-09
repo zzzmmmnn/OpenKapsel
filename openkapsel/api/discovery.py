@@ -57,6 +57,7 @@ from openkapsel.api.mcp import (
     tools_for,
 )
 from openkapsel.contract import (
+    ENCODINGS,
     MAX_CONVERSATION_CONTENT_CHARS,
     MAX_CONVERSATION_SUMMARY_CHARS,
     MAX_MEMORY_CONTENT_CHARS,
@@ -1026,7 +1027,7 @@ class DiscoveryMixin:
                 "openkapsel_rest": skill_discovery(self._public_base_url()),
             },
             "capabilities": {
-                "files": {"read": read_enabled, "write": write_enabled},
+                "files": {"read": read_enabled, "write": write_enabled, "text_encodings": list(ENCODINGS)},
                 "sharing": {
                     "enabled": True,
                     "create": control_authorized and read_enabled,

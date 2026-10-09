@@ -1331,6 +1331,33 @@ def tools_for(
     selected = [copy.deepcopy(tool) for tool in ALL_TOOLS if tool["name"] in public_names]
     for tool in selected:
         _compact_public_schema_descriptions(tool["inputSchema"])
+        props = tool["inputSchema"]["properties"]
+        if tool["name"] == "fs_mutate":
+            # The detailed per-op contract remains in Discovery/files and the
+            # authoritative server contract, not the always-loaded tools/list.
+            item = props["items"]["items"]
+            item.pop("x-openkapsel-operation-contracts", None)
+            item["description"] = "One transactional mutation item; op and path required. Operation-specific rules: discovery/files."
+        if tool["name"] in {"fs_edit_text", "fs_mutate", "fs_read_files", "fs_write"}:
+            # Server-side encoding validation remains authoritative. The
+            # supported values belong in Discovery rather than each tool.
+            encodings = []
+            if "encoding" in props:
+                encodings.append(props["encoding"])
+            if tool["name"] == "fs_mutate":
+                encodings.append(props["items"]["items"]["properties"]["encoding"])
+            for encoding in encodings:
+                encoding.pop("enum", None)
+        if tool["name"] in {"context_add", "context_plan_update", "conversation_create"}:
+            field = "conversation_entries" if tool["name"].startswith("context_") else "entries"
+            entry = props.get(field, {}).get("items")
+            if entry:
+                entry["properties"]["content"].pop("description", None)
+        if tool["name"] == "context_plan_update":
+            actions = props["debrief"]["properties"]["memory_actions"]["items"]["oneOf"]
+            update_fields = actions[0]["properties"]
+            for key in ("tags", "path"):
+                update_fields[key].pop("description", None)
         if tool["name"] == "fs_read_binary":
             length = tool["inputSchema"]["properties"]["length"]
             length["maximum"] = mcp_binary_chunk_bytes
