@@ -11,6 +11,7 @@ import logging
 import mimetypes
 import os
 import secrets
+import time
 import stat
 import traceback
 from http import HTTPStatus
@@ -27,6 +28,7 @@ from openkapsel.api.mcp import (
     validate_arguments,
 )
 from openkapsel.context.conversation import (
+    ConversationRequestConflict,
     DEFAULT_RECENT_CONVERSATION_COUNT,
     MAX_RECENT_CONVERSATION_PAGES,
 )
@@ -298,7 +300,7 @@ class McpHandlersMixin:
             self._mcp_context_status = HTTPStatus.OK
             payload = self._execute_mcp_tool(effective_name, effective_arguments)
         except ApiError as exc:
-            error: dict[str, Any] = {"code": exc.code, "message": exc.message}
+            error: dict[str, Any] = {"code": exc.code, "message": exc.message, "timestamp": int(time.time())}
             if exc.details is not None:
                 error["details"] = exc.details
             context_id = self._finalize_context_operation(exc.status, {"error": error})
@@ -1172,8 +1174,11 @@ class McpHandlersMixin:
         status: int = HTTPStatus.OK,
     ) -> None:
         error: dict[str, Any] = {"code": code, "message": message}
-        if data is not None:
-            error["data"] = data
+        # JSON-RPC errors use the protocol-defined data object rather than
+        # introducing an unknown top-level JSON-RPC field.
+        error_data = dict(data) if isinstance(data, dict) else {"details": data} if data is not None else {}
+        error_data["timestamp"] = int(time.time())
+        error["data"] = error_data
         self._send_mcp_json(status, {"jsonrpc": "2.0", "id": request_id, "error": error})
 
     def _send_mcp_json(

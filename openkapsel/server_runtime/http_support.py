@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -316,9 +317,16 @@ class HttpSupportMixin:
         if getattr(self, "_capturing_mcp_tool", False):
             self._mcp_tool_response = (status, payload)
             return
+        # Every JSON HTTP error exposes the server's current Unix timestamp.
+        # This also covers errors rejected before signed-envelope verification,
+        # allowing GET-only clients without a clock to bootstrap a signed retry.
+        # Never reuse the caller-supplied signed-envelope timestamp here.
+        real_status = int(status)
+        if real_status >= 400 and isinstance(payload.get("error"), dict):
+            payload = dict(payload)
+            payload["timestamp"] = int(time.time())
         # The underlying operation and Context history must retain the real
         # status. Only the final JSON wire representation is normalized to 200.
-        real_status = int(status)
         context_id = self._finalize_context_operation(status, payload)
         if context_id is not None:
             payload = dict(payload)
@@ -327,6 +335,8 @@ class HttpSupportMixin:
         if response_envelope:
             if real_status >= 400:
                 wrapped = {"ok": False, "status": real_status, "error": payload["error"]}
+                if "timestamp" in payload:
+                    wrapped["timestamp"] = payload["timestamp"]
                 if "context_id" in payload:
                     wrapped["context_id"] = payload["context_id"]
             else:

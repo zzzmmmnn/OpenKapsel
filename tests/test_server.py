@@ -630,6 +630,100 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("internal_error", payload["error"]["code"])
         self.assertNotIn("secret trace", raw.decode("utf-8"))
 
+    def test_error_timestamp_bootstraps_clockless_signed_get(self) -> None:
+        before = int(time.time())
+        status, raw, headers = self.raw_request(
+            "GET", self.endpoint("?req=memory&response_mode=envelope"), authorize=False
+        )
+        after = int(time.time())
+        self.assertEqual(200, status, raw)
+        data = json.loads(raw)
+        self.assertFalse(data["ok"])
+        self.assertEqual(401, data["status"])
+        self.assertEqual("control_token_required", data["error"]["code"])
+        self.assertIs(type(data["timestamp"]), int)
+        self.assertLessEqual(before, data["timestamp"])
+        self.assertLessEqual(data["timestamp"], after)
+        self.assertEqual("no-store", headers.get("Cache-Control"))
+
+        # A fake timestamp of zero must yield the *current* server timestamp,
+        # never echo back the stale client-supplied value.
+        stale = self.signed_envelope_path(
+            "memory", "GET", nonce="Ts12Aa34", timestamp=0,
+            query=[("response_mode", "envelope")],
+        )
+        status, raw, _ = self.raw_request("GET", stale, authorize=False)
+        self.assertEqual(200, status, raw)
+        error = json.loads(raw)
+        self.assertFalse(error["ok"])
+        self.assertEqual(401, error["status"])
+        self.assertEqual("signed_envelope_expired", error["error"]["code"])
+        self.assertGreaterEqual(error["timestamp"], before)
+        self.assertNotEqual(0, error["timestamp"])
+
+        # A fresh signed request can be built using the retrieved clock value.
+        fresh = self.signed_envelope_path(
+            "memory", "GET", nonce="Ts12Aa35", timestamp=error["timestamp"],
+        )
+        status, raw, _ = self.raw_request("GET", fresh, authorize=False)
+        self.assertEqual(200, status, raw)
+        self.assertNotIn("timestamp", json.loads(raw))
+
+    def test_error_timestamp_default_json_and_internal_failure(self) -> None:
+        before = int(time.time())
+        status, raw, _ = self.raw_request(
+            "GET", self.endpoint("/does-not-exist"), authorize=False
+        )
+        payload = json.loads(raw)
+        self.assertEqual(404, status)
+        self.assertEqual("not_found", payload["error"]["code"])
+        self.assertGreaterEqual(payload["timestamp"], before)
+        self.assertLessEqual(payload["timestamp"], int(time.time()))
+
+        with patch.object(WorkspaceRequestHandler, "_handle_fs_list", side_effect=RuntimeError("hidden trace")):
+            with self.assertLogs("openkapsel", level="ERROR"):
+                status, raw, _ = self.raw_request(
+                    "GET", self.endpoint("/fs/query/list?response_mode=envelope")
+                )
+        payload = json.loads(raw)
+        self.assertEqual(200, status)
+        self.assertEqual(500, payload["status"])
+        self.assertEqual("internal_error", payload["error"]["code"])
+        self.assertLessEqual(before, payload["timestamp"])
+        self.assertNotIn("hidden trace", raw.decode())
+
+    def test_error_timestamp_in_mcp_tool_errors(self) -> None:
+        status, reply, _ = self.mcp_request(
+            "test-token", 8020, "tools/call", {
+                "name": "conversation_create",
+                "arguments": {
+                    "conversation_id": 999,
+                    "entries": [
+                        {"role": "user", "content": "invalid sequence"},
+                        {"role": "ai", "content": "bad creation attempt"},
+                    ],
+                },
+            },
+        )
+        self.assertEqual(200, status)
+        result = reply["result"]
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual("invalid_conversation", error["code"])
+        self.assertIs(type(error["timestamp"]), int)
+        self.assertLessEqual(abs(error["timestamp"] - int(time.time())), 2)
+        self.assertEqual(error, json.loads(result["content"][0]["text"]))
+
+    def test_error_timestamp_in_mcp_json_rpc_protocol_errors(self) -> None:
+        status, result, _ = self.mcp_request(
+            "test-token", 8000, "nonexistent-method"
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(-32601, result["error"]["code"])
+        self.assertIs(type(result["error"]["data"]["timestamp"]), int)
+        self.assertLessEqual(abs(result["error"]["data"]["timestamp"] - int(time.time())), 2)
+        self.assertEqual({"jsonrpc", "id", "error"}, set(result))
+
     def test_transport_hmac_supports_path_and_req_route_without_authorization(self) -> None:
         key = "helper-secret"
         target = "req=memory&timestamp=1700000000&nonce=Ab12Cd34&http_method=GET"

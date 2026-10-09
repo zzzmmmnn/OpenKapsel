@@ -30,6 +30,26 @@ The envelope fields are:
 - `http_method`: the effective method. It must be the penultimate query parameter and may be `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, or `DELETE`.
 - `signature`: the final query parameter, encoded as Base64URL without padding.
 
+## Server timestamp bootstrap for AI clients without a clock
+
+Every core Workspace JSON HTTP **error** now includes a top-level `timestamp` containing the server's current Unix time in **whole seconds**, independent of any `timestamp` in the request. Use this time with a **new 8-character nonce** when signing the next request. `timestamp` is included for `signed_envelope_expired`, `invalid_signed_signature`, and other API errors, even when the signature is rejected.
+
+For hosts such as Dia that only expose bodies on HTTP 2xx, request an ordinary unsigned GET with the response envelope preference and use the readable error (no HMAC, local clock, or additional API needed):
+
+```text
+GET <workspace_url>?req=memory&response_mode=envelope
+```
+
+The memory route requires control authorization, so an unsigned request normally returns:
+
+```json
+{"ok":false,"status":401,"timestamp":1791519000,"error":{"code":"control_token_required","message":"..."}}
+```
+
+The integer shown is only illustrative; **always read the actual response timestamp**. For ordinary non-envelope REST errors the JSON has the form `{"error":{"code":"...","message":"..."},"timestamp":1791519000}` with a non-2xx status. For JSON-RPC/MCP, protocol errors carry `error.data.timestamp`; MCP tool failures carry `structuredContent.error.timestamp`.
+
+Server-supplied time does **not** relax the 300-second validation window or nonce replay prevention. The client must promptly sign its next request using the received timestamp, with each retry using a fresh nonce. TLS is important: a clock bootstrap response itself is not HMAC-signed.
+
 ## Signing
 
 Use the matching control token directly as the HMAC key:
@@ -100,7 +120,7 @@ Core Workspace JSON responses then use HTTP **200** and the following shapes:
 
 ```json
 {"ok":true,"status":201,"result":{"conversation_id":0,"writer_nonce":"@Ab12@"}}
-{"ok":false,"status":401,"error":{"code":"control_token_required","message":"control authorization is required"}}
+{"ok":false,"status":401,"timestamp":1791519000,"error":{"code":"control_token_required","message":"control authorization is required"}}
 ```
 
 The `status` field is the **actual original HTTP status**, and `result` or `error` contains the original API JSON payload. Existing successful responses are wrapped too, so callers must inspect `ok` rather than assuming HTTP 200 means success. Context bookkeeping still records the original status. For an unexpected server exception, `error.code` is `internal_error` and its status is `500`; stack traces remain server-side. The response uses `Cache-Control: no-store`, and error responses close the connection when necessary to prevent unread request-body bytes from contaminating the next request.
