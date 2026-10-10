@@ -11,12 +11,16 @@ from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.errors import ApiError
 from openkapsel.rpc_plugins import load_server_rpc_registry
 from openkapsel.files.filename_index import _literal_run
-from openkapsel.rpc_plugins.file_search import plugin
+from openkapsel.rpc_plugins.file_search import (
+    _spotlight_glob_pattern, _spotlight_glob_query, plugin,
+)
 from openkapsel.rpc_plugins.file_search.everything_ipc import (
     REQUEST_FULL_PATH,
+    SORT_DATE_MODIFIED_DESCENDING,
     build_query2,
     build_scope_regex,
     parse_list2,
+    query_paths,
 )
 
 
@@ -59,10 +63,83 @@ class EverythingIpcProtocolTests(unittest.TestCase):
         self.assertNotRegex(r"C:\RootX1\a+b.md", pattern)
         self.assertNotRegex(r"C:\Root[1]\sub\other.txt", pattern)
 
+    def test_everything_native_date_modified_descending_sort_and_11_result_query(self):
+        from openkapsel.rpc_plugins.file_search.everything_ipc import _query_page
+
+        captured = []
+        def page(query, **kwargs):
+            captured.append((query, kwargs))
+            return ([f"C:/work/f{i}.txt" for i in range(kwargs["offset"],
+                    min(kwargs["offset"] + kwargs["max_results"], 15))], 15)
+
+        with patch("openkapsel.rpc_plugins.file_search.everything_ipc._query_page",
+                   side_effect=page):
+            paths = list(query_paths(
+                r"C:\work", "*", mode="glob", sort_by="modified",
+                sort_order="desc", batch_size=11,
+            ))
+        self.assertEqual(15, len(paths))
+        self.assertEqual([0, 11], [item[1]["offset"] for item in captured])
+        self.assertEqual([11, 11], [item[1]["max_results"] for item in captured])
+        self.assertTrue(all(item[1]["sort_type"] == SORT_DATE_MODIFIED_DESCENDING
+                            for item in captured))
+
+    def test_everything_glob_translates_to_pcre_filename_match(self):
+        pattern = build_scope_regex(r"C:\Root", "test[0-9]?.py", mode="glob")
+        self.assertIn("test[0-9]", pattern)
+        self.assertIn("(?s:", pattern)
+        self.assertIn(r"^C:\\Root", pattern)
+
     def test_glob_hint_excludes_metacharacters_and_bracket_classes(self):
         self.assertEqual("config", _literal_run("*config?.py", True))
         self.assertEqual("test", _literal_run("test[0-9].py", True))
 
+
+class SpotlightGlobTests(unittest.TestCase):
+    def test_glob_converts_unsupported_operators_to_wider_wildcards(self):
+        self.assertEqual("test*.py", _spotlight_glob_pattern("test[0-9]?.py"))
+        self.assertEqual("image*.jpg", _spotlight_glob_pattern("image[!ab].jpg"))
+        self.assertEqual("plain*.md", _spotlight_glob_pattern("plain*.md"))
+        self.assertEqual("foo*bar", _spotlight_glob_pattern("foo[[]bar"))
+        self.assertEqual(
+            'kMDItemFSName == "file\\"*.txt"cd',
+            _spotlight_glob_query('file"?.txt'),
+        )
+
+    def test_macos_glob_uses_mdfind_index_and_exact_postfilter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            scope = root / "project"
+            scope.mkdir()
+            for name in ("test1.py", "testA.py", "test12.py", "not-test.txt"):
+                (scope / name).write_text("test", encoding="utf-8")
+            files = ClientFiles(
+                root, rpc_registry=object(),
+                rpc_capabilities={"dummy": {"state": "available"}},
+            )
+            candidates = (str(scope / name) for name in
+                          ("test1.py", "testA.py", "test12.py", "not-test.txt"))
+            with patch(
+                "openkapsel.rpc_plugins.file_search._platform_backend",
+                return_value=("mdfind", "/usr/bin/mdfind"),
+            ), patch(
+                "openkapsel.rpc_plugins.file_search._nul_paths",
+                return_value=iter(candidates),
+            ) as native:
+                result = plugin.dispatch(
+                    files, "search",
+                    {"query": "test[0-9].py", "mode": "glob", "path": "project"},
+                )
+            self.assertEqual(200, result["status"], result)
+            self.assertEqual(
+                ["project/test1.py"], [x["path"] for x in result["body"]["results"]],
+            )
+            self.assertEqual(4, result["body"]["results"][0]["size_bytes"])
+            cmd = native.call_args.args[0]
+            self.assertEqual(
+                ["/usr/bin/mdfind", "-0", "-onlyin", str(scope),
+                 'kMDItemFSName == "test*.py"cd'], cmd,
+            )
 
 class FileSearchRpcTests(unittest.TestCase):
     @staticmethod
@@ -111,8 +188,8 @@ class FileSearchRpcTests(unittest.TestCase):
                 )
             self.assertEqual(200, result["status"])
             self.assertEqual(
-                [{"path": "project/src/Alpha[1].txt", "type": "file"}],
-                result["body"]["results"],
+                ["project/src/Alpha[1].txt"],
+                [x["path"] for x in result["body"]["results"]],
             )
             self.assertFalse(result["body"]["truncated"])
 

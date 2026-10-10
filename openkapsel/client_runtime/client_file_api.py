@@ -131,6 +131,9 @@ class ClientFileAPI(FileHandlersMixin):
         case_sensitive,
         timeout_seconds,
         mode="literal",
+        sort_by="path",
+        sort_order="asc",
+        file_type="all",
     ):
         capability = self.files.rpc_capabilities.get("file_search", {})
         if capability.get("state") != "available":
@@ -159,6 +162,9 @@ class ClientFileAPI(FileHandlersMixin):
                     "case_sensitive": case_sensitive,
                     "timeout_seconds": max(0.1, remaining),
                     "mode": mode,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order,
+                    "file_type": file_type,
                 },
             )
             if not isinstance(result, dict) or not isinstance(result.get("status"), int):
@@ -209,7 +215,7 @@ class ClientFileAPI(FileHandlersMixin):
                         "invalid_mapping_response",
                         "indexed file search returned an invalid path",
                     ) from None
-                normalized.append({"path": str(absolute), "type": item["type"]})
+                normalized.append({**item, "path": str(absolute)})
             backend = body.get("backend", backend)
             items.extend(normalized)
             timed_out |= bool(body.get("timed_out"))

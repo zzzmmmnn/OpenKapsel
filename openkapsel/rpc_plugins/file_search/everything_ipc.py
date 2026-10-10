@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import struct
 import threading
@@ -16,6 +17,23 @@ MATCH_PATH = 0x04
 MATCH_REGEX = 0x08
 REQUEST_FULL_PATH = 0x00000004
 SORT_NAME_ASCENDING = 1
+SORT_NAME_DESCENDING = 2
+SORT_PATH_ASCENDING = 3
+SORT_PATH_DESCENDING = 4
+SORT_SIZE_ASCENDING = 5
+SORT_SIZE_DESCENDING = 6
+SORT_DATE_MODIFIED_ASCENDING = 13
+SORT_DATE_MODIFIED_DESCENDING = 14
+_SORT_TYPES = {
+    ("name", "asc"): SORT_NAME_ASCENDING,
+    ("name", "desc"): SORT_NAME_DESCENDING,
+    ("path", "asc"): SORT_PATH_ASCENDING,
+    ("path", "desc"): SORT_PATH_DESCENDING,
+    ("size", "asc"): SORT_SIZE_ASCENDING,
+    ("size", "desc"): SORT_SIZE_DESCENDING,
+    ("modified", "asc"): SORT_DATE_MODIFIED_ASCENDING,
+    ("modified", "desc"): SORT_DATE_MODIFIED_DESCENDING,
+}
 MAX_REPLY_BYTES = 8 * 1024 * 1024
 _BASE_WINDOW_CLASS = "EVERYTHING_TASKBAR_NOTIFICATION"
 _KNOWN_WINDOW_CLASSES = (
@@ -43,19 +61,18 @@ def _escape_regex_literal(value: str) -> str:
     return "".join(("\\" + char) if char in _REGEX_META else char for char in value)
 
 
-def build_scope_regex(scope: str, query: str) -> str:
-    """Build a regex matching filename substrings strictly below one Windows directory."""
+def build_scope_regex(scope: str, query: str, *, mode: str = "literal") -> str:
+    """Native Everything regex for basename matching inside one directory."""
     import ntpath
 
     normalized = ntpath.normpath(scope)
     prefix = normalized.rstrip("\\/") + "\\"
-    return (
-        "^"
-        + _escape_regex_literal(prefix)
-        + r"(.*\\)?[^\\]*"
-        + _escape_regex_literal(query)
-        + r"[^\\]*$"
-    )
+    beginning = "^" + _escape_regex_literal(prefix) + r"(.*\\)?"
+    if mode == "glob":
+        # fnmatch generates PCRE-compatible (?s:...) and end anchor.
+        # Safe extra candidates are rejected by the exact basename filter.
+        return beginning + fnmatch.translate(query)
+    return beginning + r"[^\\]*" + _escape_regex_literal(query) + r"[^\\]*$"
 
 
 def build_query2(
@@ -188,6 +205,7 @@ def _query_page(
     offset: int,
     max_results: int,
     timeout_seconds: float,
+    sort_type: int = SORT_NAME_ASCENDING,
 ) -> tuple[list[str], int]:
     ctypes, wt, user32, kernel32 = _windows_libraries()
     everything_hwnd, _class_name = _find_everything_window()
@@ -321,6 +339,7 @@ def _query_page(
             search_flags=flags,
             offset=offset,
             max_results=max_results,
+            sort_type=sort_type,
             reply_message=reply_tag,
         )
         buffer = ctypes.create_string_buffer(query)
@@ -383,9 +402,13 @@ def query_paths(
     case_sensitive: bool = False,
     timeout_seconds: float = 10.0,
     batch_size: int = 256,
+    sort_by: str = "path",
+    sort_order: str = "asc",
+    mode: str = "literal",
 ) -> Iterator[str]:
-    """Yield indexed paths matching a literal filename fragment below scope."""
-    search = build_scope_regex(scope, query)
+    """Yield Everything-indexed paths in native sort order, fetched by pages."""
+    search = build_scope_regex(scope, query, mode=mode)
+    sort_type = _SORT_TYPES[(sort_by, sort_order)]
     with _QUERY_LOCK:
         offset = 0
         while True:
@@ -395,6 +418,7 @@ def query_paths(
                 offset=offset,
                 max_results=batch_size,
                 timeout_seconds=timeout_seconds,
+                sort_type=sort_type,
             )
             if not page:
                 break

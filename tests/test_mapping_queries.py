@@ -72,6 +72,56 @@ class MappingQueryTests(unittest.TestCase):
         self.assertEqual(before, len(self.calls))
 
 
+    def test_root_find_newest_files_excludes_mapping_even_when_newer(self):
+        # An unscoped newest-N search only searches native Server files.
+        # Mappings must be explicitly queried by their own path.
+        self.files.rpc_capabilities.pop("file_search", None)
+        local_old = self.scope / "local-old.txt"
+        local_new = self.scope / "local-new.txt"
+        mapped_newest = self.export / "mapped-newest.txt"
+        mapped_old = self.export / "mapped-old.txt"
+        for path, timestamp in (
+            (local_old, 1_700_000_001),
+            (local_new, 1_700_000_003),
+            (mapped_newest, 1_700_000_004),
+            (mapped_old, 1_700_000_002),
+        ):
+            path.write_text("x")
+            os.utime(path, (timestamp, timestamp))
+        status, result = self.api(
+            "/fs/query/find?path=.&sort_by=modified&sort_order=desc"
+            "&file_type=file&max_results=2"
+        )
+        self.assertEqual(200, status, result)
+        self.assertEqual(["local-new.txt", "local-old.txt"],
+                         [Path(item["path"]).name for item in result["results"]])
+        self.assertEqual([], self.calls)
+        self.assertFalse(result["truncated"])
+        self.assertTrue(all(item["type"] == "file" for item in result["results"]))
+        self.assertTrue(all("modified_utc_ns" in item for item in result["results"]))
+
+    def test_native_root_excludes_storage_provider_and_explicit_scope_searches_it(self):
+        from types import SimpleNamespace
+
+        cloud = self.scope / "cloud"
+        cloud.mkdir()
+        (cloud / "Needle-cloud.txt").write_text("external", encoding="utf-8")
+        (self.scope / "Needle-local.txt").write_text("native", encoding="utf-8")
+        storage = SimpleNamespace(
+            store=SimpleNamespace(mappings=lambda: [{"workspace": self.scope.name, "name": "cloud"}]),
+            mapping_path=lambda _row: cloud,
+            check_path=lambda *_args, **_kwargs: None,
+        )
+        with patch.object(self.server, "storage_providers", storage, create=True):
+            status, broad = self.find()
+            self.assertEqual(200, status, broad)
+            self.assertEqual(["Needle-local.txt"],
+                             [Path(item["path"]).name for item in broad["results"]])
+            status, scoped = self.api("/fs/query/find?path=cloud&query=Needle")
+            self.assertEqual(200, status, scoped)
+            self.assertEqual(["Needle-cloud.txt"],
+                             [Path(item["path"]).name for item in scoped["results"]])
+
     def test_mapping_find_prefers_indexed_file_search(self):
         nested = self.export / "nested"
         nested.mkdir()
@@ -101,7 +151,7 @@ class MappingQueryTests(unittest.TestCase):
         indexed.assert_called_once()
         self.assertLessEqual(indexed.call_args.args[3], 5.0)
 
-    def test_root_find_delegates_and_recursively_falls_back_without_index(self):
+    def test_root_find_omits_mapping_and_recursively_falls_back_without_index(self):
         self.files.rpc_capabilities.pop("file_search", None)
         (self.export / "nested").mkdir()
         (self.export / "nested" / "Needle-remote.txt").write_text("x")
@@ -109,11 +159,11 @@ class MappingQueryTests(unittest.TestCase):
         status, result = self.find(timeout_seconds=5)
         self.assertEqual(200, status, result)
         self.assertEqual(
-            {"Needle-local.txt", "Needle-remote.txt"},
+            {"Needle-local.txt"},
             {Path(item["path"]).name for item in result["results"]},
         )
         self.assertFalse(result["timed_out"])
-        self.assertEqual(["api_fs_find"], [op for op, _ in self.calls])
+        self.assertEqual([], self.calls)
 
     def test_grep_depth_filters_regex_and_limits(self):
         (self.export / "nested").mkdir()

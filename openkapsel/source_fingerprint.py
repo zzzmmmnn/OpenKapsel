@@ -18,6 +18,7 @@ SHARED_FILES = (
     "openkapsel/files/file_support.py",
     "openkapsel/files/mutation.py",
     "openkapsel/files/filename_index.py",
+    "openkapsel/files/find_order.py",
     "openkapsel/mapping/mapping_transport.py",
     "openkapsel/mapping/mapping_capabilities.py",
 )
@@ -68,6 +69,7 @@ SERVER_FILES = (
     "openkapsel/rpc_plugins/git/__init__.py",
     "openkapsel/rpc_plugins/file_search/__init__.py",
     "openkapsel/rpc_plugins/file_search/everything_ipc.py",
+    "openkapsel/rpc_plugins/file_search/spotlight_adaptive.py",
 )
 
 CLIENT_FILES = (
@@ -94,6 +96,7 @@ CLIENT_FILES = (
     "openkapsel/rpc_plugins/git/__init__.py",
     "openkapsel/rpc_plugins/file_search/__init__.py",
     "openkapsel/rpc_plugins/file_search/everything_ipc.py",
+    "openkapsel/rpc_plugins/file_search/spotlight_adaptive.py",
     "openkapsel/rpc_plugins/structured/__init__.py",
     "openkapsel/rpc_plugins/tabular/__init__.py",
     "openkapsel/rpc_plugins/tabular/csv_stream.py",

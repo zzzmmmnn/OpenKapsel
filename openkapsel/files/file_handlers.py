@@ -28,6 +28,7 @@ from openkapsel.files.mutation import (
     require_standard_file_size,
 )
 from openkapsel.files.file_support import FileOperationSupportMixin
+from openkapsel.files.find_order import TopResults, stat_item, SORT_FIELDS, SORT_ORDERS, FILE_TYPES
 from openkapsel.files.recycle import RecycleError
 from openkapsel.files.safe_paths import SafePathError
 from openkapsel.files.uploads import UploadError, UploadRecord
@@ -326,6 +327,22 @@ class FileHandlersMixin(FileOperationSupportMixin):
             },
         )
 
+    def _find_mount_roots(self):
+        """Registered mapping/storage mount roots; exclude from broad native search."""
+        roots = set()
+        manager = getattr(self.server, "mappings", None)
+        if manager is not None and getattr(manager, "store", None) is not None:
+            for mapping in manager.store.list():
+                roots.add(manager.mount_path(mapping))
+        storage = getattr(self.server, "storage_providers", None)
+        if storage is not None and getattr(storage, "store", None) is not None:
+            for mapping in storage.store.mappings():
+                roots.add(storage.mapping_path(mapping))
+        # Canonicalize the native parent without resolving/entering the mount.
+        # On macOS /var is a symlink to /private/var, while the indexed
+        # filesystem root is already resolved.
+        return {mount.parent.resolve(strict=False) / mount.name for mount in roots}
+
     def _try_indexed_find(
         self,
         *,
@@ -335,22 +352,17 @@ class FileHandlersMixin(FileOperationSupportMixin):
         case_sensitive: bool,
         timeout_seconds: float,
         mode: str = "literal",
+        sort_by: str = "path",
+        sort_order: str = "asc",
+        file_type: str = "all",
     ):
         index = getattr(self.server, "filename_index", None)
         if index is None or not index.ready:
             return None
-        scope = self._resolve_path(path)
-        # The native index deliberately does not descend into FUSE mounts.
-        # Keep existing traversal/RPC behavior when scope overlaps one.
-        mounts = []
-        manager = getattr(self.server, "mappings", None)
-        if manager is not None:
-            mounts.extend(manager.mount_path(row) for row in manager.store.list())
-        storage = getattr(self.server, "storage_providers", None)
-        if storage is not None:
-            mounts.extend(storage.mapping_path(row) for row in storage.store.mappings())
-        if any(scope == mount or scope in mount.parents or mount in scope.parents
-               for mount in mounts):
+        scope = self._resolve_path(path).resolve(strict=False)
+        mounts = self._find_mount_roots()
+        # Explicit mount searches use their own mapping/provider backend.
+        if any(scope == mount or mount in scope.parents for mount in mounts):
             return None
 
         def accept(candidate, kind):
@@ -369,6 +381,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
         return index.search(
             scope, query, glob=(mode == "glob"), case_sensitive=case_sensitive,
             limit=max_results, timeout_seconds=timeout_seconds, accept=accept,
+            sort_by=sort_by, sort_order=sort_order, file_type=file_type,
+            excluded_roots=mounts,
         )
 
     def _handle_fs_find(self, query: dict[str, list[str]]) -> None:
@@ -376,8 +390,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
         if self._try_mapping_file_api("fs_find", query=query):
             return
 
-        needle = self._required_query(query, "query")
-        if len(needle) > 1024:
+        needle = self._query_one(query, "query", "*")
+        if not needle or len(needle) > 1024:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
                 "invalid_request",
@@ -401,14 +415,20 @@ class FileHandlersMixin(FileOperationSupportMixin):
         max_results = self._query_int(
             query,
             "max_results",
-            min(100, self.server.config.max_search_results),
+            min(50, self.server.config.max_search_results),
             minimum=1,
-            maximum=self.server.config.max_search_results,
+            maximum=min(1000, self.server.config.max_search_results),
         )
         case_sensitive = self._query_bool(query, "case_sensitive", False)
-        mode = self._query_one(query, "mode", "literal")
+        mode = ("glob" if "query" not in query
+                else self._query_one(query, "mode", "literal"))
         if mode not in {"literal", "glob"}:
             raise ApiError(400, "invalid_request", "mode must be literal or glob")
+        sort_by = self._query_one(query, "sort_by", "path")
+        sort_order = self._query_one(query, "sort_order", "asc")
+        file_type = self._query_one(query, "file_type", "all")
+        if sort_by not in SORT_FIELDS or sort_order not in SORT_ORDERS or file_type not in FILE_TYPES:
+            raise ApiError(400, "invalid_request", "invalid sort_by, sort_order, or file_type")
         timeout_seconds = self._query_float(
             query,
             "timeout_seconds",
@@ -425,7 +445,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             max_results=max_results,
             case_sensitive=case_sensitive,
             timeout_seconds=max(0.1, deadline - time.monotonic()),
-            mode=mode,
+            mode=mode, sort_by=sort_by, sort_order=sort_order, file_type=file_type,
         )
         if accelerated is not None:
             payload = dict(accelerated)
@@ -435,13 +455,17 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 case_sensitive=case_sensitive,
                 max_results=max_results,
                 timeout_seconds=timeout_seconds,
-                mode=mode,
+                mode=mode, sort_by=sort_by, sort_order=sort_order, file_type=file_type,
             )
             self._send_json(HTTPStatus.OK, payload)
             return
 
+        # A broad search is native-only, irrespective of whether mounts are
+        # currently online. A user can search one mapping/provider by
+        # explicitly targeting its own path.
+        mounted_roots = self._find_mount_roots()
         left = needle if case_sensitive else needle.casefold()
-        results: list[dict[str, str]] = []
+        ranked = TopResults(max_results, sort_by, sort_order)
         unavailable_mappings = []
         timed_out = False
         truncated = False
@@ -452,33 +476,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 timed_out = truncated = True
                 break
             directory = stack.pop()
-            mapping = self._mapping_root(directory)
-            if mapping is not None:
-                remaining_time = deadline - time.monotonic()
-                if remaining_time <= 0:
-                    timed_out = truncated = True
-                    break
-                try:
-                    mapped = self._mapping_find(
-                        mapping,
-                        query,
-                        max_results - len(results),
-                        max(0.1, remaining_time),
-                    )
-                except ApiError as exc:
-                    unavailable_mappings.append(
-                        self._unavailable_mapping(mapping, directory, exc)
-                    )
-                    truncated = True
-                    continue
-                results.extend(mapped["results"])
-                timed_out |= mapped["timed_out"]
-                truncated |= mapped["truncated"]
-                if len(results) >= max_results:
-                    truncated = True
-                    break
-                if timed_out:
-                    break
+            if directory != root and directory in mounted_roots:
                 continue
 
             try:
@@ -492,6 +490,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     timed_out = truncated = True
                     break
                 entry = directory / name
+                if (entry != root and entry in mounted_roots):
+                    continue
                 if self._is_hidden_internal_path(directory, entry) or stat.S_ISLNK(
                     entry_stat.st_mode
                 ):
@@ -505,15 +505,14 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     continue
                 candidate = name if case_sensitive else name.casefold()
                 matched = fnmatch.fnmatchcase(candidate, left) if mode == "glob" else left in candidate
-                if matched:
-                    results.append({"path": str(entry), "type": kind})
-                    if len(results) >= max_results:
-                        truncated = True
-                        break
-            if timed_out or len(results) >= max_results:
+                if matched and file_type in {"all", kind}:
+                    ranked.add(stat_item(str(entry), kind, entry_stat))
+            if timed_out:
                 break
             stack.extend(directories)
 
+        results = ranked.results()
+        truncated |= ranked.truncated
         self._send_json(
             HTTPStatus.OK,
             {
@@ -523,6 +522,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "max_results": max_results,
                 "timeout_seconds": timeout_seconds,
                 "mode": mode,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "file_type": file_type,
                 "backend": "recursive",
                 "results": results,
                 "result_count": len(results),

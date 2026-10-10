@@ -5,12 +5,15 @@ continue to check access and lstat results when presenting a candidate.
 """
 from __future__ import annotations
 
+import ctypes
+from functools import lru_cache
 import fnmatch
 import os
 import queue
 import re
 import sqlite3
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -18,6 +21,105 @@ from pathlib import Path
 from openkapsel.files.file_support import FileOperationSupportMixin
 
 _RECONCILE_SECONDS = 600
+_NANOSECONDS = 1_000_000_000
+_STATX_BASIC_STATS = 0x07FF
+_STATX_BTIME = 0x0800
+
+
+class _StatxTimestamp(ctypes.Structure):
+    _fields_ = [
+        ("seconds", ctypes.c_int64),
+        ("nanoseconds", ctypes.c_uint32),
+        ("reserved", ctypes.c_int32),
+    ]
+
+
+class _Statx(ctypes.Structure):
+    """Linux statx ABI (256 bytes), providing birth time when supported."""
+
+    _fields_ = [
+        ("mask", ctypes.c_uint32),
+        ("block_size", ctypes.c_uint32),
+        ("attributes", ctypes.c_uint64),
+        ("nlink", ctypes.c_uint32),
+        ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32),
+        ("mode", ctypes.c_uint16),
+        ("spare0", ctypes.c_uint16),
+        ("inode", ctypes.c_uint64),
+        ("size", ctypes.c_uint64),
+        ("blocks", ctypes.c_uint64),
+        ("attributes_mask", ctypes.c_uint64),
+        ("atime", _StatxTimestamp),
+        ("btime", _StatxTimestamp),
+        ("ctime", _StatxTimestamp),
+        ("mtime", _StatxTimestamp),
+        ("rdev_major", ctypes.c_uint32),
+        ("rdev_minor", ctypes.c_uint32),
+        ("dev_major", ctypes.c_uint32),
+        ("dev_minor", ctypes.c_uint32),
+        ("mount_id", ctypes.c_uint64),
+        ("dio_mem_align", ctypes.c_uint32),
+        ("dio_offset_align", ctypes.c_uint32),
+        ("spare3", ctypes.c_uint64 * 12),
+    ]
+
+
+@lru_cache(maxsize=1)
+def _statx_function():
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        statx = getattr(libc, "statx", None)
+        if statx is None:
+            return None
+        statx.argtypes = [
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint,
+            ctypes.POINTER(_Statx),
+        ]
+        statx.restype = ctypes.c_int
+        return statx
+    except (AttributeError, OSError):
+        return None
+
+
+def _linux_statx(path: Path) -> tuple[int, int, int, int, int | None] | None:
+    """Return (device, mode, size, mtime_utc_ns, birth_utc_ns) with no symlink follow.
+
+    Missing/unsupported statx falls back to lstat; birth time stays NULL when
+    unavailable. Linux ctime is *not* a creation timestamp.
+    """
+    statx = _statx_function()
+    if statx is None:
+        return None
+    try:
+        result = _Statx()
+        if statx(-100, os.fsencode(path), 0x100 | 0x800,
+                 _STATX_BASIC_STATS | _STATX_BTIME, ctypes.byref(result)):
+            return None
+        if result.mask & _STATX_BASIC_STATS != _STATX_BASIC_STATS:
+            return None
+        modified = result.mtime.seconds * _NANOSECONDS + result.mtime.nanoseconds
+        created = (result.btime.seconds * _NANOSECONDS + result.btime.nanoseconds
+                   if result.mask & _STATX_BTIME else None)
+        return (os.makedev(result.dev_major, result.dev_minor), result.mode,
+                result.size, modified, created)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _metadata(path: Path) -> tuple[int, int, int, int, int | None]:
+    """Portable lstat metadata, with statx for native Linux birth timestamps."""
+    indexed = _linux_statx(path)
+    if indexed is not None:
+        return indexed
+    info = path.lstat()
+    created = getattr(info, "st_birthtime_ns", None)
+    if created is None:
+        birth = getattr(info, "st_birthtime", None)
+        created = int(birth * _NANOSECONDS) if birth is not None else None
+    return info.st_dev, info.st_mode, info.st_size, info.st_mtime_ns, created
 
 
 def watcher_available() -> bool:
@@ -92,8 +194,12 @@ class FilenameIndex:
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute("""CREATE TABLE IF NOT EXISTS entries (
             id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL, folded TEXT NOT NULL, kind TEXT NOT NULL)""")
+            name TEXT NOT NULL, folded TEXT NOT NULL, kind TEXT NOT NULL,
+            created_utc_ns INTEGER, modified_utc_ns INTEGER, size_bytes INTEGER)""")
         self._db.execute("CREATE INDEX IF NOT EXISTS entries_path ON entries(path)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS entries_name_order ON entries(name,path)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS entries_size_order ON entries(size_bytes,path)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS entries_modified_order ON entries(modified_utc_ns,path)")
         self._fts = False
         try:
             self._db.execute(
@@ -208,11 +314,11 @@ class FilenameIndex:
         while stack and not self._stop.is_set():
             current = stack.pop()
             try:
-                info = current.lstat()
+                device, mode, size, modified, created = _metadata(current)
             except OSError:
                 continue
-            if info.st_dev != self._device or not (
-                stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+            if device != self._device or not (
+                stat.S_ISREG(mode) or stat.S_ISDIR(mode)
             ):
                 continue
             if current != self.root and self._ignored(current.name):
@@ -220,8 +326,9 @@ class FilenameIndex:
             relative = current.relative_to(self.root).as_posix()
             if current != self.root:
                 yield (relative, current.name, current.name.casefold(),
-                       "directory" if stat.S_ISDIR(info.st_mode) else "file")
-            if stat.S_ISDIR(info.st_mode):
+                       "directory" if stat.S_ISDIR(mode) else "file",
+                       created, modified, size)
+            if stat.S_ISDIR(mode):
                 try:
                     with os.scandir(current) as iterator:
                         children = [Path(item.path) for item in iterator
@@ -240,13 +347,13 @@ class FilenameIndex:
                     batch.append(item)
                     if len(batch) >= 1000:
                         self._db.executemany(
-                            "INSERT INTO entries(path,name,folded,kind) VALUES(?,?,?,?)",
+                            "INSERT INTO entries(path,name,folded,kind,created_utc_ns,modified_utc_ns,size_bytes) VALUES(?,?,?,?,?,?,?)",
                             batch,
                         )
                         batch.clear()
                 if batch:
                     self._db.executemany(
-                        "INSERT INTO entries(path,name,folded,kind) VALUES(?,?,?,?)",
+                        "INSERT INTO entries(path,name,folded,kind,created_utc_ns,modified_utc_ns,size_bytes) VALUES(?,?,?,?,?,?,?)",
                         batch,
                     )
 
@@ -268,13 +375,16 @@ class FilenameIndex:
                         (key, len(key)+1, key+"/"),
                     )
                     self._db.executemany(
-                        "INSERT INTO entries(path,name,folded,kind) VALUES(?,?,?,?)",
+                        "INSERT INTO entries(path,name,folded,kind,created_utc_ns,modified_utc_ns,size_bytes) VALUES(?,?,?,?,?,?,?)",
                         self._entries(path),
                     )
 
     def search(self, scope: Path, query: str, *, glob: bool = False,
-               case_sensitive: bool = False, offset: int = 0, limit: int = 100,
-               timeout_seconds: float = 5.0, accept=None) -> dict | None:
+               case_sensitive: bool = False, offset: int = 0, limit: int = 50,
+               timeout_seconds: float = 5.0, accept=None,
+               sort_by: str = "path", sort_order: str = "asc",
+               file_type: str = "all",
+               excluded_roots=()) -> dict | None:
         if not self.ready:
             return None
         scope = Path(scope).resolve(strict=False)
@@ -288,14 +398,36 @@ class FilenameIndex:
         # FTS5's trigram LIKE optimization needs >=3 literal chars and no
         # ESCAPE clause. Percent/underscore hints use the safe full scan.
         fast = self._fts and len(hint) >= 3 and not any(c in hint for c in "%_")
-        base = ("SELECT e.path,e.name,e.folded,e.kind FROM entries e "
+        if sort_by not in {"name", "path", "size", "modified"} or sort_order not in {"asc", "desc"}:
+            raise ValueError("invalid index sorting")
+        if file_type not in {"all", "file", "directory"}:
+            raise ValueError("invalid indexed file type")
+        base = ("SELECT e.path,e.name,e.folded,e.kind,e.created_utc_ns,e.modified_utc_ns,e.size_bytes FROM entries e "
                 "JOIN entry_grams f ON f.rowid=e.id WHERE f.folded LIKE ?"
-                if fast else "SELECT e.path,e.name,e.folded,e.kind FROM entries e WHERE 1=1")
+                if fast else "SELECT e.path,e.name,e.folded,e.kind,e.created_utc_ns,e.modified_utc_ns,e.size_bytes FROM entries e WHERE 1=1")
         args = ["%" + hint + "%"] if fast else []
         if prefix != ".":
             base += " AND e.path >= ? AND e.path < ?"
             args.extend([prefix + "/", prefix + "/\U0010ffff"])
-        base += " ORDER BY e.path"
+        if file_type != "all":
+            base += " AND e.kind = ?"
+            args.append(file_type)
+        # Mount roots, including unmounted registration placeholders, are
+        # excluded in SQL before sorting/limiting to preserve native Top N.
+        for mount in excluded_roots:
+            mount = Path(mount)
+            try:
+                relative_mount = mount.relative_to(self.root).as_posix()
+            except ValueError:
+                continue
+            base += (" AND e.path != ? AND NOT "
+                     "(e.path >= ? AND e.path < ?)")
+            args.extend([relative_mount, relative_mount + "/",
+                         relative_mount + "/\U0010ffff"])
+        order_col = {"name": "name", "path": "path", "size": "size_bytes",
+                     "modified": "modified_utc_ns"}[sort_by]
+        direction = "DESC" if sort_order == "desc" else "ASC"
+        base += f" ORDER BY e.{order_col} {direction}, e.path {direction}"
         deadline = time.monotonic() + timeout_seconds
         matches = []
         count = 0
@@ -303,7 +435,7 @@ class FilenameIndex:
         with self._lock:
             self._db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
             try:
-                for relative, name, folded, kind in self._db.execute(base, args):
+                for relative, name, folded, kind, created, modified, size in self._db.execute(base, args):
                     if time.monotonic() >= deadline:
                         timed_out = True
                         break
@@ -316,6 +448,8 @@ class FilenameIndex:
                     item = (accept(path, kind) if accept else {"path": relative, "type": kind})
                     if item is None:
                         continue
+                    item.update(size_bytes=size, modified_utc_ns=modified,
+                                created_utc_ns=created)
                     if count >= offset:
                         matches.append(item)
                     count += 1

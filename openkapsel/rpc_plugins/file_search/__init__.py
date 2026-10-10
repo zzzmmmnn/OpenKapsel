@@ -17,11 +17,12 @@ from typing import Any
 
 from openkapsel.errors import ApiError
 from openkapsel.files.file_support import FileOperationSupportMixin
+from openkapsel.files.find_order import SORT_FIELDS, SORT_ORDERS, FILE_TYPES, TopResults, stat_item
 from openkapsel.rpc_plugins._data import fail, object_schema, response, validate
 
 
 MAX_QUERY_CHARS = 1024
-MAX_RESULTS = 200
+MAX_RESULTS = 1000
 MAX_OFFSET = 10_000
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 5.0
 MAX_SEARCH_TIMEOUT_SECONDS = 60.0
@@ -31,9 +32,12 @@ _SEARCH_SCHEMA = object_schema(
         "query": {"type": "string", "minLength": 1, "maxLength": MAX_QUERY_CHARS},
         "path": {"type": "string", "minLength": 1, "maxLength": 4096, "default": "."},
         "offset": {"type": "integer", "minimum": 0, "maximum": MAX_OFFSET, "default": 0},
-        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS, "default": 100},
+        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS, "default": 50},
         "case_sensitive": {"type": "boolean", "default": False},
         "mode": {"type": "string", "enum": ["literal", "glob"], "default": "literal"},
+        "sort_by": {"type": "string", "enum": list(SORT_FIELDS), "default": "path"},
+        "sort_order": {"type": "string", "enum": list(SORT_ORDERS), "default": "asc"},
+        "file_type": {"type": "string", "enum": list(FILE_TYPES), "default": "all"},
         "timeout_seconds": {
             "type": "number",
             "minimum": 0.1,
@@ -41,7 +45,7 @@ _SEARCH_SCHEMA = object_schema(
             "default": DEFAULT_SEARCH_TIMEOUT_SECONDS,
         },
     },
-    ("query",),
+    (),
 )
 _STATUS_SCHEMA = object_schema({})
 
@@ -91,6 +95,42 @@ def _scope(files, value: str) -> Path:
 def _prefilter_term(query: str) -> str:
     tokens = re.findall(r"\w+", query, flags=re.UNICODE)
     return max(tokens, key=len) if tokens else query
+
+
+def _spotlight_glob_pattern(pattern: str) -> str:
+    """Broaden fnmatch-style Glob to Spotlight's '*' wildcard subset.
+
+    '?' and bracket classes are replaced with '*', so Spotlight returns a
+    superset; _candidate() applies the original Glob to every resulting name.
+    Never treat user input as query expression syntax.
+    """
+    parts = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "[":
+            end = i + 1
+            if end < len(pattern) and pattern[end] == "!":
+                end += 1
+            if end < len(pattern) and pattern[end] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end >= 0:
+                char = "*"
+                i = end
+        elif char == "?":
+            char = "*"
+        parts.append(char)
+        i += 1
+    return re.sub(r"\*+", "*", "".join(parts))
+
+
+def _spotlight_glob_query(pattern: str) -> str:
+    # Attribute predicates avoid the tokenizing/-name search syntax; flags
+    # broaden case/diacritic matching before the exact Python name filter.
+    widened = _spotlight_glob_pattern(pattern)
+    escaped = widened.replace("\\", "\\\\").replace('"', '\\"')
+    return f'kMDItemFSName == "{escaped}"cd'
 
 
 def _nul_paths(command: list[str], backend: str, timeout_seconds: float) -> Iterator[str]:
@@ -169,6 +209,10 @@ def _backend_paths(
     query: str,
     case_sensitive: bool,
     timeout_seconds: float,
+    mode: str = "literal",
+    sort_by: str = "path",
+    sort_order: str = "asc",
+    wanted: int | None = None,
 ) -> tuple[str, Iterator[str]]:
     backend, executable = _platform_backend()
     if backend == "everything_ipc":
@@ -181,6 +225,10 @@ def _backend_paths(
                     query,
                     case_sensitive=case_sensitive,
                     timeout_seconds=timeout_seconds,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    mode=mode,
+                    batch_size=min(256, max(1, wanted)) if wanted is not None else 256,
                 )
             except EverythingIpcError as exc:
                 fail(
@@ -192,12 +240,13 @@ def _backend_paths(
 
         return backend, windows_paths()
     if backend == "mdfind" and executable:
-        term = _prefilter_term(query)
-        return backend, _nul_paths(
-            [executable, "-0", "-onlyin", str(scope), "-name", term],
-            backend,
-            timeout_seconds,
-        )
+        if mode == "glob":
+            command = [executable, "-0", "-onlyin", str(scope),
+                       _spotlight_glob_query(query)]
+        else:
+            command = [executable, "-0", "-onlyin", str(scope),
+                       "-name", _prefilter_term(query)]
+        return backend, _nul_paths(command, backend, timeout_seconds)
     fail("file_search_unavailable", "no indexed filename-search backend is available", 503)
 
 
@@ -246,11 +295,94 @@ def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool, m
         kind = "directory"
     else:
         return None
-    return {"path": relative_root.as_posix(), "type": kind}
+    return stat_item(relative_root.as_posix(), kind, details)
+
+
+def _spotlight_name_predicate(query: str, mode: str) -> str:
+    if mode == "glob":
+        return _spotlight_glob_query(query)
+    # Spotlight's free-text -name is not combinable with metadata predicates.
+    # An unquoted alphanumeric run is a safe superset of literal substring
+    # matches; exact basename matching still happens in _candidate().
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    term = max(tokens, key=len, default="")
+    escaped = term.replace("\\", "\\\\").replace('"', '\\"')
+    return f'kMDItemFSName == "*{escaped}*"cd'
+
+
+def _search_spotlight_ordered(
+    files, scope: Path, scope_arg: str, query: str, mode: str,
+    *, case_sensitive: bool, sort_by: str, sort_order: str, file_type: str,
+    offset: int, limit: int, timeout_seconds: float,
+    executable: str,
+):
+    """Search disjoint, best-first Spotlight metadata ranges until Top N fits."""
+    from .spotlight_adaptive import metadata_windows
+
+    deadline = time.monotonic() + timeout_seconds
+    ranked = TopResults(offset + limit, sort_by, sort_order)
+    seen = set()
+    name_predicate = _spotlight_name_predicate(query, mode)
+    timed_out = False
+    stopped_early = False
+    for predicates, complete in metadata_windows(sort_by, sort_order):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        expression = " && ".join(
+            [f"({name_predicate})", *(f"({part})" for part in predicates)]
+        )
+        paths = _nul_paths(
+            [executable, "-0", "-onlyin", str(scope), expression],
+            "mdfind", remaining,
+        )
+        try:
+            try:
+                for raw in paths:
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        break
+                    item = _candidate(files, scope, raw, query, case_sensitive, mode)
+                    if (item is None or item["path"] in seen or
+                            file_type not in {"all", item["type"]}):
+                        continue
+                    seen.add(item["path"])
+                    ranked.add(item)
+            except ApiError as exc:
+                if exc.code != "file_search_timeout":
+                    raise
+                timed_out = True
+        finally:
+            close = getattr(paths, "close", None)
+            if callable(close):
+                close()
+
+        if timed_out:
+            break
+        if ranked.seen >= offset + limit:
+            # Entire metadata window was processed, so equal-primary-key
+            # items are ranked with the same deterministic secondary path key.
+            stopped_early = not complete
+            break
+        if complete:
+            break
+
+    selected = ranked.results()[offset : offset + limit]
+    truncated = ranked.truncated or stopped_early or timed_out
+    return {
+        "backend": "mdfind",
+        "scope": scope_arg, "query": query, "mode": mode,
+        "sort_by": sort_by, "sort_order": sort_order, "file_type": file_type,
+        "case_sensitive": case_sensitive, "offset": offset, "limit": limit,
+        "timeout_seconds": timeout_seconds, "results": selected,
+        "returned": len(selected), "truncated": truncated, "timed_out": timed_out,
+        "next_offset": offset + len(selected) if truncated else None,
+    }
 
 
 def _search(files, args):
-    query = args["query"]
+    query = args.get("query", "*")
     if "\x00" in query or "/" in query or "\\" in query:
         fail(
             "invalid_data_arguments",
@@ -259,9 +391,12 @@ def _search(files, args):
     scope_arg = args.get("path", ".")
     scope = _scope(files, scope_arg)
     offset = args.get("offset", 0)
-    limit = args.get("limit", 100)
+    limit = args.get("limit", 50)
     case_sensitive = args.get("case_sensitive", False)
-    mode = args.get("mode", "literal")
+    mode = "glob" if "query" not in args else args.get("mode", "literal")
+    sort_by = args.get("sort_by", "path")
+    sort_order = args.get("sort_order", "asc")
+    file_type = args.get("file_type", "all")
     timeout_seconds = float(
         args.get("timeout_seconds", DEFAULT_SEARCH_TIMEOUT_SECONDS)
     )
@@ -270,6 +405,7 @@ def _search(files, args):
         indexed = index.search(
             scope, query, glob=mode == "glob", case_sensitive=case_sensitive,
             offset=offset, limit=limit, timeout_seconds=timeout_seconds,
+            sort_by=sort_by, sort_order=sort_order, file_type=file_type,
             accept=lambda path, kind: _candidate(
                 files, scope, str(path), query, case_sensitive, mode
             ),
@@ -278,31 +414,60 @@ def _search(files, args):
             return {
                 **indexed, "scope": scope_arg, "query": query,
                 "mode": mode, "case_sensitive": case_sensitive,
+                "sort_by": sort_by, "sort_order": sort_order, "file_type": file_type,
                 "offset": offset, "limit": limit,
                 "timeout_seconds": timeout_seconds,
                 "returned": len(indexed["results"]),
             }
 
-    if mode == "glob":
+    platform_backend = _platform_backend()[0]
+    if mode == "glob" and platform_backend not in {"mdfind", "everything_ipc"}:
         fail("file_search_unavailable",
-             "glob search requires a ready local index or recursive fs_find traversal", 503)
+             "glob search requires a ready local index or platform search backend", 503)
+    if platform_backend == "mdfind" and sort_by in {"modified", "size"}:
+        _backend, executable = _platform_backend()
+        if executable is not None:
+            return _search_spotlight_ordered(
+                files, scope, scope_arg, query, mode,
+                case_sensitive=case_sensitive, sort_by=sort_by,
+                sort_order=sort_order, file_type=file_type,
+                offset=offset, limit=limit, timeout_seconds=timeout_seconds,
+                executable=executable,
+            )
     backend, paths = _backend_paths(
-        scope, query, case_sensitive, timeout_seconds,
+        scope, query, case_sensitive, timeout_seconds, mode=mode,
+        sort_by=sort_by, sort_order=sort_order,
+        wanted=offset + limit + 1,
     )
 
-    accepted = []
+    ranked = TopResults(offset + limit, sort_by, sort_order)
     seen = set()
     timed_out = False
     try:
         try:
             for raw in paths:
                 item = _candidate(files, scope, raw, query, case_sensitive, mode)
-                if item is None or item["path"] in seen:
+                if item is None or item["path"] in seen or file_type not in {"all", item["type"]}:
                     continue
                 seen.add(item["path"])
-                accepted.append(item)
-                if len(accepted) >= offset + limit + 1:
-                    break
+                ranked.add(item)
+                # QUERY2 sorts all native hits by size/mtime before paging.
+                # Stop once we see a worse primary key beyond the requested
+                # range, but drain equal-key ties to retain deterministic
+                # secondary path ordering in our final Top N.
+                wanted = offset + limit
+                if (backend == "everything_ipc"
+                        and sort_by in {"size", "modified"}
+                        and ranked.seen > wanted):
+                    boundary = ranked.results()[wanted - 1]
+                    field = ("size_bytes" if sort_by == "size" else
+                             "modified_utc_ns")
+                    current_value = item.get(field)
+                    boundary_value = boundary.get(field)
+                    if (current_value is not None and
+                            boundary_value is not None and
+                            current_value != boundary_value):
+                        break
         except ApiError as exc:
             if exc.code != "file_search_timeout":
                 raise
@@ -312,13 +477,16 @@ def _search(files, args):
         if callable(close):
             close()
 
-    selected = accepted[offset : offset + limit]
-    truncated = len(accepted) > offset + limit or timed_out
+    selected = ranked.results()[offset : offset + limit]
+    truncated = ranked.truncated or timed_out
     return {
         "backend": backend,
         "scope": scope_arg,
         "query": query,
         "mode": mode,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+        "file_type": file_type,
         "case_sensitive": case_sensitive,
         "offset": offset,
         "limit": limit,

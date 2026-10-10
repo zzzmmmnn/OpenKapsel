@@ -589,17 +589,19 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "fs_find",
         "Find files by name",
-        "Recursively find files and directories by literal basename substring (default) or glob (* ? []). Native roots use SQLite/watchfiles on Linux; mapped roots delegate to the client, with recursive fallback.",
+        "Search native Server files by name/size/modified/path. Broad searches exclude all Mapping and Storage Provider directories; specify path within a mount to search that source separately. sort_by=name|path|size|modified, sort_order=asc|desc, file_type=file|directory|all. Query may be omitted to match all. Returns up to max_results (default 50, maximum 1000) with UTC metadata; timeout marks partial results.",
         _object_schema(
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 1024},
                 "path": {**PATH, "default": "."},
-                "max_results": {**POSITIVE, "default": 100},
+                "max_results": {**POSITIVE, "maximum": 1000, "default": 50},
                 "case_sensitive": {"type": "boolean", "default": False},
                 "mode": {"type": "string", "enum": ["literal", "glob"], "default": "literal"},
+                "sort_by": {"type": "string", "enum": ["name", "path", "size", "modified"], "default": "path"},
+                "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
+                "file_type": {"type": "string", "enum": ["all", "file", "directory"], "default": "all"},
                 "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 60, "default": 5},
             },
-            ("query",),
         ),
         read_only=True,
         idempotent=True,

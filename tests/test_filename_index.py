@@ -1,6 +1,7 @@
 """Shared Server/Client SQLite filename index, scope, glob and incremental refresh."""
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 import threading
@@ -15,7 +16,9 @@ from types import SimpleNamespace
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_file_api import ClientFileAPI
 from openkapsel.files.file_handlers import FileHandlersMixin
-from openkapsel.files.filename_index import FilenameIndex, private_database
+from openkapsel.files.filename_index import (
+    FilenameIndex, _Statx, _linux_statx, private_database,
+)
 from openkapsel.rpc_plugins.file_search import plugin
 
 
@@ -42,6 +45,64 @@ class SharedFilenameIndexTests(unittest.TestCase):
         return self.index.search(
             scope or self.root, query, glob=glob, **kwargs
         )
+
+    def test_metadata_size_utc_nanoseconds_and_incremental_refresh(self):
+        file = self.src / "test1.py"
+        timestamp_ns = 1_700_000_000_123_456_789
+        os.utime(file, ns=(timestamp_ns, timestamp_ns))
+        self.index.apply({(2, str(file))})
+        with self.index._db:
+            row = self.index._db.execute(
+                "SELECT created_utc_ns,modified_utc_ns,size_bytes FROM entries WHERE path=?",
+                ("src/test1.py",),
+            ).fetchone()
+        self.assertEqual(timestamp_ns, row[1])
+        self.assertEqual(len("test1.py"), row[2])
+        if row[0] is not None:
+            self.assertIsInstance(row[0], int)
+            self.assertGreater(row[0], 0)
+
+        file.write_text("now has more bytes")
+        self.index.apply({(2, str(file))})
+        updated = self.index._db.execute(
+            "SELECT modified_utc_ns,size_bytes FROM entries WHERE path=?",
+            ("src/test1.py",),
+        ).fetchone()
+        self.assertEqual(file.stat().st_mtime_ns, updated[0])
+        self.assertEqual(len("now has more bytes"), updated[1])
+
+    def test_linux_statx_real_birth_time_without_ctime_substitution(self):
+        def fake_statx(_dirfd, _path, _flags, mask, pointer):
+            result = ctypes.cast(pointer, ctypes.POINTER(_Statx)).contents
+            result.mask = mask
+            result.dev_major = 8
+            result.dev_minor = 1
+            result.mode = 0o100644
+            result.size = 4321
+            result.mtime.seconds = 1_700_000_000
+            result.mtime.nanoseconds = 1234
+            result.btime.seconds = 1_600_000_000
+            result.btime.nanoseconds = 5678
+            return 0
+
+        with patch("openkapsel.files.filename_index._statx_function",
+                   return_value=fake_statx):
+            device, mode, size, modified, created = _linux_statx(self.src)
+        self.assertEqual(os.makedev(8, 1), device)
+        self.assertEqual(0o100644, mode)
+        self.assertEqual(4321, size)
+        self.assertEqual(1_700_000_000_000_001_234, modified)
+        self.assertEqual(1_600_000_000_000_005_678, created)
+
+        def fake_without_birth(_dirfd, _path, _flags, mask, pointer):
+            result = ctypes.cast(pointer, ctypes.POINTER(_Statx)).contents
+            result.mask = mask & ~0x0800
+            result.mtime.seconds = 1_700_000_000
+            return 0
+
+        with patch("openkapsel.files.filename_index._statx_function",
+                   return_value=fake_without_birth):
+            self.assertIsNone(_linux_statx(self.src)[4])
 
     def test_private_database_is_outside_the_export(self):
         self.assertEqual(0o600, self.index.database.stat().st_mode & 0o777)
@@ -82,6 +143,72 @@ class SharedFilenameIndexTests(unittest.TestCase):
         matches = self.search("test")
         self.assertEqual(3, matches["result_count"])
         self.assertTrue(all(item["path"].startswith("renamed/") for item in matches["results"]))
+
+    def test_indexed_server_excludes_registered_mapping_and_storage_roots(self):
+        native = self.root / "native-newest.txt"
+        mapped = self.root / "remote-map"
+        cloud = self.root / "cloud-drive"
+        mapped.mkdir()
+        cloud.mkdir()
+        native.write_text("native")
+        (mapped / "newest-mapped.txt").write_text("remote")
+        (cloud / "newest-cloud.txt").write_text("cloud")
+        for path, timestamp in (
+            (native, 2_000_000_001), (mapped / "newest-mapped.txt", 2_000_000_004),
+            (cloud / "newest-cloud.txt", 2_000_000_005),
+        ):
+            os.utime(path, (timestamp, timestamp))
+        self.index.rebuild()
+        # All three roots are physically on the same device. Filtering must
+        # be by registered mount boundaries rather than st_dev alone.
+        manager = SimpleNamespace(
+            store=SimpleNamespace(list=lambda: [{"id": "mapped"}]),
+            mount_path=lambda row: mapped,
+        )
+        storage = SimpleNamespace(
+            store=SimpleNamespace(mappings=lambda: [{"id": "cloud"}]),
+            mapping_path=lambda row: cloud,
+        )
+        class NativeServerFind(FileHandlersMixin):
+            def __init__(self, root, index):
+                self.root = root
+                self.server = SimpleNamespace(filename_index=index, mappings=manager,
+                                              storage_providers=storage)
+            def _resolve_path(self, path):
+                return self.root / path
+            def _file_stat(self, path):
+                return path.lstat()
+            @staticmethod
+            def _is_hidden_internal_path(_parent, _candidate):
+                return False
+
+        handler = NativeServerFind(self.root, self.index)
+        top = handler._try_indexed_find(
+            query="*", path=".", max_results=5,
+            case_sensitive=False, timeout_seconds=5,
+            mode="glob", sort_by="modified", sort_order="desc",
+            file_type="file",
+        )
+        self.assertIn("native-newest.txt", [Path(x["path"]).name for x in top["results"]])
+        self.assertFalse(any(
+            "remote-map" in x["path"] or "cloud-drive" in x["path"]
+            for x in top["results"]
+        ))
+        direct = handler._try_indexed_find(
+            query="*", path="remote-map", max_results=5,
+            case_sensitive=False, timeout_seconds=5,
+            mode="glob", sort_by="modified", sort_order="desc",
+            file_type="file",
+        )
+        self.assertIsNone(direct)  # explicitly scoped remote search uses its own backend
+        sql = (
+            "SELECT e.path FROM entries e WHERE 1=1 AND e.kind=? "
+            "AND e.path != ? AND NOT (e.path >= ? AND e.path < ?) "
+            "ORDER BY e.modified_utc_ns DESC,e.path DESC LIMIT 11"
+        )
+        plan = list(self.index._db.execute("EXPLAIN QUERY PLAN " + sql,
+                   ("file", "remote-map", "remote-map/", "remote-map/􏿿")))
+        self.assertTrue(any("entries_modified_order" in row[3] for row in plan))
 
     def test_native_server_and_client_file_find_use_same_semantics(self):
         class ServerFind(FileHandlersMixin):
