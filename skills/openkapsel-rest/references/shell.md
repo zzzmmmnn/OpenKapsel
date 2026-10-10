@@ -115,7 +115,7 @@ with no mapping-specific public task or argv REST endpoints.
 }
 ```
 
-The command runs asynchronously. `timeout_seconds` may be `null` or within the published bounds. `interactive: true` keeps stdin available.
+The command runs asynchronously. Omitted or null `timeout_seconds` uses 600 seconds; explicitly supplied positive finite values have no maximum. `interactive: true` keeps stdin available.
 
 | Method | Path | Purpose |
 |---|---|---|

@@ -16,14 +16,20 @@ never inspected for `cd` or rewritten to translate embedded absolute paths.
 Client execution requires caller Shell/write permissions, a writable mapping
 with `allow_exec`, and client execution opt-in. Client 1.60.0+ advertises
 `execution.shell_command`; older/offline/denied clients fail without fallback.
-Client-local sandbox, timeout, and resource policy apply; server `/env` and
-server sandbox/network settings are not copied to the client. Omitted or null
-timeout uses the client's `max_seconds`; a supplied value cannot exceed it.
+Client-local sandbox and resource policy apply; server `/env` and
+server sandbox/network settings are not copied to the client. Both Server and
+Mapping Shell default to a **600-second timeout** when omitted or null.
+An explicit positive finite `timeout_seconds` has no maximum (for example, `1e9`);
+the legacy Client `limits.max_seconds` does not restrict Manager-owned jobs.
 Native Windows uses `cmd.exe /d /s /c`; POSIX and client Podman use `/bin/sh -c`.
 Choose commands for the advertised platform. The client argv limit (32768 total
 characters, including the interpreter) still applies.
 
-Responses include `location` and a unified `task_id`. Use this ID with ordinary
+Responses include `location` and a unified `task_id`. Job IDs are `&a1B2&`
+(four case-sensitive alphanumeric characters between ampersands) for Server
+jobs, or `client.<mapping_id>.&a1B2&` for Mapping jobs. The ID format changes,
+but the existing task APIs, paths, and request parameter names remain unchanged.
+Pass the returned ID directly to the ordinary
 `/task/get/<id>` status/output/SSE/stdin/interrupt/kill APIs (or MCP task tools).
 Client stdout and stderr are combined in `stdout`, marked `output_combined`;
 status includes up to 64 KiB and `stdout_next_offset`. Continue with output
@@ -38,8 +44,10 @@ process group/tree. Server interruption retains its existing behavior.
 tasks and the workspace's accessible client tasks. `target=server|client`
 filters location; normal status/pagination still apply. `unavailable_mappings`
 reports clients whose tasks could not be listed, not that their tasks stopped.
-Client task IDs remain routable after reconnect/server restart. Retention and
-client process-exit limitations are described in [client mappings](client-mappings.md).
+Mapping Shell and task-based RPC jobs survive Client reconnects, Client
+process exits, and server restarts while their shared Job Manager keeps running.
+Manager restarts cannot reattach lost anonymous process pipes; details and
+retention are in [client mappings](client-mappings.md).
 Never replay an uncertain start automatically: reconnect and list tasks first.
 Schedules still execute on the server. Client execution is exposed through the
 unified `/shell/exec` and `/task/*` APIs; there are no mapping-specific public
@@ -107,7 +115,13 @@ The rc language is POSIX `/bin/sh`; Bash-only startup syntax is not portable acr
 
 Full Shell receives a deliberately small base environment instead of inheriting the complete service environment. Restricted backends also establish their own base environment before sourcing the generated file. Every backend exposes `OPENKAPSEL_WORKSPACE` as the task's workspace path.
 
-`POST /shell/exec` creates an asynchronous task and returns `task_id`. Defaults are eight concurrent tasks per token and sixteen globally. Each task has a maximum runtime, one hour by default. These values are service configuration, while process, memory, and CPU limits belong to the token.
+`POST /shell/exec` creates an asynchronous task and returns `task_id`.
+Server Shell retains its separate concurrency defaults of eight tasks per token
+and sixteen globally. The shared Mapping Job Manager allows sixteen running
+jobs globally and four per Mapping key, across Shell and task-based RPC jobs.
+Both default to a 600-second execution timeout; an explicit positive finite
+timeout has no upper bound. Memory, CPU, and process restrictions follow
+the execution backend's configured policy.
 
 Interactive tasks accept stdin. Output can be consumed by:
 
