@@ -104,6 +104,9 @@ class RpcTaskContext:
 
 
 class ClientTasks:
+    # Shell runs here only for short jobs; long Mapping Shell uses Job Manager.
+    LOCAL_SHELL_MAX_SECONDS = 120
+
     def __init__(self, files, *, enabled=False, sandbox=True, backend="podman",
                  image="docker.io/library/python:3.14-slim-trixie", network=False,
                  max_tasks=2, max_seconds=600, memory_mb=256, processes=64, cpus=1):
@@ -235,9 +238,12 @@ class ClientTasks:
         else:
             descriptor = self.files.paths.open(cwd, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             os.close(descriptor)
-        timeout = args.get("timeout_seconds", self.max_seconds)
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= self.max_seconds:
-            raise OSError(errno.EINVAL, "timeout exceeds local policy")
+        timeout = args.get("timeout_seconds", self.LOCAL_SHELL_MAX_SECONDS)
+        if timeout is None:
+            timeout = self.LOCAL_SHELL_MAX_SECONDS
+        if (type(timeout) not in (int, float) or
+                not 0.1 <= timeout <= self.LOCAL_SHELL_MAX_SECONDS):
+            raise OSError(errno.EINVAL, "local Shell timeout must be within 120 seconds")
         container = None
         env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG") if key in os.environ}
         if self.sandbox:

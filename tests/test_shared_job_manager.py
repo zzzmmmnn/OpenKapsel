@@ -498,9 +498,11 @@ time.sleep(30)
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
             "writable": True, "allow_exec": True, "sandbox": False,
+            "limits": {"max_seconds": 30},
         }
         runtime = ClientRuntime(config)
         try:
+            self.assertEqual(30, runtime.tasks.capabilities()["max_seconds"])
             self.assertEqual(120, runtime.tasks.capabilities()["default_seconds"])
             for job_id, specified in (("&Df1t&", None), ("&B120&", 120)):
                 operation = {

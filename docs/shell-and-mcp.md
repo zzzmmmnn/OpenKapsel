@@ -20,7 +20,7 @@ Client-local sandbox and resource policy apply; server `/env` and
 server sandbox/network settings are not copied to the client. Both Server and
 Mapping Shell default to a **120-second timeout** when omitted or null.
 An explicit positive finite `timeout_seconds` has no maximum (for example, `1e9`);
-Mapping Shell requests with timeouts of at most 120 seconds run in the Client and retain its local task policy; only explicit timeouts above 120 seconds use the Manager and bypass Client `limits.max_seconds`.
+Mapping Shell at most 120 seconds runs in Client; longer Mapping Shell runs in Manager. Both ignore Client `limits.max_seconds`, which applies only to asynchronous RPC tasks.
 Native Windows uses `cmd.exe /d /s /c`; POSIX and client Podman use `/bin/sh -c`.
 Choose commands for the advertised platform. The client argv limit (32768 total
 characters, including the interpreter) still applies.

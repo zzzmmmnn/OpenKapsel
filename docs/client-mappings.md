@@ -34,6 +34,17 @@ python3 -m venv .venv-client
 
 On Windows use `python` and `.venv-client\Scripts\python.exe`. A full package installation can instead use the `client` extra and the `openkapsel-client` command.
 
+On Linux, the optional native filename index uses recursive inotify watches.
+A large directory tree may exhaust the per-user `fs.inotify.max_user_watches`
+quota. When watcher setup fails, filename searches fall back to recursive
+filesystem scanning; functionality is preserved, but searches may be slower.
+Check the current limit with `cat /proc/sys/fs/inotify/max_user_watches`.
+For large exports, an administrator may raise it temporarily with
+`sudo sysctl -w fs.inotify.max_user_watches=524288`. To persist the setting,
+add `fs.inotify.max_user_watches=524288` to a configuration file under
+`/etc/sysctl.d/` and load it with `sudo sysctl --system`.
+The quota is shared by processes running under the same Linux user.
+
 Treat the client configuration as secret-bearing control-plane input: it contains the mapping token and may also contain SSH passwords, key passphrases, or paths to private keys. The selected `--config` file **must be outside the exported mapping root**; the client refuses to start otherwise. Keep it outside source control as well, and on POSIX systems use mode `0600`. This prevents ordinary mapping files, recursive search/tree/manifest operations, Archive/Git RPC snapshots, and sandboxed Shell tasks from treating the active configuration as workspace data. The file-provider layer also treats protected configuration paths as nonexistent as defense in depth. When SSH profiles are configured, `allow_exec=true` with `sandbox=false` remains allowed, but the client logs a prominent warning because native unsandboxed commands run with the client OS account and may read the configuration or referenced SSH key files.
 
 The client opens the selected configuration once and holds an exclusive process-lifetime lock. On Windows it opens the file with kernel-enforced share mode `0`, so while the client holds the handle other processes cannot newly open that path for read, write, or delete/rename access; if another process already has an incompatible handle open, client startup fails. On POSIX the lock uses advisory `flock`. A second client cannot start with the same locked file. If an automatic source reload re-execs the client, the original configuration SHA-256 is carried across the exec and verified before the new process parses the file; a changed or replaced configuration fails closed instead of being loaded. POSIX advisory locking cannot stop an arbitrary same-user process that ignores it, so the digest check remains the security boundary for automatic re-exec there. A fresh operator/service restart after the old client has exited intentionally reads the current file again.
@@ -240,7 +251,7 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 ## Client execution policy
 
-Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds and runs directly in ClientRuntime when its requested timeout is ≤120 seconds (including the default). For explicitly requested timeouts greater than 120 seconds, the shared Job Manager runs the job with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` does not cap Manager-owned Shell jobs.
+Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds and runs directly in ClientRuntime when its requested timeout is ≤120 seconds (including the default). For explicitly requested timeouts greater than 120 seconds, the shared Job Manager runs the job with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
 
 To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
 
@@ -260,7 +271,7 @@ Output is retained on disk in bounded 64 MiB spools per job. Advancing the offse
 
 Podman on macOS/Windows runs Linux workloads, not native platform tests. Linux Bubblewrap and native macOS/Windows sandbox adapters remain follow-up backends; this version does not claim they are implemented.
 
-Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. The legacy `max_tasks` (1–16) and `max_seconds` (1–86400) config keys remain accepted for in-process task callers, **but they do not restrict Manager-owned Shell jobs**. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
+Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 
 `POST /recycle/purge` removes one selected recycle entry permanently. It requires the root selector, entry ID, normal mutation Context, and `confirm: true`.
 
