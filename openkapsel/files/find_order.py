@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import heapq
+import os
 from pathlib import Path
 
 SORT_FIELDS = ("name", "path", "size", "modified")
@@ -71,5 +72,7 @@ def stat_item(path: str, kind: str, details) -> dict:
     if birth is None:
         birth_seconds = getattr(details, "st_birthtime", None)
         birth = int(birth_seconds * 1_000_000_000) if birth_seconds is not None else None
+    if birth is None and os.name == "nt":
+        birth = details.st_ctime_ns
     result["created_utc_ns"] = birth
     return result

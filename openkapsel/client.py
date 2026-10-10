@@ -202,16 +202,22 @@ def _create_resources(config, *, protected_paths=()):
         rpc_registry=rpc_registry,
         protected_paths=protected_paths,
     )
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") or os.name == "nt":
         from openkapsel.files.filename_index import FilenameIndex
-        root_key = hashlib.sha256(str(export_root).encode("utf-8")).hexdigest()[:24]
+        from openkapsel.files.filename_index import watcher_available
+        canonical_root = str(export_root).casefold() if os.name == "nt" else str(export_root)
+        root_key = hashlib.sha256(canonical_root.encode("utf-8")).hexdigest()[:24]
         if protected_paths:
             state_dir = Path(protected_paths[0]).expanduser().resolve().parent / ".openkapsel-client-state"
+        elif os.name == "nt":
+            # An exported workspace must not contain its private search cache.
+            state_dir = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "OpenKapsel" / "state"
         else:
             state_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "openkapsel"
         try:
-            files.filename_index = FilenameIndex(export_root, state_dir / f"files-{root_key}.sqlite3")
-            files.filename_index.start()
+            if watcher_available():
+                files.filename_index = FilenameIndex(export_root, state_dir / f"files-{root_key}.sqlite3")
+                files.filename_index.start()
         except (OSError, ValueError) as exc:
             LOG.warning("Local filename index unavailable; recursive search will be used: %s", exc)
             files.filename_index = None

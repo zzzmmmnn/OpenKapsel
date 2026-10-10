@@ -104,6 +104,60 @@ class SharedFilenameIndexTests(unittest.TestCase):
                    return_value=fake_without_birth):
             self.assertIsNone(_linux_statx(self.src)[4])
 
+    def test_windows_creation_timestamp_uses_birth_or_legacy_ctime_not_posix(self):
+        from openkapsel.files.filename_index import _metadata
+        from openkapsel.files.find_order import stat_item
+        info = SimpleNamespace(
+            st_dev=1, st_mode=0o100644, st_size=9,
+            st_mtime_ns=1_800_000_000_123_456_789,
+            st_ctime_ns=1_700_000_000_111_111_111,
+        )
+        with patch("openkapsel.files.filename_index._linux_statx",
+                   return_value=None), patch(
+            "openkapsel.files.filename_index.os", SimpleNamespace(name="nt")
+        ), patch.object(Path, "lstat", return_value=info):
+            self.assertEqual(
+                (1, 0o100644, 9, info.st_mtime_ns, info.st_ctime_ns),
+                _metadata(self.root / "legacy.txt"),
+            )
+        with patch("openkapsel.files.find_order.os",
+                   SimpleNamespace(name="nt")):
+            self.assertEqual(info.st_ctime_ns,
+                             stat_item("legacy.txt", "file", info)["created_utc_ns"])
+        # When st_birthtime_ns is provided, prefer it to legacy st_ctime.
+        info.st_birthtime_ns = 1_650_000_000_000_000_000
+        with patch("openkapsel.files.filename_index._linux_statx",
+                   return_value=None), patch(
+            "openkapsel.files.filename_index.os", SimpleNamespace(name="nt")
+        ), patch.object(Path, "lstat", return_value=info):
+            self.assertEqual(info.st_birthtime_ns, _metadata(self.root)[4])
+
+    def test_windows_junction_and_private_names_are_never_indexed(self):
+        from openkapsel.files import filename_index as module
+        (self.root / "reparse").mkdir()
+        (self.root / "reparse" / "hidden.txt").write_text("hidden")
+        (self.root / ".RECYCLE").mkdir()
+        (self.root / ".RECYCLE" / "secret.txt").write_text("secret")
+        original_lstat = Path.lstat
+        def fake_lstat(path, *args, **kwargs):
+            info = original_lstat(path, *args, **kwargs)
+            if path.name == "reparse":
+                return SimpleNamespace(
+                    st_file_attributes=0x400, st_dev=info.st_dev,
+                    st_mode=info.st_mode, st_size=info.st_size,
+                    st_mtime_ns=info.st_mtime_ns, st_ctime_ns=info.st_ctime_ns,
+                )
+            return info
+        with patch("openkapsel.files.filename_index.os",
+                   SimpleNamespace(name="nt", scandir=os.scandir)), patch.object(
+            Path, "lstat", side_effect=fake_lstat, autospec=True
+        ):
+            names = [row[0] for row in self.index._entries(self.index.root)]
+        self.assertNotIn("reparse", names)
+        self.assertNotIn("reparse/hidden.txt", names)
+        self.assertNotIn(".RECYCLE", names)
+        self.assertNotIn(".RECYCLE/secret.txt", names)
+
     def test_private_database_is_outside_the_export(self):
         self.assertEqual(0o600, self.index.database.stat().st_mode & 0o777)
         self.assertEqual(0o700, self.index.database.parent.stat().st_mode & 0o777)

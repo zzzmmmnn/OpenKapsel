@@ -95,6 +95,121 @@ class EverythingIpcProtocolTests(unittest.TestCase):
         self.assertEqual("test", _literal_run("test[0-9].py", True))
 
 
+class WindowsSqliteFallbackTests(unittest.TestCase):
+    def test_platform_chooses_everything_then_watchfiles_on_windows(self):
+        from types import SimpleNamespace
+        from openkapsel.rpc_plugins.file_search import _platform_backend
+        with patch("openkapsel.rpc_plugins.file_search.os",
+                   SimpleNamespace(name="nt")), patch(
+            "openkapsel.rpc_plugins.file_search.everything_ipc.status",
+            return_value={"running": True},
+        ):
+            self.assertEqual(("everything_ipc", None), _platform_backend())
+        with patch("openkapsel.rpc_plugins.file_search.os",
+                   SimpleNamespace(name="nt")), patch(
+            "openkapsel.rpc_plugins.file_search.everything_ipc.status",
+            return_value={"running": False},
+        ), patch(
+            "openkapsel.files.filename_index.watcher_available",
+            return_value=True,
+        ):
+            self.assertEqual(("sqlite_watch", None), _platform_backend())
+
+    def test_fallback_uses_folded_trigram_index_and_original_case(self):
+        import os
+        from openkapsel.files.filename_index import FilenameIndex
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "files"
+            root.mkdir()
+            (root / "Straße.TXT").write_text("x")
+            for directory, name in (("a", "README.md"), ("b", "readme.md")):
+                target = root / directory
+                target.mkdir()
+                (target / name).write_text("x")
+            index = FilenameIndex(root, base / "state" / "files.db")
+            self.addCleanup(index.close)
+            index.rebuild()
+            index._ready.set()
+            files = ClientFiles(root, rpc_registry=object(),
+                                rpc_capabilities={"dummy": {}})
+            files.filename_index = index
+            with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                       return_value=("sqlite_watch", None)):
+                result = plugin.dispatch(files, "search", {
+                    "query": "STRASSE", "sort_by": "modified"
+                })
+                self.assertEqual(200, result["status"], result)
+                self.assertEqual("sqlite_watch", result["body"]["backend"])
+                self.assertEqual(["Straße.TXT"],
+                                 [row["path"] for row in result["body"]["results"]])
+                strict = plugin.dispatch(files, "search", {
+                    "query": "STRASSE", "case_sensitive": True,
+                })
+                self.assertEqual([], strict["body"]["results"])
+                exact = plugin.dispatch(files, "search", {
+                    "query": "Straße", "case_sensitive": True,
+                })
+                self.assertEqual(["Straße.TXT"],
+                                 [row["path"] for row in exact["body"]["results"]])
+                uppercase_glob = plugin.dispatch(files, "search", {
+                    "query": "READ*.MD", "mode": "glob",
+                })
+                self.assertEqual(
+                    ["a/README.md", "b/readme.md"],
+                    [row["path"] for row in uppercase_glob["body"]["results"]],
+                )
+                strict_glob = plugin.dispatch(files, "search", {
+                    "query": "READ*.md", "mode": "glob",
+                    "case_sensitive": True,
+                })
+                self.assertEqual(["a/README.md"], [row["path"] for row in strict_glob["body"]["results"]])
+            folded = dict(index._db.execute(
+                "SELECT name, folded FROM entries WHERE kind='file'"
+            ))
+            self.assertEqual("strasse.txt", folded["Straße.TXT"])
+            self.assertTrue(index._fts)
+            self.assertEqual(5, index._db.execute("SELECT COUNT(*) FROM entry_grams").fetchone()[0])
+
+    def test_everything_preferred_over_ready_sqlite_and_fails_over_to_it(self):
+        from openkapsel.files.filename_index import FilenameIndex
+        from openkapsel.rpc_plugins.file_search.everything_ipc import EverythingIpcError
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "root"
+            root.mkdir()
+            path = root / "test.txt"
+            path.write_text("data")
+            index = FilenameIndex(root, base / "index" / "files.db")
+            self.addCleanup(index.close)
+            index.rebuild()
+            index._ready.set()
+            files = ClientFiles(root, rpc_registry=object(),
+                                rpc_capabilities={"dummy": {}})
+            files.filename_index = index
+            with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                       return_value=("everything_ipc", None)), patch(
+                "openkapsel.rpc_plugins.file_search.everything_ipc.query_paths",
+                return_value=iter([str(path)]),
+            ) as native:
+                result = plugin.dispatch(files, "search", {
+                    "query": "test", "limit": 1,
+                })
+            self.assertEqual("everything_ipc", result["body"]["backend"])
+            native.assert_called_once()
+            with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                       return_value=("everything_ipc", None)), patch(
+                "openkapsel.rpc_plugins.file_search.everything_ipc.query_paths",
+                side_effect=EverythingIpcError("service unavailable"),
+            ):
+                fallback = plugin.dispatch(files, "search", {
+                    "query": "test", "limit": 1,
+                })
+            self.assertEqual(200, fallback["status"], fallback)
+            self.assertEqual("sqlite_watch", fallback["body"]["backend"])
+            self.assertEqual(["test.txt"],
+                             [row["path"] for row in fallback["body"]["results"]])
+
 class SpotlightGlobTests(unittest.TestCase):
     def test_glob_converts_unsupported_operators_to_wider_wildcards(self):
         self.assertEqual("test*.py", _spotlight_glob_pattern("test[0-9]?.py"))

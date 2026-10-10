@@ -52,7 +52,11 @@ _STATUS_SCHEMA = object_schema({})
 
 def _platform_backend() -> tuple[str | None, str | None]:
     if os.name == "nt":
-        return "everything_ipc", None
+        from . import everything_ipc
+        if everything_ipc.status()["running"]:
+            return "everything_ipc", None
+        from openkapsel.files.filename_index import watcher_available
+        return ("sqlite_watch", None) if watcher_available() else (None, None)
     if sys.platform == "darwin":
         executable = shutil.which("mdfind")
         return ("mdfind", executable) if executable else (None, None)
@@ -76,7 +80,8 @@ def _backend_status() -> dict[str, Any]:
     if sys.platform.startswith("linux"):
         return {"backend": "sqlite_watch", "available": False, "reason": "dependency_missing"}
     if os.name == "nt":
-        return {"backend": "everything_ipc", "available": False, "reason": "service_unavailable"}
+        return {"backend": "sqlite_watch", "available": False,
+                "reason": "everything_unavailable_and_watchfiles_missing"}
     return {"backend": None, "available": False, "reason": "platform_unsupported"}
 
 
@@ -274,7 +279,8 @@ def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool, m
     right = query if case_sensitive else query.casefold()
     if not (fnmatch.fnmatchcase(left, right) if mode == "glob" else right in left):
         return None
-    if ".openkapsel" in relative_root.parts:
+    if any((part.casefold() if os.name == "nt" else part) == ".openkapsel"
+           for part in relative_root.parts):
         return None
     if any(
         FileOperationSupportMixin._is_internal_transfer_name(part)
@@ -401,7 +407,11 @@ def _search(files, args):
         args.get("timeout_seconds", DEFAULT_SEARCH_TIMEOUT_SECONDS)
     )
     index = getattr(files, "filename_index", None)
-    if index is not None and index.ready:
+    platform_backend = _platform_backend()[0]
+
+    def indexed_fallback():
+        if index is None or not index.ready:
+            return None
         indexed = index.search(
             scope, query, glob=mode == "glob", case_sensitive=case_sensitive,
             offset=offset, limit=limit, timeout_seconds=timeout_seconds,
@@ -410,17 +420,23 @@ def _search(files, args):
                 files, scope, str(path), query, case_sensitive, mode
             ),
         )
-        if indexed is not None:
-            return {
-                **indexed, "scope": scope_arg, "query": query,
-                "mode": mode, "case_sensitive": case_sensitive,
-                "sort_by": sort_by, "sort_order": sort_order, "file_type": file_type,
-                "offset": offset, "limit": limit,
-                "timeout_seconds": timeout_seconds,
-                "returned": len(indexed["results"]),
-            }
+        if indexed is None:
+            return None
+        return {
+            **indexed, "scope": scope_arg, "query": query,
+            "mode": mode, "case_sensitive": case_sensitive,
+            "sort_by": sort_by, "sort_order": sort_order, "file_type": file_type,
+            "offset": offset, "limit": limit,
+            "timeout_seconds": timeout_seconds,
+            "returned": len(indexed["results"]),
+        }
 
-    platform_backend = _platform_backend()[0]
+    # Everything is preferred when available. The background SQLite index
+    # remains ready to take over if the Everything service later goes away.
+    if platform_backend != "everything_ipc":
+        accelerated = indexed_fallback()
+        if accelerated is not None:
+            return accelerated
     if mode == "glob" and platform_backend not in {"mdfind", "everything_ipc"}:
         fail("file_search_unavailable",
              "glob search requires a ready local index or platform search backend", 503)
@@ -469,6 +485,11 @@ def _search(files, args):
                             current_value != boundary_value):
                         break
         except ApiError as exc:
+            if (backend == "everything_ipc" and
+                    exc.code == "file_search_failed"):
+                accelerated = indexed_fallback()
+                if accelerated is not None:
+                    return accelerated
             if exc.code != "file_search_timeout":
                 raise
             timed_out = True
@@ -505,7 +526,8 @@ class FileSearchRpcPlugin:
     default_enabled = True
     description = (
         "Read-only indexed filename search scoped to the selected export. "
-        "Uses native Everything IPC on Windows, mdfind on macOS, and SQLite/watchfiles on Linux."
+        "Uses Everything IPC on Windows when running, otherwise shared SQLite/watchfiles; "
+        "mdfind on macOS and SQLite/watchfiles on Linux."
     )
     operations = {
         "search": {

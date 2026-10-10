@@ -1,4 +1,4 @@
-"""Shared, private SQLite filename index for native Linux server/client roots.
+"""Shared, private SQLite filename index for Linux and Windows native roots.
 
 The index is a cache, never an authority for filesystem access.  Callers must
 continue to check access and lstat results when presenting a candidate.
@@ -119,6 +119,10 @@ def _metadata(path: Path) -> tuple[int, int, int, int, int | None]:
     if created is None:
         birth = getattr(info, "st_birthtime", None)
         created = int(birth * _NANOSECONDS) if birth is not None else None
+    if created is None and os.name == "nt":
+        # Windows exposes creation time as st_ctime_ns on older Python
+        # versions; never use POSIX ctime (inode metadata-change time).
+        created = info.st_ctime_ns
     return info.st_dev, info.st_mode, info.st_size, info.st_mtime_ns, created
 
 
@@ -136,7 +140,10 @@ def private_database(root: Path, db_path: Path) -> Path:
     if db_path == root or root in db_path.parents:
         raise ValueError("filename index database must be outside the exported root")
     db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(db_path.parent, 0o700)
+    if os.name != "nt":
+        os.chmod(db_path.parent, 0o700)
+    # Windows uses the enclosing user's profile/config-directory ACLs;
+    # chmod does not implement Unix permissions on NTFS.
     return db_path
 
 
@@ -189,7 +196,8 @@ class FilenameIndex:
         self._watcher = None
         self._closed = False
         self._db = sqlite3.connect(self.database, timeout=10, check_same_thread=False)
-        os.chmod(self.database, 0o600)
+        if os.name != "nt":
+            os.chmod(self.database, 0o600)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute("""CREATE TABLE IF NOT EXISTS entries (
@@ -306,7 +314,8 @@ class FilenameIndex:
 
     @staticmethod
     def _ignored(name: str) -> bool:
-        return (name in {".openkapsel", ".recycle"}
+        protected_name = name.casefold() if os.name == "nt" else name
+        return (protected_name in {".openkapsel", ".recycle"}
                 or FileOperationSupportMixin._is_internal_transfer_name(name))
 
     def _entries(self, path: Path):
@@ -321,6 +330,14 @@ class FilenameIndex:
                 stat.S_ISREG(mode) or stat.S_ISDIR(mode)
             ):
                 continue
+            if os.name == "nt":
+                # Junctions and other reparse-point directories must never
+                # be followed or indexed, even if they share the same device.
+                try:
+                    if getattr(current.lstat(), "st_file_attributes", 0) & 0x400:
+                        continue
+                except OSError:
+                    continue
             if current != self.root and self._ignored(current.name):
                 continue
             relative = current.relative_to(self.root).as_posix()

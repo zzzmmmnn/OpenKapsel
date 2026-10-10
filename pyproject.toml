@@ -28,7 +28,7 @@ dependencies = [
   "uvicorn>=0.34,<1",
   "wsproto>=1.2,<2",
   "fusepy>=3,<4; sys_platform == 'linux'",
-  "watchfiles>=1,<2; sys_platform == 'linux'",
+  "watchfiles>=1,<2; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
