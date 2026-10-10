@@ -16,14 +16,13 @@ from openkapsel.job_manager import JOB_RE, prepare_home, request, state_home
 
 
 class SharedClientTasks:
-    def __init__(self, legacy, *, url, token, home=None, config=None):
+    def __init__(self, legacy, *, url, home=None, config=None):
         self.legacy = legacy
         self.files = legacy.files
         self.id = urlsplit(url).path.rsplit("/", 1)[-1]
-        self.credential = token
         self.config = config or {}
         self.home = (state_home() if home is None else Path(home)).expanduser().resolve()
-        # The Manager stores Mapping credentials, SQLite metadata and task I/O:
+        # The Manager stores SQLite metadata and task I/O:
         # never let the Manager's private state be exposed by the Mapping.
         try:
             self.home.relative_to(self.files.root)
@@ -65,11 +64,11 @@ class SharedClientTasks:
     def dispatch(self, op, args):
         if op == "task_start" and isinstance(args.get("rpc"), dict):
             if JOB_RE.fullmatch(args.get("task_id", "")):
-                return request(self.home, self.id, self.credential, op,
+                return request(self.home, self.id, op,
                                self._prepare_rpc(args))
             return self.legacy.dispatch(op, args)
         if op == "task_list":
-            remote = request(self.home, self.id, self.credential, op)
+            remote = request(self.home, self.id, op)
             legacy = self.legacy.dispatch(op, args)
             return remote + legacy
         tid = args.get("task_id", "")
@@ -83,10 +82,10 @@ class SharedClientTasks:
             if not self.legacy.enabled:
                 raise OSError(errno.EACCES, "client execution is disabled")
             prepared = self._prepare(args)
-            return request(self.home, self.id, self.credential, op, prepared)
+            return request(self.home, self.id, op, prepared)
         if op not in {"task_get", "task_stdin", "task_interrupt", "task_kill"}:
             raise OSError(errno.ENOSYS, "unknown task operation")
-        return request(self.home, self.id, self.credential, op, args)
+        return request(self.home, self.id, op, args)
 
     def _prepare_rpc(self, args):
         rpc = args["rpc"]
@@ -113,7 +112,8 @@ class SharedClientTasks:
             "env": None, "worker_python": sys.executable,
             "rpc_write": bool(spec.get("write")),
             "rpc_payload": {
-                "config": self.config,
+                "config": {key: value for key, value in self.config.items()
+                           if key not in {"token", "url"}},
                 "root": str(self.files.root),
                 "protected_paths": [str(p) for p in self.files.protected_paths],
                 "rpc": rpc,
@@ -165,7 +165,7 @@ class SharedClientTasks:
             if self.files.protected_paths:
                 # The Manager must own the bind-mount source throughout the
                 # running Job, even when ClientRuntime closes its temp files.
-                home, _ = prepare_home(self.home)
+                home = prepare_home(self.home)
                 masks = home / "masks"
                 masks.mkdir(mode=0o700, exist_ok=True)
                 mask = masks / (self.id + "." + args["task_id"])

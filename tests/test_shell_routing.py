@@ -30,7 +30,6 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.tasks = SharedClientTasks(
             self.legacy_tasks,
             url="ws://127.0.0.1/mapping-connect/" + self.row["id"],
-            token="shell-fixture-credential-" + self.row["id"],
             home=self.manager_home,
         )
         self.session.capabilities["execution"] = self.tasks.capabilities()

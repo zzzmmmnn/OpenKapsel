@@ -2,7 +2,7 @@
 
 Client processes are stateless proxies. The manager owns child processes and
 stdin/stdout pipes, and stores metadata in SQLite plus append-only disk output.
-IPC uses authenticated multiprocessing.connection byte frames, never pickle.
+IPC uses unauthenticated multiprocessing.connection byte frames, never pickle.
 """
 from __future__ import annotations
 
@@ -60,27 +60,9 @@ def prepare_home(home):
         if home.stat().st_uid != os.getuid():
             raise PermissionError("job manager state directory has another owner")
         home.chmod(0o700)
-    keyfile = home / "auth.key"
-    try:
-        fd = os.open(keyfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(secrets.token_bytes(32))
-    if os.name != "nt" and (keyfile.stat().st_uid != os.getuid() or keyfile.stat().st_mode & 0o077):
-        raise PermissionError("insecure job manager authentication key")
-    # Another Client may observe the file between O_EXCL and its first write.
-    # Retry that single first-start race without ever replacing an existing key.
-    key = b""
-    for _ in range(80):
-        key = keyfile.read_bytes()
-        if len(key) == 32:
-            break
-        time.sleep(.025)
-    if len(key) != 32:
-        raise ValueError("invalid job manager authentication key")
-    return home, key
+    # Drop the former IPC authentication secret if an old local state exists.
+    (home / "auth.key").unlink(missing_ok=True)
+    return home
 
 
 def endpoint(home):
@@ -139,13 +121,11 @@ def singleton_lock(home):
 
 class Manager:
     def __init__(self, home):
-        self.home, self.key = prepare_home(home)
+        self.home = prepare_home(home)
         self.address, self.family = endpoint(self.home)
         self.db = sqlite3.connect(self.home / "jobs.sqlite3", check_same_thread=False,
                                   timeout=10)
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("""CREATE TABLE IF NOT EXISTS owners (
-            mapping_id TEXT PRIMARY KEY, credential_hash TEXT NOT NULL)""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY, mapping_id TEXT NOT NULL, kind TEXT NOT NULL,
             started_at REAL NOT NULL, finished_at REAL, pid INTEGER,
@@ -163,6 +143,8 @@ class Manager:
             request_digest TEXT)""")
         self.db.execute("CREATE INDEX IF NOT EXISTS jobs_owner_start ON jobs(mapping_id, started_at DESC)")
         with self.db:
+            # Remove obsolete per-Mapping credential records during upgrades.
+            self.db.execute("DROP TABLE IF EXISTS owners")
             # A manager restart cannot reattach anonymous pipes.
             self.db.execute("""UPDATE jobs SET finished_at=?, interrupted=1,
                 exit_code=1 WHERE finished_at IS NULL""", (time.time(),))
@@ -173,57 +155,12 @@ class Manager:
         self.last_access = time.monotonic()
 
     @staticmethod
-    def _credential_digest(credential):
-        if not isinstance(credential, str) or len(credential) < 16:
-            raise PermissionError("missing or invalid mapping credential")
-        return hashlib.sha256(credential.encode("utf-8")).hexdigest()
-
-    def _authorize(self, request):
+    def _mapping_key(request):
         mapping = request.get("mapping_id")
         if not isinstance(mapping, str) or not MAPPING_RE.fullmatch(mapping):
-            raise PermissionError("invalid mapping identity")
-        digest = self._credential_digest(request.get("credential"))
-        # Called only under self.lock: ownership registration, rotation and
-        # subsequent operations cannot interleave between authentication and
-        # the protected job action.
-        previous = self.db.execute(
-            "SELECT credential_hash FROM owners WHERE mapping_id=?", (mapping,)
-        ).fetchone()
-        if previous is None:
-            with self.db:
-                self.db.execute("INSERT OR IGNORE INTO owners VALUES (?,?)",
-                                (mapping, digest))
-            previous = self.db.execute(
-                "SELECT credential_hash FROM owners WHERE mapping_id=?", (mapping,)
-            ).fetchone()
-        if not secrets.compare_digest(previous[0], digest):
-            raise PermissionError("mapping credential does not match registered owner")
+            raise ValueError("invalid mapping key")
+        # The mapping key is a partition selector, not a credential.
         return mapping
-
-    def _rotate_owner(self, request):
-        """Change one Mapping credential without changing its Job ownership.
-
-        Both old and new credentials must be supplied in the same authenticated
-        IPC call. A newly configured client cannot seize existing jobs simply
-        by presenting its new token; it needs prior-token authorization first.
-        """
-        mapping = request.get("mapping_id")
-        if not isinstance(mapping, str) or not MAPPING_RE.fullmatch(mapping):
-            raise PermissionError("invalid mapping identity")
-        old_digest = self._credential_digest(request.get("credential"))
-        new_digest = self._credential_digest(request.get("new_credential"))
-        row = self.db.execute(
-            "SELECT credential_hash FROM owners WHERE mapping_id=?", (mapping,)
-        ).fetchone()
-        if row is None or not secrets.compare_digest(row[0], old_digest):
-            raise PermissionError("previous mapping credential is required for rotation")
-        if not secrets.compare_digest(old_digest, new_digest):
-            with self.db:
-                self.db.execute(
-                    "UPDATE owners SET credential_hash=? WHERE mapping_id=? AND credential_hash=?",
-                    (new_digest, mapping, old_digest)
-                )
-        return {"mapping_id": mapping, "rotated": True}
 
     @staticmethod
     def _key(mid, tid):
@@ -597,14 +534,10 @@ class Manager:
         if op in {"ping", "shutdown"}:
             if op == "ping":
                 return {"version": PROTOCOL, "pid": os.getpid()}
-            if req.get("auth") != self.key.hex():
-                raise PermissionError("manager shutdown requires local administrative key")
             self.stopping.set()
             return {"stopping": True}
         with self.lock:
-            if op == "rotate_owner":
-                return self._rotate_owner(req)
-            mid = self._authorize(req)
+            mid = self._mapping_key(req)
             args = req.get("args", {})
             if not isinstance(args, dict):
                 raise ValueError("invalid job arguments")
@@ -672,12 +605,12 @@ class Manager:
     def serve(self):
         if self.family == "AF_UNIX":
             Path(self.address).unlink(missing_ok=True)
-        listener = Listener(self.address, family=self.family, authkey=self.key)
+        listener = Listener(self.address, family=self.family, authkey=None)
         if self.family == "AF_UNIX":
             os.chmod(self.address, 0o600)
         try:
             while not self.stopping.is_set():
-                # Listener accepts one authenticated connection at a time, then
+                # Listener accepts one connection at a time, then
                 # dispatches fast RPCs concurrently. A wake-up is needed to quit.
                 try:
                     conn = listener.accept()
@@ -697,9 +630,9 @@ class Manager:
 
 
 def connect_once(home, request):
-    home, key = prepare_home(home)
+    home = prepare_home(home)
     address, family = endpoint(home)
-    conn = Client(address, family=family, authkey=key)
+    conn = Client(address, family=family, authkey=None)
     try:
         wire_send(conn, request)
         response = wire_recv(conn)
@@ -713,7 +646,7 @@ def connect_once(home, request):
 
 
 def ensure_running(home):
-    home, key = prepare_home(home)
+    home = prepare_home(home)
     try:
         running = connect_once(home, {"op": "ping"})
         if running.get("version") != PROTOCOL:
@@ -747,34 +680,17 @@ def ensure_running(home):
     raise ConnectionError("shared Job Manager did not start")
 
 
-def request(home, mapping_id, credential, op, args=None):
-    if not MAPPING_RE.fullmatch(mapping_id):
-        raise ValueError("mapping URL must end with a 24-character mapping ID")
+def request(home, mapping_id, op, args=None):
+    if not isinstance(mapping_id, str) or not MAPPING_RE.fullmatch(mapping_id):
+        raise ValueError("mapping URL must end with a 24-character Mapping key")
     ensure_running(home)
-    return connect_once(home, {"mapping_id": mapping_id,
-                               "credential": credential, "op": op,
+    return connect_once(home, {"mapping_id": mapping_id, "op": op,
                                "args": args or {}})
 
 
-def rotate_owner(home, mapping_id, old_credential, new_credential):
-    """Authorize a Mapping-token rotation using the existing credential.
-
-    Call this as part of changing the local Mapping configuration, before
-    discarding the previous token. Jobs and their disk output remain intact.
-    """
-    if not isinstance(mapping_id, str) or not MAPPING_RE.fullmatch(mapping_id):
-        raise ValueError("invalid mapping URL key")
-    # Avoid creating an empty ownership record just to rotate an unused manager.
-    ensure_running(home)
-    return connect_once(home, {
-        "mapping_id": mapping_id, "op": "rotate_owner",
-        "credential": old_credential, "new_credential": new_credential,
-    })
-
-
 def shutdown(home):
-    home, key = prepare_home(home)
-    result = connect_once(home, {"op": "shutdown", "auth": key.hex()})
+    home = prepare_home(home)
+    result = connect_once(home, {"op": "shutdown"})
     # Wake the single accept loop so it can notice the stop event.
     try:
         connect_once(home, {"op": "ping"})
@@ -786,28 +702,13 @@ def shutdown(home):
 def main():
     parser = argparse.ArgumentParser(description="OpenKapsel shared local Job Manager")
     parser.add_argument("--state", type=Path, default=state_home())
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--stop", action="store_true",
-                      help="kill managed jobs and stop manager")
-    mode.add_argument("--rotate-owner", metavar="MAPPING_ID",
-                      help="rotate Mapping owner credentials, reading old/new JSON tokens from stdin")
+    parser.add_argument("--stop", action="store_true",
+                        help="kill managed jobs and stop manager")
     ns = parser.parse_args()
     if ns.stop:
         shutdown(ns.state)
         return
-    if ns.rotate_owner:
-        # Never pass credentials on a command line or write them to logs.
-        raw = sys.stdin.buffer.read(16385)
-        if len(raw) > 16384:
-            raise ValueError("Mapping rotation request exceeds 16 KiB")
-        body = json.loads(raw)
-        if not isinstance(body, dict) or set(body) != {"old_token", "new_token"}:
-            raise ValueError("stdin must be JSON containing old_token and new_token")
-        rotate_owner(ns.state, ns.rotate_owner,
-                     body["old_token"], body["new_token"])
-        print(json.dumps({"mapping_id": ns.rotate_owner, "rotated": True}))
-        return
-    home, _ = prepare_home(ns.state)
+    home = prepare_home(ns.state)
     locked = singleton_lock(home)
     if locked is None:
         return

@@ -230,8 +230,7 @@ def _create_resources(config, *, protected_paths=()):
                         network=config.get("network", False), **limits)
     from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
     if urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]:
-        tasks = SharedClientTasks(tasks, url=config["url"], token=config["token"],
-                                  config=config)
+        tasks = SharedClientTasks(tasks, url=config["url"], config=config)
     if tasks.enabled and not tasks.sandbox:
         if isinstance(ssh_config, dict) and ssh_config.get("profiles"):
             LOG.warning(
