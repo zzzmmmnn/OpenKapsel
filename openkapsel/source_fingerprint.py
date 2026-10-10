@@ -81,6 +81,7 @@ CLIENT_FILES = (
     "openkapsel/client_runtime/client_files.py",
     "openkapsel/client_runtime/client_rpc.py",
     "openkapsel/client_runtime/client_tasks.py",
+    "openkapsel/client_runtime/job_backend.py",
     "openkapsel/client_runtime/shared_job_tasks.py",
     "openkapsel/job_worker.py",
     "openkapsel/client_runtime/client_windows.py",

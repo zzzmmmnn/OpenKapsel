@@ -172,14 +172,20 @@ class Manager:
         self.stopping = threading.Event()
         self.last_access = time.monotonic()
 
+    @staticmethod
+    def _credential_digest(credential):
+        if not isinstance(credential, str) or len(credential) < 16:
+            raise PermissionError("missing or invalid mapping credential")
+        return hashlib.sha256(credential.encode("utf-8")).hexdigest()
+
     def _authorize(self, request):
         mapping = request.get("mapping_id")
-        credential = request.get("credential")
         if not isinstance(mapping, str) or not MAPPING_RE.fullmatch(mapping):
             raise PermissionError("invalid mapping identity")
-        if not isinstance(credential, str) or len(credential) < 16:
-            raise PermissionError("missing mapping credential")
-        digest = hashlib.sha256(credential.encode()).hexdigest()
+        digest = self._credential_digest(request.get("credential"))
+        # Called only under self.lock: ownership registration, rotation and
+        # subsequent operations cannot interleave between authentication and
+        # the protected job action.
         previous = self.db.execute(
             "SELECT credential_hash FROM owners WHERE mapping_id=?", (mapping,)
         ).fetchone()
@@ -194,15 +200,47 @@ class Manager:
             raise PermissionError("mapping credential does not match registered owner")
         return mapping
 
-    def _row(self, mid, tid):
+    def _rotate_owner(self, request):
+        """Change one Mapping credential without changing its Job ownership.
+
+        Both old and new credentials must be supplied in the same authenticated
+        IPC call. A newly configured client cannot seize existing jobs simply
+        by presenting its new token; it needs prior-token authorization first.
+        """
+        mapping = request.get("mapping_id")
+        if not isinstance(mapping, str) or not MAPPING_RE.fullmatch(mapping):
+            raise PermissionError("invalid mapping identity")
+        old_digest = self._credential_digest(request.get("credential"))
+        new_digest = self._credential_digest(request.get("new_credential"))
+        row = self.db.execute(
+            "SELECT credential_hash FROM owners WHERE mapping_id=?", (mapping,)
+        ).fetchone()
+        if row is None or not secrets.compare_digest(row[0], old_digest):
+            raise PermissionError("previous mapping credential is required for rotation")
+        if not secrets.compare_digest(old_digest, new_digest):
+            with self.db:
+                self.db.execute(
+                    "UPDATE owners SET credential_hash=? WHERE mapping_id=? AND credential_hash=?",
+                    (new_digest, mapping, old_digest)
+                )
+        return {"mapping_id": mapping, "rotated": True}
+
+    @staticmethod
+    def _key(mid, tid):
         if not isinstance(tid, str) or not JOB_RE.fullmatch(tid):
             raise FileNotFoundError("invalid job id")
+        # Public 4-character IDs are private to a Mapping; this scoped,
+        # stable internal key also segregates on-disk I/O across owners.
+        return mid + "." + tid
+
+    def _row(self, mid, tid):
+        key = self._key(mid, tid)
         row = self.db.execute(
             "SELECT id, mapping_id, kind, started_at, finished_at, pid, exit_code,"
             " interrupted, force_killed, timed_out, interactive, stdin_closed,"
             " output_base, output_end, truncated, collected_at, deadline, container,"
             " rpc_family, rpc_operation, rpc_write"
-            " FROM jobs WHERE id=? AND mapping_id=?", (tid, mid)
+            " FROM jobs WHERE id=? AND mapping_id=?", (key, mid)
         ).fetchone()
         if row is None:
             raise FileNotFoundError("job not found")
@@ -214,7 +252,7 @@ class Manager:
 
     def _summary(self, job):
         result = {
-            "task_id": job["id"], "kind": job["kind"], "location": "client",
+            "task_id": job["id"].rsplit(".", 1)[-1], "kind": job["kind"], "location": "client",
             "started_at": job["started_at"], "finished_at": job["finished_at"],
             "exit_code": job["exit_code"], "interactive": bool(job["interactive"]),
             "stdin_open": not job["stdin_closed"] and job["finished_at"] is None,
@@ -258,6 +296,7 @@ class Manager:
                 (self.home / "output" / (tid + ".bin")).unlink(missing_ok=True)
                 (self.home / "input" / (tid + ".bin")).unlink(missing_ok=True)
                 (self.home / "results" / (tid + ".json")).unlink(missing_ok=True)
+                (self.home / "masks" / tid).unlink(missing_ok=True)
         self.db.commit()
 
     def _append(self, tid, data):
@@ -319,6 +358,9 @@ class Manager:
         finally:
             with self.lock:
                 self.processes.pop(tid, None)
+                # This file may still be in use by Podman during startup. It is
+                # intentionally not tied to the initiating Client lifetime.
+                (self.home / "masks" / tid).unlink(missing_ok=True)
                 writer = self.writers.pop(tid, None)
                 if writer is not None:
                     try:
@@ -374,9 +416,11 @@ class Manager:
             pass
 
     def _start(self, mid, args):
-        tid = args.get("task_id")
-        if not isinstance(tid, str) or not JOB_RE.fullmatch(tid):
-            raise ValueError("job ID must be & followed by 4 alphanumeric chars and &")
+        public_id = args.get("task_id")
+        try:
+            tid = self._key(mid, public_id)
+        except FileNotFoundError:
+            raise ValueError("job ID must be & followed by 4 alphanumeric chars and &") from None
         request_digest = hashlib.sha256(json.dumps(
             args, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode("utf-8")).hexdigest()
@@ -394,7 +438,7 @@ class Manager:
         if previous is not None:
             if previous[0] != mid or previous[1] != request_digest:
                 raise FileExistsError("job ID already belongs to a different request")
-            return self._summary(self._row(mid, tid))
+            return self._summary(self._row(mid, public_id))
         if self.db.execute("SELECT COUNT(*) FROM jobs WHERE finished_at IS NULL").fetchone()[0] >= MAX_RUNNING:
             raise BlockingIOError("Job Manager is at its global limit of 16")
         if self.db.execute("SELECT COUNT(*) FROM jobs WHERE finished_at IS NULL AND mapping_id=?",
@@ -483,7 +527,7 @@ class Manager:
             threading.Thread(target=self._input_worker,
                              args=(tid, process, inputs), daemon=True).start()
         threading.Thread(target=self._collect, args=(tid, process, timeout), daemon=True).start()
-        return self._summary(self._row(mid, tid))
+        return self._summary(self._row(mid, public_id))
 
     def _signal(self, tid, force):
         process = self.processes.get(tid)
@@ -528,7 +572,9 @@ class Manager:
             data = handle.read(65536)
         # A request at an advanced offset confirms that preceding output was
         # successfully received. Reclaim the consumed prefix on disk.
-        if offset > base:
+        if offset > base and (actual == end or actual - base >= 1024 * 1024):
+            # Avoid O(N^2) rewrites when output is consumed in 64-KiB pages:
+            # trim on EOF or each accumulated MiB of acknowledged output.
             with (self.home / "output" / (tid + ".bin")).open("rb") as handle:
                 handle.seek(actual - base)
                 remaining = handle.read()
@@ -542,7 +588,8 @@ class Manager:
             self.db.commit()
         return {"output": base64.b64encode(data).decode(),
                 "output_size": end, "next_offset": actual + len(data),
-                "output_base": actual if offset > base else base,
+                "output_base": actual if offset > base and
+                (actual == end or actual - base >= 1024 * 1024) else base,
                 "gap": offset < base}
 
     def request(self, req):
@@ -554,11 +601,13 @@ class Manager:
                 raise PermissionError("manager shutdown requires local administrative key")
             self.stopping.set()
             return {"stopping": True}
-        mid = self._authorize(req)
-        args = req.get("args", {})
-        if not isinstance(args, dict):
-            raise ValueError("invalid job arguments")
         with self.lock:
+            if op == "rotate_owner":
+                return self._rotate_owner(req)
+            mid = self._authorize(req)
+            args = req.get("args", {})
+            if not isinstance(args, dict):
+                raise ValueError("invalid job arguments")
             self.last_access = time.monotonic()
             self._prune(mid)
             if op == "task_list":
@@ -566,7 +615,8 @@ class Manager:
                     "SELECT id FROM jobs WHERE mapping_id=? ORDER BY started_at DESC",
                     (mid,)
                 ).fetchall()
-                return [self._summary(self._row(mid, tid)) for (tid,) in ids]
+                return [self._summary(self._row(mid, tid.rsplit(".", 1)[-1]))
+                        for (tid,) in ids]
             if op == "task_start":
                 return self._start(mid, args)
             job = self._row(mid, args.get("task_id"))
@@ -574,7 +624,7 @@ class Manager:
                 return dict(self._summary(job), **self._read(job, args.get("offset", 0)))
             if op in {"task_interrupt", "task_kill"}:
                 self._signal(job["id"], force=op == "task_kill")
-                return self._summary(self._row(mid, job["id"]))
+                return self._summary(self._row(mid, args["task_id"]))
             if op == "task_stdin":
                 if job["kind"] != "shell" or job["finished_at"] is not None or job["stdin_closed"]:
                     raise BrokenPipeError("job stdin closed")
@@ -665,7 +715,10 @@ def connect_once(home, request):
 def ensure_running(home):
     home, key = prepare_home(home)
     try:
-        return connect_once(home, {"op": "ping"})
+        running = connect_once(home, {"op": "ping"})
+        if running.get("version") != PROTOCOL:
+            raise RuntimeError("Job Manager IPC protocol mismatch; explicit manager upgrade is required")
+        return running
     except (OSError, EOFError, ConnectionError):
         pass
     log = open(home / "manager.log", "ab", buffering=0)
@@ -685,7 +738,10 @@ def ensure_running(home):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         try:
-            return connect_once(home, {"op": "ping"})
+            running = connect_once(home, {"op": "ping"})
+            if running.get("version") != PROTOCOL:
+                raise RuntimeError("Job Manager IPC protocol mismatch")
+            return running
         except (OSError, EOFError, ConnectionError):
             time.sleep(.05)
     raise ConnectionError("shared Job Manager did not start")
@@ -698,6 +754,22 @@ def request(home, mapping_id, credential, op, args=None):
     return connect_once(home, {"mapping_id": mapping_id,
                                "credential": credential, "op": op,
                                "args": args or {}})
+
+
+def rotate_owner(home, mapping_id, old_credential, new_credential):
+    """Authorize a Mapping-token rotation using the existing credential.
+
+    Call this as part of changing the local Mapping configuration, before
+    discarding the previous token. Jobs and their disk output remain intact.
+    """
+    if not isinstance(mapping_id, str) or not MAPPING_RE.fullmatch(mapping_id):
+        raise ValueError("invalid mapping URL key")
+    # Avoid creating an empty ownership record just to rotate an unused manager.
+    ensure_running(home)
+    return connect_once(home, {
+        "mapping_id": mapping_id, "op": "rotate_owner",
+        "credential": old_credential, "new_credential": new_credential,
+    })
 
 
 def shutdown(home):
@@ -714,10 +786,26 @@ def shutdown(home):
 def main():
     parser = argparse.ArgumentParser(description="OpenKapsel shared local Job Manager")
     parser.add_argument("--state", type=Path, default=state_home())
-    parser.add_argument("--stop", action="store_true", help="kill managed jobs and stop manager")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--stop", action="store_true",
+                      help="kill managed jobs and stop manager")
+    mode.add_argument("--rotate-owner", metavar="MAPPING_ID",
+                      help="rotate Mapping owner credentials, reading old/new JSON tokens from stdin")
     ns = parser.parse_args()
     if ns.stop:
         shutdown(ns.state)
+        return
+    if ns.rotate_owner:
+        # Never pass credentials on a command line or write them to logs.
+        raw = sys.stdin.buffer.read(16385)
+        if len(raw) > 16384:
+            raise ValueError("Mapping rotation request exceeds 16 KiB")
+        body = json.loads(raw)
+        if not isinstance(body, dict) or set(body) != {"old_token", "new_token"}:
+            raise ValueError("stdin must be JSON containing old_token and new_token")
+        rotate_owner(ns.state, ns.rotate_owner,
+                     body["old_token"], body["new_token"])
+        print(json.dumps({"mapping_id": ns.rotate_owner, "rotated": True}))
         return
     home, _ = prepare_home(ns.state)
     locked = singleton_lock(home)

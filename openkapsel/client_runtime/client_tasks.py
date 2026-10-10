@@ -143,6 +143,10 @@ class ClientTasks:
                 "uncollected_results": "retained_until_client_exit",
                 "max_seconds": self.max_seconds, "network": self.network if self.sandbox else "host"}
 
+    def has_active_jobs(self):
+        with self.lock:
+            return any(item["finished_at"] is None for item in self.tasks.values())
+
     def dispatch(self, op, args):
         with self.lock:
             self._prune()

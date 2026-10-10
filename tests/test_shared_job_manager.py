@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openkapsel.client import ClientRuntime
-from openkapsel.job_manager import ensure_running, new_job_id, request, shutdown
+from openkapsel.job_manager import ensure_running, new_job_id, request, rotate_owner, shutdown
 
 
 class SharedManagerTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class SharedManagerTests(unittest.TestCase):
             indexes = list(db.execute("PRAGMA index_list(jobs)"))
             self.assertTrue(any(row[1] == "jobs_owner_start" for row in indexes))
 
-        spool = self.home / "output" / (tid + ".bin")
+        spool = self.home / "output" / (self.MAPPING_A + "." + tid + ".bin")
         self.assertEqual(b"managed-job\n", spool.read_bytes())
         # Resume at the consumed offset: manager physically truncates the spool.
         acknowledged = self._get(self.MAPPING_A, self.TOKEN_A, tid,
@@ -101,15 +101,159 @@ class SharedManagerTests(unittest.TestCase):
         # Another Mapping cannot read, control or enumerate this job.
         # Even when a Mapping ID differs, a case-insensitive filesystem
         # must never alias another Job's disk-spooled I/O.
+        for other_id in (tid, "&bD2e&"):
+            other = self._start(self.MAPPING_B, self.TOKEN_B, other_id,
+                                "print('different-owner')")
+            self.assertEqual(other_id, other["task_id"])
+            different = self._wait(self.MAPPING_B, self.TOKEN_B, other_id)
+            self.assertEqual(0, different["exit_code"])
+            self.assertEqual(b"different-owner\n",
+                             base64.b64decode(different["output"]))
+        self.assertEqual({tid, "&bD2e&"}, {j["task_id"] for j in request(
+            self.home, self.MAPPING_B, self.TOKEN_B, "task_list"
+        )})
         with self.assertRaises(OSError):
-            self._start(self.MAPPING_B, self.TOKEN_B, "&aB1c&",
-                        "print('must not collide')")
-        self.assertEqual([], request(self.home, self.MAPPING_B,
-                                     self.TOKEN_B, "task_list"))
-        with self.assertRaises(OSError):
-            self._get(self.MAPPING_B, self.TOKEN_B, tid)
+            self._get(self.MAPPING_A, self.TOKEN_A, "&bD2e&")
         with self.assertRaises(OSError):
             self._get(self.MAPPING_A, self.TOKEN_B, tid)
+        # Both owners use identical public IDs, but output remains distinct.
+        own = self._get(self.MAPPING_A, self.TOKEN_A, tid)
+        other = self._get(self.MAPPING_B, self.TOKEN_B, tid)
+        self.assertNotEqual(base64.b64decode(own["output"]),
+                            base64.b64decode(other["output"]))
+
+    def test_token_rotation_requires_old_credential_and_preserves_job(self):
+        tid = "&R0tE&"
+        next_token = "freshly-rotated-mapping-token-" * 2
+        self._start(self.MAPPING_A, self.TOKEN_A, tid,
+                    'import time; print("old-token",flush=True); time.sleep(.5); print("new-token",flush=True)')
+        with self.assertRaises(OSError):
+            request(self.home, self.MAPPING_A, next_token, "task_list")
+        with self.assertRaises(OSError):
+            rotate_owner(self.home, self.MAPPING_A, "forged-old-token-" * 2,
+                         next_token)
+        self.assertEqual(
+            {"mapping_id": self.MAPPING_A, "rotated": True},
+            rotate_owner(self.home, self.MAPPING_A, self.TOKEN_A, next_token)
+        )
+        with self.assertRaises(OSError):
+            self._get(self.MAPPING_A, self.TOKEN_A, tid)
+        with self.assertRaises(OSError):
+            rotate_owner(self.home, self.MAPPING_A, self.TOKEN_A, "other-token-" * 4)
+        finished = self._wait(self.MAPPING_A, next_token, tid)
+        self.assertIn(b"old-token", base64.b64decode(finished["output"]))
+        self.assertIn(b"new-token", base64.b64decode(finished["output"]))
+        self.assertEqual(0, finished["exit_code"])
+        self.assertEqual(tid, request(
+            self.home, self.MAPPING_A, next_token, "task_list"
+        )[0]["task_id"])
+
+    def test_forcibly_killed_client_process_does_not_kill_job_and_output_resumes(self):
+        import subprocess
+        import json
+        tid = "&K1lL&"
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        launcher = """
+import json,sys,time
+from openkapsel.client import ClientRuntime
+runtime = ClientRuntime(json.loads(sys.argv[1]))
+runtime.tasks.dispatch("task_start", {
+    "task_id": "&K1lL&",
+    "argv": [sys.executable, "-u", "-c",
+        "import time; print('alpha',flush=True); time.sleep(.9); print('omega',flush=True)"],
+    "timeout_seconds": 1e9, "interactive": False,
+})
+print("STARTED", flush=True)
+time.sleep(30)
+"""
+        parent = subprocess.Popen(
+            [sys.executable, "-u", "-c", launcher, json.dumps(config)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=os.environ.copy(),
+        )
+        try:
+            self.assertEqual(b"STARTED\n", parent.stdout.readline())
+            parent.kill()
+            parent.wait(timeout=5)
+            after = ClientRuntime(config)
+            try:
+                first = self._get(self.MAPPING_A, self.TOKEN_A, tid)
+                offset = first["next_offset"]
+                captured = bytearray(base64.b64decode(first["output"]))
+                until = time.monotonic() + 5
+                while time.monotonic() < until:
+                    page = self._get(self.MAPPING_A, self.TOKEN_A, tid, offset)
+                    captured.extend(base64.b64decode(page["output"]))
+                    offset = page["next_offset"]
+                    if not page["running"] and offset >= page["output_size"]:
+                        break
+                    time.sleep(.025)
+                self.assertEqual(b"alpha\nomega\n", bytes(captured))
+                self.assertEqual(0, page["exit_code"])
+                self.assertIn(tid, [row["task_id"] for row in
+                                   after.tasks.dispatch("task_list", {})])
+                # The last response's cursor is the acknowledgment for those
+                # bytes; reading that offset triggers physical spool cleanup.
+                self._get(self.MAPPING_A, self.TOKEN_A, tid, offset)
+                self.assertEqual(b"", (self.home / "output" / (self.MAPPING_A+"."+tid+".bin")).read_bytes())
+            finally:
+                after.close()
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            parent.stdout.close()
+
+    def test_manager_owned_running_job_does_not_defer_client_source_reload(self):
+        from openkapsel.client_runtime.job_backend import JobBackend
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        tid = "&R1Ld&"
+        try:
+            self.assertIsInstance(runtime.tasks, JobBackend)
+            runtime.tasks.dispatch("task_start", {
+                "task_id": tid,
+                "argv": [sys.executable, "-u", "-c",
+                         "import time; time.sleep(1.0)"],
+                "timeout_seconds": 1e9, "interactive": False,
+            })
+            self.assertTrue(self._get(self.MAPPING_A, self.TOKEN_A, tid)["running"])
+            # ClientRuntime may re-exec for automatic source updates while
+            # the Manager's child process continues running.
+            self.assertFalse(runtime.has_active_tasks())
+        finally:
+            runtime.close()
+        self.assertEqual(0, self._wait(self.MAPPING_A, self.TOKEN_A, tid)["exit_code"])
+
+    def test_cli_token_rotation_only_reads_secrets_from_stdin(self):
+        import json
+        import subprocess
+        tid = "&T0kN&"
+        self._start(self.MAPPING_A, self.TOKEN_A, tid, "print('cli-rotation')")
+        new_token = "CLI-ROTATION-NEW-TOKEN-12345678"
+        proc = subprocess.run(
+            [sys.executable, "-m", "openkapsel.job_manager",
+             "--state", str(self.home), "--rotate-owner", self.MAPPING_A],
+            input=json.dumps({"old_token": self.TOKEN_A,
+                              "new_token": new_token}),
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertNotIn(self.TOKEN_A, proc.stdout+proc.stderr)
+        self.assertNotIn(new_token, proc.stdout+proc.stderr)
+        self.assertTrue(json.loads(proc.stdout)["rotated"])
+        self.assertEqual(0, self._wait(self.MAPPING_A, new_token, tid)["exit_code"])
+        with self.assertRaises(OSError):
+            request(self.home, self.MAPPING_A, self.TOKEN_A, "task_list")
 
     def test_stdin_is_managed_and_timeout_is_enforced(self):
         tid = "&Yz92&"
@@ -124,7 +268,7 @@ class SharedManagerTests(unittest.TestCase):
         outcome = self._wait(self.MAPPING_A, self.TOKEN_A, tid)
         self.assertIn(b"input=abc", base64.b64decode(outcome["output"]))
         # Only the Manager handles stdin pipes; consumed data is removed from disk.
-        self.assertEqual(b"", (self.home / "input" / (tid + ".bin")).read_bytes())
+        self.assertEqual(b"", (self.home / "input" / (self.MAPPING_A + "." + tid + ".bin")).read_bytes())
         tid2 = "&T1mE&"
         self._start(self.MAPPING_A, self.TOKEN_A, tid2,
                     "import time; time.sleep(20)", timeout=.15)
@@ -259,9 +403,58 @@ class SharedManagerTests(unittest.TestCase):
             )["task_id"])
             with zipfile.ZipFile(self.root / "bundle.zip") as f:
                 self.assertEqual(b"persistent archive", f.read("source/hello.txt"))
-            self.assertTrue((self.home / "results" / (tid + ".json")).exists())
+            self.assertTrue((self.home / "results" / (self.MAPPING_A + "." + tid + ".json")).exists())
         finally:
             restarted.close()
+
+    def test_private_state_must_not_be_inside_mapping_root(self):
+        from openkapsel.client_runtime.client_files import ClientFiles
+        from openkapsel.client_runtime.client_tasks import ClientTasks
+        from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
+        files = ClientFiles(self.root, writable=True)
+        tasks = ClientTasks(files, enabled=False, sandbox=False)
+        try:
+            with self.assertRaisesRegex(ValueError, "outside Mapping exports"):
+                SharedClientTasks(tasks,
+                                  url="ws://host/mapping-connect/" + self.MAPPING_A,
+                                  token=self.TOKEN_A,
+                                  home=self.root / "secret-job-state")
+        finally:
+            tasks.close()
+            files.close()
+
+    def test_sandbox_mask_lives_with_manager_not_client(self):
+        from openkapsel.client_runtime.client_files import ClientFiles
+        from openkapsel.client_runtime.client_tasks import ClientTasks
+        from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
+        protected = self.root / ".hidden-client-config"
+        protected.write_text("PRIVATE CONFIG")
+        files = ClientFiles(self.root, writable=True,
+                            protected_paths=[protected])
+        tasks = ClientTasks(files, enabled=False, sandbox=False)
+        adapter = SharedClientTasks(
+            tasks, url="ws://host/mapping-connect/" + self.MAPPING_A,
+            token=self.TOKEN_A, home=self.home,
+        )
+        try:
+            # Simulate the already configured sandbox backend without invoking
+            # Podman itself (it is optional on macOS/Windows test machines).
+            tasks.sandbox = True
+            prepared = adapter._prepare({
+                "task_id": "&M4sk&", "command": "echo sandbox",
+                "cwd": ".", "timeout_seconds": 40,
+            })
+            args = prepared["argv"]
+            binds = [args[i+1] for i, x in enumerate(args[:-1]) if x == "--volume"]
+            mask = self.home / "masks" / (self.MAPPING_A+".&M4sk&")
+            self.assertTrue(mask.is_file())
+            self.assertTrue(any(str(mask) in item for item in binds))
+            self.assertNotIn(str(protected), mask.read_text())
+            adapter.close()  # deletes original in-client temporary files
+            self.assertTrue(mask.is_file())
+        finally:
+            tasks.close()
+            files.close()
 
     def test_manager_shutdown_kills_jobs_and_persists_completed_history(self):
         tid = "&Stop&"

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from openkapsel.job_manager import JOB_RE, new_job_id, request, state_home
+from openkapsel.job_manager import JOB_RE, prepare_home, request, state_home
 
 
 class SharedClientTasks:
@@ -22,7 +22,15 @@ class SharedClientTasks:
         self.id = urlsplit(url).path.rsplit("/", 1)[-1]
         self.credential = token
         self.config = config or {}
-        self.home = state_home() if home is None else Path(home)
+        self.home = (state_home() if home is None else Path(home)).expanduser().resolve()
+        # The Manager stores Mapping credentials, SQLite metadata and task I/O:
+        # never let the Manager's private state be exposed by the Mapping.
+        try:
+            self.home.relative_to(self.files.root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("shared Job Manager state must be outside Mapping exports")
         if len(self.id) != 24 or not all(c.isalnum() or c in "_-" for c in self.id):
             raise ValueError("mapping URL must end with a 24-character mapping ID")
 
@@ -43,6 +51,11 @@ class SharedClientTasks:
             default_seconds=600,
         )
         return result
+
+    def has_active_jobs(self):
+        # External Manager-owned jobs must NEVER defer a Client source reload.
+        # Retain the guard for any locally injected/legacy RPC workers.
+        return self.legacy.has_active_jobs()
 
     def close(self):
         # The legacy in-client workers still close; shared shell jobs are NOT
@@ -149,9 +162,23 @@ class SharedClientTasks:
             container = "openkapsel-client-" + args["task_id"][1:-1].lower()
             mode = "rw" if self.files.writable else "ro"
             hidden = []
-            for protected in sorted(self.files.protected_paths, key=str):
-                relative = protected.relative_to(self.files.root).as_posix()
-                hidden.extend(["--volume", f"{legacy.secret_mask_path}:/workspace/{relative}:ro"])
+            if self.files.protected_paths:
+                # The Manager must own the bind-mount source throughout the
+                # running Job, even when ClientRuntime closes its temp files.
+                home, _ = prepare_home(self.home)
+                masks = home / "masks"
+                masks.mkdir(mode=0o700, exist_ok=True)
+                mask = masks / (self.id + "." + args["task_id"])
+                try:
+                    fd = os.open(mask, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                except FileExistsError:
+                    if not mask.is_file() or mask.stat().st_size:
+                        raise OSError(errno.EACCES, "unsafe persistent sandbox mask")
+                else:
+                    os.close(fd)
+                for protected in sorted(self.files.protected_paths, key=str):
+                    relative = protected.relative_to(self.files.root).as_posix()
+                    hidden.extend(["--volume", f"{mask}:/workspace/{relative}:ro"])
             argv = [
                 "podman", "run", "--rm", "--name", container, "--cap-drop=ALL",
                 "--security-opt=no-new-privileges", "--pids-limit", str(legacy.processes),

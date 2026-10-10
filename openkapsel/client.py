@@ -109,12 +109,14 @@ def proxy_options(url, *, target_url=None, timeout=60):
 
 
 class ClientRuntime:
-    """Own tasks across transport sessions, bound to one immutable configuration."""
+    """Own transport sessions while Manager-backed jobs outlive this process."""
     def __init__(self, config, *, protected_paths=()):
+        from openkapsel.client_runtime.job_backend import JobBackend
         self.config = json.loads(json.dumps(config))
         self.files, self.tasks = _create_resources(
             self.config, protected_paths=protected_paths
         )
+        self.tasks: JobBackend
         self.client_fingerprint = running_fingerprint("client")
         self.pending_reload = False
         self.rpc_slots = threading.BoundedSemaphore(32)
@@ -125,8 +127,7 @@ class ClientRuntime:
         with self.rpc_lock:
             if self.rpc_active:
                 return True
-        with self.tasks.lock:
-            return any(task["finished_at"] is None for task in self.tasks.tasks.values())
+        return self.tasks.has_active_jobs()
 
     def close(self):
         try:
@@ -228,7 +229,7 @@ def _create_resources(config, *, protected_paths=()):
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
                         network=config.get("network", False), **limits)
     from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
-    if config["url"].rstrip("/").split("/")[-2:-1] == ["mapping-connect"]:
+    if urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]:
         tasks = SharedClientTasks(tasks, url=config["url"], token=config["token"],
                                   config=config)
     if tasks.enabled and not tasks.sandbox:
