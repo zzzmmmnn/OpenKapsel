@@ -510,9 +510,11 @@ class FileSearchRpcPlugin:
     operations = {
         "search": {
             "description": (
-                "Find files/directories whose filename contains a literal query string. "
-                "Set mode=glob for *, ?, and [] filename patterns; literal is default. "
-                "Results are export-relative and never escape the requested path scope."
+                "Search export-relative filenames; omit query to match all, or use "
+                "mode=literal|glob (* ? []) for name matching. Sort by name/path/size/modified "
+                "with sort_order=asc|desc, filter file_type, and set limit (default 50, "
+                "maximum 1000) and offset. Results include byte size and UTC timestamps, "
+                "stay within the selected export path and mark partial results on timeout."
             ),
             "write": False,
             "execution": "sync",
