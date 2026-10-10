@@ -153,11 +153,13 @@ class ClientTasks:
             if op == "task_list":
                 return [self._public(task, include_result=False) for task in self.tasks.values()]
             tid = args.get("task_id", "")
-            if not isinstance(tid, str) or not (
-                (8 <= len(tid) <= 64 and tid.replace("-", "").replace("_", "").isalnum())
-                or (len(tid) == 6 and tid.startswith("&") and tid.endswith("&")
-                    and tid[1:5].isascii() and tid[1:5].isalnum())
-            ):
+            legacy_id = (isinstance(tid, str) and 8 <= len(tid) <= 64
+                         and tid.replace("-", "").replace("_", "").isalnum())
+            shell_id = (isinstance(tid, str) and len(tid) == 6
+                        and tid.startswith("&") and tid.endswith("&")
+                        and tid[1:5].isascii() and tid[1:5].isalnum())
+            if not (legacy_id or (shell_id and not (
+                    op == "task_start" and isinstance(args.get("rpc"), dict)))):
                 raise OSError(errno.EINVAL, "invalid task id")
             if op == "task_start":
                 if tid in self.tasks:
@@ -239,7 +241,9 @@ class ClientTasks:
         container = None
         env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG") if key in os.environ}
         if self.sandbox:
-            container = "openkapsel-client-" + tid.lower()
+            shell_id = tid[1:-1] if tid.startswith("&") and tid.endswith("&") else tid
+            namespace = getattr(self, "shell_mapping_key", "")
+            container = "openkapsel-client-" + (namespace + "-" if namespace else "") + shell_id
             mode = "rw" if self.files.writable else "ro"
             protected_mounts = []
             for protected in sorted(self.files.protected_paths, key=str):

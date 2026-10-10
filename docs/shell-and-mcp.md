@@ -18,9 +18,9 @@ with `allow_exec`, and client execution opt-in. Client 1.60.0+ advertises
 `execution.shell_command`; older/offline/denied clients fail without fallback.
 Client-local sandbox and resource policy apply; server `/env` and
 server sandbox/network settings are not copied to the client. Both Server and
-Mapping Shell default to a **600-second timeout** when omitted or null.
+Mapping Shell default to a **120-second timeout** when omitted or null.
 An explicit positive finite `timeout_seconds` has no maximum (for example, `1e9`);
-the legacy Client `limits.max_seconds` does not restrict Manager-owned jobs.
+Mapping Shell requests with timeouts of at most 120 seconds run in the Client and retain its local task policy; only explicit timeouts above 120 seconds use the Manager and bypass Client `limits.max_seconds`.
 Native Windows uses `cmd.exe /d /s /c`; POSIX and client Podman use `/bin/sh -c`.
 Choose commands for the advertised platform. The client argv limit (32768 total
 characters, including the interpreter) still applies.
@@ -44,8 +44,8 @@ process group/tree. Server interruption retains its existing behavior.
 tasks and the workspace's accessible client tasks. `target=server|client`
 filters location; normal status/pagination still apply. `unavailable_mappings`
 reports clients whose tasks could not be listed, not that their tasks stopped.
-Mapping Shell and task-based RPC jobs survive Client reconnects, Client
-process exits, and server restarts while their shared Job Manager keeps running.
+Long Mapping Shell jobs (timeout >120 seconds) survive Client reconnects, Client process exits, and server restarts while their Job Manager keeps running. Short Shell jobs (timeout ≤120 seconds, including the default) are Client-owned and stop on Client exit. RPC operations retain
+their existing Client/Server execution and task lifecycle.
 Manager restarts cannot reattach lost anonymous process pipes; details and
 retention are in [client mappings](client-mappings.md).
 Never replay an uncertain start automatically: reconnect and list tasks first.
@@ -117,9 +117,9 @@ Full Shell receives a deliberately small base environment instead of inheriting 
 
 `POST /shell/exec` creates an asynchronous task and returns `task_id`.
 Server Shell retains its separate concurrency defaults of eight tasks per token
-and sixteen globally. The shared Mapping Job Manager allows sixteen running
-jobs globally and four per Mapping key, across Shell and task-based RPC jobs.
-Both default to a 600-second execution timeout; an explicit positive finite
+and sixteen globally. The shared Mapping Job Manager allows sixteen running long Shell
+jobs globally and four per Mapping key, for Shell requests with timeout >120 seconds only.
+Both default to a 120-second execution timeout; an explicit positive finite
 timeout has no upper bound. Memory, CPU, and process restrictions follow
 the execution backend's configured policy.
 

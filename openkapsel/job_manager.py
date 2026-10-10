@@ -30,7 +30,7 @@ JOB_RE = re.compile(r"&[A-Za-z0-9]{4}&\Z")
 CHARS = string.ascii_letters + string.digits
 MAX_RUNNING = 16
 MAX_PER_MAPPING = 4
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 120
 MAX_OUTPUT = 64 * 1024 * 1024
 PROTOCOL = 1
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -139,7 +139,6 @@ class Manager:
             collected_at REAL, deadline REAL,
             container TEXT, input_base INTEGER NOT NULL DEFAULT 0,
             input_end INTEGER NOT NULL DEFAULT 0,
-            rpc_family TEXT, rpc_operation TEXT, rpc_write INTEGER NOT NULL DEFAULT 0,
             request_digest TEXT)""")
         self.db.execute("CREATE INDEX IF NOT EXISTS jobs_owner_start ON jobs(mapping_id, started_at DESC)")
         with self.db:
@@ -175,9 +174,8 @@ class Manager:
         row = self.db.execute(
             "SELECT id, mapping_id, kind, started_at, finished_at, pid, exit_code,"
             " interrupted, force_killed, timed_out, interactive, stdin_closed,"
-            " output_base, output_end, truncated, collected_at, deadline, container,"
-            " rpc_family, rpc_operation, rpc_write"
-            " FROM jobs WHERE id=? AND mapping_id=?", (key, mid)
+            " output_base, output_end, truncated, collected_at, deadline, container"
+            " FROM jobs WHERE id=? AND mapping_id=? AND kind='shell'", (key, mid)
         ).fetchone()
         if row is None:
             raise FileNotFoundError("job not found")
@@ -185,7 +183,7 @@ class Manager:
                          "pid", "exit_code", "interrupted", "force_killed",
                          "timed_out", "interactive", "stdin_closed", "output_base",
                          "output_end", "truncated", "collected_at", "deadline",
-                         "container", "rpc_family", "rpc_operation", "rpc_write"), row))
+                         "container"), row))
 
     def _summary(self, job):
         result = {
@@ -198,33 +196,13 @@ class Manager:
             "running": job["finished_at"] is None,
             "output_truncated": bool(job["truncated"]),
         }
-        if job["kind"] == "rpc":
-            result.update(
-                rpc_family=job["rpc_family"], rpc_operation=job["rpc_operation"],
-                write=bool(job["rpc_write"]), execution="task",
-            )
-            if job["finished_at"] is not None:
-                path = self.home / "results" / (job["id"] + ".json")
-                try:
-                    details = json.loads(path.read_text("utf-8"))
-                except (OSError, ValueError):
-                    details = {"error": {"status": 500, "code": "rpc_task_interrupted",
-                                         "message": "RPC worker did not produce a result"}}
-                if "result" in details:
-                    result["result_available"] = True
-                    result["result"] = details["result"]
-                else:
-                    result["error"] = details.get("error", {
-                        "status": 500, "code": "rpc_task_failed",
-                        "message": "RPC worker failed",
-                    })
         return result
 
     def _prune(self, mid):
         # Once output is consumed, completed jobs may be discarded to reclaim
         # space; retain the newest four, and never remove a running job.
         rows = self.db.execute(
-            "SELECT id, collected_at FROM jobs WHERE mapping_id=? AND finished_at IS NOT NULL "
+            "SELECT id, collected_at FROM jobs WHERE mapping_id=? AND kind='shell' AND finished_at IS NOT NULL "
             "ORDER BY finished_at DESC", (mid,)
         ).fetchall()
         for index, (tid, collected) in enumerate(rows):
@@ -232,7 +210,6 @@ class Manager:
                 self.db.execute("DELETE FROM jobs WHERE id=?", (tid,))
                 (self.home / "output" / (tid + ".bin")).unlink(missing_ok=True)
                 (self.home / "input" / (tid + ".bin")).unlink(missing_ok=True)
-                (self.home / "results" / (tid + ".json")).unlink(missing_ok=True)
                 (self.home / "masks" / tid).unlink(missing_ok=True)
         self.db.commit()
 
@@ -343,15 +320,6 @@ class Manager:
         except (OSError, ValueError, BrokenPipeError):
             pass
 
-    @staticmethod
-    def _feed_worker(process, payload):
-        try:
-            with process.stdin:
-                process.stdin.write(payload)
-                process.stdin.flush()
-        except (OSError, ValueError, BrokenPipeError):
-            pass
-
     def _start(self, mid, args):
         public_id = args.get("task_id")
         try:
@@ -376,33 +344,15 @@ class Manager:
             if previous[0] != mid or previous[1] != request_digest:
                 raise FileExistsError("job ID already belongs to a different request")
             return self._summary(self._row(mid, public_id))
-        if self.db.execute("SELECT COUNT(*) FROM jobs WHERE finished_at IS NULL").fetchone()[0] >= MAX_RUNNING:
+        if self.db.execute("SELECT COUNT(*) FROM jobs WHERE kind='shell' AND finished_at IS NULL").fetchone()[0] >= MAX_RUNNING:
             raise BlockingIOError("Job Manager is at its global limit of 16")
-        if self.db.execute("SELECT COUNT(*) FROM jobs WHERE finished_at IS NULL AND mapping_id=?",
+        if self.db.execute("SELECT COUNT(*) FROM jobs WHERE kind='shell' AND finished_at IS NULL AND mapping_id=?",
                            (mid,)).fetchone()[0] >= MAX_PER_MAPPING:
             raise BlockingIOError("mapping has reached its limit of 4 jobs")
-        kind = args.get("kind", "shell")
-        if kind not in {"shell", "rpc"}:
-            raise ValueError("unsupported Job kind")
+        if args.get("kind", "shell") != "shell" or "rpc_payload" in args:
+            raise ValueError("Job Manager supports only asynchronous Shell jobs")
         argv = args.get("argv")
         cwd = args.get("cwd")
-        rpc_payload = None
-        if kind == "rpc":
-            operation = args.get("rpc_payload")
-            if (not isinstance(operation, dict) or
-                    not isinstance(operation.get("rpc"), dict) or
-                    not isinstance(operation.get("config"), dict)):
-                raise ValueError("invalid RPC worker configuration")
-            rpc_payload = json.dumps(operation, ensure_ascii=False,
-                                     separators=(",", ":")).encode("utf-8")
-            if len(rpc_payload) > MAX_MESSAGE:
-                raise ValueError("RPC worker request too large")
-            (self.home / "results").mkdir(mode=0o700, exist_ok=True)
-            executable = args.get("worker_python")
-            if not isinstance(executable, str) or not Path(executable).is_file():
-                raise ValueError("invalid RPC worker interpreter")
-            argv = [executable, "-m", "openkapsel.job_worker", "--result",
-                    str(self.home / "results" / (tid + ".json"))]
         valid_argv = (
             isinstance(argv, list) and 1 <= len(argv) <= 512 and
             all(isinstance(x, str) and "\x00" not in x for x in argv) and
@@ -432,22 +382,19 @@ class Manager:
         # Only the manager owns subprocess handles, even if the client exits.
         process = subprocess.Popen(
             argv, cwd=cwd, env=environment, executable=executable, shell=False,
-            stdin=subprocess.PIPE if (interactive or kind == "rpc") else subprocess.DEVNULL,
+            stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             start_new_session=os.name != "nt",
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
             close_fds=True,
         )
         started = time.time()
-        rpc = args["rpc_payload"]["rpc"] if kind == "rpc" else {}
         self.db.execute(
             "INSERT INTO jobs(id,mapping_id,kind,started_at,pid,interactive,stdin_closed,"
-            "deadline,container,rpc_family,rpc_operation,rpc_write,request_digest)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (tid, mid, kind, started, process.pid, int(interactive),
-             int(not interactive), started+timeout, name,
-             rpc.get("family"), rpc.get("operation"), int(bool(args.get("rpc_write"))),
-             request_digest)
+            "deadline,container,request_digest)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (tid, mid, "shell", started, process.pid, int(interactive),
+             int(not interactive), started+timeout, name, request_digest)
         )
         self.db.commit()
         (self.home / "output").mkdir(mode=0o700, exist_ok=True)
@@ -455,9 +402,6 @@ class Manager:
         (self.home / "input").mkdir(mode=0o700, exist_ok=True)
         (self.home / "input" / (tid + ".bin")).touch(exist_ok=True)
         self.processes[tid] = process
-        if rpc_payload is not None:
-            threading.Thread(target=self._feed_worker, args=(process, rpc_payload),
-                             daemon=True).start()
         if interactive:
             inputs = queue.Queue(maxsize=16)
             self.writers[tid] = inputs
@@ -545,7 +489,7 @@ class Manager:
             self._prune(mid)
             if op == "task_list":
                 ids = self.db.execute(
-                    "SELECT id FROM jobs WHERE mapping_id=? ORDER BY started_at DESC",
+                    "SELECT id FROM jobs WHERE mapping_id=? AND kind='shell' ORDER BY started_at DESC",
                     (mid,)
                 ).fetchall()
                 return [self._summary(self._row(mid, tid.rsplit(".", 1)[-1]))

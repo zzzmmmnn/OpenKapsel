@@ -69,7 +69,7 @@ class ScheduleHandlersMixin:
                 }
             if not isinstance(run_context, dict):
                 raise ScheduleError("run_context must be a JSON object")
-            timeout = body.get("timeout_seconds", self.server.config.default_command_timeout)
+            timeout = body.get("timeout_seconds", 600)
             if timeout is not None:
                 if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                     raise ScheduleError("timeout_seconds must be null or a number")

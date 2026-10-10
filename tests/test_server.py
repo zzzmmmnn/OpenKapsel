@@ -5736,8 +5736,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("invalid_context_plan", blocked_schedule["error"]["code"])
         self.assertIn("in_progress", blocked_schedule["error"]["message"])
 
-    def test_shell_timeout_defaults_to_600_and_explicit_billion_is_allowed(self) -> None:
-        self.assertEqual(600, self.server.config.default_command_timeout)
+    def test_shell_timeout_defaults_to_120_and_explicit_billion_is_allowed(self) -> None:
+        self.assertEqual(120, self.server.config.default_command_timeout)
         status, payload = self.request(
             "POST", self.endpoint("/shell/exec"),
             {"command": "printf 'extended'", "cwd": "project",

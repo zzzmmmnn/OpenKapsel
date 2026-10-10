@@ -404,48 +404,227 @@ time.sleep(30)
         finally:
             two.close()
 
-    def test_mapping_rpc_runs_in_separate_worker_and_result_survives_client_close(self):
+    def test_async_rpc_never_uses_job_manager_or_transfers_config(self):
         import zipfile
         (self.root / "source").mkdir()
-        (self.root / "source" / "hello.txt").write_text("persistent archive")
+        (self.root / "source" / "hello.txt").write_text("normal rpc")
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
             "writable": True, "allow_exec": False, "sandbox": True,
+            "rpc": {"archive": True},
         }
         runtime = ClientRuntime(config)
-        tid = "&Rpc1&"
+        tid = "rpc-kept-client-1"
         try:
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
             started = runtime.tasks.dispatch("task_start", {
-                "task_id": tid, "rpc": {
+                "task_id": tid,
+                "rpc": {
                     "family": "archive", "operation": "create",
-                    "args": {
-                        "sources": ["source"], "destination": "bundle.zip",
-                        "format": "zip",
-                    },
+                    "args": {"sources": ["source"], "destination": "bundle.zip",
+                             "format": "zip"},
                 },
-                "timeout_seconds": 1e9,
             })
             self.assertEqual("rpc", started["kind"])
-            self.assertTrue(started["write"])
-        finally:
-            runtime.close()
-        restarted = ClientRuntime(config)
-        try:
-            finished = self._wait(self.MAPPING_A, tid)
+            self.assertEqual(tid, started["task_id"])
+            until = time.monotonic() + 6
+            while time.monotonic() < until:
+                finished = runtime.tasks.dispatch("task_get", {
+                    "task_id": tid, "offset": 0,
+                })
+                if not finished["running"]:
+                    break
+                time.sleep(.025)
             self.assertFalse(finished["running"])
             self.assertEqual(0, finished["exit_code"], finished)
-            self.assertTrue(finished["result_available"])
-            self.assertEqual("bundle.zip", finished["result"]["destination"])
-            self.assertIn("archive", base64.b64decode(finished["output"]).decode())
-            self.assertEqual(tid, restarted.tasks.dispatch(
-                "task_get", {"task_id": tid, "offset": 0}
-            )["task_id"])
-            with zipfile.ZipFile(self.root / "bundle.zip") as f:
-                self.assertEqual(b"persistent archive", f.read("source/hello.txt"))
-            self.assertTrue((self.home / "results" / (self.MAPPING_A + "." + tid + ".json")).exists())
+            with zipfile.ZipFile(self.root / "bundle.zip") as archive:
+                self.assertEqual(b"normal rpc", archive.read("source/hello.txt"))
+            # Neither RPC start nor status request can create/consult Manager.
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+            self.assertFalse((self.home / "manager.lock").exists())
         finally:
-            restarted.close()
+            runtime.close()
+        newer = ClientRuntime(config)
+        try:
+            with self.assertRaises(OSError):
+                newer.tasks.dispatch("task_get", {"task_id": tid, "offset": 0})
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+        finally:
+            newer.close()
+
+    def test_shell_sends_only_key_and_current_invocation_no_config(self):
+        from unittest.mock import patch
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": "private-token-never-sent-to-manager",
+            "root": str(self.root), "writable": True,
+            "allow_exec": True, "sandbox": False,
+            "rpc": {"archive": {"enabled": True, "config": {"secret": "private-plugin-setting"}}},
+        }
+        runtime = ClientRuntime(config)
+        try:
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+            from openkapsel.client_runtime import shared_job_tasks
+            seen = []
+            original = shared_job_tasks.request
+            def observed(home, key, operation, args=None):
+                seen.append((key, operation, args))
+                return original(home, key, operation, args)
+            with patch.object(shared_job_tasks, "request", side_effect=observed):
+                runtime.tasks.dispatch("task_start", {
+                    "task_id": "&Sh1L&",
+                    "argv": [sys.executable, "-c", "print('shell only')"],
+                    "timeout_seconds": 121, "interactive": False,
+                })
+            self.assertEqual(1, len(seen))
+            key, operation, payload = seen[0]
+            self.assertEqual(self.MAPPING_A, key)
+            self.assertEqual("task_start", operation)
+            self.assertEqual("&Sh1L&", payload["task_id"])
+            self.assertNotIn("config", payload)
+            self.assertNotIn("rpc", payload)
+            self.assertNotIn("rpc_payload", payload)
+            import json
+            text = json.dumps(payload)
+            self.assertNotIn("private-token-never-sent-to-manager", text)
+            self.assertNotIn("private-plugin-setting", text)
+            self.assertEqual(0, self._wait(self.MAPPING_A, "&Sh1L&")["exit_code"])
+        finally:
+            runtime.close()
+
+    def test_default_and_120_second_shell_stay_in_client_without_manager(self):
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        try:
+            self.assertEqual(120, runtime.tasks.capabilities()["default_seconds"])
+            for job_id, specified in (("&Df1t&", None), ("&B120&", 120)):
+                operation = {
+                    "task_id": job_id,
+                    "argv": [sys.executable, "-u", "-c", "print('short-shell')"],
+                    "interactive": False,
+                }
+                if specified is not None:
+                    operation["timeout_seconds"] = specified
+                started = runtime.tasks.dispatch("task_start", operation)
+                self.assertEqual(job_id, started["task_id"])
+                self.assertIn(job_id, runtime.tasks.legacy.tasks)
+                self.assertEqual(120, runtime.tasks.legacy.tasks[job_id]["timeout"])
+                self.assertFalse((self.home / "jobs.sqlite3").exists())
+                end = time.monotonic() + 5
+                while time.monotonic() < end:
+                    result = runtime.tasks.dispatch("task_get", {"task_id": job_id, "offset": 0})
+                    if not result["running"]:
+                        break
+                    time.sleep(.02)
+                self.assertEqual(0, result["exit_code"])
+                self.assertEqual(b"short-shell\n", base64.b64decode(result["output"]))
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+        finally:
+            runtime.close()
+
+    def test_short_shell_stdin_and_status_stay_client_local(self):
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        tid = "&St1n&"
+        try:
+            runtime.tasks.dispatch("task_start", {
+                "task_id": tid,
+                "argv": [sys.executable, "-u", "-c",
+                         "import sys; print(sys.stdin.readline().strip(), flush=True)"],
+                "timeout_seconds": 120, "interactive": True,
+            })
+            accepted = runtime.tasks.dispatch("task_stdin", {
+                "task_id": tid, "data": base64.b64encode(b"client-input\n").decode(),
+                "eof": True,
+            })
+            self.assertEqual(13, accepted["accepted"])
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                result = runtime.tasks.dispatch("task_get", {"task_id": tid, "offset": 0})
+                if not result["running"]:
+                    break
+                time.sleep(.02)
+            self.assertEqual(0, result["exit_code"])
+            self.assertEqual(b"client-input\n", base64.b64decode(result["output"]))
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+        finally:
+            runtime.close()
+
+    def test_long_shell_121_seconds_uses_manager_and_outlives_client(self):
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        job_id = "&L121&"
+        try:
+            started = runtime.tasks.dispatch("task_start", {
+                "task_id": job_id,
+                "argv": [sys.executable, "-u", "-c",
+                         "import time; print('persistent-shell',flush=True); time.sleep(.3)"],
+                "timeout_seconds": 121, "interactive": False,
+            })
+            self.assertEqual(job_id, started["task_id"])
+            self.assertNotIn(job_id, runtime.tasks.legacy.tasks)
+            self.assertTrue((self.home / "jobs.sqlite3").exists())
+        finally:
+            runtime.close()
+        self.assertEqual(0, self._wait(self.MAPPING_A, job_id)["exit_code"])
+
+    def test_short_shell_is_terminated_when_client_runtime_closes(self):
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        tid = "&Sh0r&"
+        try:
+            runtime.tasks.dispatch("task_start", {
+                "task_id": tid, "argv": [sys.executable, "-u", "-c",
+                                        "import time; time.sleep(60)"],
+                "timeout_seconds": 120, "interactive": False,
+            })
+            self.assertTrue(runtime.has_active_tasks())
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+        finally:
+            runtime.close()
+        self.assertFalse((self.home / "jobs.sqlite3").exists())
+
+    def test_shell_cannot_bypass_manager_by_using_a_legacy_task_id(self):
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        try:
+            with self.assertRaises(OSError):
+                runtime.tasks.dispatch("task_start", {
+                    "task_id": "legacy-shell-id",
+                    "argv": [sys.executable, "-c", "print('should not run')"],
+                })
+            self.assertFalse((self.home / "jobs.sqlite3").exists())
+        finally:
+            runtime.close()
+
+    def test_manager_rejects_rpc_jobs(self):
+        with self.assertRaises(OSError):
+            request(self.home, self.MAPPING_A, "task_start", {
+                "task_id": "&RpC1&", "kind": "rpc",
+                "rpc_payload": {"config": {"foo": 1}},
+            })
+        self.assertEqual([], request(self.home, self.MAPPING_A, "task_list"))
 
     def test_private_state_must_not_be_inside_mapping_root(self):
         from openkapsel.client_runtime.client_files import ClientFiles
@@ -481,7 +660,7 @@ time.sleep(30)
             tasks.sandbox = True
             prepared = adapter._prepare({
                 "task_id": "&M4sk&", "command": "echo sandbox",
-                "cwd": ".", "timeout_seconds": 40,
+                "cwd": ".", "timeout_seconds": 121,
             })
             args = prepared["argv"]
             binds = [args[i+1] for i, x in enumerate(args[:-1]) if x == "--volume"]

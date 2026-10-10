@@ -1,14 +1,8 @@
-"""Mapping Client task adapter: local RPC workers plus persistent shared Shell jobs."""
+"""Mapping Shell Job Manager adapter; RPC stays entirely inside ClientRuntime."""
 from __future__ import annotations
 
-import base64
 import errno
 import os
-import queue
-import shutil
-import signal
-import subprocess
-import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -16,11 +10,10 @@ from openkapsel.job_manager import JOB_RE, prepare_home, request, state_home
 
 
 class SharedClientTasks:
-    def __init__(self, legacy, *, url, home=None, config=None):
+    def __init__(self, legacy, *, url, home=None):
         self.legacy = legacy
         self.files = legacy.files
         self.id = urlsplit(url).path.rsplit("/", 1)[-1]
-        self.config = config or {}
         self.home = (state_home() if home is None else Path(home)).expanduser().resolve()
         # The Manager stores SQLite metadata and task I/O:
         # never let the Manager's private state be exposed by the Mapping.
@@ -32,6 +25,7 @@ class SharedClientTasks:
             raise ValueError("shared Job Manager state must be outside Mapping exports")
         if len(self.id) != 24 or not all(c.isalnum() or c in "_-" for c in self.id):
             raise ValueError("mapping URL must end with a 24-character mapping ID")
+        self.legacy.shell_mapping_key = self.id
 
     def __getattr__(self, name):
         return getattr(self.legacy, name)
@@ -39,21 +33,22 @@ class SharedClientTasks:
     def capabilities(self):
         result = self.legacy.capabilities()
         result.update(
-            max_tasks=4,
             manager_max_tasks=16,
+            manager_max_per_mapping=4,
             job_manager=True,
             reconnect_persistence=True,
             restart_persistence=True,
-            result_storage="shared_manager_disk",
-            uncollected_results="disk_spool_until_acknowledged_or_cleanup",
-            max_seconds=None,
-            default_seconds=600,
+            restart_persistence_timeout_gt=120,
+            result_storage="client_memory_or_shared_manager_disk",
+            uncollected_results="client_memory_or_disk_spool",
+            manager_max_seconds=None,
+            default_seconds=120,
         )
         return result
 
     def has_active_jobs(self):
         # External Manager-owned jobs must NEVER defer a Client source reload.
-        # Retain the guard for any locally injected/legacy RPC workers.
+        # Existing async RPC jobs are still Client-owned and block reload.
         return self.legacy.has_active_jobs()
 
     def close(self):
@@ -62,63 +57,42 @@ class SharedClientTasks:
         self.legacy.close()
 
     def dispatch(self, op, args):
+        # RPC (both sync and async) uses the original Client code path.
         if op == "task_start" and isinstance(args.get("rpc"), dict):
-            if JOB_RE.fullmatch(args.get("task_id", "")):
-                return request(self.home, self.id, op,
-                               self._prepare_rpc(args))
             return self.legacy.dispatch(op, args)
         if op == "task_list":
             remote = request(self.home, self.id, op)
-            legacy = self.legacy.dispatch(op, args)
-            return remote + legacy
+            return remote + self.legacy.dispatch(op, args)
         tid = args.get("task_id", "")
-        if op == "task_start" and not JOB_RE.fullmatch(tid):
-            # In-process legacy callers may still use old IDs for tests or
-            # internal clients. Normal Server-generated Shell IDs are &xxxx&.
-            return self.legacy.dispatch(op, args)
-        if op != "task_start" and not JOB_RE.fullmatch(tid):
-            return self.legacy.dispatch(op, args)
         if op == "task_start":
+            if not JOB_RE.fullmatch(tid):
+                raise OSError(errno.EINVAL, "Shell Job ID must be & followed by 4 alphanumeric chars and &")
             if not self.legacy.enabled:
                 raise OSError(errno.EACCES, "client execution is disabled")
-            prepared = self._prepare(args)
-            return request(self.home, self.id, op, prepared)
+            timeout = args.get("timeout_seconds")
+            if timeout is None:
+                timeout = 120
+            if (type(timeout) not in (int, float) or
+                    not 0.1 <= timeout < float("inf")):
+                raise OSError(errno.EINVAL, "invalid Shell timeout")
+            invocation = dict(args, timeout_seconds=timeout)
+            if timeout <= 120:
+                # Short-lived Shell stays with the Client, including stdin and
+                # output. No Manager process or IPC is needed to start it.
+                return self.legacy.dispatch(op, invocation)
+            # Long Shell is owned by the independent shared Job Manager.
+            return request(self.home, self.id, op, self._prepare(invocation))
+        if not JOB_RE.fullmatch(tid):
+            return self.legacy.dispatch(op, args)
         if op not in {"task_get", "task_stdin", "task_interrupt", "task_kill"}:
             raise OSError(errno.ENOSYS, "unknown task operation")
+        # Short Shell jobs share the same public ID shape as long ones.
+        # Choose the in-process record while it exists. No mapping key or
+        # other Client configuration is requested from the API caller.
+        with self.legacy.lock:
+            if tid in self.legacy.tasks:
+                return self.legacy.dispatch(op, args)
         return request(self.home, self.id, op, args)
-
-    def _prepare_rpc(self, args):
-        rpc = args["rpc"]
-        family = rpc.get("family")
-        operation = rpc.get("operation")
-        rpc_args = rpc.get("args", {})
-        if (not isinstance(family, str) or not isinstance(operation, str)
-                or not isinstance(rpc_args, dict)):
-            raise OSError(errno.EINVAL, "invalid RPC task request")
-        spec = self.files.rpc_registry.operation_spec(family, operation)
-        if spec is None or spec.get("execution") != "task":
-            raise OSError(errno.ENOSYS, "task-based RPC plugin is not available")
-        if spec.get("write") and not self.files.writable:
-            raise OSError(errno.EROFS, "mapping export is read-only")
-        timeout = args.get("timeout_seconds", 600)
-        if timeout is None:
-            timeout = 600
-        if type(timeout) not in (int, float) or not 0.1 <= timeout < float("inf"):
-            raise OSError(errno.EINVAL, "invalid task timeout")
-        return {
-            "kind": "rpc", "task_id": args["task_id"],
-            "cwd": str(self.files.root), "interactive": False,
-            "timeout_seconds": float(timeout),
-            "env": None, "worker_python": sys.executable,
-            "rpc_write": bool(spec.get("write")),
-            "rpc_payload": {
-                "config": {key: value for key, value in self.config.items()
-                           if key not in {"token", "url"}},
-                "root": str(self.files.root),
-                "protected_paths": [str(p) for p in self.files.protected_paths],
-                "rpc": rpc,
-            },
-        }
 
     def _prepare(self, args):
         """Apply Client execution policy before the Manager gets subprocess argv."""
@@ -147,9 +121,9 @@ class SharedClientTasks:
         else:
             descriptor = self.files.paths.open(cwd, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             os.close(descriptor)
-        timeout = args.get("timeout_seconds", 600)
+        timeout = args.get("timeout_seconds", 120)
         if timeout is None:
-            timeout = 600
+            timeout = 120
         if (type(timeout) not in (int, float) or
                 not 0.1 <= timeout < float("inf")):
             raise OSError(errno.EINVAL, "invalid task timeout")
@@ -159,7 +133,7 @@ class SharedClientTasks:
         executable = None
         container = None
         if legacy.sandbox:
-            container = "openkapsel-client-" + args["task_id"][1:-1].lower()
+            container = "openkapsel-client-" + self.id + "-" + args["task_id"][1:-1]
             mode = "rw" if self.files.writable else "ro"
             hidden = []
             if self.files.protected_paths:
