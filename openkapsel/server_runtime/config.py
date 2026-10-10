@@ -50,7 +50,7 @@ class ServerConfig:
     finished_task_retention_seconds: int = 60 * 60
     max_finished_tasks_per_token: int = 4
     sandbox_cgroup_enabled: bool = False
-    default_command_timeout: float | None = None
+    default_command_timeout: float = 600.0
     max_direct_upload_bytes: int = 32 * 1024 * 1024
     max_file_bytes: int = 10 * 1024 * 1024 * 1024
     upload_chunk_bytes: int = 4 * 1024 * 1024
@@ -204,8 +204,11 @@ class ServerConfig:
             raise ValueError("finished task retention cannot exceed 3600 seconds")
         if self.max_finished_tasks_per_token > 4:
             raise ValueError("finished task retention cannot exceed 4 tasks per token")
-        if self.default_command_timeout is not None and not 0.1 <= self.default_command_timeout <= 86_400:
-            raise ValueError("default command timeout must be between 0.1 and 86400 seconds")
+        if self.default_command_timeout is None:
+            object.__setattr__(self, "default_command_timeout", 600.0)
+        if (not isinstance(self.default_command_timeout, (float, int)) or
+                not 0.1 <= self.default_command_timeout < float("inf")):
+            raise ValueError("default command timeout must be a positive finite number")
         object.__setattr__(self, "root", resolved)
         object.__setattr__(self, "url_base_path", base_path)
         if self.token_data_file is not None:
@@ -481,7 +484,7 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
         finished_task_retention_seconds=finished_task_retention_minutes * 60,
         max_finished_tasks_per_token=max_finished_tasks_per_token,
         sandbox_cgroup_enabled=sandbox_cgroup_enabled,
-        default_command_timeout=payload.get("default_command_timeout"),
+        default_command_timeout=payload.get("default_command_timeout", 600),
         max_direct_upload_bytes=int(payload.get("max_direct_upload_mb", 32)) * 1024 * 1024,
         max_file_bytes=int(payload.get("max_file_size_gb", 10)) * 1024 * 1024 * 1024,
         upload_chunk_bytes=int(payload.get("rest_chunk_size_mb", 4)) * 1024 * 1024,

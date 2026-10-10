@@ -227,6 +227,10 @@ def _create_resources(config, *, protected_paths=()):
     tasks = ClientTasks(files, enabled=config.get("allow_exec", False), sandbox=config.get("sandbox", True),
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
                         network=config.get("network", False), **limits)
+    from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
+    if config["url"].rstrip("/").split("/")[-2:-1] == ["mapping-connect"]:
+        tasks = SharedClientTasks(tasks, url=config["url"], token=config["token"],
+                                  config=config)
     if tasks.enabled and not tasks.sandbox:
         if isinstance(ssh_config, dict) and ssh_config.get("profiles"):
             LOG.warning(

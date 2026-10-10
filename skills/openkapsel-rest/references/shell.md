@@ -88,8 +88,7 @@ Never infer location from `cd` inside the command. Inspect mapping capabilities
 first: client execution requires caller Shell/write, writable mapping `allow_exec`,
 client opt-in, and `execution.shell_command` (client 1.60.0+). Errors never cause
 fallback. Client sandbox/limits apply and server `/env` is not injected. Native
-Windows commands use cmd.exe; POSIX/Podman use `/bin/sh -c`. Null/omitted timeout
-uses the client maximum; an explicit timeout must fit its policy.
+Windows commands use cmd.exe; POSIX/Podman use `/bin/sh -c`. Omitted or null Shell timeout defaults to 600 seconds on both Server and Mapping Client; an explicit positive finite timeout has no maximum (e.g. 1e9).
 
 All returned IDs work with ordinary `/task/*` APIs. Client output is combined in
 stdout (`output_combined: true`), with empty stderr. Status returns the first
@@ -97,8 +96,7 @@ stdout (`output_combined: true`), with empty stderr. Status returns the first
 stdin accepts at most 16 KiB/request. Task listing `target=auto` includes server
 token tasks and workspace client tasks; `target=server|client` filters it.
 Inspect `unavailable_mappings` rather than assuming missing tasks stopped.
-Reconnect preserves client tasks while the client process remains alive;
-never automatically retry a start whose response was lost. Schedules remain
+Mapping Shell jobs live in a separate per-user Job Manager and survive Client restarts; its disk-backed stdin/stdout, 16-global/4-per-Mapping limits and `client.<mapping_id>.&a1B2&` IDs remain queryable. `task/output` with increasing offset acknowledges consumed bytes so the Manager can delete them. Manager exit does not preserve anonymous pipes; Mapping task-based RPC jobs also use Manager-owned independent Worker processes and retain results across Client restart. Never automatically retry a start whose response was lost; list by Mapping before retrying. Schedules remain
 server-side; client execution uses unified `/shell/exec` and `/task/*` routes,
 with no mapping-specific public task or argv REST endpoints.
 

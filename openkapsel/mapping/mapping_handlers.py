@@ -261,9 +261,9 @@ class MappingHandlersMixin:
         if timeout is not None and (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
-            or not 0 < float(timeout) <= 86400
+            or not 0.1 <= float(timeout) < float("inf")
         ):
-            raise ApiError(400, "invalid_request", "timeout_seconds must be between 0 and 86400")
+            raise ApiError(400, "invalid_request", "timeout_seconds must be a positive finite number")
         if write:
             context_request = self._context_request_details(body)
             context_request.update({
@@ -389,9 +389,9 @@ class MappingHandlersMixin:
         if timeout is not None and (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
-            or not 0 < float(timeout) <= 86400
+            or not 0.1 <= float(timeout) < float("inf")
         ):
-            raise ApiError(400, "invalid_request", "timeout_seconds must be between 0 and 86400")
+            raise ApiError(400, "invalid_request", "timeout_seconds must be a positive finite number")
         if write:
             context_request = self._context_request_details(body)
             context_request.update({
@@ -412,7 +412,8 @@ class MappingHandlersMixin:
         if execution == "task":
             from openkapsel.execution.shell_routing import client_summary
 
-            raw_task_id = token_urlsafe_alnum(18)
+            from openkapsel.job_manager import new_job_id
+            raw_task_id = new_job_id()
             task_args = {
                 "task_id": raw_task_id,
                 "rpc": {

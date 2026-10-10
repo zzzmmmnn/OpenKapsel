@@ -113,7 +113,7 @@ class GitHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         self.assertFalse(payload["result"]["isError"], payload)
         task_id = payload["result"]["structuredContent"]["task_id"]
-        self.assertTrue(task_id.startswith("task_"), task_id)
+        self.assertRegex(task_id, r"^&[A-Za-z0-9]{4}&$")
         staged = self.wait_task(conn["secret"], task_id)
         self.assertEqual(0, staged["exit_code"], staged)
         self.assertEqual("rpc", staged["kind"])

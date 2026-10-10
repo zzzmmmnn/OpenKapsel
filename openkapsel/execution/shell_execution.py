@@ -187,7 +187,7 @@ def start_shell_task(server, record, scope_root, *, command, cwd_value,
     if not isinstance(command, str) or not command or len(command) > 100000:
         raise ApiError(400, "invalid_request", "command must contain 1-100000 characters")
     if timeout_seconds is not None and (isinstance(timeout_seconds, bool) or
-            not isinstance(timeout_seconds, (int, float)) or not .1 <= timeout_seconds <= 86400):
+            not isinstance(timeout_seconds, (int, float)) or not .1 <= timeout_seconds < float("inf")):
         raise ApiError(400, "invalid_request", "invalid command timeout")
     raw = Path(cwd_value or ".").expanduser()
     candidate = Path(os.path.abspath(raw if raw.is_absolute() else scope_root / raw))
@@ -246,12 +246,12 @@ def _start_shell_task(
     if timeout_seconds is not None and (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, (int, float))
-        or not 0.1 <= float(timeout_seconds) <= 86_400
+        or not 0.1 <= float(timeout_seconds) < float("inf")
     ):
         raise ApiError(
             HTTPStatus.BAD_REQUEST,
             "invalid_request",
-            "timeout_seconds must be null or a number between 0.1 and 86400",
+            "timeout_seconds must be null or a positive finite number",
         )
     timeout = None if timeout_seconds is None else float(timeout_seconds)
     try:

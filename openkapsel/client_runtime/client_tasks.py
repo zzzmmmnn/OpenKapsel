@@ -149,7 +149,11 @@ class ClientTasks:
             if op == "task_list":
                 return [self._public(task, include_result=False) for task in self.tasks.values()]
             tid = args.get("task_id", "")
-            if not isinstance(tid, str) or not 8 <= len(tid) <= 64 or not tid.replace("-", "").replace("_", "").isalnum():
+            if not isinstance(tid, str) or not (
+                (8 <= len(tid) <= 64 and tid.replace("-", "").replace("_", "").isalnum())
+                or (len(tid) == 6 and tid.startswith("&") and tid.endswith("&")
+                    and tid[1:5].isascii() and tid[1:5].isalnum())
+            ):
                 raise OSError(errno.EINVAL, "invalid task id")
             if op == "task_start":
                 if tid in self.tasks:

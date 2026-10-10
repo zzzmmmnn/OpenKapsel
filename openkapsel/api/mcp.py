@@ -133,7 +133,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "args": {"type": "object", "default": {}},
-            "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 86400, "description": "Optional client task deadline for execution=task; cannot exceed the client max_seconds policy."},
+            "timeout_seconds": {"type": "number", "minimum": 0.1, "description": "Task execution timeout in seconds. Omitted uses 600; explicit finite positive values have no maximum."},
             "plan_id": plan_id_schema(
                 description="Required owning Plan id when operation_specs.<operation>.write is true."
             ),
@@ -991,7 +991,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "shell_exec",
         "Run shell command",
-        "Start an asynchronous Shell task. target=auto routes a mapped cwd to its client and other cwd to the server; client failures do not fall back. Returned task_id values use capability_call family=task operations. Client execution uses client-local policy and environment.",
+        "Start an asynchronous Shell job with &a1B2& reference ID. Omitted/null timeout defaults to 600s; explicit finite positive timeouts have no maximum. target=auto routes mapped cwd to client, otherwise server; errors never fall back. Mapping Shell jobs survive Client restarts via shared disk-backed Job Manager (16 global, 4 per Mapping key). Use family=task operations to inspect and control output.",
         _object_schema(
             {
                 "command": {"type": "string", "minLength": 1},
@@ -1005,8 +1005,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 "timeout_seconds": {
                     "type": ["number", "null"],
                     "minimum": 0.1,
-                    "maximum": 86400,
-                    "default": None,
+                    "default": 600,
                 },
                 "interactive": {
                     "type": "boolean",

@@ -7,6 +7,8 @@ import time
 import unittest
 from unittest.mock import patch
 from openkapsel.client_runtime.client_tasks import ClientTasks
+from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
+from openkapsel.job_manager import shutdown as shutdown_manager
 from tests import test_mapping_file_api as fixture
 from tests import test_oauth
 
@@ -23,14 +25,25 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         fixture.MappingFileHTTPTests.setUp(self)
         self.record = self.server.tokens.update(self.record.token, shell_mode="full")
         self.row, _ = self.server.mappings.store.update(self.row["id"], allow_exec=True)
-        self.tasks = ClientTasks(self.files, enabled=True, sandbox=False)
+        self.legacy_tasks = ClientTasks(self.files, enabled=True, sandbox=False)
+        self.manager_home = self.export.parent / "job-manager"
+        self.tasks = SharedClientTasks(
+            self.legacy_tasks,
+            url="ws://127.0.0.1/mapping-connect/" + self.row["id"],
+            token="shell-fixture-credential-" + self.row["id"],
+            home=self.manager_home,
+        )
         self.session.capabilities["execution"] = self.tasks.capabilities()
         self.session.call = self.tasks.dispatch
 
     def tearDown(self):
         self.tasks.close()
-        for task in self.tasks.tasks.values():
+        for task in self.legacy_tasks.tasks.values():
             task["done"].wait(5)
+        try:
+            shutdown_manager(self.manager_home)
+        except (OSError, ConnectionError):
+            pass
         fixture.MappingFileHTTPTests.tearDown(self)
 
     def finished(self, tid):
@@ -83,7 +96,7 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         self.assertEqual(400, self.api("/shell/exec", dict(body, target=[]))[0])
         self.assertEqual(400, self.api("/shell/exec", dict(body, cwd="laptop\x00"))[0])
         self.server.mappings.store.update(self.row["id"], allow_exec=True)
-        self.assertEqual(400, self.api("/shell/exec", dict(body, timeout_seconds=601))[0])
+        self.assertEqual(202, self.api("/shell/exec", dict(body, timeout_seconds=601))[0])
         self.server.mappings.store.update(self.row["id"], writable=False)
         self.assertEqual(403, self.api("/shell/exec", body)[0])
         self.server.mappings.store.update(self.row["id"], writable=True)

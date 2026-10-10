@@ -5736,6 +5736,17 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("invalid_context_plan", blocked_schedule["error"]["code"])
         self.assertIn("in_progress", blocked_schedule["error"]["message"])
 
+    def test_shell_timeout_defaults_to_600_and_explicit_billion_is_allowed(self) -> None:
+        self.assertEqual(600, self.server.config.default_command_timeout)
+        status, payload = self.request(
+            "POST", self.endpoint("/shell/exec"),
+            {"command": "printf 'extended'", "cwd": "project",
+             "timeout_seconds": 1e9},
+        )
+        self.assertEqual(202, status, payload)
+        self.assertRegex(payload["task_id"], r"^&[A-Za-z0-9]{4}&$")
+        self.assertEqual("extended", self.wait_for_task(payload["task_id"])["stdout"])
+
     def test_shell_is_async_and_returns_output_and_exit_code(self) -> None:
         status, payload = self.request(
             "POST",
@@ -5744,7 +5755,7 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertEqual(202, status)
         task_id = payload["task_id"]
-        self.assertTrue(task_id.startswith("task_"))
+        self.assertRegex(task_id, r"^&[A-Za-z0-9]{4}&$")
 
         task = self.wait_for_task(task_id)
         self.assertEqual(3, task["exit_code"])

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-TASK_ID_PATTERN = re.compile(r"\Atask_[A-Za-z0-9_-]{1,128}\Z")
+TASK_ID_PATTERN = re.compile(r"\A(?:&[A-Za-z0-9]{4}&|task_[A-Za-z0-9_-]{1,128})\Z")
 TOKEN_KEY_PATTERN = re.compile(r"\A[0-9a-f]{32}\Z")
 METADATA_FILE = "meta.json"
 STDOUT_FILE = "stdout.bin"

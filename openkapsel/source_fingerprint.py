@@ -19,6 +19,7 @@ SHARED_FILES = (
     "openkapsel/files/mutation.py",
     "openkapsel/files/filename_index.py",
     "openkapsel/files/find_order.py",
+    "openkapsel/job_manager.py",
     "openkapsel/mapping/mapping_transport.py",
     "openkapsel/mapping/mapping_capabilities.py",
 )
@@ -80,6 +81,8 @@ CLIENT_FILES = (
     "openkapsel/client_runtime/client_files.py",
     "openkapsel/client_runtime/client_rpc.py",
     "openkapsel/client_runtime/client_tasks.py",
+    "openkapsel/client_runtime/shared_job_tasks.py",
+    "openkapsel/job_worker.py",
     "openkapsel/client_runtime/client_windows.py",
     "openkapsel/files/git_operations.py",
     "openkapsel/files/git_read.py",

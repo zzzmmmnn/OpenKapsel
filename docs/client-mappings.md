@@ -143,10 +143,10 @@ call `POST /rpc/<family>/<operation>`. MCP uses one `rpc_call` tool: provide
 publishes `write` and `execution`. The registry default is `execution=sync` for
 reads and `execution=task` for writes, although plugins may declare either mode
 explicitly. `sync` returns the result directly. `task` returns HTTP 202 and a
-normal task ID; mapped tasks use `client.<mapping>.<task>`, while server tasks use
+normal task ID; mapped Shell jobs use `client.<mapping_id>.&a1B2&`, while server jobs use a four-character `&a1B2&` ID from
 the server task registry. Poll `/task/get/<id>` or `/task/output/<id>`, and use the
 ordinary interrupt/kill task controls. Mapping tasks survive provider WebSocket
-disconnects/reconnects while the client process remains alive. Server RPC tasks
+disconnects/reconnects and Client process restarts (Shell jobs are held by a separate Job Manager). Task-based Mapping RPC operations run in separate Manager-owned Worker processes and persist their output and result across Client process restarts. Server RPC tasks
 follow normal server task persistence. A selected target never falls back to the
 other host after an error.
 
@@ -154,10 +154,9 @@ For `write=false`, read permission is sufficient and no Plan Context is
 required. For `write=true`, the caller needs the control credential, token write
 permission, and `plan_id`, `taskname`, and `message`; mapped writes additionally
 require that mapping to be enabled with `writable=true`. Task operations accept
-optional `timeout_seconds`. Mapping tasks are bounded by the client's local task
-policy; server tasks use the server task registry. Client-configured third-party
-plugins remain trusted local code in the mapping client process, while the server
-registry exposes only explicitly registered server families.
+optional `timeout_seconds`. Shell tasks on both Server and Mapping Client default to 600 seconds; explicit positive finite timeouts have no upper bound (e.g. `1e9`). Mapping Shell jobs use the shared manager's 16 global/4 per Mapping quotas; Mapping task-based RPC jobs use the same shared 16/4 Manager quota. Server tasks use the Server task registry. Client-configured third-party task-based plugins run as Manager-owned Worker
+processes using their configured Client interpreter. They remain trusted local
+code; only registered server RPC families execute against the server workspace.
 
 The file family currently uses version `3` and advertises its supported
 operations. The server automatically sends one complete file operation over the
@@ -248,23 +247,23 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 ## Client execution policy
 
-Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Podman defaults are two concurrent tasks, 600 seconds, 256 MB memory, 64 processes, and one CPU per task.
+Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). The shared Job Manager limits running Mapping Shell jobs to 16 total and 4 per Mapping ID, with a 600-second default timeout and no maximum for explicitly requested positive finite timeouts. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` does not cap Manager-owned Shell jobs.
 
 To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
 
 The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/task/*` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
 
-There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/task/*` routes. Client output is combined stdout/stderr, capped at 2 MB per task, and retrieved incrementally as base64. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
+There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/task/*` routes. Client Shell output combines stdout/stderr and is appended directly to the Manager's bounded 64 MiB disk spool; clients read it incrementally as base64, and advancing the read offset physically reclaims acknowledged bytes. Stdin is likewise queued on disk and reclaimed as the child consumes it. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
 
-### Task lifetime across reconnects
+### Persistent Mapping Shell Job Manager
 
-With client 1.58.0 or later, one in-memory task manager spans all automatic reconnects. Network loss or a server restart does not kill tasks or reset their deadlines. After reconnect, list tasks or use the original task ID to read output, inspect exit status, send stdin, interrupt, or kill. Offline requests fail: they are not queued, and an unavailable client does not imply a stopped task. Never automatically replay a start request whose response was lost; reconnect and inspect the task list first.
+Mapping Shell jobs run in one **per-OS-user shared on-demand Job Manager process**, independently of ClientRuntime. Any Client task list/get/start operation starts the singleton manager if required. Linux/macOS use authenticated `multiprocessing.connection` AF_UNIX and Windows uses AF_PIPE Named Pipes; JSON is sent with `send_bytes/recv_bytes` (not pickle). The manager stores jobs in SQLite and stdin/stdout in private disk spools outside every Mapping export. It terminates jobs only on explicit interrupt/kill, expiration, or explicit manager shutdown, not when the Mapping Client reconnects, exits, reloads, or starts again.
 
-Results completed while offline remain available. Uncollected results do not expire while the client process remains alive. A completed result becomes collected when a task GET reads through the end of its retained output; listing alone does not collect it. Collected results are pruned on subsequent requests after one hour, or beyond four collected records. The registry holds at most `max_tasks + 4` total records (six by default); when full it rejects new starts rather than discarding uncollected results. The server reports this condition as `409 client_task_capacity_reached` with recovery guidance. List the completed client tasks, read each task output through its final offset so the result is marked collected, then retry the new task start. A plain task listing is not sufficient. Per-task output remains capped at 2 MB, with truncation reported explicitly.
+The Client URL's final 24-character `mapping_id` is the owner of each job; clients also present their Mapping credential, pinned as a hash by the manager. A Client may list/query/control only jobs belonging to its own Mapping ID and credential. A new Mapping token after credential rotation requires an authorized manager-side owner reset; an arbitrary new credential is not allowed to claim the existing jobs. Within one OS user account, other programs with that account's filesystem and process privileges are outside this application-level boundary.
 
-This is reconnect persistence, not process-restart persistence: stopping the client normally (including Ctrl+C and `--once` termination) kills active tasks and discards in-memory results. Client crashes, OS restarts, and detached native processes are not recoverable through this manager. File handles remain session-scoped and are closed on disconnect. Existing clients must be upgraded and restarted to use the new task lifetime.
+The Manager has global capacity for **16** running Shell jobs, with **4** per Mapping key. Job IDs are six-character `&a1B2&` references: four randomly selected case-sensitive ASCII letters/digits between ampersands. The Server prefixes mapped IDs as `client.<mapping_id>.&a1B2&`; normal `/task/*` and MCP task APIs remain available. Duplicate starts with an already-owned ID return the existing job; do not replay a failed start with a different ID without checking `task_list`.
 
-When the total registry is full, starting a task may evict the oldest already-collected result before its one-hour deadline. Uncollected results are never evicted to make room.
+Output is retained on disk in bounded 64 MiB spools per job. Advancing the offset confirms receipt, allowing the manager to discard the consumed prefix; output lost to quota is reported as truncated/a gap. The manager may remove old completed, read-through jobs after one hour or when more than four retained records exist. `python -m openkapsel.job_manager --stop` explicitly terminates jobs and stops the manager; the next Client request creates it again. If **the Manager itself** crashes or restarts, its SQLite records and output survive, but still-running child processes and anonymous stdin/stdout pipes are not reattached; they are marked interrupted. Async RPC plugins use isolated one-shot Workers with credentials passed over anonymous stdin rather than persisted in SQLite or command-line arguments. Their results are stored on disk, and both Shell and RPC Jobs survive Client restarts; a Manager crash still cannot reattach active Worker I/O.
 
 Podman on macOS/Windows runs Linux workloads, not native platform tests. Linux Bubblewrap and native macOS/Windows sandbox adapters remain follow-up backends; this version does not claim they are implemented.
 

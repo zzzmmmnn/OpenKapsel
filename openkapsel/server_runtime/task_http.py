@@ -23,7 +23,9 @@ class TaskHttpMixin:
         if self._start_client_shell(body):
             return
         cwd_value = body.get("cwd", "")
-        timeout = body.get("timeout_seconds", self.server.config.default_command_timeout)
+        timeout = body.get("timeout_seconds")
+        if timeout is None:
+            timeout = self.server.config.default_command_timeout
         interactive = self._optional_bool(body, "interactive", False)
         task = start_shell_task(
             self.server,

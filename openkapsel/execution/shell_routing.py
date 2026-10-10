@@ -8,6 +8,7 @@ from pathlib import Path
 
 from openkapsel.errors import ApiError
 from openkapsel.random_ids import token_urlsafe_alnum
+from openkapsel.job_manager import new_job_id
 
 
 def client_task_id(mid, tid):
@@ -31,11 +32,12 @@ class RemoteOutput:
             result = self.task.fetch(offset)
             data = base64.b64decode(result["output"], validate=True)[:limit]
             end = result.get("output_size", result["next_offset"])
-            actual = min(offset, end)
+            actual = max(result.get("output_base", 0), min(offset, end))
         return {"data": data.decode("utf-8", errors="replace"),
                 "data_base64": base64.b64encode(data).decode("ascii"),
                 "encoding": "utf-8-replace", "offset": actual,
-                "next_offset": actual + len(data), "available_end": end, "gap": False}
+                "next_offset": actual + len(data), "available_end": end,
+                "gap": bool(result.get("gap", False)) if not self.empty else False}
 
 
 class RemoteTask:
@@ -90,7 +92,7 @@ class ShellRoutingMixin:
     def _client_task_parts(self, task_id):
         if not task_id.startswith("client."):
             return None
-        match = re.fullmatch(r"client\.([A-Za-z0-9_-]{24})\.([A-Za-z0-9_-]{8,64})", task_id)
+        match = re.fullmatch(r"client\.([A-Za-z0-9_-]{24})\.(&[A-Za-z0-9]{4}&|[A-Za-z0-9_-]{8,64})", task_id)
         if not match:
             raise ApiError(404, "task_not_found", "task does not exist")
         return self._mapping_for_caller(match[1]), match[2]
@@ -151,7 +153,7 @@ class ShellRoutingMixin:
             raise ApiError(403, "client_execution_disabled", "mapping and client execution must both be enabled")
         if not execution.get("shell_command"):
             raise ApiError(409, "client_upgrade_required", "update and reconnect client for unified Shell execution")
-        args = {"task_id": token_urlsafe_alnum(18), "command": body["command"],
+        args = {"task_id": new_job_id(), "command": body["command"],
                 "cwd": candidate.relative_to(self.server.mappings.mount_path(row)).as_posix(),
                 "interactive": self._optional_bool(body, "interactive", False)}
         if body.get("timeout_seconds") is not None:

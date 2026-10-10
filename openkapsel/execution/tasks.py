@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from openkapsel.random_ids import token_urlsafe_alnum
+from openkapsel.job_manager import new_job_id
 from openkapsel.execution.cgroups import SandboxLimits, TokenCgroupManager
 from openkapsel.errors import ApiError
 from openkapsel.execution.task_history import ArchivedTask, TaskHistoryStore
@@ -367,7 +368,7 @@ class TaskRegistry:
                     f"token resource controls are unavailable: {exc}",
                 ) from None
         task = ShellTask(
-            id=f"task_{token_urlsafe_alnum(12)}",
+            id=new_job_id(),
             command=command,
             cwd=str(cwd),
             output_limit=self.config.max_task_output_bytes,
@@ -418,6 +419,14 @@ class TaskRegistry:
                         "running": global_running,
                     },
                 )
+            # A four-character public ID is human-friendly but must not
+            # accidentally replace an active or retained task on collision.
+            for _ in range(128):
+                if task.id not in self._tasks and self.history.load(owner_token, task.id) is None:
+                    break
+                task.id = new_job_id()
+            else:
+                raise ApiError(503, "task_id_exhausted", "cannot allocate an unused job ID")
             self._tasks[task.id] = task
             thread = threading.Thread(
                 target=self._run,
@@ -442,7 +451,7 @@ class TaskRegistry:
         runner: Any,
     ) -> ShellTask:
         task = ShellTask(
-            id=f"task_{token_urlsafe_alnum(12)}",
+            id=new_job_id(),
             command=f"rpc {family}.{operation}",
             cwd=str(cwd),
             output_limit=self.config.max_task_output_bytes,
@@ -480,6 +489,14 @@ class TaskRegistry:
                     "the server already has the maximum number of running tasks",
                     {"scope": "global", "limit": self.config.max_concurrent_shell_tasks, "running": global_running},
                 )
+            # A four-character public ID is human-friendly but must not
+            # accidentally replace an active or retained task on collision.
+            for _ in range(128):
+                if task.id not in self._tasks and self.history.load(owner_token, task.id) is None:
+                    break
+                task.id = new_job_id()
+            else:
+                raise ApiError(503, "task_id_exhausted", "cannot allocate an unused job ID")
             self._tasks[task.id] = task
             thread = threading.Thread(
                 target=self._run_rpc,
