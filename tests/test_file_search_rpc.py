@@ -10,7 +10,8 @@ from unittest.mock import patch
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.errors import ApiError
 from openkapsel.rpc_plugins import load_server_rpc_registry
-from openkapsel.rpc_plugins.file_search import _plocate_pattern, plugin
+from openkapsel.files.filename_index import _literal_run
+from openkapsel.rpc_plugins.file_search import plugin
 from openkapsel.rpc_plugins.file_search.everything_ipc import (
     REQUEST_FULL_PATH,
     build_query2,
@@ -58,8 +59,9 @@ class EverythingIpcProtocolTests(unittest.TestCase):
         self.assertNotRegex(r"C:\RootX1\a+b.md", pattern)
         self.assertNotRegex(r"C:\Root[1]\sub\other.txt", pattern)
 
-    def test_plocate_glob_metacharacters_are_escaped(self):
-        self.assertEqual(r"abc\*\?\[x\]", _plocate_pattern("abc*?[x]"))
+    def test_glob_hint_excludes_metacharacters_and_bracket_classes(self):
+        self.assertEqual("config", _literal_run("*config?.py", True))
+        self.assertEqual("test", _literal_run("test[0-9].py", True))
 
 
 class FileSearchRpcTests(unittest.TestCase):

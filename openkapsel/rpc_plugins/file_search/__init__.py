@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import selectors
@@ -32,6 +33,7 @@ _SEARCH_SCHEMA = object_schema(
         "offset": {"type": "integer", "minimum": 0, "maximum": MAX_OFFSET, "default": 0},
         "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS, "default": 100},
         "case_sensitive": {"type": "boolean", "default": False},
+        "mode": {"type": "string", "enum": ["literal", "glob"], "default": "literal"},
         "timeout_seconds": {
             "type": "number",
             "minimum": 0.1,
@@ -51,8 +53,8 @@ def _platform_backend() -> tuple[str | None, str | None]:
         executable = shutil.which("mdfind")
         return ("mdfind", executable) if executable else (None, None)
     if sys.platform.startswith("linux"):
-        executable = shutil.which("plocate")
-        return ("plocate", executable) if executable else (None, None)
+        from openkapsel.files.filename_index import watcher_available
+        return ("sqlite_watch", None) if watcher_available() else (None, None)
     return None, None
 
 
@@ -68,7 +70,7 @@ def _backend_status() -> dict[str, Any]:
     if sys.platform == "darwin":
         return {"backend": "mdfind", "available": False, "reason": "dependency_missing"}
     if sys.platform.startswith("linux"):
-        return {"backend": "plocate", "available": False, "reason": "dependency_missing"}
+        return {"backend": "sqlite_watch", "available": False, "reason": "dependency_missing"}
     if os.name == "nt":
         return {"backend": "everything_ipc", "available": False, "reason": "service_unavailable"}
     return {"backend": None, "available": False, "reason": "platform_unsupported"}
@@ -89,15 +91,6 @@ def _scope(files, value: str) -> Path:
 def _prefilter_term(query: str) -> str:
     tokens = re.findall(r"\w+", query, flags=re.UNICODE)
     return max(tokens, key=len) if tokens else query
-
-
-def _plocate_pattern(value: str) -> str:
-    result = []
-    for char in value:
-        if char in "\\*?[]":
-            result.append("\\")
-        result.append(char)
-    return "".join(result)
 
 
 def _nul_paths(command: list[str], backend: str, timeout_seconds: float) -> Iterator[str]:
@@ -152,8 +145,6 @@ def _nul_paths(command: list[str], backend: str, timeout_seconds: float) -> Iter
             yield os.fsdecode(bytes(output))
         if return_code == 0:
             return
-        if backend == "plocate" and return_code == 1 and not error.strip():
-            return
         fail(
             "file_search_failed",
             f"{backend} indexed search failed",
@@ -207,12 +198,6 @@ def _backend_paths(
             backend,
             timeout_seconds,
         )
-    if backend == "plocate" and executable:
-        command = [executable, "-0", "-e"]
-        if not case_sensitive:
-            command.append("-i")
-        command.extend(["--", _plocate_pattern(str(scope)), _plocate_pattern(query)])
-        return backend, _nul_paths(command, backend, timeout_seconds)
     fail("file_search_unavailable", "no indexed filename-search backend is available", 503)
 
 
@@ -220,7 +205,7 @@ def _has_surrogate(value: str) -> bool:
     return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
 
 
-def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool):
+def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool, mode: str = "literal"):
     if not raw or _has_surrogate(raw):
         return None
     candidate = Path(raw)
@@ -238,7 +223,7 @@ def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool):
     name = candidate.name
     left = name if case_sensitive else name.casefold()
     right = query if case_sensitive else query.casefold()
-    if right not in left:
+    if not (fnmatch.fnmatchcase(left, right) if mode == "glob" else right in left):
         return None
     if ".openkapsel" in relative_root.parts:
         return None
@@ -276,14 +261,33 @@ def _search(files, args):
     offset = args.get("offset", 0)
     limit = args.get("limit", 100)
     case_sensitive = args.get("case_sensitive", False)
+    mode = args.get("mode", "literal")
     timeout_seconds = float(
         args.get("timeout_seconds", DEFAULT_SEARCH_TIMEOUT_SECONDS)
     )
+    index = getattr(files, "filename_index", None)
+    if index is not None and index.ready:
+        indexed = index.search(
+            scope, query, glob=mode == "glob", case_sensitive=case_sensitive,
+            offset=offset, limit=limit, timeout_seconds=timeout_seconds,
+            accept=lambda path, kind: _candidate(
+                files, scope, str(path), query, case_sensitive, mode
+            ),
+        )
+        if indexed is not None:
+            return {
+                **indexed, "scope": scope_arg, "query": query,
+                "mode": mode, "case_sensitive": case_sensitive,
+                "offset": offset, "limit": limit,
+                "timeout_seconds": timeout_seconds,
+                "returned": len(indexed["results"]),
+            }
+
+    if mode == "glob":
+        fail("file_search_unavailable",
+             "glob search requires a ready local index or recursive fs_find traversal", 503)
     backend, paths = _backend_paths(
-        scope,
-        query,
-        case_sensitive,
-        timeout_seconds,
+        scope, query, case_sensitive, timeout_seconds,
     )
 
     accepted = []
@@ -292,7 +296,7 @@ def _search(files, args):
     try:
         try:
             for raw in paths:
-                item = _candidate(files, scope, raw, query, case_sensitive)
+                item = _candidate(files, scope, raw, query, case_sensitive, mode)
                 if item is None or item["path"] in seen:
                     continue
                 seen.add(item["path"])
@@ -314,6 +318,7 @@ def _search(files, args):
         "backend": backend,
         "scope": scope_arg,
         "query": query,
+        "mode": mode,
         "case_sensitive": case_sensitive,
         "offset": offset,
         "limit": limit,
@@ -332,12 +337,13 @@ class FileSearchRpcPlugin:
     default_enabled = True
     description = (
         "Read-only indexed filename search scoped to the selected export. "
-        "Uses native Everything IPC on Windows, mdfind on macOS, and plocate on Linux."
+        "Uses native Everything IPC on Windows, mdfind on macOS, and SQLite/watchfiles on Linux."
     )
     operations = {
         "search": {
             "description": (
                 "Find files/directories whose filename contains a literal query string. "
+                "Set mode=glob for *, ?, and [] filename patterns; literal is default. "
                 "Results are export-relative and never escape the requested path scope."
             ),
             "write": False,
@@ -364,7 +370,11 @@ class FileSearchRpcPlugin:
                 fail("file_search_operation", "unsupported file-search operation")
             validate(args, self.operations[operation]["input_schema"])
             if operation == "status":
-                return _backend_status()
+                result = _backend_status()
+                index = getattr(files, "filename_index", None)
+                if index is not None:
+                    result["ready"] = index.ready
+                return result
             return _search(files, args)
 
         return response(run)

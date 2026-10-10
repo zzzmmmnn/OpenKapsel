@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fnmatch
 import hashlib
 import io
 import mimetypes
@@ -333,8 +334,42 @@ class FileHandlersMixin(FileOperationSupportMixin):
         max_results: int,
         case_sensitive: bool,
         timeout_seconds: float,
+        mode: str = "literal",
     ):
-        return None
+        index = getattr(self.server, "filename_index", None)
+        if index is None or not index.ready:
+            return None
+        scope = self._resolve_path(path)
+        # The native index deliberately does not descend into FUSE mounts.
+        # Keep existing traversal/RPC behavior when scope overlaps one.
+        mounts = []
+        manager = getattr(self.server, "mappings", None)
+        if manager is not None:
+            mounts.extend(manager.mount_path(row) for row in manager.store.list())
+        storage = getattr(self.server, "storage_providers", None)
+        if storage is not None:
+            mounts.extend(storage.mapping_path(row) for row in storage.store.mappings())
+        if any(scope == mount or scope in mount.parents or mount in scope.parents
+               for mount in mounts):
+            return None
+
+        def accept(candidate, kind):
+            try:
+                if self._is_hidden_internal_path(candidate.parent, candidate):
+                    return None
+                info = self._file_stat(candidate)
+                actual = ("file" if stat.S_ISREG(info.st_mode) else
+                          "directory" if stat.S_ISDIR(info.st_mode) else None)
+                if kind != actual:
+                    return None
+                return {"path": str(candidate), "type": kind}
+            except (OSError, ApiError, SafePathError):
+                return None
+
+        return index.search(
+            scope, query, glob=(mode == "glob"), case_sensitive=case_sensitive,
+            limit=max_results, timeout_seconds=timeout_seconds, accept=accept,
+        )
 
     def _handle_fs_find(self, query: dict[str, list[str]]) -> None:
         self._require_permission(self.token_record.can_read, "read permission is not granted")
@@ -371,6 +406,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
             maximum=self.server.config.max_search_results,
         )
         case_sensitive = self._query_bool(query, "case_sensitive", False)
+        mode = self._query_one(query, "mode", "literal")
+        if mode not in {"literal", "glob"}:
+            raise ApiError(400, "invalid_request", "mode must be literal or glob")
         timeout_seconds = self._query_float(
             query,
             "timeout_seconds",
@@ -387,6 +425,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             max_results=max_results,
             case_sensitive=case_sensitive,
             timeout_seconds=max(0.1, deadline - time.monotonic()),
+            mode=mode,
         )
         if accelerated is not None:
             payload = dict(accelerated)
@@ -396,6 +435,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 case_sensitive=case_sensitive,
                 max_results=max_results,
                 timeout_seconds=timeout_seconds,
+                mode=mode,
             )
             self._send_json(HTTPStatus.OK, payload)
             return
@@ -464,7 +504,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 else:
                     continue
                 candidate = name if case_sensitive else name.casefold()
-                if left in candidate:
+                matched = fnmatch.fnmatchcase(candidate, left) if mode == "glob" else left in candidate
+                if matched:
                     results.append({"path": str(entry), "type": kind})
                     if len(results) >= max_results:
                         truncated = True
@@ -481,6 +522,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "case_sensitive": case_sensitive,
                 "max_results": max_results,
                 "timeout_seconds": timeout_seconds,
+                "mode": mode,
                 "backend": "recursive",
                 "results": results,
                 "result_count": len(results),

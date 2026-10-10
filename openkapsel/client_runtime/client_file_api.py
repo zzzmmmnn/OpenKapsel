@@ -130,6 +130,7 @@ class ClientFileAPI(FileHandlersMixin):
         max_results,
         case_sensitive,
         timeout_seconds,
+        mode="literal",
     ):
         capability = self.files.rpc_capabilities.get("file_search", {})
         if capability.get("state") != "available":
@@ -157,6 +158,7 @@ class ClientFileAPI(FileHandlersMixin):
                     "limit": min(200, max_results - len(items)),
                     "case_sensitive": case_sensitive,
                     "timeout_seconds": max(0.1, remaining),
+                    "mode": mode,
                 },
             )
             if not isinstance(result, dict) or not isinstance(result.get("status"), int):

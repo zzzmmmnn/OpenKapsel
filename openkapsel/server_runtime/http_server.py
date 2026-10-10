@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
+import sys
 import socket
 import sqlite3
 import tempfile
@@ -140,6 +143,20 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         from .request_handler import WorkspaceRequestHandler
 
         super().__init__(address, WorkspaceRequestHandler)
+        self.filename_index = None
+        if sys.platform.startswith("linux"):
+            from openkapsel.files.filename_index import FilenameIndex
+            try:
+                self.filename_index = FilenameIndex(
+                    config.root, config.upload_state_dir.parent / "file-index"
+                    / (hashlib.sha256(str(config.root).encode()).hexdigest()[:24] + ".sqlite3")
+                )
+                self.filename_index.start()
+            except (OSError, ValueError) as exc:
+                logging.getLogger(__name__).warning(
+                    "Native filename index unavailable; recursive search will be used: %s", exc
+                )
+                self.filename_index = None
         self.scheduler = SchedulerManager(self)
 
     def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
@@ -196,6 +213,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.sse_slots.release()
 
     def server_close(self) -> None:
+        if self.filename_index is not None:
+            self.filename_index.close()
         self.api_workers.close()
         self.scheduler.close()
         self.tasks.close()

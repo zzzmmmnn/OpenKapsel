@@ -130,7 +130,7 @@ class ClientRpcCapabilityTests(unittest.TestCase):
     def test_missing_file_search_backend_is_not_advertised(self):
         with patch(
             "openkapsel.rpc_plugins.file_search._backend_status",
-            return_value={"backend": "plocate", "available": False, "reason": "dependency_missing"},
+            return_value={"backend": "sqlite_watch", "available": False, "reason": "dependency_missing"},
         ):
             capabilities = self.capabilities()
         self.assertNotIn("file_search", capabilities)

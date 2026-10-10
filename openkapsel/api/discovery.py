@@ -1877,12 +1877,13 @@ class DiscoveryMixin:
                 },
                 "fs_find": {
                     "url_query": "path=.&query=<filename>&max_results=100&timeout_seconds=5",
-                    "notes": "recursively finds files/directories whose basename contains a literal query string. Default timeout is 5 seconds; timeout returns partial results with timed_out=true and truncated=true. A mapped subtree uses its indexed file_search backend when advertised, otherwise the client recursively traverses it.",
+                    "notes": "searches basenames using literal substring by default or mode=glob for * ? [] matching. Default timeout is 5 seconds; timeout returns partial results with timed_out=true and truncated=true. Native Linux roots use shared SQLite/watchfiles indexing, with recursive fallback while the index is unavailable; mapped subtrees delegate to the client.",
                     "query": {
                         "path": ".",
                         "query": "<required filename fragment>",
                         "max_results": min(100, self.server.config.max_search_results),
                         "case_sensitive": False,
+                        "mode": "literal",
                         "timeout_seconds": 5,
                         **optional_read_context_query,
                     },

@@ -22,7 +22,11 @@ class ClientFiles:
         rpc_capabilities=None,
         rpc_registry=None,
         protected_paths=(),
+        filename_index=None,
+        index_owned=True,
     ):
+        self.filename_index = filename_index
+        self._index_owned = index_owned
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("export root must be a directory")
@@ -274,6 +278,10 @@ class ClientFiles:
 
     def close(self):
         try:
-            self.rpc_registry.close()
+            if self._index_owned and self.filename_index is not None:
+                self.filename_index.close()
         finally:
-            self.close_handles()
+            try:
+                self.rpc_registry.close()
+            finally:
+                self.close_handles()

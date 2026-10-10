@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import errno
 import json
 import logging
@@ -201,6 +202,19 @@ def _create_resources(config, *, protected_paths=()):
         rpc_registry=rpc_registry,
         protected_paths=protected_paths,
     )
+    if sys.platform.startswith("linux"):
+        from openkapsel.files.filename_index import FilenameIndex
+        root_key = hashlib.sha256(str(export_root).encode("utf-8")).hexdigest()[:24]
+        if protected_paths:
+            state_dir = Path(protected_paths[0]).expanduser().resolve().parent / ".openkapsel-client-state"
+        else:
+            state_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "openkapsel"
+        try:
+            files.filename_index = FilenameIndex(export_root, state_dir / f"files-{root_key}.sqlite3")
+            files.filename_index.start()
+        except (OSError, ValueError) as exc:
+            LOG.warning("Local filename index unavailable; recursive search will be used: %s", exc)
+            files.filename_index = None
     limits = config.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {"max_tasks", "max_seconds", "memory_mb", "processes", "cpus"}:
         raise ValueError("invalid client limits")

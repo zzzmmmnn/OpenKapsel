@@ -589,13 +589,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "fs_find",
         "Find files by name",
-        "Recursively find files and directories whose basename contains a literal query. Mapped roots use indexed file_search acceleration when available and otherwise fall back to recursive traversal.",
+        "Recursively find files and directories by literal basename substring (default) or glob (* ? []). Native roots use SQLite/watchfiles on Linux; mapped roots delegate to the client, with recursive fallback.",
         _object_schema(
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 1024},
                 "path": {**PATH, "default": "."},
                 "max_results": {**POSITIVE, "default": 100},
                 "case_sensitive": {"type": "boolean", "default": False},
+                "mode": {"type": "string", "enum": ["literal", "glob"], "default": "literal"},
                 "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 60, "default": 5},
             },
             ("query",),

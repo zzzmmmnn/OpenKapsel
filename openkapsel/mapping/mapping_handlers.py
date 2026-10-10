@@ -287,6 +287,8 @@ class MappingHandlersMixin:
             writable=self.token_record.can_write,
             rpc_registry=self.server.rpc_registry,
             rpc_capabilities=self.server.rpc_capabilities,
+            filename_index=getattr(self.server, "filename_index", None),
+            index_owned=False,
         )
         rpc_args = self._rpc_args_with_policy(family, operation, body.get("args", {}))
         if execution == "task":
