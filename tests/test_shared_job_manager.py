@@ -36,6 +36,18 @@ class SharedManagerTests(unittest.TestCase):
                 shutdown(self.home)
             except (OSError, ConnectionError, EOFError):
                 pass
+            else:
+                if os.name != "nt":
+                    # shutdown() acknowledges the stop request before the
+                    # daemon closes SQLite and unlinks its socket. Never
+                    # delete the temporary state while it is still writing.
+                    from openkapsel.job_manager import endpoint
+                    address, _ = endpoint(self.home)
+                    deadline = time.monotonic() + 10
+                    while Path(address).exists() and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    self.assertFalse(Path(address).exists(),
+                                     "Job Manager still running during test cleanup")
         self.addCleanup(cleanup)
 
     def _start(self, mid, tid, program, *, timeout=40, interactive=False):
@@ -71,9 +83,11 @@ class SharedManagerTests(unittest.TestCase):
         started = self._start(self.MAPPING_A, tid, 'print("managed-job")')
         self.assertTrue(started["running"])
         self.assertEqual(started["task_id"], tid)
-        self.assertEqual(started, self._start(
-            self.MAPPING_A, tid, 'print("managed-job")'
-        ))
+        repeated = self._start(self.MAPPING_A, tid, 'print("managed-job")')
+        # A fast job may finish between requests; status fields are live.
+        # Idempotency means reusing the original job, not freezing its state.
+        for key in ("task_id", "kind", "location", "started_at", "interactive"):
+            self.assertEqual(started[key], repeated[key], key)
         with self.assertRaises(OSError):
             self._start(self.MAPPING_A, tid,
                         'raise Exception("different command must fail")')
@@ -364,9 +378,32 @@ time.sleep(30)
 
     def test_concurrent_client_startup_resolves_one_singleton(self):
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            results = list(pool.map(lambda _: ensure_running(self.home), range(12)))
+        from openkapsel import job_manager
+
+        # Observe real daemon launches instead of mocking the startup path:
+        # identical PIDs alone do not reveal redundant losing processes.
+        launch = job_manager.subprocess.Popen
+        launched = []
+        def record_launch(*args, **kwargs):
+            process = launch(*args, **kwargs)
+            argv = args[0] if args else kwargs.get("args", ())
+            if (isinstance(argv, (tuple, list)) and len(argv) >= 5
+                    and argv[1:4] == ["-m", "openkapsel.job_manager", "--state"]
+                    and argv[4] == str(self.home)):
+                launched.append(process)
+            return process
+
+        with patch.object(job_manager.subprocess, "Popen", side_effect=record_launch):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                results = list(pool.map(lambda _: ensure_running(self.home), range(12)))
         self.assertEqual(1, len({row["pid"] for row in results}))
+        self.assertEqual(1, len(launched),
+                         f"concurrent clients launched redundant managers: "
+                         f"pids={[(p.pid, p.poll()) for p in launched]} "
+                         f"responses={[row['pid'] for row in results]} "
+                         f"log={(self.home / 'manager.log').read_text(errors='replace')[-500:]}")
+        self.assertEqual(results[0]["pid"], launched[0].pid)
+        self.assertTrue((self.home / "jobs.sqlite3").is_file())
 
     def test_new_client_runtime_recovers_job_after_previous_client_closes(self):
         config = {

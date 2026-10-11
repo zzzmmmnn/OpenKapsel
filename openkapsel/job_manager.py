@@ -34,6 +34,9 @@ DEFAULT_TIMEOUT = 120
 MAX_OUTPUT = 64 * 1024 * 1024
 PROTOCOL = 1
 MAX_MESSAGE = 2 * 1024 * 1024
+# Serialize cold starts in one Client process. The daemon's file lock still
+# enforces the singleton across separate Client processes.
+_START_LOCK = threading.Lock()
 
 
 def new_job_id():
@@ -549,7 +552,10 @@ class Manager:
     def serve(self):
         if self.family == "AF_UNIX":
             Path(self.address).unlink(missing_ok=True)
-        listener = Listener(self.address, family=self.family, authkey=None)
+        # multiprocessing's default backlog is just 1. Concurrent Client
+        # startup/status probes can overflow it, mistake a busy singleton
+        # for a missing manager, and launch unnecessary losing processes.
+        listener = Listener(self.address, family=self.family, backlog=64, authkey=None)
         if self.family == "AF_UNIX":
             os.chmod(self.address, 0o600)
         try:
@@ -598,30 +604,41 @@ def ensure_running(home):
         return running
     except (OSError, EOFError, ConnectionError):
         pass
-    log = open(home / "manager.log", "ab", buffering=0)
-    try:
-        daemon_process = subprocess.Popen(
-            [sys.executable, "-m", "openkapsel.job_manager", "--state", str(home)],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-            close_fds=True, start_new_session=os.name != "nt",
-            creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-                           if os.name == "nt" else 0),
-        )
-        # Reap the detached daemon on its eventual exit without blocking
-        # ClientRuntime or triggering Popen ResourceWarning at garbage collection.
-        threading.Thread(target=daemon_process.wait, daemon=True).start()
-    finally:
-        log.close()
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
+    with _START_LOCK:
+        # Concurrent calls can all miss the initial ping. Recheck inside the
+        # lock before spawning: only one process per Client may attempt a cold
+        # start, while the existing daemon file lock handles other Clients.
         try:
             running = connect_once(home, {"op": "ping"})
             if running.get("version") != PROTOCOL:
-                raise RuntimeError("Job Manager IPC protocol mismatch")
+                raise RuntimeError("Job Manager IPC protocol mismatch; explicit manager upgrade is required")
             return running
         except (OSError, EOFError, ConnectionError):
-            time.sleep(.05)
-    raise ConnectionError("shared Job Manager did not start")
+            pass
+        log = open(home / "manager.log", "ab", buffering=0)
+        try:
+            daemon_process = subprocess.Popen(
+                [sys.executable, "-m", "openkapsel.job_manager", "--state", str(home)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                close_fds=True, start_new_session=os.name != "nt",
+                creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                               if os.name == "nt" else 0),
+            )
+            # Reap the detached daemon on its eventual exit without blocking
+            # ClientRuntime or triggering Popen ResourceWarning at garbage collection.
+            threading.Thread(target=daemon_process.wait, daemon=True).start()
+        finally:
+            log.close()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                running = connect_once(home, {"op": "ping"})
+                if running.get("version") != PROTOCOL:
+                    raise RuntimeError("Job Manager IPC protocol mismatch")
+                return running
+            except (OSError, EOFError, ConnectionError):
+                time.sleep(.05)
+        raise ConnectionError("shared Job Manager did not start")
 
 
 def request(home, mapping_id, op, args=None):
