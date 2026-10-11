@@ -310,7 +310,14 @@ class FilenameIndex:
 
     def _worker_loop(self):
         try:
-            if not self._watch_ready.wait(timeout=5) or self._stop.is_set():
+            # Watch registration enumerates every accessible directory and can
+            # take longer than five seconds on large roots. Never abandon the
+            # builder while the watcher is still starting: that leaves an empty
+            # SQLite database and permanent recursive-search fallback.
+            while not self._watch_ready.wait(timeout=1):
+                if self._stop.is_set() or not self._watcher.is_alive():
+                    return
+            if self._stop.is_set():
                 return
             self.rebuild()
             # Apply modifications observed while the initial scan was running.

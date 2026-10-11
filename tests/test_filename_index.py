@@ -296,6 +296,41 @@ class SharedFilenameIndexTests(unittest.TestCase):
         self.assertEqual(200, portable["status"], portable)
         self.assertEqual(2, portable["body"]["result_count"])
 
+    def test_slow_watch_registration_does_not_abandon_initial_index(self):
+        # Model a slow watcher registration by making its first readiness
+        # wait time out, without sleeping five seconds in the test suite.
+        class FirstTimeoutEvent(threading.Event):
+            def __init__(self):
+                super().__init__()
+                self.wait_count = 0
+
+            def wait(self, timeout=None):
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    return False
+                return super().wait(timeout)
+
+        def fake_watch(*paths, stop_event, **kwargs):
+            yield set()  # watcher is now registered
+            while not stop_event.wait(0.02):
+                yield set()
+
+        self.index._ready.clear()
+        self.index._watch_ready = FirstTimeoutEvent()
+        fake_module = types.SimpleNamespace(
+            watch=fake_watch, Change=SimpleNamespace(added=1),
+        )
+        with patch.dict(sys.modules, {"watchfiles": fake_module}), patch(
+            "openkapsel.files.filename_index.watcher_available", return_value=True
+        ):
+            self.assertTrue(self.index.start())
+            deadline = time.monotonic() + 3
+            while not self.index.ready and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.index.ready, "initial builder exited after watcher wait timed out")
+            self.assertGreaterEqual(self.index._watch_ready.wait_count, 2)
+            self.assertEqual(3, self.search("test")["result_count"])
+
     def test_background_watcher_replays_later_changes(self):
         gate = threading.Event()
         new_file = self.src / "arriving.txt"
@@ -333,6 +368,39 @@ class SharedFilenameIndexTests(unittest.TestCase):
             while self.search("arriving")["result_count"] == 0 and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertEqual(1, self.search("arriving")["result_count"])
+
+    def test_mapping_rpc_session_preserves_shared_filename_index(self):
+        # A transport session gets a private handle table, but must not lose
+        # the runtime-owned index or close it when the session disconnects.
+        from openkapsel.client_runtime.client_rpc import ClientRpcSession
+
+        class Registry:
+            @staticmethod
+            def dispatch_sync(files, family, operation, args):
+                if family != "file_search" or operation != "search":
+                    raise AssertionError("unexpected RPC")
+                return plugin.dispatch(files, operation, args)
+
+        files = ClientFiles(
+            self.root, rpc_registry=Registry(),
+            rpc_capabilities={"file_search": {"state": "available"}},
+            filename_index=self.index, index_owned=False,
+        )
+        session = ClientRpcSession(
+            SimpleNamespace(files=files), SimpleNamespace(), threading.Event(),
+        )
+        try:
+            self.assertIs(session.files.filename_index, self.index)
+            self.assertFalse(session.files._index_owned)
+            result = ClientFileAPI.dispatch(session.files, "fs_find", {
+                "query": {"path": ["src"], "query": ["test1.py"]},
+            })
+            self.assertEqual(200, result["status"], result)
+            self.assertEqual("sqlite_watch", result["body"]["backend"])
+            self.assertEqual(1, result["body"]["result_count"])
+        finally:
+            session.close()
+        self.assertTrue(self.index.ready)
 
     def test_rpc_filters_private_scope_and_supports_glob(self):
         files = ClientFiles(self.root, rpc_registry=object(), rpc_capabilities={"stub": {}})

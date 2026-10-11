@@ -25,6 +25,7 @@ class ClientRpcSession:
         self.files = type(base)(
             base.root, writable=base.writable, rpc_registry=base.rpc_registry,
             rpc_capabilities=base.rpc_capabilities, protected_paths=base.protected_paths,
+            filename_index=base.filename_index, index_owned=False,
         )
         # Keep local mutations/seek-based handle I/O serialized even across
         # reconnects. Each session has its own handle table, never reused by a
