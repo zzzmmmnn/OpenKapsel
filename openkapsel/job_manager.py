@@ -153,6 +153,7 @@ class Manager:
         self.lock = threading.RLock()
         self.processes = {}
         self.writers = {}
+        self.collectors = {}
         self.stopping = threading.Event()
         self.last_access = time.monotonic()
 
@@ -284,6 +285,7 @@ class Manager:
                         writer.put_nowait(None)
                     except queue.Full:
                         pass
+                self.collectors.pop(tid, None)
 
     def _input_worker(self, tid, process, inputs):
         try:
@@ -372,6 +374,21 @@ class Manager:
         interactive = args.get("interactive", False)
         if type(interactive) is not bool:
             raise ValueError("invalid interactive flag")
+        # Reserved job execution sandbox environment. This is a JSON *string*;
+        # omitting it preserves the current OS-user execution behavior.
+        # Never silently run an unsupported sandbox request without isolation.
+        sandbox = args.get("sandbox")
+        if sandbox is not None:
+            if not isinstance(sandbox, str):
+                raise ValueError("sandbox must be a JSON string")
+            try:
+                specification = json.loads(sandbox)
+            except json.JSONDecodeError as exc:
+                raise ValueError("invalid sandbox JSON string") from exc
+            if not isinstance(specification, dict):
+                raise ValueError("sandbox JSON must contain an object")
+            if specification != {"type": "current_user"}:
+                raise ValueError("unsupported sandbox environment; only current_user is implemented")
         environment = args.get("env")
         if environment is not None and (
             not isinstance(environment, dict)
@@ -410,7 +427,9 @@ class Manager:
             self.writers[tid] = inputs
             threading.Thread(target=self._input_worker,
                              args=(tid, process, inputs), daemon=True).start()
-        threading.Thread(target=self._collect, args=(tid, process, timeout), daemon=True).start()
+        collector = threading.Thread(target=self._collect, args=(tid, process, timeout), daemon=True)
+        self.collectors[tid] = collector
+        collector.start()
         return self._summary(self._row(mid, public_id))
 
     def _signal(self, tid, force):
@@ -478,12 +497,31 @@ class Manager:
 
     def request(self, req):
         op = req.get("op")
-        if op in {"ping", "shutdown"}:
-            if op == "ping":
-                return {"version": PROTOCOL, "pid": os.getpid()}
-            self.stopping.set()
-            return {"stopping": True}
+        if op == "ping":
+            return {"version": PROTOCOL, "pid": os.getpid()}
+        if op == "shutdown":
+            force = req.get("force", False)
+            if type(force) is not bool:
+                raise ValueError("force must be a boolean")
+            with self.lock:
+                pending = self.db.execute(
+                    "SELECT mapping_id,id FROM jobs WHERE kind='shell' "
+                    "AND finished_at IS NULL ORDER BY started_at,id"
+                ).fetchall()
+                jobs = [dict(self._summary(self._row(mid, key.rsplit(".", 1)[-1])),
+                             mapping_id=mid) for mid, key in pending]
+                if self.stopping.is_set():
+                    return {"stopping": True, "jobs": jobs}
+                if jobs and not force:
+                    return {"stopping": False, "jobs": jobs}
+                self.stopping.set()
+                if force:
+                    for _mid, key in pending:
+                        self._signal(key, force=True)
+                return {"stopping": True, "jobs": jobs}
         with self.lock:
+            if self.stopping.is_set():
+                raise BlockingIOError("Job Manager is stopping")
             mid = self._mapping_key(req)
             args = req.get("args", {})
             if not isinstance(args, dict):
@@ -574,7 +612,15 @@ class Manager:
             with self.lock:
                 for tid in list(self.processes):
                     self._signal(tid, force=True)
-            self.db.close()
+                collectors = list(self.collectors.values())
+            # Wait for the actual output collectors to reap killed subprocesses
+            # and persist exit state before closing their shared SQLite DB.
+            for collector in collectors:
+                collector.join(timeout=15)
+            if any(collector.is_alive() for collector in collectors):
+                raise RuntimeError("Job Manager collectors did not stop")
+            with self.lock:
+                self.db.close()
             if self.family == "AF_UNIX":
                 Path(self.address).unlink(missing_ok=True)
 
@@ -649,14 +695,35 @@ def request(home, mapping_id, op, args=None):
                                "args": args or {}})
 
 
-def shutdown(home):
+def shutdown(home, *, force=False):
+    """Request shutdown without starting a missing Manager.
+
+    Without force, running jobs veto shutdown and are returned in jobs.
+    With force, all active jobs are terminated and their final status is
+    persisted before the Manager process finishes exiting.
+    """
+    if type(force) is not bool:
+        raise ValueError("force must be a boolean")
     home = prepare_home(home)
-    result = connect_once(home, {"op": "shutdown"})
-    # Wake the single accept loop so it can notice the stop event.
-    try:
-        connect_once(home, {"op": "ping"})
-    except (OSError, EOFError, ConnectionError):
-        pass
+    result = connect_once(home, {"op": "shutdown", "force": force})
+    if result["stopping"]:
+        # Wake the single accept loop only if shutdown was accepted.
+        try:
+            connect_once(home, {"op": "ping"})
+        except (OSError, EOFError, ConnectionError):
+            pass
+        # Waiting only for AF_UNIX socket unlink is insufficient: the old
+        # process can still hold the singleton lock, causing the next launch
+        # to lose the lock race and time out. Wait for actual lock release.
+        deadline = time.monotonic() + 20
+        while True:
+            fd = singleton_lock(home)
+            if fd is not None:
+                os.close(fd)
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Job Manager did not finish exiting")
+            time.sleep(.03)
     return result
 
 
@@ -664,10 +731,17 @@ def main():
     parser = argparse.ArgumentParser(description="OpenKapsel shared local Job Manager")
     parser.add_argument("--state", type=Path, default=state_home())
     parser.add_argument("--stop", action="store_true",
-                        help="kill managed jobs and stop manager")
+                        help="stop only when no jobs are running")
+    parser.add_argument("--force", action="store_true",
+                        help="with --stop, terminate every running job")
     ns = parser.parse_args()
+    if ns.force and not ns.stop:
+        parser.error("--force requires --stop")
     if ns.stop:
-        shutdown(ns.state)
+        result = shutdown(ns.state, force=ns.force)
+        print(json.dumps(result, ensure_ascii=False))
+        if not result["stopping"]:
+            raise SystemExit(2)
         return
     home = prepare_home(ns.state)
     locked = singleton_lock(home)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import sys
@@ -33,7 +34,7 @@ class SharedManagerTests(unittest.TestCase):
 
         def cleanup():
             try:
-                shutdown(self.home)
+                shutdown(self.home, force=True)
             except (OSError, ConnectionError, EOFError):
                 pass
             else:
@@ -298,12 +299,120 @@ time.sleep(30)
             runtime.close()
         self.assertEqual(0, self._wait(self.MAPPING_A, tid)["exit_code"])
 
+    def test_graceful_shutdown_rejects_active_jobs_and_returns_mapping_scoped_list(self):
+        tid1, tid2 = "&Veto&", "&List&"
+        self._start(self.MAPPING_A, tid1, "import time;time.sleep(30)")
+        self._start(self.MAPPING_B, tid2, "import time;time.sleep(30)")
+        pid = ensure_running(self.home)["pid"]
+        result = shutdown(self.home)
+        self.assertFalse(result["stopping"], result)
+        self.assertEqual({(self.MAPPING_A, tid1), (self.MAPPING_B, tid2)},
+                         {(item["mapping_id"], item["task_id"]) for item in result["jobs"]})
+        self.assertTrue(all(item["running"] for item in result["jobs"]))
+        self.assertEqual(pid, ensure_running(self.home)["pid"])
+        # Without force, both jobs must still be alive.
+        self.assertTrue(self._get(self.MAPPING_A, tid1)["running"])
+        self.assertTrue(self._get(self.MAPPING_B, tid2)["running"])
+        stopped = shutdown(self.home, force=True)
+        self.assertTrue(stopped["stopping"])
+        self.assertEqual(2, len(stopped["jobs"]))
+        self._await_manager_exit()
+        # Restart exposes persisted real kill results for both mappings.
+        self.assertNotEqual(pid, ensure_running(self.home)["pid"])
+        for mid, tid in ((self.MAPPING_A, tid1), (self.MAPPING_B, tid2)):
+            final = self._get(mid, tid)
+            self.assertFalse(final["running"])
+            self.assertTrue(final["force_killed"], final)
+
+    def test_graceful_shutdown_when_idle_does_not_spawn_another_manager(self):
+        from openkapsel.job_manager import endpoint
+        before = ensure_running(self.home)["pid"]
+        stopped = shutdown(self.home)
+        self.assertEqual({"stopping": True, "jobs": []}, stopped)
+        self._await_manager_exit()
+        self.assertNotEqual(before, ensure_running(self.home)["pid"])
+
+    def test_sandbox_json_is_reserved_and_never_silently_ignored(self):
+        good = {"task_id": "&Sand&", "argv": [sys.executable, "-c", "print('user')"],
+                "cwd": str(self.root), "interactive": False,
+                "timeout_seconds": 10, "env": {}}
+        # No sandbox field remains backward-compatible.
+        started = request(self.home, self.MAPPING_A, "task_start", good)
+        self.assertEqual("&Sand&", started["task_id"])
+        self.assertEqual(0, self._wait(self.MAPPING_A, "&Sand&")["exit_code"])
+        valid = dict(good, task_id="&Us3r&", sandbox='{"type":"current_user"}')
+        started = request(self.home, self.MAPPING_A, "task_start", valid)
+        self.assertEqual("&Us3r&", started["task_id"])
+        self.assertEqual(0, self._wait(self.MAPPING_A, "&Us3r&")["exit_code"])
+        for sandbox in ('not JSON', '{}', '{"type":"bubblewrap"}', '[]', True):
+            with self.subTest(sandbox=sandbox):
+                with self.assertRaises(OSError):
+                    request(self.home, self.MAPPING_A, "task_start",
+                            dict(good, task_id=new_job_id(), sandbox=sandbox))
+
+    def test_client_cli_stop_requires_exclusive_config_and_force(self):
+        import subprocess
+        from openkapsel.client_runtime.client_config import ClientConfigLock
+        config = self.base / "client.json"
+        config.write_text(json.dumps({"url": "ws://localhost/mapping-connect/" + self.MAPPING_A}))
+        if os.name != "nt":
+            config.chmod(0o600)
+        def cli(*extra):
+            return subprocess.run(
+                [sys.executable, "-m", "openkapsel.client", "--config", str(config),
+                 "--stop-manager", *extra], cwd=str(Path(__file__).resolve().parents[1]),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=15,
+            )
+        lock = ClientConfigLock.acquire(config)
+        try:
+            pid = ensure_running(self.home)["pid"]
+            refused = cli()
+            self.assertNotEqual(0, refused.returncode)
+            self.assertIn("locked", refused.stderr)
+            self.assertEqual(pid, ensure_running(self.home)["pid"])
+        finally:
+            lock.close()
+        tid = "&CL1x&"
+        self._start(self.MAPPING_A, tid, "import time;time.sleep(30)")
+        refused = cli()
+        self.assertEqual(2, refused.returncode, refused.stderr)
+        self.assertFalse(json.loads(refused.stdout)["stopping"])
+        self.assertTrue(self._get(self.MAPPING_A, tid)["running"])
+        forced = cli("--force")
+        self.assertEqual(0, forced.returncode, forced.stderr)
+        reply = json.loads(forced.stdout)
+        self.assertTrue(reply["stopping"])
+        self.assertEqual([tid], [row["task_id"] for row in reply["jobs"]])
+        self._await_manager_exit()
+
+    def _await_manager_exit(self):
+        if os.name != "nt":
+            from openkapsel.job_manager import endpoint
+            address, _ = endpoint(self.home)
+            deadline = time.monotonic() + 10
+            while Path(address).exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertFalse(Path(address).exists(), "manager did not exit")
+        else:
+            # On Windows, AF_PIPE has no path: try new launch only after
+            # the original manager process has stopped responding.
+            from openkapsel.job_manager import connect_once
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    connect_once(self.home, {"op": "ping"})
+                except (OSError, EOFError, ConnectionError):
+                    return
+                time.sleep(.02)
+            self.fail("manager did not exit")
+
     def test_manager_stop_requires_no_credentials(self):
         import subprocess
         self._start(self.MAPPING_A, "&St0p&", "import time; time.sleep(30)")
         proc = subprocess.run(
             [sys.executable, "-m", "openkapsel.job_manager",
-             "--state", str(self.home), "--stop"],
+             "--state", str(self.home), "--stop", "--force"],
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(0, proc.returncode, proc.stderr)
@@ -718,7 +827,9 @@ time.sleep(30)
         self._start(self.MAPPING_A, tid,
                     'import time; time.sleep(20)')
         pid = ensure_running(self.home)["pid"]
-        shutdown(self.home)
+        result = shutdown(self.home, force=True)
+        self.assertTrue(result["stopping"])
+        self.assertEqual([tid], [job["task_id"] for job in result["jobs"]])
         # Manager is allowed to finish process termination asynchronously.
         for _ in range(60):
             time.sleep(.05)
@@ -732,7 +843,7 @@ time.sleep(30)
             self.fail("manager did not restart after --stop")
         finished = self._get(self.MAPPING_A, tid)
         self.assertFalse(finished["running"])
-        self.assertTrue(finished["interrupted"])
+        self.assertTrue(finished["force_killed"])
 
 
 if __name__ == "__main__":

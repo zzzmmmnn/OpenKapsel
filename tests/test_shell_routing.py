@@ -40,7 +40,7 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         for task in self.legacy_tasks.tasks.values():
             task["done"].wait(5)
         try:
-            shutdown_manager(self.manager_home)
+            shutdown_manager(self.manager_home, force=True)
         except (OSError, ConnectionError):
             pass
         fixture.MappingFileHTTPTests.tearDown(self)

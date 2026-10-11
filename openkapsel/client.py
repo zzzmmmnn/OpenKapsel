@@ -501,7 +501,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--once", action="store_true", help="do not reconnect")
+    parser.add_argument("--stop-manager", action="store_true",
+                        help="stop the shared Job Manager if idle (requires exclusive config ownership)")
+    parser.add_argument("--force", action="store_true",
+                        help="with --stop-manager, kill every Manager job before exit")
     options = parser.parse_args()
+    if options.force and not options.stop_manager:
+        parser.error("--force requires --stop-manager")
+    if options.once and options.stop_manager:
+        parser.error("--once cannot be combined with --stop-manager")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     options.config = options.config.expanduser().resolve()
     try:
@@ -510,6 +518,19 @@ def main():
         parser.error(str(exc))
     config = config_lock.config
     try:
+        if options.stop_manager:
+            # The same config's normal Client process holds this exclusive
+            # lock for its lifetime. Do not stop its shared Manager while a
+            # competing instance still owns this configuration.
+            from openkapsel.job_manager import shutdown, state_home
+            try:
+                result = shutdown(state_home(), force=options.force)
+            except (OSError, ConnectionError, EOFError) as exc:
+                parser.error(f"Job Manager is not available: {type(exc).__name__}: {exc}")
+            print(json.dumps(result, ensure_ascii=False))
+            if not result["stopping"]:
+                raise SystemExit(2)
+            return
         reload_state = ClientReloadState(options.config)
         # Every process start loads code afresh. It also initializes the periodic
         # trusted-source check used by healthy long-lived provider connections.
