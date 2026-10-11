@@ -47,7 +47,7 @@ class JobSandboxTests(unittest.TestCase):
             dict(network_mode="surprise"),
             dict(allowed_domains=["example.com"]),
             dict(network_mode="domain_allowlist", allowed_domains=[]),
-            dict(allowed_paths=[{"path": "/", "read_only": False}]),
+            dict(allowed_paths=[{"path": "/", "access": "rw"}]),
             dict(hidden_paths=[str(self.base / "private.txt")]),
             dict(root=str(self.state)),
         ]

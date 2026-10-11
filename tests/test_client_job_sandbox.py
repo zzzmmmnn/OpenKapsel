@@ -55,8 +55,8 @@ class ClientJobSandboxTests(unittest.TestCase):
             "writable": False,
             "job_sandbox": {
                 "paths": [
-                    {"path": str(self.readonly), "read_only": True},
-                    {"path": str(self.writable), "read_only": False},
+                    {"path": str(self.readonly), "access": "ro"},
+                    {"path": str(self.writable), "access": "rw"},
                 ],
                 "network": {"mode": "domain_allowlist", "domains": ["EXAMPLE.COM", ".GitHub.com", "example.com"]},
             },
@@ -81,7 +81,7 @@ class ClientJobSandboxTests(unittest.TestCase):
             self.assertEqual(["example.com", ".github.com"], spec["allowed_domains"])
             self.assertTrue(domain_allowed("sub.github.com", tuple(spec["allowed_domains"])))
             self.assertFalse(domain_allowed("otherexample.com", tuple(spec["allowed_domains"])))
-            self.assertEqual([True, False], [p["read_only"] for p in spec["allowed_paths"]])
+            self.assertEqual([True, False], [p["access"] == "ro" for p in spec["allowed_paths"]])
             self.assertTrue(runtime.tasks.capabilities()["sandbox"])
             self.assertEqual(0, runtime.tasks.capabilities()["restart_persistence_timeout_gt"])
         finally:
@@ -91,7 +91,7 @@ class ClientJobSandboxTests(unittest.TestCase):
         cases = [
             {"job_sandbox": {"type": "seatbelt"}},
             {"job_sandbox": None},
-            {"job_sandbox": {"paths": [{"path": str(self.readonly), "read_only": "false"}]}},
+            {"job_sandbox": {"paths": [{"path": str(self.readonly), "access": "invalid"}]}},
             {"job_sandbox": {"paths": [{"path": "/"}]}},
             {"job_sandbox": {"network": {"mode": "bogus"}}},
             {"job_sandbox": {"network": {"mode": "none", "domains": ["example.com"]}}},
@@ -120,33 +120,40 @@ class ClientJobSandboxTests(unittest.TestCase):
         protected_dir.mkdir()
         protected = protected_dir / "secret-client-config.json"
         protected.write_text("{}")
-        with self.assertRaisesRegex(ValueError, "protected Client configuration"):
-            runtime = ClientRuntime(self._config(job_sandbox={
-                "paths": [{"path": str(protected_dir), "read_only": True}],
-            }), protected_paths=[protected])
+        runtime = ClientRuntime(self._config(job_sandbox={
+            "paths": [{"path": str(protected_dir), "access": "ro"}],
+        }), protected_paths=[protected])
+        try:
+            self.assertIn(str(protected), runtime.tasks.job_sandbox["hidden_paths"])
+        finally:
             runtime.close()
-        with self.assertRaisesRegex(ValueError, "enclose the workspace root"):
+        with self.assertRaisesRegex(ValueError, "enclose root"):
             runtime = ClientRuntime(self._config(job_sandbox={
-                "paths": [{"path": str(self.base), "read_only": True}],
+                "paths": [{"path": str(self.base), "access": "ro"}],
             }))
             runtime.close()
         internal = self.root / ".openkapsel"
         internal.mkdir()
-        with self.assertRaisesRegex(ValueError, "protected workspace metadata"):
-            runtime = ClientRuntime(self._config(job_sandbox={
-                "paths": [{"path": str(internal), "read_only": False}],
-            }))
+        runtime = ClientRuntime(self._config(job_sandbox={
+            "paths": [{"path": str(internal), "access": "rw"}],
+        }))
+        try:
+            self.assertIn(str(internal), runtime.tasks.job_sandbox["hidden_paths"])
+        finally:
             runtime.close()
-        # Overlapping write and read-only grants are ambiguous by design.
+        # Overlapping rules are valid; read-only takes precedence over writable.
         child = self.writable / "nested"
         child.mkdir()
-        with self.assertRaisesRegex(ValueError, "overlapping"):
-            runtime = ClientRuntime(self._config(job_sandbox={
-                "paths": [
-                    {"path": str(self.writable), "read_only": False},
-                    {"path": str(child), "read_only": True},
-                ],
-            }))
+        runtime = ClientRuntime(self._config(job_sandbox={
+            "paths": [
+                {"path": str(self.writable), "access": "rw"},
+                {"path": str(child), "access": "r"},
+            ],
+        }))
+        try:
+            self.assertIn({"path": str(child), "access": "ro"},
+                          runtime.tasks.job_sandbox["allowed_paths"])
+        finally:
             runtime.close()
 
 
@@ -159,8 +166,8 @@ class ClientJobSandboxTests(unittest.TestCase):
         self.assertIsNotNone(__import__("shutil").which("bwrap"))
         runtime = ClientRuntime(self._config(job_sandbox={
             "paths": [
-                {"path": str(self.readonly), "read_only": True},
-                {"path": str(self.writable), "read_only": False},
+                {"path": str(self.readonly), "access": "ro"},
+                {"path": str(self.writable), "access": "rw"},
             ],
             "network": {"mode": "none"},
         }))
@@ -203,7 +210,7 @@ class ClientJobSandboxTests(unittest.TestCase):
         nested.mkdir()
         (nested / "visible.txt").write_text("VISIBLE")
         runtime = ClientRuntime(self._config(writable=True, job_sandbox={
-            "paths": [{"path": str(nested), "read_only": True}],
+            "paths": [{"path": str(nested), "access": "ro"}],
             "network": {"mode": "none"},
         }))
         try:
@@ -242,8 +249,8 @@ class ClientJobSandboxTests(unittest.TestCase):
         # must remain writable, while the read-only grant must reject writes.
         runtime = ClientRuntime(self._config(job_sandbox={
             "paths": [
-                {"path": str(self.readonly), "read_only": True},
-                {"path": str(self.writable), "read_only": False},
+                {"path": str(self.readonly), "access": "ro"},
+                {"path": str(self.writable), "access": "rw"},
             ],
             "network": {"mode": "none"},
         }))

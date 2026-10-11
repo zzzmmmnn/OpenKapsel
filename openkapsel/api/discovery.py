@@ -1336,7 +1336,8 @@ class DiscoveryMixin:
                     else []
                 ),
                 "extra_paths": [
-                    {"path": item.path, "read_only": item.read_only}
+                    {"path": item.path, "read_only": item.read_only,
+                     "access": item.access}
                     for item in self.token_record.allowed_paths
                 ] if control_authorized else [],
                 "extra_paths_redacted": not control_authorized,
@@ -1344,7 +1345,7 @@ class DiscoveryMixin:
                     control_authorized
                     and (
                         self.token_record.shell_mode == "full"
-                        or bool(self.token_record.allowed_paths)
+                        or any(g.access != "deny" for g in self.token_record.allowed_paths)
                     )
                 ),
                 "tasks": shell_enabled,

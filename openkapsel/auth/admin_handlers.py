@@ -585,9 +585,9 @@ class AdminHandlersMixin:
             cleaned = path.strip()
             if not cleaned:
                 continue
-            if mode not in {"ro", "rw"}:
-                raise ValueError("extra-directory access mode must be read-only or writable")
-            grants.append(PathGrant(path=cleaned, read_only=mode == "ro"))
+            if mode not in {"ro", "r", "rw", "deny"}:
+                raise ValueError("path access mode must be rw, ro/r or deny")
+            grants.append(PathGrant(path=cleaned, access=mode))
         return tuple(grants)
 
     def _read_form(self) -> dict[str, list[str]]:

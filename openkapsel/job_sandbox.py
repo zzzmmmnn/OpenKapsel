@@ -134,18 +134,19 @@ def prepare_job(
         raise ValueError("invalid sandbox path grants")
     grants: list[PathGrant] = []
     for item in extras:
-        if not isinstance(item, dict) or set(item) != {"path", "read_only"} or type(item["read_only"]) is not bool:
-            raise ValueError("allowed_paths entries require path and read_only")
+        if not isinstance(item, dict) or set(item) != {"path", "access"}:
+            raise ValueError("allowed_paths entries require path and access")
+        access = item["access"]
+        if access == "r":
+            access = "ro"
+        if access not in {"rw", "ro"}:
+            raise ValueError("allowed_paths entries require rw or ro access")
         directory = _real_dir(item["path"])
         if _contains(directory, root):
             raise ValueError("sandbox grant must not enclose workspace root")
         if _contains(directory, state_root) or _contains(state_root, directory):
             raise ValueError("sandbox grant overlaps Manager state")
-        if any(directory == Path(grant.path) or
-               directory in Path(grant.path).parents or
-               Path(grant.path) in directory.parents for grant in grants):
-            raise ValueError("overlapping sandbox path grants are ambiguous")
-        grants.append(PathGrant(str(directory), item["read_only"]))
+        grants.append(PathGrant(str(directory), access=access))
     excluded: list[Path] = []
     for item in hidden:
         if not isinstance(item, str) or not item or "\x00" in item:
@@ -154,17 +155,30 @@ def prepare_job(
         if not value.is_absolute():
             raise ValueError("hidden path must be absolute")
         path = value.resolve(strict=True)
-        if not _contains(root, path):
-            raise ValueError("hidden path must be inside workspace root")
         if path == root:
             raise ValueError("cannot hide the sandbox root")
+        if not (_contains(root, path) or any(
+                _contains(Path(grant.path), path) for grant in grants)):
+            raise ValueError("hidden path must be within an allowed directory")
+        if _contains(path, state_root) or _contains(state_root, path):
+            raise ValueError("hidden path overlaps Manager state")
         excluded.append(path)
-    for grant in grants:
-        directory = Path(grant.path)
-        if any(_contains(directory, item) or _contains(item, directory)
-               for item in excluded):
-            raise ValueError("sandbox grant overlaps a hidden path")
-
+    reduced = []
+    for path in sorted(set(excluded), key=lambda p: (len(p.parts), str(p))):
+        if not any(parent == path or parent in path.parents for parent in reduced):
+            reduced.append(path)
+    excluded = reduced
+    # A narrower RW bind must never cancel a parent RO bind. Root RO has
+    # priority for everything inside the root, but not external grants.
+    readonly = [root] if not writable else []
+    readonly.extend(Path(grant.path) for grant in grants if grant.access == "ro")
+    grants = [grant for grant in grants if grant.access == "ro" or not any(
+        _contains(ro_path, Path(grant.path)) for ro_path in readonly
+    )]
+    # Drop grants that only name areas hidden by a deny rule; deny wins.
+    grants = [grant for grant in grants if not any(
+        _contains(path, Path(grant.path)) for path in excluded
+    )]
     sandbox_home = home / "sandboxes"
     sandbox_home.mkdir(mode=0o700, exist_ok=True)
     job_dir = Path(tempfile.mkdtemp(prefix="job-", dir=sandbox_home)).resolve()
@@ -194,25 +208,6 @@ def prepare_job(
             launch = backend.build_shell(spec)
             controller = launch.controller
             result = PreparedJob(list(launch.argv), dict(environment), controller, temp_dir=job_dir)
-            # Directory masks are handled by the shared backend. Files need a
-            # read-only /dev/null bind instead of a tmpfs mount (which fails
-            # on regular-file destinations).
-            file_masks = [path for path in excluded if path.is_file()]
-            if file_masks:
-                # Remove these from the backend's --tmpfs list, then place
-                # regular-file masks after the workspace bind and path grants.
-                for path in file_masks:
-                    marker = ["--tmpfs", str(path)]
-                    index = next(
-                        (i for i in range(len(result.argv) - 1)
-                         if result.argv[i:i + 2] == marker), None
-                    )
-                    if index is None:
-                        raise RuntimeError("file mask not found in Bubblewrap launch")
-                    del result.argv[index:index + 2]
-                for path in file_masks:
-                    index = result.argv.index("--clearenv")
-                    result.argv[index:index] = ["--ro-bind", "/dev/null", str(path)]
             if launch.stdin_data is not None:
                 fd = tempfile.TemporaryFile()
                 fd.write(launch.stdin_data)

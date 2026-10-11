@@ -6227,7 +6227,8 @@ class WorkspaceServerTests(unittest.TestCase):
             discovery["authentication"]["credentials_expires_at"],
         )
         self.assertEqual(
-            [{"path": str(admin_read_only.resolve()), "read_only": True}],
+            [{"path": str(admin_read_only.resolve()), "read_only": True,
+              "access": "ro"}],
             discovery["capabilities"]["extra_paths"],
         )
 

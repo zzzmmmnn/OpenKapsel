@@ -39,6 +39,8 @@ class ClientFiles:
                 continue
             protected.add(candidate)
         self.protected_paths = frozenset(protected)
+        # Populated once the Client's job_sandbox policy is validated.
+        self.sandbox_denied_paths = frozenset()
         self.writable = writable
         if rpc_registry is None:
             from openkapsel.rpc_plugins import load_client_rpc_registry
@@ -61,19 +63,21 @@ class ClientFiles:
         return path
 
     def is_protected_path(self, path):
-        return Path(path) in self.protected_paths
+        path = Path(path)
+        return any(path == entry or entry in path.parents
+                   for entry in (*self.protected_paths, *self.sandbox_denied_paths))
 
     def ensure_accessible_path(self, path):
         if self.is_protected_path(path):
-            # Secret-bearing client configuration is not part of the exported
-            # namespace. Use ENOENT so remote callers cannot probe its metadata.
+            # Denied content is hidden from both Shell and exported file APIs.
             raise OSError(errno.ENOENT, "path does not exist")
 
     def ensure_mutable_path(self, path):
         path = Path(path)
-        for protected in self.protected_paths:
-            if path == protected or path in protected.parents:
-                raise OSError(errno.EACCES, "active client configuration is protected")
+        for protected in (*self.protected_paths, *self.sandbox_denied_paths):
+            if (path == protected or protected in path.parents or
+                    path in protected.parents):
+                raise OSError(errno.EACCES, "configuration or sandbox deny path is protected")
 
     @staticmethod
     def details(st):

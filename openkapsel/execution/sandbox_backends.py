@@ -164,18 +164,33 @@ class BubblewrapBackend:
             argv.extend(
                 ["--ro-bind", str(spec.environment_file), ENVIRONMENT_MOUNT]
             )
-        for hidden in spec.hidden_paths:
-            argv.extend(["--tmpfs", str(hidden)])
+        # Child mounts are ordered from broad to narrow. RO ancestors keep
+        # their precedence over descendant RW grants, while hidden-path
+        # masks are installed LAST so later grant binds cannot uncover them.
+        readonly = [spec.scope_root] if not spec.can_write else []
+        readonly += [Path(p.path) for p in spec.allowed_paths if p.access == "ro"]
         for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
-            mode = "--ro-bind" if (grant.read_only or (
+            path = Path(grant.path)
+            if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
+                continue
+            mode = "--ro-bind" if (grant.access != "rw" or any(
+                path == ro or ro in path.parents for ro in readonly
+            ) or (
                 not spec.can_write and not spec.allow_grant_writes_when_scope_readonly
             )) else "--bind"
-            self._append_parent_dirs(argv, Path(grant.path).parent)
+            self._append_parent_dirs(argv, path.parent)
             argv.extend([mode, grant.path, grant.path])
         for path in spec.native_mapping_paths:
             argv.extend(["--bind" if spec.can_write else "--ro-bind", str(path), str(path)])
         for path in spec.denied_mapping_paths:
             argv.extend(["--ro-bind", str(spec.mapping_mask_source), str(path)])
+        for hidden in spec.hidden_paths:
+            # Existing directories become empty, and files receive a
+            # read-only /dev/null bind in Job Manager's file-mask adapter.
+            if hidden.is_dir():
+                argv.extend(["--tmpfs", str(hidden)])
+            else:
+                argv.extend(["--ro-bind", "/dev/null", str(hidden)])
         controller = None
         shell_command = spec.command
         if spec.environment_file is not None:
@@ -396,15 +411,27 @@ class PodmanBackend:
             argv.extend(
                 ["--volume", f"{spec.environment_file}:{ENVIRONMENT_MOUNT}:ro"]
             )
-        for hidden in spec.hidden_paths:
-            argv.extend(["--tmpfs", f"{hidden}:rw,nosuid,nodev,noexec,mode=700"])
+        readonly = [spec.scope_root] if not spec.can_write else []
+        readonly.extend(Path(g.path) for g in spec.allowed_paths if g.access == "ro")
         for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
-            mode = "ro" if not spec.can_write or grant.read_only else "rw"
+            path = Path(grant.path)
+            if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
+                continue
+            mode = "ro" if not spec.can_write or grant.access != "rw" or any(
+                path == ro or ro in path.parents for ro in readonly
+            ) else "rw"
             argv.extend(["--volume", f"{grant.path}:{grant.path}:{mode}"])
         for path in spec.native_mapping_paths:
             argv.extend(["--volume", f"{path}:{path}:{'rw' if spec.can_write else 'ro'}"])
         for path in spec.denied_mapping_paths:
             argv.extend(["--volume", f"{spec.mapping_mask_source}:{path}:ro"])
+        for hidden in spec.hidden_paths:
+            if hidden.is_dir():
+                argv.extend(["--tmpfs", f"{hidden}:rw,nosuid,nodev,noexec,mode=700"])
+            else:
+                # A file bind is necessary: tmpfs mounts can only cover
+                # directories. On Linux /dev/null supplies an empty view.
+                argv.extend(["--volume", f"/dev/null:{hidden}:ro"])
         podman_controller = PodmanController(self.executable, container_name)
         proxy = None
         try:

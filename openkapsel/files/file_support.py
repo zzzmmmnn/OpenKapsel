@@ -94,14 +94,28 @@ class FileOperationSupportMixin(MappingQueryMixin):
         files = self._workspace_files()
         if files is not None:
             try:
-                return files.entries(path)
+                entries = files.entries(path)
             except OSError as exc:
                 self._raise_file_io_error(exc)
+            visible = []
+            for name, details in entries:
+                try:
+                    self._assert_inside_root(path / name)
+                except ApiError:
+                    continue
+                visible.append((name, details))
+            return visible
         descriptor = self._safe_open_descriptor(path, os.O_RDONLY)
         try:
             with os.scandir(descriptor) as iterator:
                 entries = []
                 for entry in iterator:
+                    # Hidden or explicitly denied children must not be
+                    # enumerated by the file list API.
+                    try:
+                        self._assert_inside_root(path / entry.name)
+                    except ApiError:
+                        continue
                     try:
                         entries.append((entry.name, entry.stat(follow_symlinks=False)))
                     except OSError:

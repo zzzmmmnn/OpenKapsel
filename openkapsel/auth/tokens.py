@@ -78,14 +78,29 @@ def credential_expiry(days: int = DEFAULT_CREDENTIAL_TTL_DAYS) -> str:
 @dataclass(frozen=True)
 class PathGrant:
     path: str
+    # Server accepts legacy read_only construction and serialized records.
+    # New policy is access: rw, ro (alias r), deny. read_only remains a
+    # compatibility attribute for older consumers and extension call sites.
     read_only: bool = True
+    access: str = ""
+
+    def __post_init__(self) -> None:
+        mode = self.access or ("ro" if self.read_only else "rw")
+        if mode == "r":
+            mode = "ro"
+        if mode not in {"rw", "ro", "deny"}:
+            raise ValueError("path access must be rw, ro/r or deny")
+        object.__setattr__(self, "access", mode)
+        object.__setattr__(self, "read_only", mode != "rw")
 
     @classmethod
     def from_data(cls, value: Any) -> "PathGrant":
         if isinstance(value, str):
-            return cls(path=value, read_only=True)
+            return cls(path=value, access="ro")
         if not isinstance(value, dict):
             raise ValueError("allowed path entries must be objects")
+        if "access" in value:
+            return cls(path=str(value.get("path", "")), access=value["access"])
         return cls(
             path=str(value.get("path", "")),
             read_only=bool(value.get("read_only", True)),
@@ -145,7 +160,9 @@ class TokenRecord:
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
-        result["allowed_paths"] = [asdict(item) for item in self.allowed_paths]
+        result["allowed_paths"] = [
+            {"path": item.path, "access": item.access} for item in self.allowed_paths
+        ]
         return result
 
     @classmethod
@@ -701,36 +718,54 @@ class TokenStore:
             if workspace_image != str(relative):
                 raise ValueError("workspace image must match the token workspace directory")
         allowed_paths = []
+        previous_permits = []
         for grant in record.allowed_paths:
             cleaned = grant.path.strip()
             if not cleaned:
                 continue
             candidate = Path(cleaned).expanduser()
             if not candidate.is_absolute():
-                raise ValueError("extra accessible paths must be absolute directories")
-            resolved_path = candidate.resolve(strict=False)
+                raise ValueError("sandbox paths must be absolute")
+            resolved_path = candidate.resolve(strict=True)
             if resolved_path == Path("/"):
-                raise ValueError("the filesystem root cannot be an extra accessible path")
-            if not resolved_path.is_dir():
-                raise ValueError(f"extra accessible path is not an existing directory: {resolved_path}")
-            try:
-                resolved_path.relative_to(self.root)
-            except ValueError:
-                try:
-                    self.root.relative_to(resolved_path)
-                except ValueError:
-                    pass
-                else:
+                raise ValueError("the filesystem root cannot be a sandbox path")
+            if not ((resolved_path.is_file() or resolved_path.is_dir())
+                    if grant.access == "deny" else resolved_path.is_dir()):
+                raise ValueError(f"sandbox path type is invalid: {resolved_path}")
+            # A permit must remain outside the shared Workspace Root, as
+            # before. A deny or read-only overlay may be inside the workspace
+            # or any separately permitted directory.
+            if grant.access == "rw" or grant.access == "ro":
+                if resolved_path == self.root or resolved_path in self.root.parents:
                     raise ValueError("extra accessible paths cannot contain Workspace Root")
-            else:
-                raise ValueError("extra accessible paths must be outside Workspace Root")
+                if (grant.access == "rw" and
+                        (self.root in resolved_path.parents)):
+                    raise ValueError("rw grants inside Workspace Root are implicit; use ro or deny overlays")
             normalized = str(resolved_path)
+            if grant.access != "deny":
+                previous_permits.append(resolved_path)
             existing = next((item for item in allowed_paths if item.path == normalized), None)
-            normalized_grant = PathGrant(path=normalized, read_only=bool(grant.read_only))
+            normalized_grant = PathGrant(path=normalized, access=grant.access)
             if existing is None:
                 allowed_paths.append(normalized_grant)
-            elif existing.read_only != normalized_grant.read_only:
-                raise ValueError(f"extra accessible path has conflicting modes: {normalized}")
+            elif existing.access != normalized_grant.access:
+                # Most restrictive mode wins when identical paths repeat.
+                order = {"rw": 0, "ro": 1, "deny": 2}
+                allowed_paths[allowed_paths.index(existing)] = (
+                    max((existing, normalized_grant), key=lambda item: order[item.access])
+                )
+        permitted = [scoped, *(Path(p.path) for p in allowed_paths if p.access != "deny")]
+        for grant in allowed_paths:
+            path = Path(grant.path)
+            if grant.access == "deny":
+                if not (any(path == base or base in path.parents for base in permitted)
+                        or any(path in base.parents for base in permitted[1:])
+                        or any(path == old or path in old.parents for old in previous_permits)):
+                    raise ValueError("deny paths must lie within workspace or an allowed directory")
+                if path == scoped or path in scoped.parents:
+                    raise ValueError("cannot deny the workspace root or its ancestors")
+        if record.shell_mode == "full" and any(g.access == "deny" for g in allowed_paths):
+            raise ValueError("deny paths require restricted Shell; full Shell can bypass sandbox rules")
         return replace(
             record,
             name=name,

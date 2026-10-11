@@ -304,8 +304,10 @@ JSON **string**. The Windows implementation uses Anthropic SRT (alpha).
   "allow_exec": true,
   "job_sandbox": {
     "paths": [
-      {"path": "/home/me/reference", "read_only": true},
-      {"path": "/home/me/outputs", "read_only": false}
+      {"path": "/home/me/reference", "access": "r"},
+      {"path": "/home/me/outputs", "access": "rw"},
+      {"path": "/home/me/outputs/.openkapsel", "access": "deny"},
+      {"path": "/home/me/outputs/secret.json", "access": "deny"}
     ],
     "network": {
       "mode": "domain_allowlist",
@@ -317,14 +319,28 @@ JSON **string**. The Windows implementation uses Anthropic SRT (alpha).
 
 The exported Mapping `root` is always automatically included. Its write
 permission follows the existing top-level `writable` setting. Each additional
-directory under `job_sandbox.paths` has an **independent** permission: use
-`read_only: true` for read access or `false` for read/write access. Up to
-32 existing absolute directories may be granted. Relative paths, non-existent
-directories, a grant for `/`, invalid access types and overlapping/duplicate
-grants fail Client startup. A read-only grant within a writable workspace
-restricts writing to that subdirectory; a writable grant within a read-only
-workspace grants write access to that subdirectory only. Never grant the Manager's private state directory or any directory containing the Client configuration/other protected files. The Client
-automatically hides existing internal `.openkapsel` metadata under the root.
+entry under `job_sandbox.paths` specifies `access: "rw"` (read/write),
+`access: "ro"` (read-only; `"r"` is an alias), or `access: "deny"`
+(no read, write or delete). Additional rw/ro paths must be existing absolute
+directories; deny paths may be existing files or directories within the
+workspace or a permitted extra directory. **The more restrictive mode always
+wins: deny > ro > rw**, including nested rules and duplicates. The automatic
+workspace root permission is controlled by `writable`. Overlapping rules are
+supported; when an ancestor is read-only a narrower rw rule cannot reopen it.
+The Client rejects legacy `paths[].read_only` fields (no compatibility shim
+for this experimental Manager sandbox protocol).
+
+At most 32 explicit path rules are accepted. Root-of-filesystem grants,
+nonexistent paths, unknown access modes and grants overlapping the Manager's
+private state fail closed. Existing `.openkapsel` subdirectories directly
+under the workspace root and each extra permitted directory, plus protected
+Client configuration files, are automatically denied in Shell. When the
+Client sandbox is configured, denied paths inside the exported Mapping root
+are also hidden from its file APIs (including search). A path inside a granted
+parent may contain protected Client configuration: that configuration is
+automatically denied rather than forbidding access to the entire parent.
+Hidden paths are evaluated at sandbox preparation time; avoid creating new
+secret directories after a job starts without refreshing its sandbox policy.
 
 `job_sandbox.network.mode` is one of:
 

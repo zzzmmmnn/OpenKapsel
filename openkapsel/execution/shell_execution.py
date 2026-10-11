@@ -12,6 +12,7 @@ from openkapsel.execution.environment_store import EnvironmentConfigError, Envir
 from openkapsel.errors import ApiError
 from openkapsel.execution.sandbox_backends import SandboxLaunch, SandboxSpec
 from openkapsel.auth.tokens import PathGrant, TokenRecord
+from openkapsel.auth.path_access import effective_path_access
 from openkapsel.workspace.workspace_layout import INTERNAL_DIRECTORY, ensure_workspace_layout
 
 
@@ -43,16 +44,24 @@ def validated_path_grants(record: TokenRecord) -> tuple[PathGrant, ...]:
                 "extra_path_unavailable",
                 f"extra accessible directory is unavailable: {grant.path}",
             ) from None
-        if resolved != configured or not resolved.is_dir():
+        if resolved != configured or not (
+                resolved.is_dir() or (grant.access == "deny" and resolved.is_file())):
             raise ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "extra_path_changed",
                 f"extra accessible directory changed after authorization: {grant.path}",
             )
-    return record.allowed_paths
+    denied = [Path(grant.path) for grant in record.allowed_paths if grant.access == "deny"]
+    return tuple(
+        grant for grant in record.allowed_paths
+        if grant.access != "deny" and not any(
+            parent == Path(grant.path) or parent in Path(grant.path).parents
+            for parent in denied
+        )
+    )
 
 
-def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=()) -> tuple[Path, ...]:
+def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tuple[Path, ...]:
     hidden: list[Path] = [ensure_workspace_layout(scope_root).root]
     mapped = set(mapping_roots)
     for current, directories, _files in os.walk(scope_root, followlinks=False):
@@ -68,7 +77,23 @@ def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=()) -> tuple[Path, .
                 directories.remove(name)
             if name == INTERNAL_DIRECTORY and path.is_dir() and not path.is_symlink():
                 hidden.append(path)
-    return tuple(sorted(set(hidden), key=lambda path: len(path.parts)))
+    active_grants = [scope_root, *(
+        Path(grant.path) for grant in grants if grant.access != "deny"
+    )]
+    for grant in grants:
+        path = Path(grant.path)
+        if grant.access == "deny":
+            if any(path == base or base in path.parents for base in active_grants):
+                hidden.append(path)
+        else:
+            internal = path / ".openkapsel"
+            if internal.is_dir() and not internal.is_symlink():
+                hidden.append(internal)
+    reduced = []
+    for path in sorted(set(hidden), key=lambda p: (len(p.parts), str(p))):
+        if not any(parent == path or parent in path.parents for parent in reduced):
+            reduced.append(path)
+    return tuple(reduced)
 
 
 def resolve_shell_cwd(scope_root: Path, record: TokenRecord, value: str) -> Path:
@@ -93,6 +118,9 @@ def resolve_shell_cwd(scope_root: Path, record: TokenRecord, value: str) -> Path
         return resolved
     except ValueError:
         pass
+    policy = effective_path_access(resolved, scope_root, record.can_write, record.allowed_paths)
+    if policy == "deny":
+        raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "Shell cwd is denied")
     for grant in validated_path_grants(record):
         try:
             resolved.relative_to(Path(grant.path))
@@ -157,7 +185,7 @@ def sandbox_launch(
         hidden_paths=sandbox_hidden_paths(scope_root, mapping_roots=(
             tuple(server.mappings.mount_path(row) for row in server.mappings.store.list(record.path_prefix))
             if hasattr(server, "mappings") else ()
-        )),
+        ), grants=record.allowed_paths),
         limits=SandboxLimits(
             max_processes=record.sandbox_max_processes,
             memory_bytes=record.sandbox_memory_mb * 1024 * 1024,
@@ -194,9 +222,10 @@ def start_shell_task(server, record, scope_root, *, command, cwd_value,
     manager = getattr(server, "mappings", None)
     if manager is None or manager.at_path(candidate) is None:
         candidate = candidate.resolve(strict=False)
-    authorized = (scope_root, *(Path(p.path) for p in record.allowed_paths))
-    if not any(candidate == root or root in candidate.parents for root in authorized):
-        raise ApiError(403, "path_outside_scope", "cwd is outside authorized paths")
+    policy = effective_path_access(candidate, scope_root, record.can_write,
+                                  record.allowed_paths)
+    if policy in (None, "deny"):
+        raise ApiError(403, "path_outside_scope", "cwd is denied or outside authorized paths")
     lease = None
     if manager is not None:
         try:

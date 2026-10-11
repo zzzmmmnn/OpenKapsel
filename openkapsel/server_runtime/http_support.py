@@ -16,6 +16,7 @@ from typing import Any
 
 from openkapsel.errors import ApiError
 from openkapsel.files.safe_paths import SafePathAccess
+from openkapsel.auth.path_access import effective_path_access
 from openkapsel.workspace.workspace_layout import INTERNAL_DIRECTORY
 
 LOGGER = logging.getLogger("openkapsel")
@@ -48,9 +49,6 @@ class HttpSupportMixin:
                 "Storage Provider mapping is protected, read-only, or offline",
             ) from None
         resolved = candidate if self.server.mappings.at_path(candidate) else candidate.resolve(strict=False)
-        self._assert_inside_root(resolved)
-        if write:
-            self._assert_path_writable(resolved)
         for checked in (candidate.absolute(), resolved):
             try:
                 relative_to_workspace = checked.relative_to(self.token_scope_root)
@@ -62,6 +60,13 @@ class HttpSupportMixin:
                     "reserved_path",
                     "workspace internal directories are not available through file endpoints",
                 )
+        # Examine both spellings: symlinks or mapping-root translations must
+        # never bypass a deny/readonly entry.
+        self._assert_inside_root(candidate)
+        self._assert_inside_root(resolved)
+        if write:
+            self._assert_path_writable(candidate)
+            self._assert_path_writable(resolved)
         if any(self._is_internal_transfer_name(part) for part in resolved.parts):
             raise ApiError(
                 HTTPStatus.FORBIDDEN,
@@ -75,49 +80,44 @@ class HttpSupportMixin:
         return SafePathAccess(
             (
                 self.token_scope_root,
-                *(Path(item.path) for item in self.token_record.allowed_paths),
+                *(Path(item.path) for item in self.token_record.allowed_paths
+                  if item.access != "deny"),
             )
         )
 
 
     def _assert_path_writable(self, path: Path) -> None:
-        try:
-            path.relative_to(self.token_scope_root)
-        except ValueError:
-            pass
-        else:
-            return
-        matching = []
-        for grant in self.token_record.allowed_paths:
-            try:
-                path.relative_to(grant.path)
-            except ValueError:
-                continue
-            matching.append(grant)
-        if not matching:
-            raise ApiError(HTTPStatus.FORBIDDEN, "path_outside_root", "path is not authorized")
-        grant = max(matching, key=lambda item: len(Path(item.path).parts))
-        if grant.read_only:
-            raise ApiError(
-                HTTPStatus.FORBIDDEN,
-                "read_only_path",
-                f"extra accessible path is read-only: {grant.path}",
-            )
-
+        # Mutating a parent directory (rename/delete) must not indirectly
+        # remove any protected descendant. Ordinary writes to its siblings
+        # still pass because those targets are not ancestors.
+        target = Path(path).resolve(strict=False)
+        for rule in self.token_record.allowed_paths:
+            protected = Path(rule.path)
+            if rule.access in {"ro", "deny"} and protected != target and target in protected.parents:
+                raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied",
+                               "directory contains protected sandbox paths")
+        policy = effective_path_access(
+            path, self.token_scope_root, self.token_record.can_write,
+            self.token_record.allowed_paths,
+        )
+        if policy == "deny":
+            raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")
+        if policy != "rw":
+            raise ApiError(HTTPStatus.FORBIDDEN, "read_only_path",
+                           "path is read-only or outside authorized directories")
 
     def _assert_inside_root(self, path: Path) -> None:
-        for root in (self.token_scope_root, *(Path(item.path) for item in self.token_record.allowed_paths)):
-            try:
-                path.relative_to(root)
-            except ValueError:
-                continue
-            return
-        raise ApiError(
-            HTTPStatus.FORBIDDEN,
-            "path_outside_root",
-            "path is outside the token workspace and extra accessible paths",
+        policy = effective_path_access(
+            path, self.token_scope_root, self.token_record.can_write,
+            self.token_record.allowed_paths,
         )
-
+        if policy == "deny":
+            raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")
+        if policy is None:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN, "path_outside_root",
+                "path is outside the token workspace and extra accessible paths",
+            )
 
     @staticmethod
     def _require_permission(granted: bool, message: str) -> None:

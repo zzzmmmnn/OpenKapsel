@@ -107,7 +107,7 @@ def srt_settings(*, root: Path, writable: bool, grants, hidden: list[Path],
         path = str(item.path)
         if path not in reads:
             reads.append(path)
-        if item.read_only:
+        if item.access == "ro":
             denied_writes.append(path)
         else:
             writes.append(path)
@@ -140,7 +140,7 @@ def launch_windows_srt(*, argv: list[str], environment: dict[str, str],
     node, cli = _resolve_global_cli(
         writable_dirs=tuple(
             [root] * int(writable) +
-            [Path(item.path) for item in grants if not item.read_only]
+            [Path(item.path) for item in grants if item.access == "rw"]
         ),
     )
     settings_path = job_dir / "srt-settings.json"

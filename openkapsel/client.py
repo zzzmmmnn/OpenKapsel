@@ -227,6 +227,11 @@ def _create_resources(config, *, protected_paths=()):
         raise ValueError("invalid client limits")
     from openkapsel.client_runtime.job_sandbox_config import make_job_sandbox
     job_sandbox = make_job_sandbox(config, files, protected_paths=protected_paths)
+    if job_sandbox is not None:
+        files.sandbox_denied_paths = frozenset(
+            Path(path) for path in job_sandbox["hidden_paths"]
+            if Path(path) == files.root or files.root in Path(path).parents
+        )
     is_mapping = urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]
     if job_sandbox is not None and not is_mapping:
         raise ValueError("job_sandbox requires a mapping-connect Client")

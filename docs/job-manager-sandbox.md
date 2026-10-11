@@ -38,16 +38,24 @@ Example JSON **value of the `sandbox` string**:
   "writable": false,
   "network_mode": "domain_allowlist",
   "allowed_domains": ["github.com", ".githubusercontent.com"],
-  "allowed_paths": [{"path": "/absolute/reference", "read_only": true}],
-  "hidden_paths": ["/absolute/workspace/private"]
+  "allowed_paths": [{"path": "/absolute/reference", "access": "ro"},
+                    {"path": "/absolute/output", "access": "rw"}],
+  "hidden_paths": ["/absolute/workspace/private",
+                   "/absolute/output/.openkapsel"]
 }
 ```
 
 `root` is required and must be an existing directory, not `/`; `cwd` must
-lie inside it. `allowed_paths` grants at most 32 extra existing directories;
-entries explicitly declare `read_only`. `hidden_paths` can mask at most 32
-existing files/directories inside `root`.  `writable` defaults to false and applies to the
-workspace root only. Extra path grants have independent write permissions.
+lie inside it. `allowed_paths` grants up to 32 existing absolute directories
+with `access: "rw"` or `"ro"` (alias `"r"`). `hidden_paths` masks up
+to 32 existing files/directories beneath `root` **or a permitted extra
+directory**. Manager IPC intentionally does not accept old `read_only`
+entries. Denies take precedence over all grants, and read-only ancestors
+take precedence over descendant rw grants. `writable` is the implicit
+workspace root access. Directory denies mask contents on Bubblewrap/Podman;
+file denies are read-only /dev/null bind mounts. Seatbelt and SRT apply
+read/write denies. Existing direct-child `.openkapsel` directories and
+Client configuration are automatically hidden by Client policy generation.
 For Client configuration see `docs/client-mappings.md` (`job_sandbox`
 automatically derives `type`, `root`, and `writable` and forwards the
 Manager's JSON **string** for every Shell invocation). The Manager's own state, job output,
@@ -58,6 +66,33 @@ and IPC files may not be mounted as workspace or as an extra grant.
 same normalization and suffix-match rules as Server Shell. The proxy is
 restricted to HTTP port 80 and HTTPS port 443, not arbitrary raw TCP protocols.
 If the requested backend or proxy cannot launch, the job is rejected.
+
+## Server Token path access and legacy compatibility
+
+In **Administration → Tokens → Additional accessible directories**, the
+access selector now offers **Writable**, **Read only**, and **Deny access**.
+Deny entries can refer to an existing regular file or directory below the
+Token workspace or a separately granted extra directory. Under an existing
+read/write root, add a narrower rule such as
+`/data/project/.openkapsel` with **Deny access**; the other files remain
+readable/writable. Rules compose regardless of order using **deny > ro > rw**.
+The short alias `r` is normalized to `ro` in programmatic rules.
+
+Server Token records retain backwards compatibility: persisted entries with
+`read_only: true/false` are accepted on load as `ro/rw`, and existing Admin
+form mode values `ro/rw` still work. New Token JSON is serialized with
+`access`; Discovery continues to report `read_only` as well as `access`
+for existing integrations. Server File API read/write/list and restricted
+Shell enforce the same deny rules. Existing direct-child `.openkapsel`
+subdirectories below extra granted directories are automatically hidden;
+within the token workspace, the existing recursive metadata hide continues.
+An explicit deny is incompatible with `shell_mode=full` because an unrestricted
+host Shell could bypass it: set Shell permission to Restricted (or None).
+
+Podman overlays directories with `--tmpfs` and individual files with a
+read-only `/dev/null` bind after permitted mounts. Bubblewrap does the
+same. These backends generally show a masked empty view rather than hiding
+the pathname itself; they prevent reading or modifying the host contents.
 
 ## Platform boundaries
 

@@ -130,6 +130,56 @@ class PodmanBackendTests(unittest.TestCase):
             options,
         )
 
+    def test_nested_directory_and_file_denies_override_writable_grants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            executable = base / "podman"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o755)
+            scope = base / "workspace"
+            scope.mkdir()
+            extra = base / "extra"
+            extra.mkdir()
+            metadata = extra / ".openkapsel"
+            metadata.mkdir()
+            secret = extra / "secret.json"
+            secret.write_text("sensitive", encoding="utf-8")
+            spec = SandboxSpec(
+                command="true", cwd=scope, scope_root=scope,
+                can_write=True, network_mode="none", allowed_domains=(),
+                proxy_root=base / "proxy",
+                allowed_paths=(PathGrant(str(extra), access="rw"),),
+                hidden_paths=(metadata, secret),
+                limits=SandboxLimits(16, 256 * 1024 * 1024, 100),
+                owner_token="token",
+            )
+            probe = subprocess.CompletedProcess([], 0, "crun\n", "")
+            with patch("openkapsel.execution.sandbox_backends.subprocess.run", return_value=probe):
+                podman = self._backend(executable).build_shell(spec).argv
+            i_rw = podman.index(f"{extra}:{extra}:rw")
+            i_hidden_dir = podman.index(f"{metadata}:rw,nosuid,nodev,noexec,mode=700")
+            i_hidden_file = podman.index(f"/dev/null:{secret}:ro")
+            self.assertLess(i_rw, i_hidden_dir)
+            self.assertLess(i_rw, i_hidden_file)
+
+            bwrap = base / "bwrap"
+            rootlesskit = base / "rootlesskit"
+            for entry in (bwrap, rootlesskit):
+                entry.write_text("#!/bin/sh\n", encoding="utf-8")
+                entry.chmod(0o755)
+            with patch(
+                "openkapsel.execution.sandbox_backends.apparmor_restricts_user_namespaces",
+                return_value=False,
+            ):
+                linux = BubblewrapBackend(bwrap, rootlesskit, aggregate_resources=False).build_shell(spec).argv
+            i_rw = linux.index(str(extra))
+            i_hidden_dir = linux.index(str(metadata))
+            i_hidden_file = linux.index(str(secret))
+            self.assertLess(i_rw, i_hidden_dir)
+            self.assertLess(i_rw, i_hidden_file)
+            self.assertEqual("--ro-bind", linux[i_hidden_file - 2])
+            self.assertEqual("/dev/null", linux[i_hidden_file - 1])
+
     def test_controller_uses_stop_kill_and_forced_cleanup(self) -> None:
         controller = PodmanController(Path("/usr/bin/podman"), "openkapsel-test")
         completed = subprocess.CompletedProcess([], 0, "", "")

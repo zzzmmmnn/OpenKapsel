@@ -33,38 +33,81 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         raise ValueError("job_sandbox root must be an existing directory")
     paths = options.get("paths", [])
     if not isinstance(paths, list) or len(paths) > 32:
-        raise ValueError("job_sandbox.paths must be a list of up to 32 directories")
+        raise ValueError("job_sandbox.paths must be a list of up to 32 path rules")
     protected = [Path(value).expanduser().resolve(strict=False)
                  for value in protected_paths]
     grants = []
-    used = set()
+    denied = []
+    used = {}
+    raw_permits = []
     for item in paths:
-        if (not isinstance(item, dict) or set(item) != {"path", "read_only"}
-                or type(item["read_only"]) is not bool):
-            raise ValueError("job_sandbox.paths entries require path and boolean read_only")
+        if not isinstance(item, dict) or set(item) != {"path", "access"}:
+            raise ValueError("job_sandbox.paths entries require path and access")
+        access = item["access"]
+        if access == "r":
+            access = "ro"
+        if access not in {"rw", "ro", "deny"}:
+            raise ValueError("job_sandbox.paths access must be rw, ro/r or deny")
         value = item["path"]
         if not isinstance(value, str) or not value or "\x00" in value:
-            raise ValueError("job_sandbox path must be an absolute directory")
+            raise ValueError("job_sandbox path must be an absolute path")
         path = Path(value).expanduser()
         if not path.is_absolute():
             raise ValueError("job_sandbox path must be absolute")
         resolved = path.resolve(strict=True)
-        if not resolved.is_dir() or resolved == Path(resolved.anchor):
-            raise ValueError("job_sandbox path must be a non-root directory")
-        if resolved == root or resolved in root.parents:
-            raise ValueError("job_sandbox path must not enclose the workspace root")
-        internal = (root / ".openkapsel").resolve(strict=False)
-        if resolved == internal or resolved in internal.parents or internal in resolved.parents:
-            raise ValueError("job_sandbox path overlaps protected workspace metadata")
-        if any(secret == resolved or resolved in secret.parents
-               for secret in protected):
-            raise ValueError("job_sandbox path would expose protected Client configuration")
+        if resolved == Path(resolved.anchor):
+            raise ValueError("job_sandbox cannot authorize filesystem root")
+        if access != "deny" and not resolved.is_dir():
+            raise ValueError("rw/ro sandbox paths must be directories")
+        if access == "deny" and not (resolved.is_dir() or resolved.is_file()):
+            raise ValueError("deny sandbox path must be a file or directory")
+        if access in {"rw", "ro"}:
+            raw_permits.append(resolved)
         if resolved in used:
-            raise ValueError("duplicate job_sandbox path")
-        if any(resolved in existing.parents or existing in resolved.parents for existing in used):
-            raise ValueError("overlapping job_sandbox.paths grants are ambiguous")
-        used.add(resolved)
-        grants.append({"path": str(resolved), "read_only": item["read_only"]})
+            priority = {"rw": 0, "ro": 1, "deny": 2}
+            access = max((access, used[resolved]), key=lambda x: priority[x])
+        used[resolved] = access
+    # An explicit permit cannot grant a protected secret path itself. A
+    # writable parent is fine because its protected contents are auto-denied.
+    for resolved, access in used.items():
+        if access == "deny":
+            denied.append(resolved)
+            continue
+        if resolved == root or resolved in root.parents:
+            raise ValueError("job_sandbox additional permits must not enclose root")
+        for secret in protected:
+            if secret == resolved or secret in resolved.parents:
+                raise ValueError("job_sandbox path would expose protected Client configuration")
+        grants.append({"path": str(resolved), "access": access})
+    permitted = [root, *(Path(g["path"]) for g in grants)]
+    all_denied = tuple(denied)
+    for denied_path in all_denied:
+        if denied_path == root or denied_path in root.parents:
+            raise ValueError("cannot deny the sandbox root or its ancestors")
+        if any(denied_path == base or base in denied_path.parents for base in permitted):
+            continue
+        # Deny the very same path as an earlier rw/ro entry, or deny
+        # an ancestor of an extra grant: the now-shadowed permit need not
+        # be mounted at all, so no filesystem mask is needed.
+        if any(denied_path == base or denied_path in base.parents for base in raw_permits):
+            denied.remove(denied_path)
+            continue
+        raise ValueError("deny path must be inside root or another permitted directory")
+    grants = [grant for grant in grants if not any(
+        denied_path == Path(grant["path"]) or
+        denied_path in Path(grant["path"]).parents for denied_path in all_denied
+    )]
+    permitted = [root, *(Path(g["path"]) for g in grants)]
+    # Automatic deny applies to the workspace metadata and direct .openkapsel
+    # subdirectory of each extra grant; also hide any Client config under a
+    # permitted parent. Deny is never canceled by a more specific permit.
+    for base in permitted:
+        internal = base / ".openkapsel"
+        if internal.exists():
+            denied.append(internal.resolve(strict=True))
+    for secret in protected:
+        if secret.exists() and any(secret == base or base in secret.parents for base in permitted):
+            denied.append(secret.resolve(strict=True))
     network = options.get("network", {"mode": "none"})
     if (not isinstance(network, dict) or set(network) - {"mode", "domains"}):
         raise ValueError("job_sandbox.network must be an object with mode and domains")
@@ -87,19 +130,19 @@ def make_job_sandbox(config, files, *, protected_paths=()):
             raise ValueError("job_sandbox.domain_allowlist requires domains")
     elif domains:
         raise ValueError("job_sandbox.network.domains requires domain_allowlist mode")
-    hidden = []
-    # Keep the Client's internal metadata out of Shell. If this directory
-    # does not exist, the sandbox already cannot reach it outside the root.
-    for protected in [*protected_paths, root / ".openkapsel"]:
-        path = Path(protected).expanduser().resolve(strict=False)
-        if path != root and root in path.parents and path.exists():
-            hidden.append(str(path))
+    reduced = []
+    for path in sorted(set(denied), key=lambda p: (len(p.parts), str(p))):
+        if not any(parent == path or parent in path.parents for parent in reduced):
+            reduced.append(path)
+    hidden = [str(path) for path in reduced]
+    if len(hidden) > 32:
+        raise ValueError("too many sandbox hidden paths (max 32)")
     return {
         "type": kind,
         "root": str(root),
         "writable": bool(files.writable),
         "allowed_paths": grants,
-        "hidden_paths": sorted(set(hidden)),
+        "hidden_paths": hidden,
         "network_mode": mode,
         "allowed_domains": domains,
     }
