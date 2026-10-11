@@ -299,8 +299,10 @@ class SharedFilenameIndexTests(unittest.TestCase):
     def test_background_watcher_replays_later_changes(self):
         gate = threading.Event()
         new_file = self.src / "arriving.txt"
+        watcher_options = {}
 
         def fake_watch(_root, *, stop_event, **kwargs):
+            watcher_options.update(kwargs)
             yield set()  # first timeout proves watch registration
             gate.wait(timeout=3)
             if not stop_event.is_set():
@@ -318,6 +320,7 @@ class SharedFilenameIndexTests(unittest.TestCase):
             while not self.index.ready and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertTrue(self.index.ready, "initial scan did not become ready")
+            self.assertIs(watcher_options.get("ignore_permission_denied"), True)
             new_file.write_text("new")
             gate.set()
             deadline = time.monotonic() + 4

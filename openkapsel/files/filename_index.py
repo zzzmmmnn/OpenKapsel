@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 from functools import lru_cache
 import fnmatch
+import logging
 import os
 import queue
 import re
@@ -249,6 +250,7 @@ class FilenameIndex:
             for changes in watch(
                 self.root, stop_event=self._stop, recursive=True,
                 debounce=100, step=50, rust_timeout=500, yield_on_timeout=True,
+                ignore_permission_denied=True,
             ):
                 self._watch_ready.set()
                 if self._stop.is_set():
@@ -259,7 +261,11 @@ class FilenameIndex:
                     except queue.Full:
                         self._overflow.set()
                         self._ready.clear()
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Filename index watcher stopped for %s; using recursive search: %s",
+                self.root, exc,
+            )
             self._ready.clear()
         finally:
             self._watch_ready.set()
@@ -307,7 +313,11 @@ class FilenameIndex:
                     last_reconcile = time.monotonic()
                     if not self._overflow.is_set():
                         self._ready.set()
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Filename index builder stopped for %s; using recursive search: %s",
+                self.root, exc,
+            )
             self._ready.clear()
         finally:
             self._ready.clear()
