@@ -87,6 +87,13 @@ jobs:
           python -m unittest
           tests.test_sandbox_verify.SandboxVerificationTests.test_real_bubblewrap_enforces_private_files_pid_and_readonly -v
 
+      - name: Verify real Job Manager Bubblewrap isolation
+        env:
+          OPENKAPSEL_REAL_SANDBOX_TESTS: "1"
+        run: >-
+          python -m unittest
+          tests.test_job_sandbox.JobSandboxTests.test_bubblewrap_real_filesystem_network_and_hidden_files -v
+
   linux-distro:
     name: Linux distro / ${{ matrix.image }}
     runs-on: ubuntu-latest

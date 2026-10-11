@@ -319,6 +319,53 @@ class DomainProxy:
         thread.start()
         return proxy
 
+    @classmethod
+    def start_loopback(
+        cls, root: Path, domains: tuple[str, ...],
+        ports: tuple[int, ...] = DEFAULT_NETWORK_PORTS,
+    ) -> tuple["DomainProxy", int]:
+        """Run the same domain-validation proxy on an exclusively held TCP port.
+
+        This is for Seatbelt, whose network rules can restrict an exact
+        localhost destination but cannot route arbitrary tools to a Unix socket.
+        """
+        normalized = normalize_domain_rules(list(domains))
+        if not normalized:
+            raise ValueError("domain_allowlist network mode requires at least one domain")
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.chmod(0o700)
+        with _PROXY_CONFIG_LOCK:
+            global_slots = _PROXY_GLOBAL_SLOTS
+            per_instance_limit = _PROXY_PER_INSTANCE_LIMIT
+            header_timeout_seconds = _PROXY_HEADER_TIMEOUT_SECONDS
+        directory = Path(tempfile.mkdtemp(prefix="proxy-", dir=root))
+        server = None
+        try:
+            class LoopbackServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+                daemon_threads = True
+                allow_reuse_address = False
+
+            server = LoopbackServer(("127.0.0.1", 0), _ProxyHandler)
+            proxy = cls(
+                directory, directory / "not-a-socket", normalized,
+                tuple(ports), server, None,  # type: ignore[arg-type]
+                threading.BoundedSemaphore(per_instance_limit),
+                global_slots, header_timeout_seconds,
+            )
+            server.proxy = proxy  # type: ignore[attr-defined]
+            thread = threading.Thread(
+                target=server.serve_forever, name=f"domain-proxy-{directory.name}",
+                daemon=True,
+            )
+            proxy._thread = thread
+            thread.start()
+            return proxy, server.server_address[1]
+        except BaseException:
+            if server is not None:
+                server.server_close()
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()

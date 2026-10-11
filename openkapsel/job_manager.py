@@ -154,6 +154,7 @@ class Manager:
         self.processes = {}
         self.writers = {}
         self.collectors = {}
+        self.sandboxes = {}
         self.stopping = threading.Event()
         self.last_access = time.monotonic()
 
@@ -286,6 +287,9 @@ class Manager:
                     except queue.Full:
                         pass
                 self.collectors.pop(tid, None)
+                sandbox = self.sandboxes.pop(tid, None)
+            if sandbox is not None:
+                sandbox.cleanup()
 
     def _input_worker(self, tid, process, inputs):
         try:
@@ -387,8 +391,13 @@ class Manager:
                 raise ValueError("invalid sandbox JSON string") from exc
             if not isinstance(specification, dict):
                 raise ValueError("sandbox JSON must contain an object")
-            if specification != {"type": "current_user"}:
-                raise ValueError("unsupported sandbox environment; only current_user is implemented")
+            if specification.get("type") == "current_user":
+                if specification != {"type": "current_user"}:
+                    raise ValueError("current_user sandbox takes no options")
+            elif specification.get("type") not in {"bubblewrap", "seatbelt"}:
+                raise ValueError("unsupported sandbox environment")
+        else:
+            specification = {"type": "current_user"}
         environment = args.get("env")
         if environment is not None and (
             not isinstance(environment, dict)
@@ -399,15 +408,31 @@ class Manager:
         if executable is not None and not isinstance(executable, str):
             raise ValueError("invalid executable")
         name = args.get("container")
+        prepared = None
+        if specification["type"] != "current_user":
+            if executable is not None or name is not None:
+                raise ValueError("sandbox launcher does not accept executable or container override")
+            from openkapsel.job_sandbox import prepare_job
+            prepared = prepare_job(specification, argv, cwd, environment or {}, self.home)
+            argv = prepared.argv
+            environment = prepared.environment
         # Only the manager owns subprocess handles, even if the client exits.
-        process = subprocess.Popen(
-            argv, cwd=cwd, env=environment, executable=executable, shell=False,
-            stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            start_new_session=os.name != "nt",
-            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
-            close_fds=True,
-        )
+        try:
+            process = subprocess.Popen(
+                argv, cwd=cwd, env=environment, executable=executable, shell=False,
+                stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=os.name != "nt",
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                close_fds=True,
+                pass_fds=prepared.pass_fds if prepared is not None else (),
+            )
+        except BaseException:
+            if prepared is not None:
+                prepared.cleanup()
+            raise
+        if prepared is not None:
+            prepared.launched()
         started = time.time()
         self.db.execute(
             "INSERT INTO jobs(id,mapping_id,kind,started_at,pid,interactive,stdin_closed,"
@@ -422,6 +447,8 @@ class Manager:
         (self.home / "input").mkdir(mode=0o700, exist_ok=True)
         (self.home / "input" / (tid + ".bin")).touch(exist_ok=True)
         self.processes[tid] = process
+        if prepared is not None:
+            self.sandboxes[tid] = prepared
         if interactive:
             inputs = queue.Queue(maxsize=16)
             self.writers[tid] = inputs
@@ -579,7 +606,8 @@ class Manager:
                 result = self.request(req)
                 wire_send(conn, {"result": result})
             except (PermissionError, FileNotFoundError, ValueError,
-                    FileExistsError, BlockingIOError, BrokenPipeError, OSError) as exc:
+                    FileExistsError, BlockingIOError, BrokenPipeError, OSError,
+                    RuntimeError) as exc:
                 wire_send(conn, {"error": {"errno": getattr(exc, "errno", None),
                                           "message": str(exc)[:200]}})
         except (EOFError, OSError, ValueError):
