@@ -24,15 +24,50 @@ Under the server state directory, `mappings.sqlite3` holds registrations and `fi
 
 ## Python client installation
 
-The client requires Python 3.10+. To avoid installing scientific and web-server libraries on a client-only machine, run from a source checkout:
+Use Python **3.10 or later**. From an OpenKapsel source checkout, use the
+idempotent Client environment builder (Linux and macOS):
 
 ```sh
-python3 -m venv .venv-client
-.venv-client/bin/python -m pip install 'websocket-client>=1.8,<2' 'python-socks>=2.7,<3'
-.venv-client/bin/python -m openkapsel.client --config /path/to/client.json
+python3 scripts/setup_client_venv.py
+.venv/bin/python -m openkapsel.client --config /path/to/client.json
 ```
 
-On Windows use `python` and `.venv-client\Scripts\python.exe`. A full package installation can instead use the `client` extra and the `openkapsel-client` command.
+On Windows (PowerShell):
+
+```powershell
+py -3 scripts\setup_client_venv.py
+.\.venv\Scripts\python.exe -m openkapsel.client --config C:\path\to\client.json
+```
+
+The setup script detects Linux, macOS or Windows, creates `.venv` if absent,
+then checks the **current source checkout's** `pyproject.toml` for all core
+dependencies and all three optional Client groups: `client`, `data-rpc`,
+`ssh-rpc`. These include mapping WebSocket/proxy support, tabular/structured
+data, and SSH RPC. It also checks necessary transitive packages and versions.
+Packages already satisfying their requirements are left in place; only
+missing or incompatible dependencies are passed to pip. The local source
+checkout is installed editable only when not already correctly installed.
+No packages are installed if a second run finds the environment complete.
+The full default set includes scientific/web libraries from the project's
+core dependency group, so the first installation can be relatively large.
+
+Use `python3 scripts/setup_client_venv.py --check` (or `py -3` on Windows)
+to report missing packages without making changes; it exits nonzero if the
+environment needs repair. The optional `--venv /custom/path` changes the
+venv location. An existing directory that is not a healthy Python venv is
+**never overwritten automatically**. Dependency installation uses pip and
+therefore needs access to a configured package index or cached wheels.
+
+This script prepares **Python dependencies only**. On Windows, the proposed
+npm-based `@anthropic-ai/sandbox-runtime` integration is a separate future
+Job Manager backend; this script does not install Node.js/npm or claim
+Windows sandboxing is active. See the [sandbox configuration](#native-job-manager-sandbox-configuration-linuxmacos)
+for currently supported native platforms.
+
+A minimal manual installation with only `websocket-client` and
+`python-socks` can still be used for basic Client connection where the
+optional RPC functionality is not required; the automated script deliberately
+installs the complete set by default.
 
 On Linux, the optional native filename index uses recursive inotify watches.
 A large directory tree may exhaust the per-user `fs.inotify.max_user_watches`
