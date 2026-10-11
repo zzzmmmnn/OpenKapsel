@@ -9,6 +9,7 @@ import ctypes
 from functools import lru_cache
 import fnmatch
 import logging
+from contextlib import closing
 import os
 import queue
 import re
@@ -244,23 +245,53 @@ class FilenameIndex:
         self._worker.start()
         return True
 
+    def _watch_directories(self):
+        """Watch only accessible native directories, never foreign mounts.
+
+        Recursive OS watcher registration can abort on an unreadable folder
+        (e.g. a mounted filesystem's lost+found), leaving later siblings
+        unwatched. Register each traversable same-device directory instead.
+        """
+        paths = [self.root]
+        for relative, _name, _folded, kind, *_metadata in self._entries(self.root):
+            if kind == "directory":
+                directory = self.root / relative
+                if os.access(directory, os.R_OK | os.X_OK):
+                    paths.append(directory)
+        return paths
+
     def _watch_loop(self):
-        from watchfiles import watch
+        from watchfiles import Change, watch
         try:
-            for changes in watch(
-                self.root, stop_event=self._stop, recursive=True,
-                debounce=100, step=50, rust_timeout=500, yield_on_timeout=True,
-                ignore_permission_denied=True,
-            ):
-                self._watch_ready.set()
-                if self._stop.is_set():
-                    break
-                if changes:
-                    try:
-                        self._events.put_nowait(changes)
-                    except queue.Full:
-                        self._overflow.set()
-                        self._ready.clear()
+            while not self._stop.is_set():
+                directories = self._watch_directories()
+                with closing(watch(
+                    *directories, stop_event=self._stop, recursive=False,
+                    debounce=100, step=50, rust_timeout=500,
+                    yield_on_timeout=True, ignore_permission_denied=True,
+                )) as changes_stream:
+                    for changes in changes_stream:
+                        self._watch_ready.set()
+                        if self._stop.is_set():
+                            break
+                        if changes:
+                            try:
+                                self._events.put_nowait(changes)
+                            except queue.Full:
+                                self._overflow.set()
+                                self._ready.clear()
+                            # New directories require their own non-recursive
+                            # watches. Re-register, and rebuild to close the
+                            # brief race while the watch set changes.
+                            if any(
+                                change == Change.added
+                                and Path(path).is_dir()
+                                and not Path(path).is_symlink()
+                                for change, path in changes
+                            ):
+                                self._overflow.set()
+                                self._ready.clear()
+                                break
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Filename index watcher stopped for %s; using recursive search: %s",
@@ -269,7 +300,6 @@ class FilenameIndex:
             self._ready.clear()
         finally:
             self._watch_ready.set()
-            # If full, the worker will eventually drain the queue.
             while True:
                 try:
                     self._events.put(None, timeout=1)

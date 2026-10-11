@@ -301,8 +301,9 @@ class SharedFilenameIndexTests(unittest.TestCase):
         new_file = self.src / "arriving.txt"
         watcher_options = {}
 
-        def fake_watch(_root, *, stop_event, **kwargs):
+        def fake_watch(*paths, stop_event, **kwargs):
             watcher_options.update(kwargs)
+            watcher_options["paths"] = paths
             yield set()  # first timeout proves watch registration
             gate.wait(timeout=3)
             if not stop_event.is_set():
@@ -312,7 +313,9 @@ class SharedFilenameIndexTests(unittest.TestCase):
                 yield set()
 
         self.index._ready.clear()
-        fake_module = types.SimpleNamespace(watch=fake_watch)
+        fake_module = types.SimpleNamespace(
+            watch=fake_watch, Change=SimpleNamespace(added=1),
+        )
         with patch.dict(sys.modules, {"watchfiles": fake_module}):
             with patch("openkapsel.files.filename_index.watcher_available", return_value=True):
                 self.assertTrue(self.index.start())
@@ -321,6 +324,9 @@ class SharedFilenameIndexTests(unittest.TestCase):
                 time.sleep(0.02)
             self.assertTrue(self.index.ready, "initial scan did not become ready")
             self.assertIs(watcher_options.get("ignore_permission_denied"), True)
+            self.assertIs(watcher_options.get("recursive"), False)
+            self.assertIn(self.root.resolve(), watcher_options["paths"])
+            self.assertIn(self.src.resolve(), watcher_options["paths"])
             new_file.write_text("new")
             gate.set()
             deadline = time.monotonic() + 4
