@@ -394,7 +394,7 @@ class Manager:
             if specification.get("type") == "current_user":
                 if specification != {"type": "current_user"}:
                     raise ValueError("current_user sandbox takes no options")
-            elif specification.get("type") not in {"bubblewrap", "seatbelt"}:
+            elif specification.get("type") not in {"bubblewrap", "seatbelt", "srt_windows"}:
                 raise ValueError("unsupported sandbox environment")
         else:
             specification = {"type": "current_user"}
@@ -410,6 +410,8 @@ class Manager:
         name = args.get("container")
         prepared = None
         if specification["type"] != "current_user":
+            if not isinstance(argv, list):
+                raise ValueError("restricted sandbox requires argv array")
             if executable is not None or name is not None:
                 raise ValueError("sandbox launcher does not accept executable or container override")
             from openkapsel.job_sandbox import prepare_job

@@ -17,6 +17,17 @@ execution. This is an internal Manager IPC contract, not a public REST parameter
   The sandbox may connect only to that port; the proxy validates domain names,
   destination ports, DNS answers and public addresses. A restricted program
   cannot initiate arbitrary TCP connections merely by ignoring `HTTP_PROXY`.
+- `srt_windows`: Windows only; wraps each Job in Anthropic Sandbox Runtime
+  0.0.79+ (Node.js 22.12+). SRT's Rust `srt-win.exe` uses a dedicated
+  `srt-sandbox` account, SID-restricted WFP egress filter and NTFS ACLs.
+  First run requires `npm install -g @anthropic-ai/sandbox-runtime` and an
+  elevated `srt windows-install`. The Manager writes an independent private
+  SRT settings JSON and invokes the globally installed Node entrypoint.
+  `none` and `domain_allowlist` work with SRT's proxy; `full` currently
+  **fails closed** because this SRT version cannot express an unrestricted
+  Windows egress policy. The shared sandbox account SID means directory
+  grants across concurrently running Windows Jobs may overlap; these Jobs
+  intentionally remain parallel in this initial implementation.
 
 Example JSON **value of the `sandbox` string**:
 
@@ -59,6 +70,8 @@ have been changed; the existing Client Shell/Podman configuration and the
 Manager's current-user default remain unchanged.
 
 The macOS integration tests execute real Seatbelt profiles and check denied
-filesystem and network access, proxy policy, output and cleanup. Linux CI
+filesystem and network access, proxy policy, output and cleanup. Windows
+adapter tests exercise settings translation, dependency refusal and cleanup,
+but native Windows isolation is not yet verified on a provisioned host. Linux CI
 executes real Bubblewrap isolation under
 `OPENKAPSEL_REAL_SANDBOX_TESTS=1`, rather than treating mocks as isolation.

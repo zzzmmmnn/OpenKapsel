@@ -176,7 +176,7 @@ class SharedClientTasks:
                 "--tmpfs", "/workspace/.openkapsel:rw,nosuid,nodev,noexec,size=1m",
                 "--interactive", legacy.image, *argv,
             ]
-        if command is not None and os.name == "nt" and not legacy.sandbox:
+        if command is not None and os.name == "nt" and not legacy.sandbox and self.job_sandbox is None:
             executable = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
             argv = f'"{executable}" /d /s /c "{command}"'
         prepared = {

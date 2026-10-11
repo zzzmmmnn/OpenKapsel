@@ -23,7 +23,7 @@ from openkapsel.execution.sandbox_backends import (
 from openkapsel.execution.tasks import RESOLVER_FD_MARKER
 
 MODES = {"none", "full", "domain_allowlist"}
-TYPES = {"bubblewrap", "seatbelt"}
+TYPES = {"bubblewrap", "seatbelt", "srt_windows"}
 MAX_PATHS = 32
 # Runtime libraries are readable, but nothing under the host user's home is.
 MACOS_SYSTEM_READ = (
@@ -69,7 +69,7 @@ def _real_dir(value: str) -> Path:
     if not path.is_absolute():
         raise ValueError("sandbox path must be absolute")
     resolved = path.resolve(strict=True)
-    if not resolved.is_dir() or resolved == Path("/"):
+    if not resolved.is_dir() or resolved == Path(resolved.anchor):
         raise ValueError("sandbox must use a non-root directory")
     return resolved
 
@@ -100,6 +100,8 @@ def prepare_job(
         raise ValueError("bubblewrap sandbox requires Linux")
     if kind == "seatbelt" and platform.system() != "Darwin":
         raise ValueError("Seatbelt sandbox requires macOS")
+    if kind == "srt_windows" and platform.system() != "Windows":
+        raise ValueError("sandbox-runtime requires Windows")
     root = _real_dir(specification.get("root"))
     work = Path(cwd).resolve(strict=True)
     if not _contains(root, work):
@@ -168,6 +170,14 @@ def prepare_job(
     job_dir = Path(tempfile.mkdtemp(prefix="job-", dir=sandbox_home)).resolve()
     controller: object | None = None
     try:
+        if kind == "srt_windows":
+            from openkapsel.windows_srt import launch_windows_srt
+            command, env = launch_windows_srt(
+                argv=argv, environment=environment, job_dir=job_dir,
+                root=root, writable=writable, grants=grants, hidden=excluded,
+                mode=mode, domains=domains,
+            )
+            return PreparedJob(command, env, temp_dir=job_dir)
         if kind == "bubblewrap":
             bwrap = Path(shutil.which("bwrap") or "/usr/bin/bwrap")
             rootlesskit = Path(shutil.which("rootlesskit") or "/usr/bin/rootlesskit")

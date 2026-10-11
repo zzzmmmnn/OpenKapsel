@@ -66,12 +66,16 @@ class ClientJobSandboxTests(unittest.TestCase):
 
     def test_client_selects_native_backend_and_domain_matching_table(self):
         from openkapsel.execution.network_proxy import domain_allowed
-        if platform.system() not in {"Linux", "Darwin"}:
-            self.skipTest("Native sandbox requires Linux/macOS")
+        if platform.system() not in {"Linux", "Darwin", "Windows"}:
+            self.skipTest("Native sandbox requires Linux, macOS or Windows")
         runtime = ClientRuntime(self._config())
         try:
             spec = runtime.tasks.job_sandbox
-            self.assertEqual("bubblewrap" if platform.system() == "Linux" else "seatbelt", spec["type"])
+            self.assertEqual(
+                {"Linux": "bubblewrap", "Darwin": "seatbelt",
+                 "Windows": "srt_windows"}[platform.system()],
+                spec["type"],
+            )
             self.assertEqual(str(self.root), spec["root"])
             self.assertFalse(spec["writable"])
             self.assertEqual(["example.com", ".github.com"], spec["allowed_domains"])
@@ -100,8 +104,16 @@ class ClientJobSandboxTests(unittest.TestCase):
                     runtime = ClientRuntime(self._config(**variant))
                     runtime.close()
         with patch("openkapsel.client_runtime.job_sandbox_config.platform.system", return_value="Windows"):
-            with self.assertRaisesRegex(ValueError, "only on Linux and macOS"):
-                runtime = ClientRuntime(self._config())
+            runtime = ClientRuntime(self._config())
+            try:
+                self.assertEqual("srt_windows", runtime.tasks.job_sandbox["type"])
+            finally:
+                runtime.close()
+        with patch("openkapsel.client_runtime.job_sandbox_config.platform.system", return_value="Windows"):
+            with self.assertRaisesRegex(ValueError, "Windows SRT does not support"):
+                runtime = ClientRuntime(self._config(job_sandbox={
+                    "network": {"mode": "full"},
+                }))
                 runtime.close()
         # Explicit extra mounts may never expose a protected config file.
         protected_dir = self.base / "secrets"

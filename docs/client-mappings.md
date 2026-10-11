@@ -58,11 +58,12 @@ venv location. An existing directory that is not a healthy Python venv is
 **never overwritten automatically**. Dependency installation uses pip and
 therefore needs access to a configured package index or cached wheels.
 
-This script prepares **Python dependencies only**. On Windows, the proposed
-npm-based `@anthropic-ai/sandbox-runtime` integration is a separate future
-Job Manager backend; this script does not install Node.js/npm or claim
-Windows sandboxing is active. See the [sandbox configuration](#native-job-manager-sandbox-configuration-linuxmacos)
-for currently supported native platforms.
+This script installs **Python dependencies only**. On Windows, it checks
+whether Node.js/npm and the globally installed `@anthropic-ai/sandbox-runtime`
+package appear present, without installing them. For Windows native Shell
+sandboxing, see the [additional Windows SRT installation](#windows-sandbox-runtime-installation)
+below. The installer diagnostic by itself does not prove the machine has the
+required SRT sandbox user and WFP protection.
 
 A minimal manual installation with only `websocket-client` and
 `python-socks` can still be used for basic Client connection where the
@@ -286,13 +287,13 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 ## Client execution policy
 
-### Native Job Manager sandbox configuration (Linux/macOS)
+### Native Job Manager sandbox configuration (Linux/macOS/Windows)
 
 Add `job_sandbox` to the Client JSON configuration to enable the native
 Job Manager sandbox. **Do not set a `type` manually.** The Client derives
-`bubblewrap` on Linux and `seatbelt` on macOS, normalizes the policy, then
-serializes it into the Manager's `task_start.sandbox` JSON **string**.
-Windows rejects this configuration rather than silently executing unsandboxed.
+`bubblewrap` on Linux, `seatbelt` on macOS, or `srt_windows` on Windows,
+normalizes the policy, and serializes it into the Manager's `task_start.sandbox`
+JSON **string**. The Windows implementation uses Anthropic SRT (alpha).
 
 ```json
 {
@@ -328,15 +329,20 @@ automatically hides existing internal `.openkapsel` metadata under the root.
 `job_sandbox.network.mode` is one of:
 
 - `none` (default): deny outbound network connections.
-- `full`: allow network access.
-- `domain_allowlist`: HTTP/HTTPS through the Manager-owned domain proxy only.
+- `full`: allow network access on Linux and macOS; currently **rejected
+  on Windows** because SRT's SID-wide WFP policy denies direct egress and its
+  allowlist does not support an allow-all wildcard.
+- `domain_allowlist`: domain-filtered proxy access (Manager-owned on Linux/
+  macOS; SRT-owned HTTP/SOCKS proxy on Windows).
   `domains` is required, and uses **the same matching rules as Server**:
   `github.com` matches exactly; `.githubusercontent.com` matches both
   the apex name and its subdomains. DNS/domain names are normalized using
-  the Server proxy's validation. Non-whitelisted domains are rejected by the
-  proxy; direct connections cannot bypass it. Programs generally need to
-  support the injected HTTP(S) proxy environment variables; raw TCP is not
-  transparently redirected.
+  the Server proxy's validation. On Windows, `.githubusercontent.com`
+  becomes both `githubusercontent.com` and `*.githubusercontent.com` in
+  the SRT configuration, because SRT wildcard matching does not include the
+  base domain. Non-whitelisted domains are rejected by the proxy; direct
+  connections cannot bypass it. Programs generally need to support the
+  injected proxy variables; raw TCP is not transparently redirected.
 
 With `job_sandbox`, **every Mapping Shell job**, including the default
 120-second and shorter jobs, runs in the shared Job Manager. This prevents
@@ -349,21 +355,64 @@ sandbox. Without `job_sandbox`, current short/long Shell routing is unchanged.
 
 Configuration errors or missing native tools fail closed. Install `bwrap`
 on Linux (and RootlessKit where the shared backend requires it); macOS uses
-`/usr/bin/sandbox-exec`. Existing jobs are not retroactively restricted after
-changing the configuration. See [Job Manager sandbox](job-manager-sandbox.md)
-for the platform isolation guarantees and Manager IPC format.
+`/usr/bin/sandbox-exec`. Windows requires SRT as below. Existing jobs are
+not retroactively restricted after changing the configuration. See
+[Job Manager sandbox](job-manager-sandbox.md) for isolation guarantees and
+the Manager IPC format.
 
-Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds and runs directly in ClientRuntime when its requested timeout is ≤120 seconds (including the default). For explicitly requested timeouts greater than 120 seconds, the shared Job Manager runs the job with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
+### Windows Sandbox Runtime installation
 
-To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
+Install **Node.js 22.12+**, then once per machine in PowerShell:
+
+```powershell
+npm install -g @anthropic-ai/sandbox-runtime
+srt windows-install
+```
+
+The second command requests elevation (UAC). SRT provisions the
+`srt-sandbox` local account, NTFS ACL support and SID-scoped WFP network
+fence. The Client setup script only checks npm package presence; it does not
+perform this privileged machine-wide initialization. Missing npm/Node, a
+missing/incompatible SRT package, or an unprovisioned WFP/user setup causes
+the Job to fail; **no unsandboxed fallback** is allowed.
+
+The Client JSON `job_sandbox` configuration and directory permissions are
+identical on all platforms. Windows SRT accepts `network.mode=none` and
+`domain_allowlist` in this first release. It does **not** yet accept
+`network.mode=full` (Client startup rejects this configuration); use a domain
+allowlist when Windows Shell tasks need internet access.
+
+The Manager runs the **globally installed npm package's Node CLI** with a
+private per-Job `--settings` JSON file, rather than executing an editable
+`srt.cmd` wrapper. Each Job remains independently managed and can run
+concurrently up to the usual Manager limits. SRT uses **one shared sandbox
+account SID** and session-level NTFS ACL grants: while Jobs overlap, one
+sandboxed Job might be able to access another Job's additionally granted
+directory. This first release intentionally does not provide per-Job path
+confidentiality on Windows. Use only trusted combinations of concurrently
+running Jobs when they have different extra directory grants. SRT also has
+a small default allowed proxy port range; concurrent Jobs may exhaust those
+ports before the Manager's own capacity limit.
+
+Windows SRT executes under a **different local user**, so tools installed
+only under the interactive user's profile might not be accessible. Prefer
+machine-wide Python, Node, Git and other CLI installations or explicitly
+grant their read-only runtime paths. See
+[Anthropic's Windows alpha documentation](https://github.com/anthropics/sandbox-runtime#windows-alpha)
+for sandbox provisioning and restrictions.
+
+Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox` enabled, **all** Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
+
+To intentionally run unrestricted native Shell tasks without `job_sandbox`,
+explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
 
 The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/task/*` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
 
-There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/task/*` routes. Client Shell output combines stdout/stderr. For short Shell (≤120 seconds), it remains in the Client's existing 2 MiB memory buffer. For long Shell (>120 seconds), the Manager appends output directly to a bounded 64 MiB disk spool; clients read it incrementally as base64 and advancing the read offset reclaims acknowledged bytes. Stdin is likewise queued on disk and reclaimed as the child consumes it. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
+There is no mapping-specific public task or argv API. Client execution starts through the unified `/shell/exec` interface and its returned ID is controlled through ordinary `/task/*` routes. Client Shell output combines stdout/stderr. For legacy short Shell (≤120 seconds, without `job_sandbox`), output remains in the Client's existing 2 MiB memory buffer. Manager-owned jobs (all when `job_sandbox` is enabled, otherwise >120 seconds) append output to a bounded 64 MiB disk spool; clients read it incrementally as base64 and advancing the read offset reclaims acknowledged bytes. Stdin is likewise queued on disk and reclaimed as the child consumes it. Stdin accepts bounded chunks. Interrupt and force-kill are supported; native POSIX tasks use process groups and Windows uses process-tree termination. These are lifecycle controls, not sandbox boundaries, and deliberately detached native processes are outside the guarantee.
 
 ### Persistent Mapping Shell Job Manager
 
-Long Mapping Shell jobs (explicit timeout >120 seconds) run in one **per-OS-user shared on-demand Job Manager process**, independently of ClientRuntime. Short Shell jobs (≤120 seconds) run in ClientRuntime and do not start Manager; only they stop when Client exits. Listing or querying Manager-owned jobs can start the singleton manager if required. Linux/macOS use `multiprocessing.connection` AF_UNIX and Windows uses AF_PIPE Named Pipes. Both transports use `authkey=None` and length-bounded JSON byte messages (`send_bytes/recv_bytes`, not pickle); **the Job Manager performs no authentication**. The manager stores jobs in SQLite and stdin/stdout in private disk spools outside every Mapping export. If its default per-user state directory lies inside an exported root, Client startup refuses that unsafe arrangement; set `OPENKAPSEL_JOB_MANAGER_HOME` to a private directory outside all exports. Podman bind-mount mask files also live in Manager-owned private state until their Jobs exit, rather than disappearing when the initiating Client closes. It terminates its long-running jobs only on explicit interrupt/kill, expiration, or explicit manager shutdown, not when the Mapping Client reconnects, exits, reloads, or starts again.
+Long Mapping Shell jobs (explicit timeout >120 seconds) run in one **per-OS-user shared on-demand Job Manager process**, independently of ClientRuntime. With native `job_sandbox` configured, short Shell jobs run in the same Manager too. Otherwise, short Shell jobs (≤120 seconds) remain in ClientRuntime and stop when Client exits. Listing or querying Manager-owned jobs can start the singleton manager if required. Linux/macOS use `multiprocessing.connection` AF_UNIX and Windows uses AF_PIPE Named Pipes. Both transports use `authkey=None` and length-bounded JSON byte messages (`send_bytes/recv_bytes`, not pickle); **the Job Manager performs no authentication**. The manager stores jobs in SQLite and stdin/stdout in private disk spools outside every Mapping export. If its default per-user state directory lies inside an exported root, Client startup refuses that unsafe arrangement; set `OPENKAPSEL_JOB_MANAGER_HOME` to a private directory outside all exports. Podman bind-mount mask files also live in Manager-owned private state until their Jobs exit, rather than disappearing when the initiating Client closes. It terminates its long-running jobs only on explicit interrupt/kill, expiration, or explicit manager shutdown, not when the Mapping Client reconnects, exits, reloads, or starts again.
 
 The Client URL's final 24-character `mapping_id` is the **partition key** for all Jobs. The Client obtains it once from its fixed Mapping URL; Server callers cannot supply or override it through Job operation arguments. The Manager uses only `(mapping_id, job_id)` to select records and spool files, without any Mapping Token, credential hash, initial owner registration, or token rotation. Public `&a1B2&` IDs are scoped to one Mapping, so separate Mappings may have identical Job IDs without mixing their records. Changing a Client's Server Mapping Token does not affect existing Manager Jobs. Local IPC users are assumed to be trusted; the Manager's Mapping key is a routing/indexing field, **not an access-control credential**.
 
@@ -382,8 +431,8 @@ extra `allowed_paths`, `hidden_paths`, `network_mode`, and normalized
 sandboxes; it never falls back silently.
 
 Podman on macOS/Windows runs Linux workloads, not native platform tests.
-The native implementation in this version covers Linux Bubblewrap and macOS
-Seatbelt; native Windows sandboxing remains unsupported.
+The native implementation covers Linux Bubblewrap, macOS Seatbelt and
+Windows Anthropic SRT (alpha; requires one-time elevated Windows installation).
 
 Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 

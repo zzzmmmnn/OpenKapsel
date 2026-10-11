@@ -23,8 +23,10 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         kind = "bubblewrap"
     elif system == "Darwin":
         kind = "seatbelt"
+    elif system == "Windows":
+        kind = "srt_windows"
     else:
-        raise ValueError("job_sandbox is supported only on Linux and macOS")
+        raise ValueError("job_sandbox requires Linux, macOS or Windows")
     # "root" is the Client's exported workspace; no redundant, mutable config.
     root = files.root.resolve(strict=True)
     if not root.is_dir():
@@ -47,7 +49,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         if not path.is_absolute():
             raise ValueError("job_sandbox path must be absolute")
         resolved = path.resolve(strict=True)
-        if not resolved.is_dir() or resolved == Path("/"):
+        if not resolved.is_dir() or resolved == Path(resolved.anchor):
             raise ValueError("job_sandbox path must be a non-root directory")
         if resolved == root or resolved in root.parents:
             raise ValueError("job_sandbox path must not enclose the workspace root")
@@ -69,6 +71,11 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     mode = network.get("mode", "none")
     if not isinstance(mode, str) or mode not in {"none", "full", "domain_allowlist"}:
         raise ValueError("job_sandbox.network.mode must be none, full or domain_allowlist")
+    if kind == "srt_windows" and mode == "full":
+        raise ValueError(
+            "Windows SRT does not support job_sandbox.network.mode=full; "
+            "use none or domain_allowlist"
+        )
     domains = network.get("domains", [])
     if not isinstance(domains, list) or len(domains) > 128 or not all(
         isinstance(item, str) for item in domains

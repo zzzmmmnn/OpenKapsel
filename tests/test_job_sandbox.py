@@ -39,7 +39,8 @@ class JobSandboxTests(unittest.TestCase):
         return dict(type=kind, root=str(self.workspace), **kw)
 
     def test_invalid_grants_and_modes_rejected_before_launch(self):
-        kind = "seatbelt" if platform.system() == "Darwin" else "bubblewrap"
+        kind = {"Darwin": "seatbelt", "Linux": "bubblewrap",
+                "Windows": "srt_windows"}[platform.system()]
         cases = [
             dict(root="/"),
             dict(writable="yes"),
