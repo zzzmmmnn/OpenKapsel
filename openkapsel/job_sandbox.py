@@ -9,6 +9,7 @@ import os
 import platform
 import shlex
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -170,6 +171,19 @@ def prepare_job(
     excluded = reduced
     # A narrower RW bind must never cancel a parent RO bind. Root RO has
     # priority for everything inside the root, but not external grants.
+    # The Manager's AF_UNIX socket is in the OS temp dir, not under the
+    # private state directory. Mask it even if a broad sandbox grant could
+    # otherwise include that directory. The Manager additionally authenticates
+    # every connection independently of filesystem visibility.
+    ipc_parent = None
+    if os.name != "nt":
+        from openkapsel.job_manager import endpoint
+        address, family = endpoint(state_root)
+        if family == "AF_UNIX":
+            ipc_parent = Path(address).parent.resolve()
+            if any(_contains(base, ipc_parent)
+                   for base in (root, *(Path(item.path) for item in grants))):
+                excluded.append(ipc_parent)
     readonly = [root] if not writable else []
     readonly.extend(Path(grant.path) for grant in grants if grant.access == "ro")
     grants = [grant for grant in grants if grant.access == "ro" or not any(
@@ -227,9 +241,17 @@ def prepare_job(
             "(allow process*)", "(allow sysctl-read)",
             "(allow file-read-metadata)", '(allow file-read-data (literal "/"))',
         ]
-        for system_path in MACOS_SYSTEM_READ:
-            if Path(system_path).exists():
-                profile.append(f"(allow file-read* (subpath {_sb_quote(Path(system_path).resolve())}))")
+        # Hosted CI and source checkouts can use Python outside Apple's
+        # /usr and Homebrew roots (e.g. /Users/runner/hostedtoolcache/Python).
+        # Grant only the interpreter's installed runtime prefix, never HOME.
+        read_roots = [Path(path) for path in MACOS_SYSTEM_READ]
+        for interpreter_prefix in (sys.base_prefix, sys.exec_prefix):
+            prefix = Path(interpreter_prefix).resolve()
+            if prefix != Path(prefix.anchor):
+                read_roots.append(prefix)
+        for system_path in dict.fromkeys(read_roots):
+            if system_path.exists():
+                profile.append(f"(allow file-read* (subpath {_sb_quote(system_path.resolve())}))")
         for directory in (root, *(Path(item.path) for item in grants)):
             profile.append(f"(allow file-read* (subpath {_sb_quote(directory)}))")
         if writable:
@@ -248,6 +270,17 @@ def prepare_job(
             operation = "subpath" if directory.is_dir() else "literal"
             profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")
             profile.append(f"(deny file-write* ({operation} {_sb_quote(directory)}))")
+        # State is not mounted/allowed, except the private per-Job scratch
+        # directory. Do NOT deny all of state_root: a broad deny would also
+        # override the allowed job_dir and break TMPDIR/tempfile creation.
+        # Explicitly deny the IPC key and AF_UNIX socket subtree regardless
+        # of any extra runtime read grants.
+        credential = state_root / "ipc.key"
+        profile.append(f"(deny file-read* (literal {_sb_quote(credential)}))")
+        profile.append(f"(deny file-write* (literal {_sb_quote(credential)}))")
+        if ipc_parent is not None:
+            profile.append(f"(deny file-read* (subpath {_sb_quote(ipc_parent)}))")
+            profile.append(f"(deny file-write* (subpath {_sb_quote(ipc_parent)}))")
         env = dict(environment)
         env.update(TMPDIR=str(job_dir), TMP=str(job_dir), TEMP=str(job_dir), HOME=str(root))
         if mode == "full":
@@ -260,6 +293,11 @@ def prepare_job(
             for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
                 env[name] = url
             env["NO_PROXY"] = env["no_proxy"] = ""
+        # In full mode, (allow network*) includes AF_UNIX and would allow
+        # connecting to Manager's same-UID IPC socket despite file-read denies.
+        # The command-facing sandbox has no reason to connect to ANY host
+        # AF_UNIX socket (the domain proxy uses loopback TCP on macOS).
+        profile.append("(deny network-outbound (remote unix-socket))")
         # Everything else, including outgoing sockets, is denied by default.
         rules = "\n".join(profile)
         if len(rules) > 32000:

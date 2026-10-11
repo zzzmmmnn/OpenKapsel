@@ -100,6 +100,77 @@ class JobSandboxTests(unittest.TestCase):
         finally:
             prepared.cleanup()
 
+    @unittest.skipUnless(
+        platform.system() == "Linux"
+        and os.environ.get("OPENKAPSEL_REAL_SANDBOX_TESTS") == "1",
+        "requires real Linux Bubblewrap installation and namespaces",
+    )
+    def test_bubblewrap_cannot_reach_manager_unix_socket(self):
+        from openkapsel.job_manager import endpoint, ensure_running
+        ensure_running(self.state)
+        self.addCleanup(shutdown, self.state, force=True)
+        address, family = endpoint(self.state)
+        self.assertEqual("AF_UNIX", family)
+        secret = self.state / "ipc.key"
+        code = (
+            "import socket,pathlib;"
+            "s=socket.socket(socket.AF_UNIX);"
+            "print('socket_result',s.connect_ex(" + repr(address) + "));"
+            "\ntry:print('secret',pathlib.Path(" + repr(str(secret)) + ").read_bytes())"
+            "\nexcept OSError:print('secret_blocked')"
+        )
+        prepared = prepare_job(
+            self._spec("bubblewrap", writable=True, network_mode="full"),
+            ["/usr/bin/python3", "-c", code], str(self.workspace),
+            dict(os.environ), self.state,
+        )
+        try:
+            result = subprocess.run(
+                prepared.argv, cwd=self.workspace, env=prepared.environment,
+                pass_fds=prepared.pass_fds,
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("secret_blocked", result.stdout)
+            self.assertRegex(result.stdout, r"socket_result (?!0\b)\d+")
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin" and shutil.which("sandbox-exec"),
+                         "macOS Seatbelt is required")
+    def test_seatbelt_cannot_contact_manager_unix_socket_even_with_full_network(self):
+        from openkapsel.job_manager import endpoint, ensure_running
+        ensure_running(self.state)
+        self.addCleanup(shutdown, self.state, force=True)
+        address, family = endpoint(self.state)
+        self.assertEqual("AF_UNIX", family)
+        secret = self.state / "ipc.key"
+        code = (
+            "import pathlib,socket,tempfile,os;"
+            "s=socket.socket(socket.AF_UNIX);"
+            "print('socket_result',s.connect_ex(" + repr(address) + "));"
+            "\ntry:print('manager_secret',pathlib.Path(" + repr(str(secret)) + ").read_bytes())"
+            "\nexcept OSError:print('manager_secret_blocked')"
+            "\nwith tempfile.TemporaryFile(dir=os.environ['TMPDIR']) as f: f.write(b'OK')"
+            "\nprint('job_temp_writable')"
+        )
+        prepared = prepare_job(
+            self._spec("seatbelt", writable=True, network_mode="full"),
+            [sys.executable, "-c", code], str(self.workspace),
+            dict(os.environ), self.state,
+        )
+        try:
+            result = subprocess.run(
+                prepared.argv, cwd=self.workspace, env=prepared.environment,
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("manager_secret_blocked", result.stdout)
+            self.assertIn("job_temp_writable", result.stdout)
+            self.assertRegex(result.stdout, r"socket_result (?:1|2|13|61)")
+        finally:
+            prepared.cleanup()
+
     @unittest.skipUnless(platform.system() == "Darwin" and shutil.which("sandbox-exec"),
                          "macOS Seatbelt is required")
     def test_seatbelt_real_filesystem_and_network_isolation(self):

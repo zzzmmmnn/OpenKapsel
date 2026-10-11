@@ -2,7 +2,7 @@
 
 Client processes are stateless proxies. The manager owns child processes and
 stdin/stdout pipes, and stores metadata in SQLite plus append-only disk output.
-IPC uses unauthenticated multiprocessing.connection byte frames, never pickle.
+IPC uses authenticated multiprocessing.connection byte frames, never pickle.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import queue
 import re
 import secrets
 import signal
+import stat
 import sqlite3
 import string
 import subprocess
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Listener
 from pathlib import Path
 
@@ -66,6 +68,46 @@ def prepare_home(home):
     # Drop the former IPC authentication secret if an old local state exists.
     (home / "auth.key").unlink(missing_ok=True)
     return home
+
+
+def ipc_authkey(home) -> bytes:
+    """Private per-Manager IPC credential, atomically published in state home.
+
+    A sandboxed child can share our UID, so AF_UNIX filesystem permissions
+    alone are NOT sufficient authentication. The key stays outside mounted
+    workspaces and is additionally denied by the native Seatbelt policy.
+    """
+    home = Path(home)
+    path = home / "ipc.key"
+    if not path.exists() and not path.is_symlink():
+        fd, temporary = tempfile.mkstemp(prefix=".ipc-", dir=home)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(secrets.token_bytes(32))
+                stream.flush()
+                os.fsync(stream.fileno())
+            # Linking a fully written file publishes the key atomically.
+            # Racing Clients must never replace an existing Manager secret.
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        status = os.fstat(stream.fileno())
+        if not stat.S_ISREG(status.st_mode) or (
+            os.name != "nt" and status.st_mode & 0o077
+        ):
+            raise PermissionError("insecure Job Manager IPC credential")
+        if os.name != "nt" and status.st_uid != os.getuid():
+            raise PermissionError("Job Manager IPC credential has another owner")
+        key = stream.read(33)
+    if len(key) != 32:
+        raise PermissionError("invalid Job Manager IPC credential")
+    return key
 
 
 def endpoint(home):
@@ -125,6 +167,7 @@ def singleton_lock(home):
 class Manager:
     def __init__(self, home):
         self.home = prepare_home(home)
+        self.ipc_key = ipc_authkey(self.home)
         self.address, self.family = endpoint(self.home)
         self.db = sqlite3.connect(self.home / "jobs.sqlite3", check_same_thread=False,
                                   timeout=10)
@@ -623,7 +666,8 @@ class Manager:
         # multiprocessing's default backlog is just 1. Concurrent Client
         # startup/status probes can overflow it, mistake a busy singleton
         # for a missing manager, and launch unnecessary losing processes.
-        listener = Listener(self.address, family=self.family, backlog=64, authkey=None)
+        listener = Listener(self.address, family=self.family, backlog=64,
+                            authkey=self.ipc_key)
         if self.family == "AF_UNIX":
             os.chmod(self.address, 0o600)
         try:
@@ -632,7 +676,7 @@ class Manager:
                 # dispatches fast RPCs concurrently. A wake-up is needed to quit.
                 try:
                     conn = listener.accept()
-                except (OSError, EOFError):
+                except (OSError, EOFError, AuthenticationError):
                     if self.stopping.is_set():
                         break
                     continue
@@ -658,7 +702,15 @@ class Manager:
 def connect_once(home, request):
     home = prepare_home(home)
     address, family = endpoint(home)
-    conn = Client(address, family=family, authkey=None)
+    if family == "AF_UNIX" and not (home / "ipc.key").exists() and Path(address).exists():
+        # Legacy Managers accepted unauthenticated local peers. Authenticating
+        # against one would block forever: the old listener never sends an
+        # authentication challenge. Fail fast until the old daemon exits.
+        raise RuntimeError(
+            "unauthenticated legacy Job Manager still owns the socket; "
+            "stop the old Manager before upgrading"
+        )
+    conn = Client(address, family=family, authkey=ipc_authkey(home))
     try:
         wire_send(conn, request)
         response = wire_recv(conn)

@@ -139,6 +139,7 @@ class SharedManagerTests(unittest.TestCase):
         finished = self._wait(self.MAPPING_A, tid)
         self.assertEqual(0, finished["exit_code"])
         self.assertFalse((self.home / "auth.key").exists())
+        self.assertEqual(32, len((self.home / "ipc.key").read_bytes()))
         from contextlib import closing
         import sqlite3
         with closing(sqlite3.connect(self.home / "jobs.sqlite3")) as db:
@@ -166,22 +167,56 @@ class SharedManagerTests(unittest.TestCase):
             db.commit()
         ensure_running(self.home)
         self.assertFalse((self.home / "auth.key").exists())
+        self.assertEqual(32, len((self.home / "ipc.key").read_bytes()))
         with closing(sqlite3.connect(self.home / "jobs.sqlite3")) as db:
             names = {row[0] for row in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertNotIn("owners", names)
         self.assertIn("jobs", names)
 
-    def test_ipc_accepts_keyless_local_connections(self):
+    def test_ipc_key_created_atomically_across_concurrent_clients(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from openkapsel.job_manager import ipc_authkey, prepare_home
+        home = prepare_home(self.home)
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            keys = list(pool.map(lambda _: ipc_authkey(home), range(60)))
+        self.assertEqual(1, len(set(keys)))
+        self.assertEqual(32, len(keys[0]))
+        self.assertEqual(keys[0], (home / "ipc.key").read_bytes())
+
+    @unittest.skipIf(os.name == "nt", "Legacy detection uses an AF_UNIX socket path")
+    def test_legacy_unauthenticated_socket_fails_fast_before_handshake(self):
+        from openkapsel.job_manager import connect_once, endpoint, prepare_home
+        import socket
+        home = prepare_home(self.home)
+        address, _ = endpoint(home)
+        legacy = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        legacy.bind(address)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "legacy Job Manager"):
+                connect_once(home, {"op": "ping"})
+            self.assertFalse((home / "ipc.key").exists())
+        finally:
+            legacy.close()
+            Path(address).unlink(missing_ok=True)
+
+    def test_ipc_requires_authentication_even_for_same_uid(self):
+        from multiprocessing import AuthenticationError
         from multiprocessing.connection import Client as IpcClient
-        from openkapsel.job_manager import endpoint, wire_recv, wire_send
+        from openkapsel.job_manager import endpoint, ipc_authkey, wire_recv, wire_send
         ensure_running(self.home)
         address, family = endpoint(self.home)
-        with IpcClient(address, family=family, authkey=None) as conn:
+        with self.assertRaises((AuthenticationError, ConnectionResetError, EOFError)):
+            with IpcClient(address, family=family, authkey=b"unauthorized") as conn:
+                wire_send(conn, {"op": "shutdown", "force": True})
+                wire_recv(conn)
+        self.assertGreater(ensure_running(self.home)["pid"], 0)
+        key = ipc_authkey(self.home)
+        self.assertEqual(32, len(key))
+        with IpcClient(address, family=family, authkey=key) as conn:
             wire_send(conn, {"op": "ping"})
             result = wire_recv(conn)
         self.assertEqual(1, result["result"]["version"])
-        self.assertGreater(result["result"]["pid"], 0)
 
     def test_mapping_token_change_does_not_affect_existing_jobs(self):
         config = {

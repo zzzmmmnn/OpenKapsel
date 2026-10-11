@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import platform
+import sys
 import tempfile
 import time
 import unittest
@@ -223,7 +224,7 @@ class ClientJobSandboxTests(unittest.TestCase):
             )
             runtime.tasks.dispatch("task_start", {
                 "task_id": "&RoSb&",
-                "argv": ["/usr/bin/python3", "-c", code],
+                "argv": [sys.executable, "-c", code],
                 "timeout_seconds": 12, "interactive": False,
             })
             end = time.monotonic() + 12
@@ -233,7 +234,13 @@ class ClientJobSandboxTests(unittest.TestCase):
                     break
                 time.sleep(.05)
             self.assertFalse(task["running"])
-            self.assertEqual(0, task["exit_code"])
+            self.assertEqual(
+                0, task["exit_code"],
+                base64.b64decode(task.get("output", "")).decode(errors="replace")
+                + "\nManager log: "
+                + ((self.state / "manager.log").read_text(errors="replace")
+                   if (self.state / "manager.log").exists() else "(missing)"),
+            )
             output = base64.b64decode(task["output"]).decode()
             self.assertIn("read VISIBLE", output)
             self.assertIn("nested_write_denied", output)
@@ -267,7 +274,7 @@ class ClientJobSandboxTests(unittest.TestCase):
             )
             runtime.tasks.dispatch("task_start", {
                 "task_id": "&Shrt&",
-                "argv": ["/usr/bin/python3", "-c", code],
+                "argv": [sys.executable, "-c", code],
                 "timeout_seconds": 12, "interactive": False,
             })
             deadline = time.monotonic() + 12
@@ -277,7 +284,13 @@ class ClientJobSandboxTests(unittest.TestCase):
                     break
                 time.sleep(.05)
             self.assertFalse(task["running"])
-            self.assertEqual(0, task["exit_code"])
+            self.assertEqual(
+                0, task["exit_code"],
+                base64.b64decode(task.get("output", "")).decode(errors="replace")
+                + "\nManager log: "
+                + ((self.state / "manager.log").read_text(errors="replace")
+                   if (self.state / "manager.log").exists() else "(missing)"),
+            )
             output = base64.b64decode(task["output"]).decode()
             self.assertIn("REFERENCE", output)
             self.assertEqual(2, output.count("write-denied"))

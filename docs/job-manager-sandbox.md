@@ -94,6 +94,31 @@ read-only `/dev/null` bind after permitted mounts. Bubblewrap does the
 same. These backends generally show a masked empty view rather than hiding
 the pathname itself; they prevent reading or modifying the host contents.
 
+## Job Manager IPC security (Linux/macOS/Windows)
+
+The shared Manager authenticates IPC using a private 32-byte key stored in
+`job-manager/ipc.key` (mode 0600 on POSIX). Each connection uses
+`multiprocessing.connection` challenge-response authentication; random
+Mapping identifiers and Unix socket owner permissions alone are not credentials.
+The Manager state directory and IPC key are not sandbox-mounted.
+
+On Linux, Bubblewrap creates private `/tmp`, `/var/tmp` and `/run`
+mounts. If a broad explicitly allowed directory could otherwise include the
+Manager socket, the socket parent directory is additionally masked. On macOS,
+Seatbelt explicitly denies reading the IPC credential and accessing the socket
+directory, and **denies all outbound AF_UNIX sockets**, including
+`network_mode=full`; HTTP/S domain proxies use TCP loopback instead.
+The Manager state directory is otherwise outside the sandbox's readable roots,
+except for the specific per-Job temporary directory (used by `TMPDIR`).
+These restrictions complement IPC authentication: a sandboxed process sharing
+the Manager's UID must never obtain Manager command access.
+
+**Upgrade note:** stop a previously running, keyless Job Manager using the
+previous version of OpenKapsel before upgrading the Client. New Clients detect
+an old Unix-domain Manager without `ipc.key` and fail with an explicit error
+rather than hanging during an incompatible authentication handshake. Do not
+delete or reset `ipc.key` while a Manager is running.
+
 ## Platform boundaries
 
 Seatbelt has **no Linux-style PID namespace** and this feature does not

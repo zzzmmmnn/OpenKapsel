@@ -101,7 +101,8 @@ jobs:
           OPENKAPSEL_REAL_SANDBOX_TESTS: "1"
         run: >-
           python -m unittest
-          tests.test_client_job_sandbox.ClientJobSandboxTests.test_linux_short_shell_really_uses_manager_and_write_grants -v
+          tests.test_client_job_sandbox.ClientJobSandboxTests.test_linux_short_shell_really_uses_manager_and_write_grants
+          tests.test_job_sandbox.JobSandboxTests.test_bubblewrap_cannot_reach_manager_unix_socket -v
 
   linux-distro:
     name: Linux distro / ${{ matrix.image }}
