@@ -168,8 +168,72 @@ class WindowsSqliteFallbackTests(unittest.TestCase):
                 "SELECT name, folded FROM entries WHERE kind='file'"
             ))
             self.assertEqual("strasse.txt", folded["Straße.TXT"])
-            self.assertTrue(index._fts)
-            self.assertEqual(5, index._db.execute("SELECT COUNT(*) FROM entry_grams").fetchone()[0])
+            # Older system SQLite builds (including AlmaLinux 8) do not
+            # necessarily provide FTS5's trigram tokenizer. The index should
+            # enable it whenever the SQLite library actually supports it.
+            import sqlite3
+            with sqlite3.connect(":memory:") as probe:
+                try:
+                    probe.execute(
+                        "CREATE VIRTUAL TABLE trigram_probe "
+                        "USING fts5(folded, tokenize='trigram')"
+                    )
+                except sqlite3.OperationalError:
+                    trigram_available = False
+                else:
+                    trigram_available = True
+            self.assertEqual(trigram_available, index._fts)
+            if trigram_available:
+                self.assertEqual(
+                    5, index._db.execute("SELECT COUNT(*) FROM entry_grams").fetchone()[0]
+                )
+
+    def test_missing_trigram_tokenizer_still_searches_folded_names(self):
+        import sqlite3
+        from openkapsel.files.filename_index import FilenameIndex
+
+        class NoTrigramConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                if "USING fts5(" in sql:
+                    raise sqlite3.OperationalError("no such tokenizer: trigram")
+                return super().execute(sql, parameters)
+
+        connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            return connect(*args, factory=NoTrigramConnection, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "files"
+            root.mkdir()
+            (root / "Straße.TXT").write_text("x")
+            with patch(
+                "openkapsel.files.filename_index.sqlite3.connect",
+                side_effect=connect_without_trigram,
+            ):
+                index = FilenameIndex(root, base / "state" / "files.db")
+            try:
+                self.assertFalse(index._fts)
+                index.rebuild()
+                index._ready.set()
+                files = ClientFiles(root, rpc_registry=object(),
+                                    rpc_capabilities={"dummy": {}})
+                files.filename_index = index
+                with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                           return_value=("sqlite_watch", None)):
+                    result = plugin.dispatch(files, "search", {"query": "STRASSE"})
+                    strict = plugin.dispatch(files, "search", {
+                        "query": "STRASSE", "case_sensitive": True,
+                    })
+                self.assertEqual(200, result["status"], result)
+                self.assertEqual("sqlite_watch", result["body"]["backend"])
+                self.assertEqual(["Straße.TXT"], [
+                    item["path"] for item in result["body"]["results"]
+                ])
+                self.assertEqual([], strict["body"]["results"])
+            finally:
+                index.close()
 
     def test_everything_preferred_over_ready_sqlite_and_fails_over_to_it(self):
         from openkapsel.files.filename_index import FilenameIndex
