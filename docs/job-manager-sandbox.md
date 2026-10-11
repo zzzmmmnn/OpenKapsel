@@ -35,8 +35,11 @@ Example JSON **value of the `sandbox` string**:
 `root` is required and must be an existing directory, not `/`; `cwd` must
 lie inside it. `allowed_paths` grants at most 32 extra existing directories;
 entries explicitly declare `read_only`. `hidden_paths` can mask at most 32
-existing files/directories inside `root`. `writable` defaults to false and
-takes precedence over extra write grants. The Manager's own state, job output,
+existing files/directories inside `root`.  `writable` defaults to false and applies to the
+workspace root only. Extra path grants have independent write permissions.
+For Client configuration see `docs/client-mappings.md` (`job_sandbox`
+automatically derives `type`, `root`, and `writable` and forwards the
+Manager's JSON **string** for every Shell invocation). The Manager's own state, job output,
 and IPC files may not be mounted as workspace or as an extra grant.
 
 `network_mode` is `none` (default), `full`, or `domain_allowlist`.

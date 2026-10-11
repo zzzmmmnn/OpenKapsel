@@ -251,6 +251,73 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 ## Client execution policy
 
+### Native Job Manager sandbox configuration (Linux/macOS)
+
+Add `job_sandbox` to the Client JSON configuration to enable the native
+Job Manager sandbox. **Do not set a `type` manually.** The Client derives
+`bubblewrap` on Linux and `seatbelt` on macOS, normalizes the policy, then
+serializes it into the Manager's `task_start.sandbox` JSON **string**.
+Windows rejects this configuration rather than silently executing unsandboxed.
+
+```json
+{
+  "url": "wss://host.example/kapsel/mapping-connect/<MAPPING_ID>",
+  "token": "<MAPPING_TOKEN>",
+  "root": "/home/me/project",
+  "writable": true,
+  "allow_exec": true,
+  "job_sandbox": {
+    "paths": [
+      {"path": "/home/me/reference", "read_only": true},
+      {"path": "/home/me/outputs", "read_only": false}
+    ],
+    "network": {
+      "mode": "domain_allowlist",
+      "domains": ["github.com", ".githubusercontent.com"]
+    }
+  }
+}
+```
+
+The exported Mapping `root` is always automatically included. Its write
+permission follows the existing top-level `writable` setting. Each additional
+directory under `job_sandbox.paths` has an **independent** permission: use
+`read_only: true` for read access or `false` for read/write access. Up to
+32 existing absolute directories may be granted. Relative paths, non-existent
+directories, a grant for `/`, invalid access types and overlapping/duplicate
+grants fail Client startup. A read-only grant within a writable workspace
+restricts writing to that subdirectory; a writable grant within a read-only
+workspace grants write access to that subdirectory only. Never grant the Manager's private state directory or any directory containing the Client configuration/other protected files. The Client
+automatically hides existing internal `.openkapsel` metadata under the root.
+
+`job_sandbox.network.mode` is one of:
+
+- `none` (default): deny outbound network connections.
+- `full`: allow network access.
+- `domain_allowlist`: HTTP/HTTPS through the Manager-owned domain proxy only.
+  `domains` is required, and uses **the same matching rules as Server**:
+  `github.com` matches exactly; `.githubusercontent.com` matches both
+  the apex name and its subdomains. DNS/domain names are normalized using
+  the Server proxy's validation. Non-whitelisted domains are rejected by the
+  proxy; direct connections cannot bypass it. Programs generally need to
+  support the injected HTTP(S) proxy environment variables; raw TCP is not
+  transparently redirected.
+
+With `job_sandbox`, **every Mapping Shell job**, including the default
+120-second and shorter jobs, runs in the shared Job Manager. This prevents
+a short command from bypassing sandbox restrictions and makes Shell output
+Manager-owned and persistent. The old `sandbox` (Podman boolean), `backend`,
+and top-level `network` settings apply only when `job_sandbox` is absent;
+the new native policy takes precedence if present. Async task-based RPC and
+SSH are separate capabilities and are **not** constrained by this Shell
+sandbox. Without `job_sandbox`, current short/long Shell routing is unchanged.
+
+Configuration errors or missing native tools fail closed. Install `bwrap`
+on Linux (and RootlessKit where the shared backend requires it); macOS uses
+`/usr/bin/sandbox-exec`. Existing jobs are not retroactively restricted after
+changing the configuration. See [Job Manager sandbox](job-manager-sandbox.md)
+for the platform isolation guarantees and Manager IPC format.
+
 Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds and runs directly in ClientRuntime when its requested timeout is ≤120 seconds (including the default). For explicitly requested timeouts greater than 120 seconds, the shared Job Manager runs the job with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
 
 To run native macOS/Windows tasks before native sandbox adapters are implemented, explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
@@ -271,9 +338,17 @@ Output is retained on disk in bounded 64 MiB spools per job. Advancing the offse
 
 To request shutdown through the Client CLI, run `python -m openkapsel.client --config /path/to/client.json --stop-manager` (or append `--force`). The configuration file is mandatory and is held by the existing exclusive `ClientConfigLock` during the command. If another Client instance already owns **that same configuration**, the command refuses to run; stop that Client first. The Manager is per **OS user**, not per Client config: forcing shutdown affects jobs from other Mapping configurations too. The stop command never launches an absent Manager. The Client only reads and locks the specified config; it does not connect to the Mapping Server while requesting the Manager stop. The configuration lock also prevents two ordinary Client processes from running simultaneously with the same config.
 
-The Job Manager `task_start` IPC request reserves an optional `sandbox` field containing a **JSON-encoded string**, not a JSON object. Omitting it runs under the existing OS user (and retains the existing Client-prepared argv, including Podman wrapping when configured). The only explicit value currently supported is `"{\"type\":\"current_user\"}"`; invalid JSON and unknown sandbox modes are rejected rather than silently executing without isolation. A future native sandbox adapter can extend this interface; no additional sandbox modes are implemented yet.
+The Job Manager `task_start` IPC accepts an optional `sandbox` **JSON string**.
+Omission or `"{\"type\":\"current_user\"}"` preserves existing
+OS-user/Podman execution. With `job_sandbox` configured, Client supplies a
+validated JSON string with native `type`, exported `root`, root `writable`,
+extra `allowed_paths`, `hidden_paths`, `network_mode`, and normalized
+`allowed_domains`. The Manager validates these again and rejects unsupported
+sandboxes; it never falls back silently.
 
-Podman on macOS/Windows runs Linux workloads, not native platform tests. Linux Bubblewrap and native macOS/Windows sandbox adapters remain follow-up backends; this version does not claim they are implemented.
+Podman on macOS/Windows runs Linux workloads, not native platform tests.
+The native implementation in this version covers Linux Bubblewrap and macOS
+Seatbelt; native Windows sandboxing remains unsupported.
 
 Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 

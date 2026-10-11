@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,8 +11,9 @@ from openkapsel.job_manager import JOB_RE, prepare_home, request, state_home
 
 
 class SharedClientTasks:
-    def __init__(self, legacy, *, url, home=None):
+    def __init__(self, legacy, *, url, home=None, job_sandbox=None):
         self.legacy = legacy
+        self.job_sandbox = job_sandbox
         self.files = legacy.files
         self.id = urlsplit(url).path.rsplit("/", 1)[-1]
         self.home = (state_home() if home is None else Path(home)).expanduser().resolve()
@@ -44,6 +46,15 @@ class SharedClientTasks:
             manager_max_seconds=None,
             default_seconds=120,
         )
+        if self.job_sandbox is not None:
+            result.update(
+                sandbox=True,
+                backend=self.job_sandbox["type"],
+                network=self.job_sandbox["network_mode"],
+                restart_persistence_timeout_gt=0,
+                result_storage="shared_manager_disk",
+                uncollected_results="disk_spool",
+            )
         return result
 
     def has_active_jobs(self):
@@ -76,9 +87,10 @@ class SharedClientTasks:
                     not 0.1 <= timeout < float("inf")):
                 raise OSError(errno.EINVAL, "invalid Shell timeout")
             invocation = dict(args, timeout_seconds=timeout)
-            if timeout <= 120:
-                # Short-lived Shell stays with the Client, including stdin and
-                # output. No Manager process or IPC is needed to start it.
+            if timeout <= 120 and self.job_sandbox is None:
+                # Legacy short Shell remains Client-owned. When native Job
+                # sandboxing is configured, *every* Shell must use the Manager
+                # or short jobs would bypass the requested restrictions.
                 return self.legacy.dispatch(op, invocation)
             # Long Shell is owned by the independent shared Job Manager.
             return request(self.home, self.id, op, self._prepare(invocation))
@@ -167,8 +179,13 @@ class SharedClientTasks:
         if command is not None and os.name == "nt" and not legacy.sandbox:
             executable = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
             argv = f'"{executable}" /d /s /c "{command}"'
-        return {
+        prepared = {
             "task_id": args["task_id"], "argv": argv, "cwd": str(cwd),
             "interactive": interactive, "timeout_seconds": float(timeout),
             "env": env, "executable": executable, "container": container,
         }
+        if self.job_sandbox is not None:
+            prepared["sandbox"] = json.dumps(
+                self.job_sandbox, separators=(",", ":"), ensure_ascii=False,
+            )
+        return prepared

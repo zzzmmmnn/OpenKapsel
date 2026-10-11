@@ -225,13 +225,20 @@ def _create_resources(config, *, protected_paths=()):
     limits = config.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {"max_tasks", "max_seconds", "memory_mb", "processes", "cpus"}:
         raise ValueError("invalid client limits")
-    tasks = ClientTasks(files, enabled=config.get("allow_exec", False), sandbox=config.get("sandbox", True),
+    from openkapsel.client_runtime.job_sandbox_config import make_job_sandbox
+    job_sandbox = make_job_sandbox(config, files, protected_paths=protected_paths)
+    is_mapping = urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]
+    if job_sandbox is not None and not is_mapping:
+        raise ValueError("job_sandbox requires a mapping-connect Client")
+    tasks = ClientTasks(files, enabled=config.get("allow_exec", False),
+                        sandbox=config.get("sandbox", True) if job_sandbox is None else False,
+                        managed_sandbox=job_sandbox is not None,
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
                         network=config.get("network", False), **limits)
     from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
-    if urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]:
-        tasks = SharedClientTasks(tasks, url=config["url"])
-    if tasks.enabled and not tasks.sandbox:
+    if is_mapping:
+        tasks = SharedClientTasks(tasks, url=config["url"], job_sandbox=job_sandbox)
+    if tasks.enabled and not tasks.sandbox and job_sandbox is None:
         if isinstance(ssh_config, dict) and ssh_config.get("profiles"):
             LOG.warning(
                 "Sandbox explicitly disabled while SSH profiles are configured: "

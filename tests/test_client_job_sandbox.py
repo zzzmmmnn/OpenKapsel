@@ -1,0 +1,277 @@
+"""Client job_sandbox configuration and automatic OS backend selection."""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import platform
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from openkapsel.client import ClientRuntime
+from openkapsel.job_manager import shutdown
+
+
+class ClientJobSandboxTests(unittest.TestCase):
+    MAPPING = "C" * 24
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="openkapsel-client-job-sandbox-")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name).resolve()
+        self.root = self.base / "workspace"
+        self.root.mkdir()
+        self.readonly = self.base / "references"
+        self.readonly.mkdir()
+        (self.readonly / "example.txt").write_text("REFERENCE")
+        self.writable = self.base / "writable"
+        self.writable.mkdir()
+        self.state = self.base / "manager"
+        self.env = patch.dict(os.environ, {"OPENKAPSEL_JOB_MANAGER_HOME": str(self.state)})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        def stop():
+            try:
+                shutdown(self.state, force=True)
+            except (ConnectionError, OSError, EOFError):
+                return
+            if os.name != "nt":
+                from openkapsel.job_manager import endpoint
+                socket_path, _ = endpoint(self.state)
+                until = time.monotonic() + 8
+                while Path(socket_path).exists() and time.monotonic() < until:
+                    time.sleep(.04)
+        self.addCleanup(stop)
+
+    def _config(self, **overrides):
+        base = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING,
+            "token": "t" * 32,
+            "root": str(self.root),
+            "allow_exec": True,
+            "writable": False,
+            "job_sandbox": {
+                "paths": [
+                    {"path": str(self.readonly), "read_only": True},
+                    {"path": str(self.writable), "read_only": False},
+                ],
+                "network": {"mode": "domain_allowlist", "domains": ["EXAMPLE.COM", ".GitHub.com", "example.com"]},
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_client_selects_native_backend_and_domain_matching_table(self):
+        from openkapsel.execution.network_proxy import domain_allowed
+        if platform.system() not in {"Linux", "Darwin"}:
+            self.skipTest("Native sandbox requires Linux/macOS")
+        runtime = ClientRuntime(self._config())
+        try:
+            spec = runtime.tasks.job_sandbox
+            self.assertEqual("bubblewrap" if platform.system() == "Linux" else "seatbelt", spec["type"])
+            self.assertEqual(str(self.root), spec["root"])
+            self.assertFalse(spec["writable"])
+            self.assertEqual(["example.com", ".github.com"], spec["allowed_domains"])
+            self.assertTrue(domain_allowed("sub.github.com", tuple(spec["allowed_domains"])))
+            self.assertFalse(domain_allowed("otherexample.com", tuple(spec["allowed_domains"])))
+            self.assertEqual([True, False], [p["read_only"] for p in spec["allowed_paths"]])
+            self.assertTrue(runtime.tasks.capabilities()["sandbox"])
+            self.assertEqual(0, runtime.tasks.capabilities()["restart_persistence_timeout_gt"])
+        finally:
+            runtime.close()
+
+    def test_invalid_configs_fail_closed(self):
+        cases = [
+            {"job_sandbox": {"type": "seatbelt"}},
+            {"job_sandbox": None},
+            {"job_sandbox": {"paths": [{"path": str(self.readonly), "read_only": "false"}]}},
+            {"job_sandbox": {"paths": [{"path": "/"}]}},
+            {"job_sandbox": {"network": {"mode": "bogus"}}},
+            {"job_sandbox": {"network": {"mode": "none", "domains": ["example.com"]}}},
+            {"job_sandbox": {"network": {"mode": "domain_allowlist", "domains": []}}},
+            {"job_sandbox": {"network": {"mode": "domain_allowlist", "domains": ["foo/bar"]}}},
+        ]
+        for variant in cases:
+            with self.subTest(variant=variant):
+                with self.assertRaises(ValueError):
+                    runtime = ClientRuntime(self._config(**variant))
+                    runtime.close()
+        with patch("openkapsel.client_runtime.job_sandbox_config.platform.system", return_value="Windows"):
+            with self.assertRaisesRegex(ValueError, "only on Linux and macOS"):
+                runtime = ClientRuntime(self._config())
+                runtime.close()
+        # Explicit extra mounts may never expose a protected config file.
+        protected_dir = self.base / "secrets"
+        protected_dir.mkdir()
+        protected = protected_dir / "secret-client-config.json"
+        protected.write_text("{}")
+        with self.assertRaisesRegex(ValueError, "protected Client configuration"):
+            runtime = ClientRuntime(self._config(job_sandbox={
+                "paths": [{"path": str(protected_dir), "read_only": True}],
+            }), protected_paths=[protected])
+            runtime.close()
+        with self.assertRaisesRegex(ValueError, "enclose the workspace root"):
+            runtime = ClientRuntime(self._config(job_sandbox={
+                "paths": [{"path": str(self.base), "read_only": True}],
+            }))
+            runtime.close()
+        internal = self.root / ".openkapsel"
+        internal.mkdir()
+        with self.assertRaisesRegex(ValueError, "protected workspace metadata"):
+            runtime = ClientRuntime(self._config(job_sandbox={
+                "paths": [{"path": str(internal), "read_only": False}],
+            }))
+            runtime.close()
+        # Overlapping write and read-only grants are ambiguous by design.
+        child = self.writable / "nested"
+        child.mkdir()
+        with self.assertRaisesRegex(ValueError, "overlapping"):
+            runtime = ClientRuntime(self._config(job_sandbox={
+                "paths": [
+                    {"path": str(self.writable), "read_only": False},
+                    {"path": str(child), "read_only": True},
+                ],
+            }))
+            runtime.close()
+
+
+    @unittest.skipUnless(
+        platform.system() == "Linux"
+        and os.environ.get("OPENKAPSEL_REAL_SANDBOX_TESTS") == "1",
+        "real Client-to-Manager Bubblewrap runs in dedicated Linux CI",
+    )
+    def test_linux_short_shell_really_uses_manager_and_write_grants(self):
+        self.assertIsNotNone(__import__("shutil").which("bwrap"))
+        runtime = ClientRuntime(self._config(job_sandbox={
+            "paths": [
+                {"path": str(self.readonly), "read_only": True},
+                {"path": str(self.writable), "read_only": False},
+            ],
+            "network": {"mode": "none"},
+        }))
+        try:
+            code = (
+                "import pathlib,socket;"
+                "p=pathlib.Path;"
+                "print('granted_read',p(" + repr(str(self.readonly / "example.txt")) + ").read_text());"
+                "\ntry:p(" + repr(str(self.root / "blocked")) + ").write_text('unsafe')"
+                "\nexcept OSError:print('root_write_denied')"
+                "\np(" + repr(str(self.writable / "created.txt")) + ").write_text('allowed');"
+                "print('granted_write')"
+                "\ns=socket.socket();print('network_denied',s.connect_ex(('1.1.1.1',443)))"
+            )
+            runtime.tasks.dispatch("task_start", {
+                "task_id": "&Lnx1&", "argv": ["/usr/bin/python3", "-c", code],
+                "timeout_seconds": 15, "interactive": False,
+            })
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                task = runtime.tasks.dispatch("task_get", {"task_id": "&Lnx1&"})
+                if not task["running"]:
+                    break
+                time.sleep(.05)
+            self.assertFalse(task["running"])
+            self.assertEqual(0, task["exit_code"],
+                             base64.b64decode(task.get("output", "")).decode(errors="replace"))
+            result = base64.b64decode(task["output"]).decode()
+            for expected in ("granted_read REFERENCE", "root_write_denied",
+                             "granted_write", "network_denied"):
+                self.assertIn(expected, result)
+            self.assertEqual("allowed", (self.writable / "created.txt").read_text())
+            self.assertFalse((self.root / "blocked").exists())
+        finally:
+            runtime.close()
+
+    @unittest.skipUnless(platform.system() == "Darwin", "Real Seatbelt integration requires macOS")
+    def test_read_only_subdirectory_overrides_writable_workspace(self):
+        nested = self.root / "read-only-subtree"
+        nested.mkdir()
+        (nested / "visible.txt").write_text("VISIBLE")
+        runtime = ClientRuntime(self._config(writable=True, job_sandbox={
+            "paths": [{"path": str(nested), "read_only": True}],
+            "network": {"mode": "none"},
+        }))
+        try:
+            code = (
+                "import pathlib; p=pathlib.Path;"
+                "print('read', p('read-only-subtree/visible.txt').read_text());"
+                "\ntry:p('read-only-subtree/nope').write_text('bad')"
+                "\nexcept OSError:print('nested_write_denied')"
+                "\np('root_can_write').write_text('good');print('root_write_ok')"
+            )
+            runtime.tasks.dispatch("task_start", {
+                "task_id": "&RoSb&",
+                "argv": ["/usr/bin/python3", "-c", code],
+                "timeout_seconds": 12, "interactive": False,
+            })
+            end = time.monotonic() + 12
+            while time.monotonic() < end:
+                task = runtime.tasks.dispatch("task_get", {"task_id": "&RoSb&"})
+                if not task["running"]:
+                    break
+                time.sleep(.05)
+            self.assertFalse(task["running"])
+            self.assertEqual(0, task["exit_code"])
+            output = base64.b64decode(task["output"]).decode()
+            self.assertIn("read VISIBLE", output)
+            self.assertIn("nested_write_denied", output)
+            self.assertIn("root_write_ok", output)
+            self.assertFalse((nested / "nope").exists())
+            self.assertEqual("good", (self.root / "root_can_write").read_text())
+        finally:
+            runtime.close()
+
+    @unittest.skipUnless(platform.system() == "Darwin", "Real Seatbelt integration requires macOS")
+    def test_short_shell_is_manager_sandboxed_with_independent_directory_grants(self):
+        # The workspace is read-only; a separate explicitly writable directory
+        # must remain writable, while the read-only grant must reject writes.
+        runtime = ClientRuntime(self._config(job_sandbox={
+            "paths": [
+                {"path": str(self.readonly), "read_only": True},
+                {"path": str(self.writable), "read_only": False},
+            ],
+            "network": {"mode": "none"},
+        }))
+        try:
+            code = (
+                "import pathlib;"
+                "p=pathlib.Path;"
+                "print(p(" + repr(str(self.readonly / "example.txt")) + ").read_text());"
+                "\nfor path in (" + repr(str(self.root / "no_write")) + ","
+                + repr(str(self.readonly / "no_write")) + "):"
+                "\n try:p(path).write_text('bad');print('unsafe-write')"
+                "\n except OSError:print('write-denied')"
+                "\np(" + repr(str(self.writable / "created.txt")) + ").write_text('EXTRA_WRITE');print('extra-write-ok')"
+            )
+            runtime.tasks.dispatch("task_start", {
+                "task_id": "&Shrt&",
+                "argv": ["/usr/bin/python3", "-c", code],
+                "timeout_seconds": 12, "interactive": False,
+            })
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                task = runtime.tasks.dispatch("task_get", {"task_id": "&Shrt&"})
+                if not task["running"]:
+                    break
+                time.sleep(.05)
+            self.assertFalse(task["running"])
+            self.assertEqual(0, task["exit_code"])
+            output = base64.b64decode(task["output"]).decode()
+            self.assertIn("REFERENCE", output)
+            self.assertEqual(2, output.count("write-denied"))
+            self.assertIn("extra-write-ok", output)
+            self.assertNotIn("unsafe-write", output)
+            self.assertEqual("EXTRA_WRITE", (self.writable / "created.txt").read_text())
+            self.assertFalse((self.root / "no_write").exists())
+            self.assertFalse((self.readonly / "no_write").exists())
+        finally:
+            runtime.close()
+        # Closing the Client doesn't stop the shared Manager.
+        self.assertTrue(self.state.joinpath("jobs.sqlite3").is_file())
+
+
+if __name__ == "__main__":
+    unittest.main()

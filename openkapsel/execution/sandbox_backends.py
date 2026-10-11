@@ -75,6 +75,7 @@ class SandboxSpec:
     native_mapping_paths: tuple[Path, ...] = ()
     denied_mapping_paths: tuple[Path, ...] = ()
     mapping_mask_source: Path | None = None
+    allow_grant_writes_when_scope_readonly: bool = False
 
 
 class SandboxBackend(Protocol):
@@ -166,7 +167,9 @@ class BubblewrapBackend:
         for hidden in spec.hidden_paths:
             argv.extend(["--tmpfs", str(hidden)])
         for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
-            mode = "--ro-bind" if not spec.can_write or grant.read_only else "--bind"
+            mode = "--ro-bind" if (grant.read_only or (
+                not spec.can_write and not spec.allow_grant_writes_when_scope_readonly
+            )) else "--bind"
             self._append_parent_dirs(argv, Path(grant.path).parent)
             argv.extend([mode, grant.path, grant.path])
         for path in spec.native_mapping_paths:

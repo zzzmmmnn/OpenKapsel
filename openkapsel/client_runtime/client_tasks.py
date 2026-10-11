@@ -109,7 +109,8 @@ class ClientTasks:
 
     def __init__(self, files, *, enabled=False, sandbox=True, backend="podman",
                  image="docker.io/library/python:3.14-slim-trixie", network=False,
-                 max_tasks=2, max_seconds=600, memory_mb=256, processes=64, cpus=1):
+                 max_tasks=2, max_seconds=600, memory_mb=256, processes=64, cpus=1,
+                 managed_sandbox=False):
         self.files = files
         self.enabled, self.sandbox, self.backend = enabled, sandbox, backend
         self.image, self.network = image, network
@@ -120,7 +121,7 @@ class ClientTasks:
                 raise ValueError(f"{name} must be a positive integer")
         if max_tasks > 16 or max_seconds > 86400 or isinstance(cpus, bool) or not isinstance(cpus, (float, int)) or not 0 < cpus <= 1024:
             raise ValueError("invalid client execution limits")
-        if enabled and not sandbox and not files.writable:
+        if enabled and not sandbox and not files.writable and not managed_sandbox:
             raise ValueError("native unsandboxed execution requires explicit writable=true")
         if enabled and sandbox and (backend != "podman" or not shutil.which("podman")):
             raise ValueError("enabled sandbox requires Podman; install it or explicitly set sandbox=false")

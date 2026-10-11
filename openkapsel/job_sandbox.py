@@ -135,8 +135,14 @@ def prepare_job(
         if not isinstance(item, dict) or set(item) != {"path", "read_only"} or type(item["read_only"]) is not bool:
             raise ValueError("allowed_paths entries require path and read_only")
         directory = _real_dir(item["path"])
+        if _contains(directory, root):
+            raise ValueError("sandbox grant must not enclose workspace root")
         if _contains(directory, state_root) or _contains(state_root, directory):
             raise ValueError("sandbox grant overlaps Manager state")
+        if any(directory == Path(grant.path) or
+               directory in Path(grant.path).parents or
+               Path(grant.path) in directory.parents for grant in grants):
+            raise ValueError("overlapping sandbox path grants are ambiguous")
         grants.append(PathGrant(str(directory), item["read_only"]))
     excluded: list[Path] = []
     for item in hidden:
@@ -151,6 +157,11 @@ def prepare_job(
         if path == root:
             raise ValueError("cannot hide the sandbox root")
         excluded.append(path)
+    for grant in grants:
+        directory = Path(grant.path)
+        if any(_contains(directory, item) or _contains(item, directory)
+               for item in excluded):
+            raise ValueError("sandbox grant overlaps a hidden path")
 
     sandbox_home = home / "sandboxes"
     sandbox_home.mkdir(mode=0o700, exist_ok=True)
@@ -168,6 +179,7 @@ def prepare_job(
                 allowed_paths=tuple(grants), hidden_paths=tuple(excluded),
                 limits=SandboxLimits(64, 256 * 1024 * 1024, 100),
                 owner_token="job-manager",
+                allow_grant_writes_when_scope_readonly=True,
             )
             launch = backend.build_shell(spec)
             controller = launch.controller
@@ -218,8 +230,13 @@ def prepare_job(
         if writable:
             profile.append(f"(allow file-write* (subpath {_sb_quote(root)}))")
         for grant in grants:
-            if writable and not grant.read_only:
+            if not grant.read_only:
                 profile.append(f"(allow file-write* (subpath {_sb_quote(grant.path)}))")
+            else:
+                # A read-only path inside a writable workspace (or another
+                # writable ancestor) needs a deny override, not just the
+                # absence of an extra allow.
+                profile.append(f"(deny file-write* (subpath {_sb_quote(grant.path)}))")
         profile.append(f"(allow file-read* (subpath {_sb_quote(job_dir)}))")
         profile.append(f"(allow file-write* (subpath {_sb_quote(job_dir)}))")
         for directory in excluded:

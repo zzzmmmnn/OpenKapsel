@@ -94,6 +94,13 @@ jobs:
           python -m unittest
           tests.test_job_sandbox.JobSandboxTests.test_bubblewrap_real_filesystem_network_and_hidden_files -v
 
+      - name: Verify real Client-to-Manager Bubblewrap policy and write grants
+        env:
+          OPENKAPSEL_REAL_SANDBOX_TESTS: "1"
+        run: >-
+          python -m unittest
+          tests.test_client_job_sandbox.ClientJobSandboxTests.test_linux_short_shell_really_uses_manager_and_write_grants -v
+
   linux-distro:
     name: Linux distro / ${{ matrix.image }}
     runs-on: ubuntu-latest
