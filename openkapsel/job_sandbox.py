@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -83,6 +85,52 @@ def _sb_quote(value: Path | str) -> str:
     # Seatbelt profile string quoting is not shell quoting.
     raw = str(value)
     return '"' + raw.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+
+
+def _trusted_macos_xcode_developer_dir(path: Path) -> bool:
+    """Only a system-installed Xcode.app Developer root, not arbitrary apps.
+
+    Do not grant /Applications itself (or an environment-selected user tree)
+    access to sensitive data merely because /usr/bin/python3 uses xcrun.
+    """
+    parts = path.parts
+    return (
+        len(parts) == 5
+        and parts[:2] == ("/", "Applications")
+        and bool(re.fullmatch(r"Xcode(?:[._-][A-Za-z0-9._-]+)?\.app", parts[2]))
+        and parts[3:] == ("Contents", "Developer")
+    )
+
+
+def _macos_xcode_developer_dir(environment: dict[str, str]) -> Path | None:
+    """Resolve the selected Apple developer toolchain outside the sandbox.
+
+    GitHub-hosted macOS may select /Applications/Xcode_<version>.app; Apple's
+    /usr/bin/python3 then loads libxcrun.dylib from its Developer/usr/lib.
+    The CLT variant under /Library is already covered by system read roots.
+    """
+    selected = environment.get("DEVELOPER_DIR")
+    if not selected:
+        try:
+            result = subprocess.run(
+                ["/usr/bin/xcode-select", "-p"],
+                capture_output=True, text=True, check=True, timeout=5,
+                env={key: value for key, value in os.environ.items()
+                     if key != "DEVELOPER_DIR"},
+            )
+            selected = result.stdout.strip()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return None
+    if not selected:
+        return None
+    candidate = Path(selected)
+    if candidate.suffix == ".app":
+        candidate = candidate / "Contents" / "Developer"
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    return resolved if _trusted_macos_xcode_developer_dir(resolved) and resolved.is_dir() else None
 
 
 def prepare_job(
@@ -252,6 +300,12 @@ def prepare_job(
         for system_path in dict.fromkeys(read_roots):
             if system_path.exists():
                 profile.append(f"(allow file-read* (subpath {_sb_quote(system_path.resolve())}))")
+        developer = _macos_xcode_developer_dir(environment)
+        if developer is not None:
+            # The resolver already checked existence and the trusted layout.
+            # Emit this separately so a mocked selected Xcode path can be
+            # regression-tested on a Mac with only CommandLineTools installed.
+            profile.append(f"(allow file-read* (subpath {_sb_quote(developer)}))")
         for directory in (root, *(Path(item.path) for item in grants)):
             profile.append(f"(allow file-read* (subpath {_sb_quote(directory)}))")
         if writable:

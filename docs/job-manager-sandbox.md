@@ -102,6 +102,14 @@ The shared Manager authenticates IPC using a private 32-byte key stored in
 Mapping identifiers and Unix socket owner permissions alone are not credentials.
 The Manager state directory and IPC key are not sandbox-mounted.
 
+On macOS with Xcode selected, Seatbelt also permits **read-only**
+access to the trusted selected `/Applications/Xcode*.app/Contents/Developer`
+toolchain so Apple's `/usr/bin/python3` shim can load `libxcrun.dylib`.
+The path is derived from the selected developer directory (or explicit
+`DEVELOPER_DIR`), checked against the system Xcode layout after resolving
+symlinks, and never permits the entire `/Applications` tree. Other app and
+user-selected paths are not automatically granted.
+
 On Linux, Bubblewrap creates private `/tmp`, `/var/tmp` and `/run`
 mounts. If a broad explicitly allowed directory could otherwise include the
 Manager socket, the socket parent directory is additionally masked. On macOS,

@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from openkapsel.job_sandbox import prepare_job
 from openkapsel.job_manager import request, shutdown
@@ -37,6 +38,47 @@ class JobSandboxTests(unittest.TestCase):
 
     def _spec(self, kind, **kw):
         return dict(type=kind, root=str(self.workspace), **kw)
+
+    def test_macos_selected_xcode_developer_root_is_narrowly_trusted(self):
+        from openkapsel.job_sandbox import _trusted_macos_xcode_developer_dir
+        allowed = [
+            "/Applications/Xcode.app/Contents/Developer",
+            "/Applications/Xcode_26.6.app/Contents/Developer",
+            "/Applications/Xcode-beta.app/Contents/Developer",
+        ]
+        denied = [
+            "/Applications",
+            "/Applications/Xcode_26.6.app",
+            "/Applications/Other.app/Contents/Developer",
+            "/Users/runner/Xcode_26.6.app/Contents/Developer",
+            "/Applications/Xcode_26.6.app/Contents/Developer/usr/lib",
+            "/Applications/Xcode_26.6.app/Contents/Developer/../../..",
+        ]
+        for item in allowed:
+            with self.subTest(item=item):
+                self.assertTrue(_trusted_macos_xcode_developer_dir(pathlib.Path(item)))
+        for item in denied:
+            with self.subTest(item=item):
+                self.assertFalse(_trusted_macos_xcode_developer_dir(pathlib.Path(item)))
+
+    @unittest.skipUnless(platform.system() == "Darwin", "Only Seatbelt is configured on macOS")
+    def test_seatbelt_grants_only_selected_xcode_developer_tree(self):
+        from openkapsel import job_sandbox
+        selected = pathlib.Path("/Applications/Xcode_26.6.app/Contents/Developer")
+        with patch.object(job_sandbox, "_macos_xcode_developer_dir", return_value=selected):
+            prepared = prepare_job(
+                self._spec("seatbelt", writable=True, network_mode="none"),
+                ["/usr/bin/python3", "-c", "print('ok')"],
+                str(self.workspace), dict(os.environ), self.state,
+            )
+        try:
+            profile = prepared.argv[prepared.argv.index("-p") + 1]
+            self.assertIn(f'(allow file-read* (subpath "{selected}"))', profile)
+            self.assertNotIn('(allow file-read* (subpath "/Applications"))', profile)
+            self.assertIn('deny network-outbound (remote unix-socket)', profile)
+            self.assertIn('deny file-read* (literal', profile)
+        finally:
+            prepared.cleanup()
 
     def test_invalid_grants_and_modes_rejected_before_launch(self):
         kind = {"Darwin": "seatbelt", "Linux": "bubblewrap",

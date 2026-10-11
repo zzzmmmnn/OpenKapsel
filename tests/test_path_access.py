@@ -226,7 +226,8 @@ class PathAccessTests(unittest.TestCase):
                 launch.argv, cwd=self.root, env=launch.environment,
                 capture_output=True, text=True, timeout=25,
             )
-            self.assertEqual(0, outcome.returncode, outcome.stderr)
+            self.assertEqual(0, outcome.returncode,
+                             f"stdout={outcome.stdout!r}\nstderr={outcome.stderr!r}")
             self.assertIn("secret.json DENIED", outcome.stdout)
             self.assertIn("config.json DENIED", outcome.stdout)
             self.assertIn("RO_DENIED", outcome.stdout)
