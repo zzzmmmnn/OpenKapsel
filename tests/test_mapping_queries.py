@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import time
 import unittest
 from pathlib import Path
 from urllib.parse import urlencode
@@ -106,6 +107,16 @@ class MappingQueryTests(unittest.TestCase):
         cloud = self.scope / "cloud"
         cloud.mkdir()
         (cloud / "Needle-cloud.txt").write_text("external", encoding="utf-8")
+        index = getattr(self.server, "filename_index", None)
+        watching = index is not None and index._worker is not None
+        if watching:
+            # Allow the initial watcher/index setup to finish *before* adding
+            # the native file. The subsequent lookup must use the real
+            # asynchronous inotify update, never a manual rebuild.
+            deadline = time.monotonic() + 12
+            while not index.ready and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(index.ready, "native index did not become ready")
         (self.scope / "Needle-local.txt").write_text("native", encoding="utf-8")
         storage = SimpleNamespace(
             store=SimpleNamespace(mappings=lambda: [{"workspace": self.scope.name, "name": "cloud"}]),
@@ -113,10 +124,31 @@ class MappingQueryTests(unittest.TestCase):
             check_path=lambda *_args, **_kwargs: None,
         )
         with patch.object(self.server, "storage_providers", storage, create=True):
-            status, broad = self.find()
-            self.assertEqual(200, status, broad)
-            self.assertEqual(["Needle-local.txt"],
-                             [Path(item["path"]).name for item in broad["results"]])
+            # The watcher applies mutations asynchronously: poll the actual
+            # HTTP search until the native index observes the new file. Do
+            # not replace this with index.rebuild(), which bypasses inotify.
+            deadline = time.monotonic() + 12
+            while True:
+                status, broad = self.find()
+                self.assertEqual(200, status, broad)
+                names = [Path(item["path"]).name for item in broad["results"]]
+                if not watching or (broad["backend"] == "sqlite_watch"
+                                    and names == ["Needle-local.txt"]):
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail(f"native watcher did not index new file: {broad}")
+                time.sleep(0.05)
+            self.assertEqual(["Needle-local.txt"], names)
+            if watching:
+                self.assertEqual("sqlite_watch", broad["backend"])
+            # Both the indexed native search and the recursive fallback must
+            # exclude registered storage roots from an unscoped query.
+            with patch.object(self.server, "filename_index", None):
+                status, recursive = self.find()
+                self.assertEqual(200, status, recursive)
+                self.assertEqual("recursive", recursive["backend"])
+                self.assertEqual(["Needle-local.txt"],
+                                 [Path(item["path"]).name for item in recursive["results"]])
             status, scoped = self.api("/fs/query/find?path=cloud&query=Needle")
             self.assertEqual(200, status, scoped)
             self.assertEqual(["Needle-cloud.txt"],
