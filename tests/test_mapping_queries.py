@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -108,15 +109,20 @@ class MappingQueryTests(unittest.TestCase):
         cloud.mkdir()
         (cloud / "Needle-cloud.txt").write_text("external", encoding="utf-8")
         index = getattr(self.server, "filename_index", None)
-        watching = index is not None and index._worker is not None
-        if watching:
-            # Allow the initial watcher/index setup to finish *before* adding
-            # the native file. The subsequent lookup must use the real
-            # asynchronous inotify update, never a manual rebuild.
+        requires_index = sys.platform.startswith("linux")
+        if requires_index:
+            # Linux Server is expected to have a live watcher. This test
+            # must FAIL if startup silently falls back to recursive search.
+            from openkapsel.files.filename_index import watcher_available
+            self.assertTrue(watcher_available(), "Linux watchfiles dependency missing")
+            self.assertIsNotNone(index, "Linux native index failed to initialize")
+            self.assertIsNotNone(index._worker, "Linux index worker never started")
+            self.assertIsNotNone(index._watcher, "Linux watcher never started")
             deadline = time.monotonic() + 12
             while not index.ready and time.monotonic() < deadline:
                 time.sleep(0.05)
-            self.assertTrue(index.ready, "native index did not become ready")
+            self.assertTrue(index.ready, "Linux native index did not become ready")
+            self.assertTrue(index._watcher.is_alive(), "Linux native watcher has stopped")
         (self.scope / "Needle-local.txt").write_text("native", encoding="utf-8")
         storage = SimpleNamespace(
             store=SimpleNamespace(mappings=lambda: [{"workspace": self.scope.name, "name": "cloud"}]),
@@ -132,14 +138,14 @@ class MappingQueryTests(unittest.TestCase):
                 status, broad = self.find()
                 self.assertEqual(200, status, broad)
                 names = [Path(item["path"]).name for item in broad["results"]]
-                if not watching or (broad["backend"] == "sqlite_watch"
-                                    and names == ["Needle-local.txt"]):
+                if ((not requires_index or broad["backend"] == "sqlite_watch")
+                        and names == ["Needle-local.txt"]):
                     break
                 if time.monotonic() >= deadline:
                     self.fail(f"native watcher did not index new file: {broad}")
                 time.sleep(0.05)
             self.assertEqual(["Needle-local.txt"], names)
-            if watching:
+            if requires_index:
                 self.assertEqual("sqlite_watch", broad["backend"])
             # Both the indexed native search and the recursive fallback must
             # exclude registered storage roots from an unscoped query.

@@ -70,6 +70,23 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
+      # This is a separate mandatory integration step: the ordinary suite
+      # mocks probe process output and must never be counted as real isolation.
+      - name: Install real Linux sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap rootlesskit slirp4netns
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Verify real Bubblewrap namespace and filesystem isolation
+        env:
+          OPENKAPSEL_REAL_SANDBOX_TESTS: "1"
+        run: >-
+          python -m unittest
+          tests.test_sandbox_verify.SandboxVerificationTests.test_real_bubblewrap_enforces_private_files_pid_and_readonly -v
+
   linux-distro:
     name: Linux distro / ${{ matrix.image }}
     runs-on: ubuntu-latest
