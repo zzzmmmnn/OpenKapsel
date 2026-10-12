@@ -55,7 +55,22 @@ class ClientCommandTests(unittest.TestCase):
                     shutdown(home, force=True)
                 except (OSError, ConnectionError):
                     pass
-                if os.name != "nt":
+                if os.name == "nt":
+                    # The Manager releases its singleton lock before Windows
+                    # closes the detached process's inherited stdout/stderr
+                    # handles. TemporaryDirectory cannot remove manager.log
+                    # until that final process teardown finishes.
+                    log = home / "manager.log"
+                    deadline = time.monotonic() + 10
+                    while True:
+                        try:
+                            log.unlink(missing_ok=True)
+                            break
+                        except PermissionError:
+                            if time.monotonic() >= deadline:
+                                raise
+                            time.sleep(.03)
+                else:
                     from openkapsel.job_manager import endpoint
                     socket_path, _ = endpoint(home)
                     until = time.monotonic() + 5
