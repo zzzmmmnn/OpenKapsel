@@ -24,7 +24,7 @@ class OAuthConsentMixin:
         if retry_after:
             headers["Retry-After"] = str(retry_after)
         callback = urlsplit(request["params"]["redirect_uri"])
-        password_enabled = self.server.capability_grants.configured(record.path_prefix)
+        password_enabled = self.server.capability_grants.configured(record.app_id)
         self._send_html(status, consent_page(request, record,
                         action=self._oauth_base(request["connection_id"]) + "/consent", csrf=csrf, error=error,
                         password_enabled=password_enabled),
@@ -113,7 +113,7 @@ class OAuthConsentMixin:
                 workspace_password = form.get("workspace_password", "")
                 if workspace_password:
                     self._require_password_transport()
-                    retry = self.server.capability_limiter.take(self._admin_rate_limit_address(), "workspace:" + record.path_prefix)
+                    retry = self.server.capability_limiter.take(self._admin_rate_limit_address(), "workspace:" + record.app_id)
                     if retry:
                         self._consent_send_page(request, record, status=429, error="Too many workspace password attempts", retry_after=retry)
                         return
@@ -122,7 +122,7 @@ class OAuthConsentMixin:
                             raise OAuthError("access_denied", "Configuration is unavailable", 403)
                         self.server.oauth_consent.verify(cookie, form.get("csrf"), request, verified)
                         with self.server.capability_grants.lock:
-                            if not self.server.capability_grants.verify_workspace_password(verified.path_prefix, workspace_password):
+                            if not self.server.capability_grants.verify_workspace_password(verified.app_id, workspace_password):
                                 raise OAuthError("access_denied", "Workspace password incorrect", 403)
                             params, code = self.server.oauth.approve(rid, expected_binding=(verified.app_id, verified.path_prefix))
                     query = {"code": code}

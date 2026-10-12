@@ -51,12 +51,114 @@ class CapabilityHTTPTests(unittest.TestCase):
         return location
 
     def configure(self):
-        self.server.capability_grants.set_password(self.record.path_prefix, self.PASSWORD)
+        self.server.capability_grants.set_password(self.record.app_id, self.PASSWORD)
 
     def request_elevation(self, target="server", **values):
         body = {"target": target, "writer_nonce": self.ownership()[1]}
         body.update(values)
         return self.api("/shell/elevation/request", body)
+
+    def test_shared_directory_tokens_have_independent_passwords_and_grants(self):
+        self.configure()
+        original = self.server.tokens.get(self.record.token)
+        second = self.server.tokens.create(
+            name="Second Token", path_prefix=original.path_prefix,
+            shell_mode="full", expires_at=None, can_read=True, can_write=True,
+        )
+        grants = self.server.capability_grants
+        self.assertEqual(original.path_prefix, second.path_prefix)
+        self.assertNotEqual(original.app_id, second.app_id)
+        self.assertTrue(grants.configured(original.app_id))
+        self.assertFalse(grants.configured(second.app_id))
+        session = self.server.admin_sessions.create()
+        headers = {"Cookie": "ws_admin=" + session.id}
+        _, _, page = self.request("GET", "/kapsel/admin", headers=headers)
+        second_card = page.decode().split(f'data-token-app="{second.app_id}"', 1)[1]
+        self.assertIn(f'name="workspace" value="{second.app_id}"', second_card)
+        self.assertIn("Not configured", second_card)
+        second_password = "second-token-password-456"
+        grants.set_password(second.app_id, second_password)
+        first_ticket = grants.request(original.app_id, self.ownership()[0],
+                                      "server", "shell.elevated")
+        second_ticket = grants.request(second.app_id, self.ownership()[0],
+                                       "server", "shell.elevated")
+        with self.assertRaises(PermissionError):
+            grants.approve(second_ticket, self.PASSWORD)
+        grants.approve(first_ticket, self.PASSWORD)
+        grants.approve(second_ticket, second_password)
+        self.assertTrue(grants.granted(original.app_id, self.ownership()[0],
+                                       "server", "shell.elevated"))
+        self.assertTrue(grants.granted(second.app_id, self.ownership()[0],
+                                       "server", "shell.elevated"))
+        grants.set_password(second.app_id, "rotated-second-token-password-789")
+        self.assertFalse(grants.granted(second.app_id, self.ownership()[0],
+                                        "server", "shell.elevated"))
+        self.assertTrue(grants.granted(original.app_id, self.ownership()[0],
+                                       "server", "shell.elevated"))
+        # Rotating the first Token's credentials preserves its password/grants.
+        rotated = self.server.tokens.rotate_control_token(original.token)
+        self.assertEqual(original.app_id, rotated.app_id)
+        self.assertTrue(grants.verify_workspace_password(rotated.app_id, self.PASSWORD))
+        self.assertTrue(grants.granted(rotated.app_id, self.ownership()[0],
+                                       "server", "shell.elevated"))
+        delete = {"action": "delete", "token": second.token, "csrf": session.csrf}
+        self.assertEqual(303, self.form("/kapsel/admin/tokens", delete, headers)[0])
+        self.assertFalse(grants.configured(second.app_id))
+        self.assertTrue(grants.configured(original.app_id))
+        self.assertTrue(grants.granted(original.app_id, self.ownership()[0],
+                                       "server", "shell.elevated"))
+
+    def test_same_directory_http_elevation_requires_own_token_password(self):
+        self.configure()
+        second = self.server.tokens.create(
+            name="Separate Workspace Token", path_prefix=self.record.path_prefix,
+            shell_mode="full", expires_at=None, can_read=True, can_write=True,
+        )
+        second_password = "second-workspace-pass-123"
+        self.server.capability_grants.set_password(second.app_id, second_password)
+        first_status, first = self.request_elevation()
+        self.assertEqual(200, first_status, first)
+        self.approve({"error": {"details": first}})
+        self.assertEqual("granted", self.request_elevation()[1]["status"])
+        body = {
+            "target": "server", "writer_nonce": self.ownership()[1],
+            "plan_id": self.plan, "taskname": "token-isolation",
+            "message": "Verify exact Token password scope",
+        }
+        url = f"/kapsel/w/{second.token}/shell/elevation/request"
+        auth = {
+            "Authorization": "Bearer " + second.control_token,
+            "Content-Type": "application/json",
+        }
+        status, _, raw = self.request("POST", url, json.dumps(body), auth)
+        self.assertEqual(200, status, raw)
+        result = json.loads(raw)
+        self.assertEqual("approval_required", result["status"])
+        location, headers, approval, page = self.approval(
+            {"error": {"details": result}}
+        )
+        self.assertIn(second.name.encode(), page)
+        self.assertIn(second.app_id.encode(), page)
+        self.assertEqual(403, self.form(location, approval, headers)[0])
+        self.assertEqual(200, self.form(
+            location, dict(approval, password=second_password), headers
+        )[0])
+        status, _, raw = self.request("POST", url, json.dumps(body), auth)
+        self.assertEqual(200, status, raw)
+        self.assertEqual("granted", json.loads(raw)["status"])
+        self.assertEqual("granted", self.request_elevation()[1]["status"])
+
+    def test_old_directory_password_does_not_apply_to_token(self):
+        self.server.capability_grants.set_password(self.record.path_prefix, self.PASSWORD)
+        self.assertFalse(self.server.capability_grants.configured(self.record.app_id))
+        status, body = self.elevated()
+        self.assertEqual(403, status)
+        self.assertEqual("capability_approval_required", body["error"]["code"])
+        location, headers, form, _ = self.approval(body)
+        self.assertEqual(403, self.form(location, form, headers)[0])
+        self.assertFalse(self.server.capability_grants.granted(
+            self.record.app_id, self.ownership()[0], "server", "shell.elevated"
+        ))
 
     def test_proactive_elevation_request_is_command_free_and_reuses_grant(self):
         self.configure()
@@ -206,8 +308,8 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual("capability_approval_required", self.elevated()[1]["error"]["code"])
         finally:
             self.plan = original
-        self.server.capability_grants.revoke_workspace(self.record.path_prefix)
-        ticket = self.server.capability_grants.request(self.record.path_prefix, self.ownership()[0], "server", "files.write")
+        self.server.capability_grants.revoke_workspace(self.record.app_id)
+        ticket = self.server.capability_grants.request(self.record.app_id, self.ownership()[0], "server", "files.write")
         self.server.capability_grants.approve(ticket, self.PASSWORD)
         self.assertEqual("capability_approval_required", self.elevated()[1]["error"]["code"])
 
@@ -271,30 +373,116 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(403, status, raw)
             self.assertNotIn(b"incorrect-secret", raw)
         self.assertEqual(400, self.form(location, form, headers)[0])
-        self.assertFalse(self.server.capability_grants.granted(self.record.path_prefix, self.ownership()[0], "server", "shell.elevated"))
+        self.assertFalse(self.server.capability_grants.granted(self.record.app_id, self.ownership()[0], "server", "shell.elevated"))
         # New URL cannot reset the shared workspace password budget.
         _, new = self.elevated()
         location, headers, form, _ = self.approval(new)
         self.assertEqual(429, self.form(location, form, headers)[0])
 
+    def test_admin_token_tabs_include_workspace_password_settings(self):
+        import re
+        session = self.server.admin_sessions.create()
+        headers = {"Cookie": "ws_admin=" + session.id}
+        status, _, dashboard = self.request("GET", "/kapsel/admin", headers=headers)
+        self.assertEqual(200, status, dashboard)
+        self.assertNotIn(b"Workspace password</span>", dashboard)
+        page = dashboard.decode()
+        scripts = re.findall(r'<script>(.*?)</script>', page, re.S)
+        admin_script = next(script for script in scripts
+                            if 'function setAdminPanel(' in script)
+        self.assertLess(admin_script.index('function setAdminPanel('),
+                        admin_script.index('function setTokenPane('))
+        import shutil
+        import subprocess
+        if shutil.which("node"):
+            result = subprocess.run(["node", "--check"], input=admin_script,
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(0, result.returncode, result.stderr)
+        card = page.split(f'data-token-app="{self.record.app_id}"', 1)[1].split(
+            '</details>', 1)[0]
+        self.assertEqual(
+            ["basic", "permissions", "credentials"],
+            re.findall(r'<button[^>]*data-token-tab="([^"]+)"', card),
+        )
+        panes = re.findall(r'<section class="token-pane"[^>]*>', card)
+        self.assertEqual(3, len(panes))
+        self.assertNotIn(" hidden", panes[0])
+        self.assertIn(" hidden", panes[1])
+        self.assertIn(" hidden", panes[2])
+        update = card.split('<form data-token-update ', 1)[1].split('</form>', 1)[0]
+        self.assertNotIn("<form ", update)  # no nested forms
+        names = re.findall(r'<(?:input|select|textarea)[^>]*name="([^"]+)"', update)
+        for name in ("name", "expires_at", "workspace_type", "path_prefix",
+                     "workspace_image", "can_read", "can_write", "can_preview",
+                     "can_schedule", "enabled", "shell_mode", "network_mode",
+                     "sandbox_max_processes", "allowed_domains"):
+            self.assertIn(name, names)
+        credentials = card.split('data-token-pane="credentials"', 1)[1]
+        self.assertIn('action="/kapsel/admin/capabilities"', credentials)
+        self.assertIn(f'name="workspace" value="{self.record.app_id}"',
+                      credentials)
+        self.assertIn(f'name="token_app_id" value="{self.record.app_id}"',
+                      credentials)
+        self.assertFalse(self.server.capability_grants.configured(self.record.app_id))
+        values = {"workspace": self.record.app_id, "action": "password",
+                  "password": self.PASSWORD, "csrf": session.csrf,
+                  "return_to": "token", "token_app_id": self.record.app_id}
+        self.assertEqual(403, self.form("/kapsel/admin/capabilities",
+                                         dict(values, csrf="invalid"), headers)[0])
+        self.assertEqual(400, self.form("/kapsel/admin/capabilities",
+                                         dict(values, token_app_id="unknown"), headers)[0])
+        status, post_headers, _ = self.form("/kapsel/admin/capabilities", values, headers)
+        self.assertEqual(303, status)
+        self.assertIn(f"#token-{self.record.app_id}-credentials",
+                      post_headers["Location"])
+        self.assertTrue(self.server.capability_grants.configured(self.record.app_id))
+        self.assertIn(b"Configured", self.request("GET", "/kapsel/admin",
+                                                 headers=headers)[2])
+
+    def test_admin_token_update_restores_permissions_tab(self):
+        session = self.server.admin_sessions.create()
+        headers = {"Cookie": "ws_admin=" + session.id}
+        record = self.server.tokens.get(self.record.token)
+        values = {
+            "csrf": session.csrf, "action": "update", "token": record.token,
+            "name": record.name, "workspace_type": "directory",
+            "path_prefix": record.path_prefix, "expires_at": "",
+            "shell_mode": record.shell_mode, "network_mode": record.network_mode,
+            "sandbox_backend": "auto",
+            "allowed_domains": "\n".join(record.allowed_domains),
+            "sandbox_max_processes": str(record.sandbox_max_processes),
+            "sandbox_memory_mb": str(record.sandbox_memory_mb),
+            "sandbox_cpu_percent": str(record.sandbox_cpu_percent),
+            "enabled": "on", "token_pane": "permissions",
+        }
+        for name in ("can_read", "can_write", "can_preview", "can_schedule"):
+            if getattr(record, name):
+                values[name] = "on"
+        status, response_headers, _ = self.form("/kapsel/admin/tokens", values, headers)
+        self.assertEqual(303, status)
+        self.assertEqual(
+            f"/kapsel/admin?token_updated=1#token-{record.app_id}-permissions",
+            response_headers["Location"],
+        )
+
     def test_admin_password_reset_revoke_and_lifecycle(self):
         session = self.server.admin_sessions.create()
         headers = {"Cookie": "ws_admin=" + session.id}
         path = "/kapsel/admin/capabilities"
-        form = {"workspace": self.record.path_prefix, "action": "password", "password": self.PASSWORD, "csrf": session.csrf}
+        form = {"workspace": self.record.app_id, "action": "password", "password": self.PASSWORD, "csrf": session.csrf}
         self.assertEqual(403, self.form(path, dict(form, csrf="invalid"), headers)[0])
         self.assertEqual(200, self.form(path, form, headers)[0])
         _, result = self.elevated()
         self.approve(result)
         self.assertIn(b"shell.elevated", self.request("GET", path, headers=headers)[2])
-        grant = {"workspace": self.record.path_prefix, "action": "revoke", "conversation_id": str(self.ownership()[0]), "target": "server", "capability": "shell.elevated", "csrf": session.csrf}
+        grant = {"workspace": self.record.app_id, "action": "revoke", "conversation_id": str(self.ownership()[0]), "target": "server", "capability": "shell.elevated", "csrf": session.csrf}
         self.assertEqual(200, self.form(path, grant, headers)[0])
         self.assertEqual(403, self.elevated()[0])
         self.assertEqual(200, self.form(path, dict(form, password="new-workspace-password-123"), headers)[0])
         self.assertEqual({}, self.server.capability_grants.pending_requests)
         delete = {"action": "delete", "token": self.record.token, "csrf": session.csrf}
         self.assertEqual(303, self.form("/kapsel/admin/tokens", delete, headers)[0])
-        self.assertFalse(self.server.capability_grants.configured(self.record.path_prefix))
+        self.assertFalse(self.server.capability_grants.configured(self.record.app_id))
 
     def test_expiry_blocks_new_jobs_and_preserves_running_job(self):
         self.configure()
@@ -307,7 +495,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.approve(first)
         status, task = self.elevated(command="cat", interactive=True)
         self.assertEqual(202, status, task)
-        self.server.capability_grants.active[(self.record.path_prefix, self.ownership()[0], "server", "shell.elevated")] = 0
+        self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.elevated")] = 0
         self.assertEqual(403, self.elevated()[0])
         self.assertEqual(200, self.api("/task/stdin/" + task["task_id"], {"data": "still-running\n", "close": True})[0])
         self.assertEqual("still-running\n", self.finished(task["task_id"])["stdout"])
@@ -374,7 +562,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.configure()
         _, result = self.elevated()
         self.approve(result)
-        key = (self.record.path_prefix, self.ownership()[0], "server", "shell.elevated")
+        key = (self.record.app_id, self.ownership()[0], "server", "shell.elevated")
         # Environment configuration is loaded before the final authorization.
         from openkapsel.execution.environment_store import EnvironmentStore
         original = EnvironmentStore.shell_file
@@ -394,8 +582,27 @@ class WorkspacePasswordOAuthTests(unittest.TestCase):
     pending = test_oauth_control_consent.ControlConsentHTTPTests.pending
     submit = test_oauth_control_consent.ControlConsentHTTPTests.submit
 
+    def test_shared_directory_oauth_cannot_use_another_tokens_password(self):
+        first = self.record
+        second = self.server.tokens.create(
+            name="Same Directory Other Token", path_prefix=first.path_prefix,
+            shell_mode="none", expires_at=None, can_read=True, can_write=False,
+        )
+        second_password = "other-token-oauth-pass-123"
+        self.server.capability_grants.set_password(second.app_id, second_password)
+        pending = self.pending()
+        # OAuth consent for the first Token must not authenticate with a
+        # separate Token's password, even though both share path_prefix.
+        self.assertEqual(403, self.submit(
+            pending, values={"control_token": "", "workspace_password": second_password}
+        )[0])
+        self.server.capability_grants.set_password(first.app_id, "first-token-oauth-pass-456")
+        self.assertEqual(303, self.submit(
+            pending, values={"control_token": "", "workspace_password": "first-token-oauth-pass-456"}
+        )[0])
+
     def test_workspace_password_oauth_is_independent_of_capability_grants(self):
-        self.server.capability_grants.set_password(self.record.path_prefix, "workspace-test-password-123")
+        self.server.capability_grants.set_password(self.record.app_id, "workspace-test-password-123")
         pending = self.pending()
         self.assertIn(b'name="workspace_password"', pending["page"])
         status, _, raw = self.submit(pending, values={"control_token": "", "workspace_password": "incorrect-password"})

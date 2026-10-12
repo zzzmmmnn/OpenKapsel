@@ -33,7 +33,7 @@ class Pending:
 
 
 class CapabilityGrants:
-    """Single-server grant store; only password hashes are persisted."""
+    """Token-scoped grant store, keyed by stable app_id; only hashes persist."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -43,13 +43,16 @@ class CapabilityGrants:
         self.pending_requests: dict[str, Pending] = {}
         self.active: dict[tuple[str, int, str, str], float] = {}
         with closing(sqlite3.connect(self.path)) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS workspace_passwords ("
-                       "workspace TEXT PRIMARY KEY, password_hash TEXT NOT NULL)")
+            # Token app_id is the stable Workspace identity. Never reuse the
+            # legacy path_prefix-keyed workspace_passwords table: a directory
+            # can be shared by different Tokens with independent credentials.
+            db.execute("CREATE TABLE IF NOT EXISTS token_passwords ("
+                       "token_app_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL)")
             db.commit()
 
     def configured(self, workspace: str) -> bool:
         with self.lock, closing(sqlite3.connect(self.path)) as db:
-            row = db.execute("SELECT 1 FROM workspace_passwords WHERE workspace=?",
+            row = db.execute("SELECT 1 FROM token_passwords WHERE token_app_id=?",
                              (workspace,)).fetchone()
             return row is not None
 
@@ -58,8 +61,8 @@ class CapabilityGrants:
             raise ValueError("workspace password must contain 12-1024 characters")
         encoded = hash_password(password)
         with self.lock, closing(sqlite3.connect(self.path)) as db:
-            db.execute("INSERT INTO workspace_passwords (workspace,password_hash) "
-                       "VALUES (?,?) ON CONFLICT(workspace) DO UPDATE SET "
+            db.execute("INSERT INTO token_passwords (token_app_id,password_hash) "
+                       "VALUES (?,?) ON CONFLICT(token_app_id) DO UPDATE SET "
                        "password_hash=excluded.password_hash", (workspace, encoded))
             db.commit()
             self.revoke_workspace(workspace)
@@ -68,7 +71,7 @@ class CapabilityGrants:
         if not isinstance(password, str) or len(password) > 1024:
             return False
         with closing(sqlite3.connect(self.path)) as db:
-            row = db.execute("SELECT password_hash FROM workspace_passwords WHERE workspace=?",
+            row = db.execute("SELECT password_hash FROM token_passwords WHERE token_app_id=?",
                              (workspace,)).fetchone()
         return bool(row and verify_password(password, row[0]))
 
@@ -153,7 +156,7 @@ class CapabilityGrants:
 
     def remove_workspace(self, workspace: str) -> None:
         with self.lock, closing(sqlite3.connect(self.path)) as db:
-            db.execute("DELETE FROM workspace_passwords WHERE workspace=?", (workspace,))
+            db.execute("DELETE FROM token_passwords WHERE token_app_id=?", (workspace,))
             db.commit()
             self.revoke_workspace(workspace)
 

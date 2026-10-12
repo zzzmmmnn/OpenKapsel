@@ -229,9 +229,11 @@ Without approval the error code is `capability_approval_required` and
 `error.details.approval_url` contains the full browser URL. Display it and pause
 for user approval; retry the same request after approval. Each attempt may return
 a different five-minute single-use URL. Grants default to ten minutes, may last
-up to 24 hours, and are specific to the Conversation and selected execution
-target. Server approval does not approve any Mapping. Changing cwd may require
-a separate approval. A new Conversation needs its own approval.
+up to 24 hours, and are specific to the **Token Workspace** (stable `app_id`),
+Conversation and selected execution target. Distinct Tokens pointing to the
+same server directory need separate passwords and grants. Server approval does
+not approve any Mapping. Changing cwd may require a separate approval. A new
+Conversation needs its own approval.
 
 Approved execution bypasses Server and Client sandboxes as the current OS user.
 Mapping `allow_exec=false` and Client execution-disabled flags can be overridden

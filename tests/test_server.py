@@ -5962,7 +5962,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn('data-admin-panel="tokens"', dashboard_text)
         self.assertIn('data-admin-panel="password" hidden', dashboard_text)
         self.assertIn("function setAdminPanel", dashboard_text)
-        self.assertIn('<details class="card token-card">', dashboard_text)
+        self.assertIn('<details class="card token-card" data-token-app=', dashboard_text)
         self.assertNotIn('<details class="card token-card" open', dashboard_text)
         self.assertIn('<strong>Workspace</strong><span>.</span>', dashboard_text)
         self.assertIn('<strong>Workspace lifetime</strong><span>Never expires</span>', dashboard_text)

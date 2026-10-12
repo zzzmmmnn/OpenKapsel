@@ -59,7 +59,11 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
                 self._send_html(HTTPStatus.OK, render_login(self._admin_path()))
                 return
             query = parse_qs(raw_query, keep_blank_values=True)
-            if query.get("password_changed") == ["1"]:
+            if query.get("workspace_password_changed") == ["1"]:
+                success = "Workspace approval password updated; pending requests and grants revoked"
+            elif query.get("token_updated") == ["1"]:
+                success = "Token settings updated"
+            elif query.get("password_changed") == ["1"]:
                 success = "Administrator password updated"
             elif query.get("control_token_rotated") == ["1"]:
                 success = "Control token regenerated; the previous control token is now invalid"
@@ -211,7 +215,16 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
         except (KeyError, ValueError, WorkspaceImageError) as exc:
             self._send_admin_dashboard(session, error=str(exc), status=HTTPStatus.BAD_REQUEST)
             return
-        if action == "rotate_read":
+        if action == "update":
+            record = self.server.tokens.get(self._form_one(form, "token"))
+            pane = self._form_one(form, "token_pane")
+            if pane not in {"basic", "permissions"}:
+                pane = "basic"
+            destination = (
+                f"{self._admin_path()}?token_updated=1"
+                f"#token-{record.app_id}-{pane}"
+            )
+        elif action == "rotate_read":
             destination = f"{self._admin_path()}?read_token_rotated=1"
         elif action in {"rotate_control", "rotate_token"}:
             destination = f"{self._admin_path()}?control_token_rotated=1"
@@ -301,9 +314,7 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
             )
             self.server.api_workers.stop(record.app_id)
             if current.path_prefix != record.path_prefix or not record.valid:
-                self.server.capability_grants.revoke_workspace(current.path_prefix)
-            if current.path_prefix != record.path_prefix and not any(r.path_prefix == current.path_prefix for r in self.server.tokens.list()):
-                self.server.capability_grants.remove_workspace(current.path_prefix)
+                self.server.capability_grants.revoke_workspace(current.app_id)
             if not record.can_schedule or not record.valid:
                 self.server.scheduler.pause_app(previous_scope, record.app_id)
             self._refresh_cgroup_limits(record)
@@ -314,9 +325,7 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
                 self.server.tokens.scope_root(current), current.app_id
             )
             self.server.tokens.delete(current.token)
-            self.server.capability_grants.revoke_workspace(current.path_prefix)
-            if not any(r.path_prefix == current.path_prefix for r in self.server.tokens.list()):
-                self.server.capability_grants.remove_workspace(current.path_prefix)
+            self.server.capability_grants.remove_workspace(current.app_id)
         elif action == "rotate_read":
             record = self.server.tokens.rotate_read_token(self._form_one(form, "token"))
             self._refresh_cgroup_limits(record)
@@ -492,6 +501,10 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
                 storage_capability=self.server.storage_providers.probe(),
                 storage_message=storage_message,
                 storage_delete_warning=storage_delete_warning,
+                workspace_passwords=frozenset(
+                    row.app_id for row in self.server.tokens.list()
+                    if self.server.capability_grants.configured(row.app_id)
+                ),
             ),
         )
 

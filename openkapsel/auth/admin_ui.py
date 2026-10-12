@@ -30,7 +30,7 @@ button.secondary{background:var(--secondary);color:var(--secondary-text)}button.
 .notice{background:var(--notice-bg);border:1px solid var(--notice-line);padding:10px;border-radius:10px;margin-top:12px}.token-card{border-left:4px solid var(--line)}.token-card.invalid{border-left-color:var(--danger)}
 .path-grant-row{display:grid;grid-template-columns:minmax(0,1fr) 130px;gap:10px;margin-bottom:8px}.path-grant-row input,.path-grant-row select{margin:0}
 .admin-shell{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh}.admin-sidebar{position:sticky;top:0;height:100vh;background:var(--sidebar);color:var(--sidebar-text);padding:22px 14px;display:flex;flex-direction:column;gap:22px;overflow:hidden;border-right:1px solid var(--line)}.admin-brand{display:flex;align-items:center;gap:11px;padding:0 9px}.brand-mark{display:grid;place-items:center;flex:0 0 34px;height:34px;border-radius:10px;background:var(--brand);color:#fff;font-size:17px;font-weight:800}.brand-copy{min-width:0}.brand-copy strong,.brand-copy span{display:block;white-space:nowrap}.brand-copy span{color:var(--sidebar-muted);font-size:12px;margin-top:2px}.admin-nav{display:flex;flex-direction:column;gap:7px}.nav-item{width:100%;display:flex;align-items:center;gap:11px;background:transparent;color:var(--sidebar-text);padding:11px 12px;text-align:left;border-radius:10px;white-space:nowrap}.nav-item:hover{background:var(--sidebar-hover);color:var(--text)}.nav-item.active{background:var(--sidebar-active);color:var(--text)}.nav-icon{display:grid;place-items:center;flex:0 0 24px;font-size:16px}.sidebar-spacer{flex:1}.logout-button,.theme-button{background:transparent;color:var(--sidebar-text);font-weight:500}.theme-button{margin-bottom:4px}.admin-main{width:100%;max-width:1280px;margin:0 auto;padding:30px 34px}.admin-panel[hidden]{display:none}.panel-heading{margin-bottom:18px}.panel-heading h2{margin-bottom:4px}
-details.token-card{padding:0;overflow:hidden}details.token-card>summary{list-style:none}details.token-card>summary::-webkit-details-marker{display:none}.token-summary{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(150px,1fr) minmax(180px,1fr) minmax(220px,1.2fr) auto;align-items:center;gap:16px;padding:17px 19px;cursor:pointer;user-select:none}.token-summary:hover{background:var(--hover)}.token-summary-title{font-size:16px;font-weight:750;min-width:0}.token-summary-title>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.token-summary-meta{min-width:0}.token-summary-meta strong,.token-summary-meta span{display:block}.token-summary-meta strong{font-size:12px;color:var(--muted);margin-bottom:2px}.token-summary-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.summary-toggle{color:var(--brand);font-weight:700;white-space:nowrap}.summary-toggle::after{content:'Show settings'}.summary-toggle::before{content:'+';display:inline-block;margin-right:6px;font-size:18px;line-height:1}details[open] .summary-toggle::after{content:'Hide settings'}details[open] .summary-toggle::before{content:'−'}.token-details{border-top:1px solid var(--line);padding:20px}.token-details>.top{margin-bottom:14px}
+.token-tablist{display:flex;gap:6px;flex-wrap:wrap;padding:6px;background:var(--subtle);border-radius:12px;margin:18px 0}.token-tab{flex:1 1 150px;background:transparent;color:var(--text);border-radius:9px;font-weight:600}.token-tab:hover{background:var(--hover)}.token-tab.active{background:var(--secondary);color:var(--secondary-text)}.token-pane[hidden],.token-save-actions[hidden]{display:none}.token-pane{padding:8px 0}.token-save-actions{display:flex;justify-content:flex-end;margin-top:14px}.token-password-settings{margin-top:20px;border-top:1px solid var(--line);padding-top:20px}.token-password-settings h3{margin:0 0 8px;font-size:16px}details.token-card{padding:0;overflow:hidden}details.token-card>summary{list-style:none}details.token-card>summary::-webkit-details-marker{display:none}.token-summary{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(150px,1fr) minmax(180px,1fr) minmax(220px,1.2fr) auto;align-items:center;gap:16px;padding:17px 19px;cursor:pointer;user-select:none}.token-summary:hover{background:var(--hover)}.token-summary-title{font-size:16px;font-weight:750;min-width:0}.token-summary-title>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.token-summary-meta{min-width:0}.token-summary-meta strong,.token-summary-meta span{display:block}.token-summary-meta strong{font-size:12px;color:var(--muted);margin-bottom:2px}.token-summary-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.summary-toggle{color:var(--brand);font-weight:700;white-space:nowrap}.summary-toggle::after{content:'Show settings'}.summary-toggle::before{content:'+';display:inline-block;margin-right:6px;font-size:18px;line-height:1}details[open] .summary-toggle::after{content:'Hide settings'}details[open] .summary-toggle::before{content:'−'}.token-details{border-top:1px solid var(--line);padding:20px}.token-details>.top{margin-bottom:14px}
 @media(max-width:980px){.token-summary{grid-template-columns:minmax(180px,1.4fr) minmax(130px,1fr) minmax(160px,1fr) auto}.token-summary-meta.permissions{display:none}}
 @media(max-width:800px){.admin-shell{grid-template-columns:68px minmax(0,1fr)}.admin-sidebar{padding:18px 8px}.brand-copy,.nav-label{display:none}.admin-brand{padding:0 9px}.nav-item{justify-content:center;padding:11px}.admin-main{padding:24px 20px}.grid{grid-template-columns:1fr}.span2,.span4{grid-column:span 1}.top{align-items:flex-start}.checks{padding-top:4px;flex-wrap:wrap}.token-summary{grid-template-columns:minmax(150px,1fr) minmax(120px,.8fr) auto;padding:15px}.token-summary-meta.expires{display:none}}
 @media(max-width:520px){.admin-shell{grid-template-columns:58px minmax(0,1fr)}.admin-sidebar{padding:14px 5px}.admin-main{padding:18px 12px}.top{flex-direction:column}.token-summary{grid-template-columns:minmax(0,1fr) auto}.token-summary-meta{display:none}.summary-toggle::after{content:'Show'}details[open] .summary-toggle::after{content:'Hide'}.card{padding:16px}.token-details{padding:16px}.path-grant-row{grid-template-columns:1fr}.connection-status-row{align-items:flex-start;flex-direction:column;gap:6px}}
@@ -297,6 +297,7 @@ def render_dashboard(
     storage_capability: dict | None = None,
     storage_message: str = "",
     storage_delete_warning: dict | None = None,
+    workspace_passwords: frozenset[str] = frozenset(),
 ) -> str:
     esc_csrf = html.escape(csrf, quote=True)
     error_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
@@ -322,6 +323,7 @@ def render_dashboard(
             podman_default_image,
             podman_images,
             workspace_images,
+            item.app_id in workspace_passwords,
         )
         for item in records
     )
@@ -437,7 +439,53 @@ def render_dashboard(
         '</button><form method="post"',
         1,
     )
-    body = body.replace('</nav>', f'<a class="nav-item" href="{escaped_admin_path}/capabilities"><span class="nav-icon" aria-hidden="true">⏱</span><span class="nav-label">Workspace grants</span></a></nav>', 1)
+    token_tab_js = """
+function setTokenPane(card,name){
+    card.querySelectorAll('[data-token-tab]').forEach(button=>{
+        const active=button.dataset.tokenTab===name;
+        button.classList.toggle('active',active);
+        button.setAttribute('aria-selected',active?'true':'false');
+        button.tabIndex=active?0:-1;
+    });
+    card.querySelectorAll('[data-token-pane]').forEach(pane=>{
+        pane.hidden=pane.dataset.tokenPane!==name;
+    });
+    const save=card.querySelector('[data-token-save]');
+    if(save)save.hidden=name==='credentials';
+    const field=card.querySelector('[data-token-pane-field]');
+    if(field&&name!=='credentials')field.value=name;
+}
+document.querySelectorAll('details.token-card').forEach(card=>{
+    card.querySelectorAll('[data-token-tab]').forEach(button=>{
+        button.addEventListener('click',()=>setTokenPane(card,button.dataset.tokenTab));
+        button.addEventListener('keydown',event=>{
+            if(!['ArrowRight','ArrowLeft','Home','End'].includes(event.key))return;
+            const tabs=Array.from(card.querySelectorAll('[data-token-tab]'));
+            const index=tabs.indexOf(button);
+            const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:
+                (index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
+            setTokenPane(card,tabs[next].dataset.tokenTab);
+            tabs[next].focus();
+            event.preventDefault();
+        });
+    });
+    const update=card.querySelector('form[data-token-update]');
+    if(update)update.addEventListener('invalid',event=>{
+        const pane=event.target.closest('[data-token-pane]');
+        if(pane&&pane.hidden)setTokenPane(card,pane.dataset.tokenPane);
+    },true);
+});
+const restored=location.hash.match(/^#token-([A-Za-z0-9_-]+)-(basic|permissions|credentials)$/);
+if(restored){
+    const card=Array.from(document.querySelectorAll('details.token-card'))
+        .find(item=>item.dataset.tokenApp===restored[1]);
+    if(card){setAdminPanel('tokens',false);card.open=true;setTokenPane(card,restored[2]);}
+}
+"""
+    # Append after the main dashboard script (other panels may have scripts).
+    # That ensures setAdminPanel exists before restored Token tabs call it.
+    prefix, end_script, suffix = body.rpartition('</script>')
+    body = prefix + token_tab_js + end_script + suffix
     return _page("Workspace Administration", body, favicon_href="favicon.svg")
 
 
@@ -452,6 +500,7 @@ def _token_card(
     podman_default_image: str,
     podman_images: tuple[str, ...],
     workspace_images: list[WorkspaceImage],
+    workspace_password_configured: bool = False,
 ) -> str:
     """Add independent read/control credential controls to the token card."""
     backend_options = _sandbox_backend_options(
@@ -543,10 +592,15 @@ def _token_card(
         '<div class="actions" style="margin:10px 0">' + control_form,
         1,
     )
-    return _collapsible_token_card(card, record)
+    return _collapsible_token_card(
+        card, record, csrf, admin_path, workspace_password_configured
+    )
 
 
-def _collapsible_token_card(card: str, record: TokenRecord) -> str:
+def _collapsible_token_card(
+    card: str, record: TokenRecord, csrf: str, admin_path: str,
+    workspace_password_configured: bool,
+) -> str:
     status, usable = _token_status(record)
     invalid_class = "" if usable else " invalid"
     badge_class = "" if usable else " off"
@@ -573,7 +627,98 @@ def _collapsible_token_card(card: str, record: TokenRecord) -> str:
     if not separator or not remainder.endswith("</section>"):
         return card
     content = remainder.removesuffix("</section>")
-    return f"""<details class="card token-card{invalid_class}"><summary class="token-summary"><div class="token-summary-title"><span>{html.escape(record.name)}</span><span class="badge{badge_class}">{status}</span></div><div class="token-summary-meta"><strong>Workspace</strong><span>{html.escape(record.path_prefix)}</span></div><div class="token-summary-meta expires"><strong>Workspace lifetime</strong><span>{html.escape(expires_label)}</span></div><div class="token-summary-meta permissions"><strong>Permissions</strong><span>{html.escape(' · '.join(capabilities))}</span></div><span class="summary-toggle" aria-hidden="true"></span></summary><div class="token-details">{content}</div></details>"""
+    heading, marker, remaining = content.partition('<label>Workspace URL</label>')
+    token_escaped = html.escape(record.token, quote=True)
+    update_start = (
+        f'<form method="post" action="{admin_path}/tokens">'
+        f'<input type="hidden" name="csrf" value="{csrf}">'
+        f'<input type="hidden" name="token" value="{token_escaped}">'
+        '<input type="hidden" name="action" value="update"><div class="grid">'
+    )
+    credentials, separator, remaining = remaining.partition(update_start)
+    save_marker = (
+        '<div class="span4 actions"><button type="submit">Save changes</button>'
+        '</div></div></form>'
+    )
+    fields, save_separator, delete_form = remaining.partition(save_marker)
+    basic_fields, permission_separator, permission_fields = fields.partition(
+        '<div class="span2 checks">'
+    )
+    if not all((marker, separator, save_separator, permission_separator)):
+        raise ValueError("Token settings layout could not be divided into tabs")
+    permission_fields = permission_separator + permission_fields
+    app_id = html.escape(record.app_id, quote=True)
+    workspace = html.escape(record.path_prefix, quote=True)
+    tabs = (
+        '<div class="token-tablist" role="tablist" aria-label="Token settings">'
+        + "".join(
+            f'<button type="button" role="tab" data-token-tab="{key}" '
+            f'id="token-{app_id}-tab-{key}" '
+            f'aria-controls="token-{app_id}-pane-{key}" '
+            f'aria-selected="{"true" if key == "basic" else "false"}" '
+            f'class="token-tab{" active" if key == "basic" else ""}">{label}</button>'
+            for key, label in (
+                ("basic", "Basic information"),
+                ("permissions", "Permissions"),
+                ("credentials", "Credentials &amp; password"),
+            )
+        ) + '</div>'
+    )
+    def pane_open(key: str, *, hidden: bool = False) -> str:
+        return (
+            f'<section class="token-pane" role="tabpanel" data-token-pane="{key}" '
+            f'id="token-{app_id}-pane-{key}" '
+            f'aria-labelledby="token-{app_id}-tab-{key}"'
+            f'{" hidden" if hidden else ""}>'
+        )
+    status_label = "Configured" if workspace_password_configured else "Not configured"
+    password_panel = (
+        '<section class="token-password-settings"><h3>Workspace approval password</h3>'
+        f'<p class="muted">Workspace: <strong>{workspace or "/"}</strong> · '
+        f'{status_label}. This password belongs only to this Token Workspace, '
+        'even when another Token uses the same directory. '
+        'It is separate from the administrator login password and is used for '
+        'temporary Shell elevation approvals.</p>'
+        f'<form method="post" action="{admin_path}/capabilities">'
+        f'<input type="hidden" name="csrf" value="{csrf}">'
+        f'<input type="hidden" name="workspace" value="{app_id}">'
+        '<input type="hidden" name="action" value="password">'
+        '<input type="hidden" name="return_to" value="token">'
+        f'<input type="hidden" name="token_app_id" value="{app_id}">'
+        '<label>Set or reset Workspace password</label>'
+        '<input name="password" type="password" minlength="12" maxlength="1024" '
+        'autocomplete="new-password" required>'
+        '<div class="actions" style="margin-top:10px">'
+        '<button type="submit">Save Workspace password</button></div>'
+        '<p class="muted">Changing it revokes existing temporary approvals and grants '
+        'for this Workspace.</p></form></section>'
+    )
+    editor = (
+        tabs
+        + update_start.removesuffix('<div class="grid">')
+        .replace('<form method=', '<form data-token-update method=', 1)
+        + '<input type="hidden" name="token_pane" value="basic" data-token-pane-field>'
+        + pane_open("basic")
+        + '<div class="grid">' + basic_fields + '</div></section>'
+        + pane_open("permissions", hidden=True)
+        + '<div class="grid">' + permission_fields + '</div></section>'
+        + '<div class="token-save-actions" data-token-save>'
+        '<button type="submit">Save changes</button></div></form>'
+        + pane_open("credentials", hidden=True)
+        + marker + credentials + password_panel + delete_form + '</section>'
+    )
+    return (
+        f'<details class="card token-card{invalid_class}" data-token-app="{app_id}">'
+        f'<summary class="token-summary"><div class="token-summary-title">'
+        f'<span>{html.escape(record.name)}</span><span class="badge{badge_class}">'
+        f'{status}</span></div><div class="token-summary-meta"><strong>Workspace'
+        f'</strong><span>{workspace}</span></div><div class="token-summary-meta expires">'
+        f'<strong>Workspace lifetime</strong><span>{html.escape(expires_label)}</span>'
+        f'</div><div class="token-summary-meta permissions"><strong>Permissions'
+        f'</strong><span>{html.escape(" · ".join(capabilities))}</span></div>'
+        f'<span class="summary-toggle" aria-hidden="true"></span></summary>'
+        f'<div class="token-details">{heading}{editor}</div></details>'
+    )
 
 
 def _token_card_base(

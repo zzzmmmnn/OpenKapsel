@@ -46,7 +46,9 @@ class CapabilityHandlersMixin:
             raise ApiError(403, "conversation_writer_nonce_mismatch", "Conversation writer_nonce does not match") from None
         except (ValueError, KeyError) as exc:
             raise ApiError(400, "invalid_capability_conversation", str(exc)) from None
-        workspace = self.token_record.path_prefix
+        # Workspace password/grants belong to the Token record, not the
+        # filesystem directory shared by potentially many Tokens.
+        workspace = self.token_record.app_id
         grants = self.server.capability_grants
         if grants.granted(workspace, conversation, target, capability):
             return
@@ -61,12 +63,13 @@ class CapabilityHandlersMixin:
         })
 
     def _capability_binding(self, item):
-        if not any(r.valid and r.path_prefix == item.workspace for r in self.server.tokens.list()):
-            raise ValueError("Workspace is unavailable")
+        record = self.server.tokens.get_by_app_id(item.workspace)
+        if record is None or not record.valid:
+            raise ValueError("Token Workspace is unavailable")
         if item.target == "server":
             return "Workspace Server"
         row = self.server.mappings.store.get(item.target)
-        if row["workspace"] != item.workspace or not row["enabled"]:
+        if row["workspace"] != record.path_prefix or not row["enabled"]:
             raise ValueError("Mapping is unavailable or ownership changed")
         return row["name"] + " (" + item.target + ")"
 
@@ -124,7 +127,10 @@ class CapabilityHandlersMixin:
         body = f'<h1>Approve temporary capability</h1><p class="error">{esc(error)}</p>' if error else '<h1>Approve temporary capability</h1>'
         warning = ("Shell elevation runs as the target's current OS user without sandbox restrictions. "
                    if item.capability == "shell.elevated" else "")
-        body += f'''<dl><dt>Workspace</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd></dl>
+        workspace_record = self.server.tokens.get_by_app_id(item.workspace)
+        workspace_label = (f"{workspace_record.name} ({workspace_record.path_prefix})"
+                           if workspace_record else "Unavailable Token")
+        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd></dl>
 <p class="notice">{esc(warning)}Approve only the conversation and target you intend.</p>
 <form method="post" action="{esc(self._admin_path() + '/capability/' + ticket, quote=True)}" autocomplete="off">
 <input type="hidden" name="csrf" value="{proof}"><label>Workspace password</label><input type="password" name="password" required maxlength="1024" autocomplete="off">
@@ -139,7 +145,7 @@ class CapabilityHandlersMixin:
             return
         self._require_password_transport()
         grants = self.server.capability_grants
-        workspaces = sorted({r.path_prefix for r in self.server.tokens.list()})
+        workspaces = sorted(self.server.tokens.list(), key=lambda record: record.name)
         message, status = "", 200
         if method == "POST":
             form = self._read_form()
@@ -148,12 +154,29 @@ class CapabilityHandlersMixin:
             workspace = self._form_one(form, "workspace")
             try:
                 with self.server.workspace_admin_lock:
-                    if workspace not in {r.path_prefix for r in self.server.tokens.list()}:
-                        raise ValueError("Unknown workspace")
+                    record = self.server.tokens.get_by_app_id(workspace)
+                    if record is None:
+                        raise ValueError("Unknown Token Workspace")
                     action = self._form_one(form, "action")
                     if action == "password":
+                        return_to = self._form_one(form, "return_to")
+                        token_app_id = self._form_one(form, "token_app_id")
+                        if return_to:
+                            if return_to != "token" or not re.fullmatch(
+                                r"[A-Za-z0-9_-]{1,128}", token_app_id
+                            ) or not any(
+                                item.app_id == token_app_id == workspace
+                                for item in self.server.tokens.list()
+                            ):
+                                raise ValueError("Invalid token password settings return target")
                         grants.set_password(workspace, self._form_one(form, "password"))
                         message = "Workspace password updated; all pending approvals and active grants revoked."
+                        if return_to == "token":
+                            self._redirect(
+                                f"{self._admin_path()}?workspace_password_changed=1"
+                                f"#token-{token_app_id}-credentials"
+                            )
+                            return
                     elif action == "revoke":
                         grants.revoke(workspace, int(self._form_one(form, "conversation_id")),
                                       self._form_one(form, "target"), self._form_one(form, "capability"))
@@ -168,10 +191,15 @@ class CapabilityHandlersMixin:
             return
         esc = html.escape
         action_url = esc(self._admin_path() + "/capabilities", quote=True)
-        body = f'<h1>Workspace passwords and grants</h1><p>{esc(message)}</p><p><a href="{esc(self._admin_path(), quote=True)}">Back to administration</a></p>'
-        for workspace in workspaces:
+        body = (f'<h1>Workspace passwords and grants</h1>'
+                '<p>Set a separate password for each Workspace. This is used for temporary '
+                'Shell elevation approvals and is not the administrator login password.</p>'
+                f'<p>{esc(message)}</p><p><a href="{esc(self._admin_path(), quote=True)}">'
+                'Back to administration</a></p>')
+        for record in workspaces:
+            workspace = record.app_id
             hidden = f'<input type="hidden" name="csrf" value="{esc(session.csrf, quote=True)}"><input type="hidden" name="workspace" value="{esc(workspace, quote=True)}">'
-            body += f'<h2>{esc(workspace or "/")}</h2><p>Password: {"Configured" if grants.configured(workspace) else "Not configured"}</p><form method="post" action="{action_url}">{hidden}<input type="hidden" name="action" value="password"><label>Set or reset workspace password</label><input type="password" name="password" minlength="12" maxlength="1024" required autocomplete="new-password"><div class="actions"><button>Save password and revoke grants</button></div></form>'
+            body += f'<h2>{esc(record.name)} · {esc(record.path_prefix)}</h2><p>Password: {"Configured" if grants.configured(workspace) else "Not configured"}</p><form method="post" action="{action_url}">{hidden}<input type="hidden" name="action" value="password"><label>Set or reset workspace password</label><input type="password" name="password" minlength="12" maxlength="1024" required autocomplete="new-password"><div class="actions"><button>Save password and revoke grants</button></div></form>'
             for grant in grants.list_grants(workspace):
                 fields = "".join(f'<input type="hidden" name="{key}" value="{esc(str(grant[key]), quote=True)}">' for key in ("conversation_id", "target", "capability"))
                 body += f'<p>Conversation {grant["conversation_id"]} · {esc(grant["target"])} · {esc(grant["capability"])} · {grant["remaining_seconds"]} seconds remaining</p><form method="post" action="{action_url}">{hidden}{fields}<button name="action" value="revoke">Revoke</button></form>'

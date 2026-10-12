@@ -16,6 +16,23 @@ class CapabilityGrantTests(unittest.TestCase):
         self.workspace = "project-a"
         self.store.set_password(self.workspace, "passphrase-for-test-123")
 
+    def test_legacy_directory_passwords_are_not_token_credentials(self):
+        import sqlite3
+        from openkapsel.auth.security import hash_password
+        legacy_password = "legacy-directory-password-123"
+        with sqlite3.connect(self.path) as db:
+            db.execute("CREATE TABLE workspace_passwords ("
+                       "workspace TEXT PRIMARY KEY, password_hash TEXT NOT NULL)")
+            db.execute("INSERT INTO workspace_passwords VALUES (?,?)",
+                       ("shared-directory", hash_password(legacy_password)))
+        reopened = CapabilityGrants(self.path)
+        self.assertFalse(reopened.configured("shared-directory"))
+        self.assertFalse(reopened.configured("token-a"))
+        reopened.set_password("token-a", "token-a-secret-456")
+        self.assertTrue(reopened.verify_workspace_password("token-a", "token-a-secret-456"))
+        self.assertFalse(reopened.verify_workspace_password("token-a", legacy_password))
+        self.assertFalse(reopened.verify_workspace_password("token-b", "token-a-secret-456"))
+
     def test_default_approval_scoped_by_workspace_conversation_target_capability(self):
         ticket = self.store.request(self.workspace, 12, "server", "shell.elevated")
         self.assertFalse(self.store.granted(self.workspace, 12, "server", "shell.elevated"))

@@ -95,12 +95,20 @@ Regular-directory mode remains available when the image helper is not installed.
 
 ## Temporary capability grants
 
-Administration → Workspace grants sets/resets one password per workspace and
-lists/revokes active grants. Passwords use the existing salted PBKDF2 hash;
-resetting one revokes all pending approvals and grants for that workspace.
-Removing the last workspace configuration removes its password. Reassigning or
-disabling a configuration revokes the old workspace's temporary grants. Password
-forms require HTTPS; local loopback HTTP is supported for development.
+In Administration → Token management, expand a Token and select **Credentials & password**
+to set or reset its Workspace approval password. **Each Token is its own
+Workspace for passwords and temporary grants**: even two Tokens pointing at the
+same filesystem directory have independent passwords. The stable Token
+`app_id` is the internal password and grant identity, so rotating Read/Control
+credentials does not reset this password. Deleting the Token deletes its
+password; changing its directory or disabling it revokes that Token's grants.
+The password is separate from the administrator login. The legacy
+`/admin/capabilities` page remains available for inspecting and revoking
+active per-Token grants. Existing passwords previously stored under the shared
+directory are **not** assigned to Tokens during upgrade; set each Token's
+password explicitly. Passwords use salted PBKDF2 hashes, and resetting a
+Token's password revokes only that Token's pending approvals and grants.
+Password forms require HTTPS; local loopback HTTP is supported for development.
 
 AI may proactively request `shell.elevated` using REST `POST
 /shell/elevation/request` or MCP `shell.request_elevation` without starting a
