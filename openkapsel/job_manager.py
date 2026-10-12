@@ -200,6 +200,36 @@ class Manager:
         self.sandboxes = {}
         self.stopping = threading.Event()
         self.last_access = time.monotonic()
+        # Linux --die-with-parent (PR_SET_PDEATHSIG) watches the *creating
+        # thread*, not merely the Manager process. IPC handlers are short-lived;
+        # starting Bubblewrap inside one kills the job when that handler exits.
+        # Keep one launcher thread alive for the entire Manager lifetime. Only
+        # process creation is serialized; jobs still execute concurrently.
+        self.launch_queue = queue.Queue()
+        self.launcher = threading.Thread(
+            target=self._launch_loop, name="openkapsel-job-launcher", daemon=True,
+        )
+        self.launcher.start()
+
+    def _launch_loop(self):
+        while True:
+            item = self.launch_queue.get()
+            if item is None:
+                return
+            argv, options, response = item
+            try:
+                outcome = subprocess.Popen(argv, **options)
+            except BaseException as exc:
+                outcome = exc
+            response.put(outcome)
+
+    def _spawn(self, argv, **options):
+        response = queue.Queue(maxsize=1)
+        self.launch_queue.put((argv, options, response))
+        outcome = response.get()
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     @staticmethod
     def _mapping_key(request):
@@ -463,7 +493,7 @@ class Manager:
             environment = prepared.environment
         # Only the manager owns subprocess handles, even if the client exits.
         try:
-            process = subprocess.Popen(
+            process = self._spawn(
                 argv, cwd=cwd, env=environment, executable=executable, shell=False,
                 stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -693,6 +723,12 @@ class Manager:
                 collector.join(timeout=15)
             if any(collector.is_alive() for collector in collectors):
                 raise RuntimeError("Job Manager collectors did not stop")
+            # Keep the launcher alive until every child has exited so
+            # Bubblewrap's parent-death signal cannot fire prematurely.
+            self.launch_queue.put(None)
+            self.launcher.join(timeout=10)
+            if self.launcher.is_alive():
+                raise RuntimeError("Job Manager launcher did not stop")
             with self.lock:
                 self.db.close()
             if self.family == "AF_UNIX":

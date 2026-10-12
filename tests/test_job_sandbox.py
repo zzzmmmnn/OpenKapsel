@@ -111,6 +111,70 @@ class JobSandboxTests(unittest.TestCase):
                     prepared = prepare_job(spec, ["/bin/echo", "ok"], str(self.workspace), {}, self.state)
                     prepared.cleanup()
 
+    def test_manager_launcher_survives_transient_request_thread(self):
+        # Bubblewrap's --die-with-parent monitors the Popen caller's Linux
+        # thread, not the entire process. The Manager's IPC request threads
+        # finish quickly, so a long-lived launcher must create each child.
+        import threading
+        from openkapsel.job_manager import Manager
+
+        manager = Manager(self.state)
+        try:
+            result = {}
+
+            def start():
+                result["process"] = manager._spawn(
+                    [sys.executable, "-c", "import time; time.sleep(.2)"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+
+            handler = threading.Thread(target=start)
+            handler.start()
+            handler.join(timeout=5)
+            self.assertFalse(handler.is_alive())
+            self.assertIn("process", result)
+            self.assertTrue(manager.launcher.is_alive())
+            self.assertEqual(0, result["process"].wait(timeout=5))
+        finally:
+            manager.launch_queue.put(None)
+            manager.launcher.join(timeout=5)
+            manager.db.close()
+
+    @unittest.skipUnless(
+        platform.system() == "Linux"
+        and os.environ.get("OPENKAPSEL_REAL_SANDBOX_TESTS") == "1",
+        "requires real Linux Bubblewrap and a running Job Manager",
+    )
+    def test_manager_bubblewrap_survives_early_ipc_thread_exit(self):
+        # A short RPC handler must not kill a longer-running sandboxed job.
+        # Last-command exec optimization also exposed intermittent SIGKILLs.
+        self.assertIsNotNone(shutil.which("bwrap"))
+        self.addCleanup(shutdown, self.state, force=True)
+        job_id = "&Pb4w&"
+        request(self.state, self.MAPPING, "task_start", {
+            "task_id": job_id,
+            "argv": ["/bin/sh", "-c",
+                     "/usr/bin/sleep .3; /usr/bin/printf 'LAUNCH_SURVIVED\\n'"],
+            "cwd": str(self.workspace),
+            "env": {"PATH": "/usr/bin:/bin"},
+            "interactive": False,
+            "timeout_seconds": 15,
+            "sandbox": json.dumps(self._spec(
+                "bubblewrap", writable=False, network_mode="none")),
+        })
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            result = request(self.state, self.MAPPING, "task_get",
+                             {"task_id": job_id})
+            if not result["running"]:
+                break
+            time.sleep(.05)
+        else:
+            self.fail("sandboxed Job Manager process failed to exit")
+        output = base64.b64decode(result.get("output", ""))
+        self.assertEqual(0, result["exit_code"], output)
+        self.assertIn(b"LAUNCH_SURVIVED", output)
+
     @unittest.skipUnless(
         platform.system() == "Linux"
         and os.environ.get("OPENKAPSEL_REAL_SANDBOX_TESTS") == "1",
