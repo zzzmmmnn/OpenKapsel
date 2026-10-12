@@ -105,9 +105,11 @@ def _trusted_macos_xcode_developer_dir(path: Path) -> bool:
 def _macos_xcode_developer_dir(environment: dict[str, str]) -> Path | None:
     """Resolve the selected Apple developer toolchain outside the sandbox.
 
-    GitHub-hosted macOS may select /Applications/Xcode_<version>.app; Apple's
-    /usr/bin/python3 then loads libxcrun.dylib from its Developer/usr/lib.
-    The CLT variant under /Library is already covered by system read roots.
+    GitHub-hosted macOS may select /Applications/Xcode_<version>.app. Apple's
+    /usr/bin/python3 loads libxcrun.dylib from Developer/usr/lib, then may
+    launch xcodebuild which requires sibling Contents/SharedFrameworks and
+    Contents/Frameworks. The CLT variant under /Library is already covered
+    by system read roots.
     """
     selected = environment.get("DEVELOPER_DIR")
     if not selected:
@@ -302,10 +304,13 @@ def prepare_job(
                 profile.append(f"(allow file-read* (subpath {_sb_quote(system_path.resolve())}))")
         developer = _macos_xcode_developer_dir(environment)
         if developer is not None:
-            # The resolver already checked existence and the trusted layout.
-            # Emit this separately so a mocked selected Xcode path can be
-            # regression-tested on a Mac with only CommandLineTools installed.
-            profile.append(f"(allow file-read* (subpath {_sb_quote(developer)}))")
+            # The resolver checked the exact Xcode.app/Contents/Developer
+            # layout. xcrun requires Developer/usr/lib, but the delegated
+            # xcodebuild process loads libraries from *sibling* trees,
+            # notably Contents/SharedFrameworks. Restrict this read-only
+            # exception to the selected Xcode.app, never /Applications.
+            xcode_app = developer.parent.parent
+            profile.append(f"(allow file-read* (subpath {_sb_quote(xcode_app)}))")
         for directory in (root, *(Path(item.path) for item in grants)):
             profile.append(f"(allow file-read* (subpath {_sb_quote(directory)}))")
         if writable:

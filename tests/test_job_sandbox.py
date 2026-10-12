@@ -62,7 +62,7 @@ class JobSandboxTests(unittest.TestCase):
                 self.assertFalse(_trusted_macos_xcode_developer_dir(pathlib.Path(item)))
 
     @unittest.skipUnless(platform.system() == "Darwin", "Only Seatbelt is configured on macOS")
-    def test_seatbelt_grants_only_selected_xcode_developer_tree(self):
+    def test_seatbelt_grants_only_selected_xcode_app_tree(self):
         from openkapsel import job_sandbox
         selected = pathlib.Path("/Applications/Xcode_26.6.app/Contents/Developer")
         with patch.object(job_sandbox, "_macos_xcode_developer_dir", return_value=selected):
@@ -73,8 +73,15 @@ class JobSandboxTests(unittest.TestCase):
             )
         try:
             profile = prepared.argv[prepared.argv.index("-p") + 1]
-            self.assertIn(f'(allow file-read* (subpath "{selected}"))', profile)
+            # Xcode's xcodebuild loads frameworks outside Contents/Developer,
+            # including Contents/SharedFrameworks/DVTSystemPrerequisites.
+            app_root = selected.parent.parent
+            framework = app_root / "Contents/SharedFrameworks/DVTSystemPrerequisites.framework"
+            self.assertTrue(framework.is_relative_to(app_root))
+            self.assertIn(f'(allow file-read* (subpath "{app_root}"))', profile)
+            self.assertNotIn(f'(allow file-read* (subpath "{selected}"))', profile)
             self.assertNotIn('(allow file-read* (subpath "/Applications"))', profile)
+            self.assertNotIn('(allow file-read* (subpath "/Users"))', profile)
             self.assertIn('deny network-outbound (remote unix-socket)', profile)
             self.assertIn('deny file-read* (literal', profile)
         finally:
