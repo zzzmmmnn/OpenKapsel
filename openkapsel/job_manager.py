@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 from multiprocessing import AuthenticationError
-from multiprocessing.connection import Client, Listener
+from multiprocessing.connection import Client, Listener, answer_challenge, deliver_challenge
 from pathlib import Path
 
 MAPPING_RE = re.compile(r"[A-Za-z0-9_-]{24}\Z")
@@ -50,7 +50,8 @@ def state_home() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     if os.name == "nt":
-        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        root = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
     elif sys.platform == "darwin":
         root = Path.home() / "Library" / "Application Support"
     else:
@@ -200,6 +201,10 @@ class Manager:
         self.sandboxes = {}
         self.stopping = threading.Event()
         self.last_access = time.monotonic()
+        # A peer can open a Windows named pipe or AF_UNIX socket and stall
+        # before finishing authentication. Bound these handshakes without
+        # allowing one incomplete peer to block every subsequent request.
+        self.ipc_slots = threading.BoundedSemaphore(64)
         # Linux --die-with-parent (PR_SET_PDEATHSIG) watches the *creating
         # thread*, not merely the Manager process. IPC handlers are short-lived;
         # starting Bubblewrap inside one kills the job when that handler exits.
@@ -690,14 +695,28 @@ class Manager:
         finally:
             conn.close()
 
+    def _serve_peer(self, conn):
+        try:
+            # Listener.accept(authkey=...) authenticates synchronously. A
+            # client that opens a pipe but never answers the challenge would
+            # otherwise permanently freeze the only accept loop on Windows.
+            deliver_challenge(conn, self.ipc_key)
+            answer_challenge(conn, self.ipc_key)
+        except (AuthenticationError, EOFError, OSError, ValueError):
+            conn.close()
+        else:
+            self._connection(conn)
+        finally:
+            self.ipc_slots.release()
+
     def serve(self):
         if self.family == "AF_UNIX":
             Path(self.address).unlink(missing_ok=True)
-        # multiprocessing's default backlog is just 1. Concurrent Client
-        # startup/status probes can overflow it, mistake a busy singleton
-        # for a missing manager, and launch unnecessary losing processes.
+        # Accept raw peers without blocking for authentication. Each bounded
+        # worker executes the same authenticated multiprocessing handshake
+        # before it is allowed to dispatch even a read-only request.
         listener = Listener(self.address, family=self.family, backlog=64,
-                            authkey=self.ipc_key)
+                            authkey=None)
         if self.family == "AF_UNIX":
             os.chmod(self.address, 0o600)
         try:
@@ -710,7 +729,15 @@ class Manager:
                     if self.stopping.is_set():
                         break
                     continue
-                threading.Thread(target=self._connection, args=(conn,), daemon=True).start()
+                if not self.ipc_slots.acquire(blocking=False):
+                    conn.close()
+                    continue
+                try:
+                    threading.Thread(target=self._serve_peer, args=(conn,), daemon=True).start()
+                except BaseException:
+                    self.ipc_slots.release()
+                    conn.close()
+                    raise
         finally:
             listener.close()
             with self.lock:
@@ -847,12 +874,14 @@ def shutdown(home, *, force=False):
 
 def main():
     parser = argparse.ArgumentParser(description="OpenKapsel shared local Job Manager")
-    parser.add_argument("--state", type=Path, default=state_home())
+    parser.add_argument("--state", type=Path, default=None)
     parser.add_argument("--stop", action="store_true",
                         help="stop only when no jobs are running")
     parser.add_argument("--force", action="store_true",
                         help="with --stop, terminate every running job")
     ns = parser.parse_args()
+    if ns.state is None:
+        ns.state = state_home()
     if ns.force and not ns.stop:
         parser.error("--force requires --stop")
     if ns.stop:

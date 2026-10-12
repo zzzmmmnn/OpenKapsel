@@ -218,6 +218,56 @@ class SharedManagerTests(unittest.TestCase):
             result = wire_recv(conn)
         self.assertEqual(1, result["result"]["version"])
 
+    def test_explicit_manager_state_does_not_read_default_user_home(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from openkapsel import job_manager
+        # --force without --stop triggers argument validation after parsing.
+        # If --state were still evaluated eagerly, the injected home lookup
+        # would raise before argparse could report the intended usage error.
+        with (patch.object(job_manager, "state_home", side_effect=AssertionError("home accessed")),
+              patch.object(sys, "argv", ["job_manager", "--state", str(self.home), "--force"]),
+              redirect_stderr(StringIO())):
+            with self.assertRaises(SystemExit) as caught:
+                job_manager.main()
+        self.assertEqual(2, caught.exception.code)
+
+    def test_half_open_ipc_authentication_does_not_block_valid_jobs(self):
+        # An AF_PIPE/AF_UNIX peer may connect without completing the auth
+        # challenge. It must not hold the Manager's only accept loop hostage.
+        import threading
+        from multiprocessing.connection import Client as IpcClient
+        from openkapsel.job_manager import connect_once, endpoint
+
+        ensure_running(self.home)
+        address, family = endpoint(self.home)
+        unfinished = IpcClient(address, family=family, authkey=None)
+        done = threading.Event()
+        result = {}
+
+        def valid_request():
+            try:
+                result["ping"] = connect_once(self.home, {"op": "ping"})
+                result["job"] = self._start(
+                    self.MAPPING_A, "&Ha1f&", 'print("not-blocked")')
+            except BaseException as exc:
+                result["error"] = exc
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=valid_request, daemon=True)
+        try:
+            worker.start()
+            self.assertTrue(done.wait(5), "incomplete IPC auth blocked valid requests")
+            if "error" in result:
+                raise result["error"]
+            self.assertEqual(1, result["ping"]["version"])
+            self.assertEqual("&Ha1f&", result["job"]["task_id"])
+            self.assertEqual(0, self._wait(self.MAPPING_A, "&Ha1f&")["exit_code"])
+        finally:
+            unfinished.close()
+            worker.join(timeout=5)
+
     def test_mapping_token_change_does_not_affect_existing_jobs(self):
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
