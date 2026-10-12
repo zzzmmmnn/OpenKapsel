@@ -989,6 +989,26 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         open_world=True,
     ),
     _tool(
+        "shell_request_elevation",
+        "Request temporary Shell elevation",
+        "Request conversation-scoped Shell elevation for an explicit target without executing any command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. The user must approve in the browser; later Shell execution still requires elevated=true.",
+        _object_schema(
+            {
+                "target": {
+                    "type": "string", "minLength": 1,
+                    "description": "Exact execution target: server or an authorized Mapping ID. No auto routing.",
+                },
+                "writer_nonce": {
+                    "type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
+                    "description": "Writer nonce for the Conversation owning plan_id.",
+                },
+            },
+            ("target", "writer_nonce"),
+        ),
+        read_only=False,
+        destructive=False,
+    ),
+    _tool(
         "shell_exec",
         "Run shell command",
         "Start an asynchronous Shell job with &a1B2& reference ID. Omitted/null timeout defaults to 120s; client Shell with timeout <=120s runs in Client, >120s in shared Job Manager. Explicit finite positive timeouts have no maximum. target=auto routes mapped cwd to client, otherwise server; errors never fall back. Only Mapping Shell with timeout >120s survives Client restart via disk-backed Job Manager (16 global, 4 per Mapping key). Use family=task operations to inspect and control output.",
@@ -1166,6 +1186,7 @@ _AUXILIARY_OPERATION_MAP: dict[
     },
     "shell": {
         "exec": ("shell_exec", None, None, ("command",), "task"),
+        "request_elevation": ("shell_request_elevation", None, None, ("target", "writer_nonce"), "sync"),
         "processes": ("sandbox_processes", None, None, (), "sync"),
     },
     "task": {
@@ -1229,7 +1250,7 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
     if record.can_read or record.can_write:
         names.update({"task_get", "task_list", "task_output", "task_interrupt", "task_kill"})
     if record.shell_mode != "none":
-        names.update({"shell_exec", "task_stdin"})
+        names.update({"shell_exec", "shell_request_elevation", "task_stdin"})
         if record.can_schedule:
             names.update({"schedule_read", "schedule_write", "schedule_control"})
     if record.shell_mode == "restricted":

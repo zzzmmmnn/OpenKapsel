@@ -248,6 +248,13 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         "_handle_mcp_method_not_allowed", control_required=True, discovery_key="mcp",
     ),
     _exact(
+        "shell_elevation_request", ("POST",), "/shell/elevation/request",
+        "_handle_shell_elevation_request", control_required=True,
+        request_body=True, context_mode="deferred",
+        context_operations=(("POST", "shell.elevation.request"),),
+        discovery_key="shell",
+    ),
+    _exact(
         "shell_exec", ("POST",), "/shell/exec", "_handle_shell_exec",
         control_required=True, request_body=True, context_mode="deferred",
         context_operations=(("POST", "shell.exec"),), discovery_key="shell",

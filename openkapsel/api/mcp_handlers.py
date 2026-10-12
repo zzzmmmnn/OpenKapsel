@@ -797,6 +797,7 @@ class McpHandlersMixin:
             "fs_move": self._handle_fs_move,
             "recycle_restore": self._handle_recycle_restore,
             "shell_exec": self._handle_shell_exec,
+            "shell_request_elevation": self._handle_shell_elevation_request,
             "upload_create": self._handle_upload_create,
             "share_create": self._handle_share_create,
         }

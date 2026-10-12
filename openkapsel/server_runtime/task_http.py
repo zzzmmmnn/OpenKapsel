@@ -17,6 +17,47 @@ from openkapsel.execution.shell_execution import start_shell_task
 from openkapsel.execution.shell_routing import RemoteTask
 
 class TaskHttpMixin:
+    def _handle_shell_elevation_request(self) -> None:
+        """Request approval for a specific Shell target without starting a job."""
+        body = self._read_json()
+        if set(body) - {"target", "writer_nonce", "plan_id", "taskname", "message"}:
+            raise ApiError(400, "invalid_request", "unexpected elevation request field")
+        self._require_permission(
+            self.token_record.shell_mode != "none", "Shell permission is required"
+        )
+        target = body.get("target")
+        if not isinstance(target, str) or not target or target == "auto":
+            raise ApiError(400, "invalid_target", "target must be server or an explicit Mapping ID")
+        if target != "server":
+            row = self._mapping_for_caller(target)
+            if not row["writable"] or not self.token_record.can_write:
+                raise ApiError(403, "client_execution_requires_write",
+                               "client execution requires a writable mapping and caller")
+            with self.server.mappings.lock:
+                session = self.server.mappings.sessions.get(row["id"])
+                execution = session.capabilities.get("execution", {}) if session else {}
+            if session is None or session.closed or not row["enabled"]:
+                raise ApiError(503, "mapping_unavailable", "mapping client is offline")
+            if not execution.get("shell_command") or not execution.get("unsandboxed"):
+                raise ApiError(409, "client_upgrade_required",
+                               "update and reconnect client for elevated Shell execution")
+            target = row["id"]
+        try:
+            self._require_capability(body, target, "shell.elevated")
+        except ApiError as exc:
+            if exc.code != "capability_approval_required":
+                raise
+            self._send_json(200, {
+                "status": "approval_required",
+                **exc.details,
+            })
+            return
+        self._send_json(200, {
+            "status": "granted",
+            "capability": "shell.elevated",
+            "target": target,
+        })
+
     def _handle_shell_exec(self) -> None:
         body = self._read_json()
         command = self._required_string(body, "command")

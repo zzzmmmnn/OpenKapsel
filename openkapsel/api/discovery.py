@@ -443,6 +443,7 @@ class DiscoveryMixin:
                 "Shell execution and restricted-sandbox process inspection.",
                 {
                     "exec": operation("shell_exec"),
+                    "request_elevation": operation("shell_elevation_request"),
                     "processes": operation(
                         "sandbox_processes",
                         path="./sandbox/processes",
@@ -2079,6 +2080,17 @@ class DiscoveryMixin:
                 "mcp": {
                     "transport": "Streamable HTTP (stateless JSON responses; GET SSE is not offered)",
                 },
+                "shell_elevation_request": {
+                    "json": {
+                        "target": "server or Mapping ID",
+                        "writer_nonce": "<owning Conversation @xxxx@>",
+                        "plan_id": "<in_progress plan_id>",
+                        "taskname": "<taskname>",
+                        "message": "<reason for request>",
+                    },
+                    "response": "HTTP 200 with status=approval_required, approval_url, approval_expires_in, capability and target; or status=granted. Does not execute a command. Each target requires a separate browser approval.",
+                    "mcp": "capability_call family=shell operation=request_elevation; same target and writer_nonce in args; plan_id/taskname/message outside args.",
+                },
                 "shell_exec": {
                     "temporary_elevation": {
                         "capability": "shell.elevated",
@@ -2444,6 +2456,7 @@ class DiscoveryMixin:
             "share_delete": ("creator Bearer control token", control_authorized),
             "mcp": ("Bearer control token", control_authorized),
             "shell_exec": ("Bearer control token + shell", shell_enabled),
+            "shell_elevation_request": ("Bearer control token + shell", shell_enabled),
             "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_create": ("Bearer control token + schedules + shell", schedules_enabled),
             "schedule_get": ("Bearer control token + schedules + shell", schedules_enabled),

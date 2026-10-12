@@ -102,10 +102,15 @@ Removing the last workspace configuration removes its password. Reassigning or
 disabling a configuration revokes the old workspace's temporary grants. Password
 forms require HTTPS; local loopback HTTP is supported for development.
 
-AI requests `shell.elevated` with `elevated=true`, the owning Conversation's
-`writer_nonce`, and the existing `plan_id`. The server derives the Conversation
-from an in-progress Plan. Without a grant the operation does not run and returns
-`capability_approval_required` with an `approval_url`. The user opens that URL,
+AI may proactively request `shell.elevated` using REST `POST
+/shell/elevation/request` or MCP `shell.request_elevation` without starting a
+command. Supply the explicit target (`server` or Mapping ID), the owning
+Conversation's `writer_nonce`, and the in-progress `plan_id` with mutation
+Context. The response is `status=approval_required` with `approval_url`, or
+`status=granted` if already approved. Later Shell commands must still request
+`elevated=true`. Alternatively, an ordinary elevated Shell invocation can
+request a grant and return `capability_approval_required` when not approved.
+The user opens that URL,
 checks workspace/conversation/target/capability, enters the Workspace Password,
 and chooses 1–1440 minutes (default 10). AI retries after approval; the page never
 executes a command.

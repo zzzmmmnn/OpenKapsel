@@ -191,6 +191,24 @@ client advertising `execution.shell_command`.
 
 ## Temporary unsandboxed Shell
 
+**Request approval proactively without executing a Shell command:**
+
+REST `POST /shell/elevation/request` accepts an explicit `target` (`"server"`
+or an authorized Mapping ID), `writer_nonce`, and mutation Context
+(`plan_id`, `taskname`, `message`). MCP `capability_call` uses
+`family="shell"`, `operation="request_elevation"`, and
+`args={"target":"server","writer_nonce":"@Ab12@"}` with normal outer Plan
+Context. Targets are explicit because no command or `cwd` is provided for
+automatic placement.
+
+The response is HTTP 200 with `status="approval_required"`, a full
+`approval_url`, `approval_expires_in`, `capability`, and exact `target` (or
+`status="granted"` when already approved). Open the URL for Workspace password
+approval. This call never runs a command or implicitly elevates subsequent
+Shell calls. Execute with `elevated=true` after approval. Mapping requests
+require an authorized, connected, writable Mapping supporting elevation;
+Shell/write permissions are not bypassed.
+
 Both REST `POST /shell/exec` and MCP `capability_call` family `shell`, operation
 `exec` accept optional `elevated` (boolean, default false) and `writer_nonce`.
 For MCP these fields go inside `args`; mutation Context stays in outer

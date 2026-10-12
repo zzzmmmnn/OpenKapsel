@@ -53,6 +53,103 @@ class CapabilityHTTPTests(unittest.TestCase):
     def configure(self):
         self.server.capability_grants.set_password(self.record.path_prefix, self.PASSWORD)
 
+    def request_elevation(self, target="server", **values):
+        body = {"target": target, "writer_nonce": self.ownership()[1]}
+        body.update(values)
+        return self.api("/shell/elevation/request", body)
+
+    def test_proactive_elevation_request_is_command_free_and_reuses_grant(self):
+        self.configure()
+        self.server.tokens.update(self.record.token, shell_mode="restricted")
+        marker = self.server.tokens.scope_root(self.record) / "proactive-marker"
+        with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as launch:
+            status, pending = self.request_elevation()
+            self.assertEqual(200, status, pending)
+            self.assertEqual("approval_required", pending["status"])
+            self.assertEqual("server", pending["target"])
+            self.assertEqual("shell.elevated", pending["capability"])
+            self.assertEqual(300, pending["approval_expires_in"])
+            launch.assert_not_called()
+            self.assertFalse(marker.exists())
+            self.approve({"error": {"details": pending}})
+            launch.assert_not_called()
+            status, granted = self.request_elevation()
+            self.assertEqual(200, status, granted)
+            self.assertEqual("granted", granted["status"])
+            self.assertEqual("server", granted["target"])
+            self.assertEqual("shell.elevated", granted["capability"])
+            launch.assert_not_called()
+            status, task = self.elevated(command="printf approved > proactive-marker")
+            self.assertEqual(202, status, task)
+        self.finished(task["task_id"])
+        self.assertEqual("approved", marker.read_text())
+
+    def test_proactive_request_mapping_is_target_scoped_and_requires_write(self):
+        self.configure()
+        mapping = self.row["id"]
+        # Approval may be requested while normal Client Shell is disabled;
+        # only an approved elevated invocation may override those flags.
+        self.server.mappings.store.update(mapping, allow_exec=False)
+        self.legacy_tasks.enabled = False
+        self.session.capabilities["execution"] = self.tasks.capabilities()
+        self.assertEqual(400, self.request_elevation("auto")[0])
+        self.assertEqual(404, self.request_elevation("invalid-mapping")[0])
+        status, pending = self.request_elevation(mapping)
+        self.assertEqual(200, status, pending)
+        self.assertEqual(mapping, pending["target"])
+        self.approve({"error": {"details": pending}})
+        self.assertEqual("granted", self.request_elevation(mapping)[1]["status"])
+        self.assertEqual("approval_required", self.request_elevation("server")[1]["status"])
+        self.server.mappings.store.update(mapping, writable=False)
+        self.assertEqual(403, self.request_elevation(mapping)[0])
+        self.server.mappings.store.update(mapping, writable=True)
+        self.session.closed = True
+        self.assertEqual(503, self.request_elevation(mapping)[0])
+        self.session.closed = False
+        self.session.capabilities["execution"].pop("unsandboxed", None)
+        self.assertEqual(409, self.request_elevation(mapping)[0])
+
+    def test_proactive_request_writer_nonce_and_payload_validation(self):
+        self.configure()
+        for override in ({"writer_nonce": None}, {"writer_nonce": "@xxxx@"},
+                         {"writer_nonce": 17}, {"command": "echo do not run"}):
+            with self.subTest(override=override):
+                status, result = self.request_elevation(**override)
+                self.assertIn(status, (400, 403), result)
+                self.assertNotIn("approval_url", str(result))
+        status, _ = self.request_elevation()
+        self.assertEqual(200, status)
+        store = self.server.context_for(self.server.tokens.scope_root(self.record))
+        with closing(store._connect()) as db, db:
+            db.execute("UPDATE context_entries SET plan_status='cancelled' WHERE id=?", (self.plan,))
+        self.assertEqual(400, self.request_elevation()[0])
+
+    def test_mcp_proactive_elevation_returns_link_without_error_or_execution(self):
+        self.configure()
+        token, _, _ = self.authorize()
+        arguments = {
+            "family": "shell", "operation": "request_elevation",
+            "args": {"target": "server", "writer_nonce": self.ownership()[1]},
+            "plan_id": self.plan, "taskname": "approve shell",
+            "message": "Request proactive Shell elevation",
+        }
+        with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as launch:
+            status, result = self.rpc(token["access_token"], "tools/call",
+                                      {"name": "capability_call", "arguments": arguments})
+            self.assertEqual(200, status, result)
+            data = result["result"]
+            self.assertFalse(data["isError"], data)
+            pending = data["structuredContent"]
+            self.assertEqual("approval_required", pending["status"])
+            self.assertIn("approval_url", pending)
+            launch.assert_not_called()
+            self.approve({"error": {"details": pending}})
+            status, result = self.rpc(token["access_token"], "tools/call",
+                                      {"name": "capability_call", "arguments": arguments})
+            self.assertEqual(200, status, result)
+            self.assertEqual("granted", result["result"]["structuredContent"]["status"])
+            launch.assert_not_called()
+
     def test_server_approval_is_single_use_no_execution_then_restricted_retry(self):
         self.configure()
         self.server.tokens.update(self.record.token, shell_mode="restricted")
