@@ -12,6 +12,7 @@ from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from openkapsel.auth.admin_ui import render_dashboard, render_login
+from openkapsel.auth.capability_handlers import CapabilityHandlersMixin
 from openkapsel.execution.cgroups import SandboxLimits
 from openkapsel.errors import ApiError
 from openkapsel.auth.security import (
@@ -25,7 +26,7 @@ from openkapsel.workspace.workspace_images import WorkspaceImageError
 LOGGER = logging.getLogger("openkapsel")
 
 
-class AdminHandlersMixin:
+class AdminHandlersMixin(CapabilityHandlersMixin):
     """Admin-domain methods mixed into the main request handler."""
     def _dispatch_admin(self, method: str, path: str, raw_query: str = "") -> None:
         if not self.server.config.admin_enabled:
@@ -33,6 +34,12 @@ class AdminHandlersMixin:
             return
         if method in {"GET", "HEAD"} and path.endswith("/favicon.svg"):
             self._send_builtin_favicon(head_only=method == "HEAD")
+            return
+        if path.startswith("/admin/capability/"):
+            self._handle_capability_approval(method, path.removeprefix("/admin/capability/"), raw_query)
+            return
+        if path == "/admin/capabilities":
+            self._handle_admin_capabilities(method)
             return
         if path == "/admin/mappings":
             self._handle_admin_mappings(method)
@@ -293,6 +300,10 @@ class AdminHandlersMixin:
                 ),
             )
             self.server.api_workers.stop(record.app_id)
+            if current.path_prefix != record.path_prefix or not record.valid:
+                self.server.capability_grants.revoke_workspace(current.path_prefix)
+            if current.path_prefix != record.path_prefix and not any(r.path_prefix == current.path_prefix for r in self.server.tokens.list()):
+                self.server.capability_grants.remove_workspace(current.path_prefix)
             if not record.can_schedule or not record.valid:
                 self.server.scheduler.pause_app(previous_scope, record.app_id)
             self._refresh_cgroup_limits(record)
@@ -303,6 +314,9 @@ class AdminHandlersMixin:
                 self.server.tokens.scope_root(current), current.app_id
             )
             self.server.tokens.delete(current.token)
+            self.server.capability_grants.revoke_workspace(current.path_prefix)
+            if not any(r.path_prefix == current.path_prefix for r in self.server.tokens.list()):
+                self.server.capability_grants.remove_workspace(current.path_prefix)
         elif action == "rotate_read":
             record = self.server.tokens.rotate_read_token(self._form_one(form, "token"))
             self._refresh_cgroup_limits(record)

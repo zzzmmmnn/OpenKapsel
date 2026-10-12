@@ -450,11 +450,11 @@ class MappingManager:
                     raise OSError(errno.EINVAL, "RPC operation is not task-based")
                 if capability.operation_spec.get("write") and not row["writable"]:
                     raise OSError(errno.EROFS, "mapping is read-only")
-            elif op in {"task_get", "task_list", "task_interrupt", "task_kill"}:
+            elif op in {"task_get", "task_list", "task_interrupt", "task_kill", "task_stdin"}:
                 # Query/control authorization is enforced by the caller-facing
                 # task endpoint after inspecting task kind/metadata.
                 pass
-            elif not row["allow_exec"]:
+            elif not row["allow_exec"] and not (op == "task_start" and args.get("unsandboxed") is True):
                 raise OSError(errno.EACCES, "mapping execution is disabled")
         elif op == "rpc":
             family = args.get("family")

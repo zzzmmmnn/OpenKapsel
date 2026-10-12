@@ -17,6 +17,7 @@ from pathlib import Path
 
 from openkapsel.auth.oauth_consent import ConsentLimiter, ConsentProtector
 from openkapsel.auth.oauth_store import OAuthStore
+from openkapsel.auth.capability_grants import CapabilityGrants
 from openkapsel.auth.security import hash_password, password_hash_needs_upgrade, verify_password
 from openkapsel.auth.static_mcp import StaticMcpStore
 from openkapsel.auth.tokens import TokenStore
@@ -66,6 +67,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.oauth = OAuthStore(config.upload_state_dir.parent / "oauth.sqlite3")
         self.oauth_consent = ConsentProtector()
         self.oauth_consent_limiter = ConsentLimiter()
+        self.capability_grants = CapabilityGrants(config.upload_state_dir.parent / "workspace-passwords.sqlite3")
+        self.capability_limiter = ConsentLimiter()
         self.static_mcp = StaticMcpStore(config.upload_state_dir.parent / "static-mcp.sqlite3")
         self.workspace_images = WorkspaceImageClient(config.workspace_image_socket)
         self.storage_providers = StorageProviderManager(

@@ -13,8 +13,9 @@ paths such as `laptop/project`. Client requires a mapped cwd; explicit server
 keeps execution on the server, using FUSE to access mapped files. Commands are
 never inspected for `cd` or rewritten to translate embedded absolute paths.
 
-Client execution requires caller Shell/write permissions, a writable mapping
-with `allow_exec`, and client execution opt-in. Client 1.60.0+ advertises
+Ordinary Client execution requires caller Shell/write permissions, a writable
+mapping with `allow_exec`, and client execution opt-in. Temporary elevation can
+override disabled execution after user approval; see the elevation workflow below. Client 1.60.0+ advertises
 `execution.shell_command`; older/offline/denied clients fail without fallback.
 Client-local sandbox and resource policy apply; server `/env` and
 server sandbox/network settings are not copied to the client. Both Server and
@@ -186,3 +187,44 @@ The Shell tools in `tools/list` use the same unified task IDs as REST:
 call. `task_interrupt` and `task_kill` dispatch to the task's actual location.
 Client execution requires a writable mapping with `allow_exec` and a connected
 client advertising `execution.shell_command`.
+
+
+## Temporary unsandboxed Shell
+
+Both REST `POST /shell/exec` and MCP `capability_call` family `shell`, operation
+`exec` accept optional `elevated` (boolean, default false) and `writer_nonce`.
+For MCP these fields go inside `args`; mutation Context stays in outer
+`plan_id`/`taskname`/`message`. For REST use existing body/header Context fields.
+
+```json
+{
+  "family": "shell",
+  "operation": "exec",
+  "args": {"command": "whoami", "elevated": true, "writer_nonce": "@Ab12@"},
+  "plan_id": 123,
+  "taskname": "inspect host",
+  "message": "Inspect the approved execution target"
+}
+```
+
+Without approval the error code is `capability_approval_required` and
+`error.details.approval_url` contains the full browser URL. Display it and pause
+for user approval; retry the same request after approval. Each attempt may return
+a different five-minute single-use URL. Grants default to ten minutes, may last
+up to 24 hours, and are specific to the Conversation and selected execution
+target. Server approval does not approve any Mapping. Changing cwd may require
+a separate approval. A new Conversation needs its own approval.
+
+Approved execution bypasses Server and Client sandboxes as the current OS user.
+Mapping `allow_exec=false` and Client execution-disabled flags can be overridden
+by this approved invocation; writable Mapping, caller write and Shell permissions
+remain required. Older Clients lacking the `unsandboxed` capability must upgrade
+and reconnect. Short jobs and long shared Job Manager jobs both support elevation.
+The Client receives only `unsandboxed=true`, never the password, URL or grant.
+
+`elevated=false` preserves ordinary Shell policy, including permanent
+administrator-configured `shell_mode=full`. Explicit `elevated=true` always checks
+for approval, including for full Shell tokens. Expiry, password reset, revocation
+or restart prevents new elevated jobs without killing jobs already started.
+Scheduled jobs do not inherit these conversation grants. Other API capabilities
+cannot borrow Shell elevation.

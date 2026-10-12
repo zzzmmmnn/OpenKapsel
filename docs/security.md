@@ -20,7 +20,7 @@ The relevant attacker profiles are:
 |---|---|---|
 | Anonymous network client | Can reach public API, preview, and application routes but initially has no valid credential | Cannot enumerate valid capabilities, enter administration, or use Workspace read/mutation surfaces; behavior intentionally exposed by a project application remains that application's responsibility |
 | Read-token holder | Can issue every read operation authorized by that Workspace URL | Cannot mutate the workspace, invoke Shell/MCP, obtain the control token, or cross into another token scope |
-| OAuth client or connection-URL holder | Can discover metadata and request registration; a successfully authorized client possesses connection-scoped access/refresh credentials | A URL or registration alone cannot grant access; matching control-token owner consent, PKCE and exact callback/resource binding are required. An authorized client remains within its linked configuration's current permissions and pinned workspace |
+| OAuth client or connection-URL holder | Can discover metadata and request registration; a successfully authorized client possesses connection-scoped access/refresh credentials | A URL or registration alone cannot grant access; matching control-token or configured Workspace Password owner consent, PKCE and exact callback/resource binding are required. An authorized client remains within its linked configuration's current permissions and pinned workspace |
 | Restricted control-token holder or compromised AI client | Has the matching Workspace URL and control token and can deliberately send arbitrary mutation and Shell requests | Is confined to that token's workspace and explicit path/network grants, resource limits, and permitted capabilities; cannot reach service-private state or other workspaces |
 | Preview visitor or application user | Can load published assets, execute project JavaScript in their browser, and call public project application routes | A preview credential does not become a read/control credential; the application worker remains isolated from service-private state and other workspaces |
 | Malicious workspace program | Runs inside restricted Shell or an application worker and may attempt interpreter-based escapes, process spawning, filesystem traversal, network pivoting, or resource exhaustion | Remains inside the corresponding mount, namespace, network, process, memory, CPU, and task limits |
@@ -77,7 +77,7 @@ Full Shell is the explicit exception. It has all filesystem and network privileg
 
 - Administrator passwords use PBKDF2-HMAC-SHA256.
 - Administration uses rate-limited login, a secure session cookie, and CSRF tokens.
-- OAuth consent is separate: exact configuration control-token verification, a signed browser/request/permission proof, Origin checks, bounded POST budgets, script-free pages and a 303 callback. Admin sessions do not authorize this flow; controls never enter its cookie or callback.
+- OAuth consent is separate: exact configuration control-token or Workspace Password verification, a signed browser/request/permission proof, Origin checks, bounded POST budgets, script-free pages and a 303 callback. Admin sessions do not authorize this flow; controls never enter its cookie or callback.
 - A stolen control token can delegate OAuth access for its own configuration. Routine control rotation does not revoke grants; revoke affected OAuth connections as part of compromise recovery.
 - Production requires HTTPS.
 - Responses include HSTS behind HTTPS, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and restrictive CSP where applicable.
@@ -105,3 +105,12 @@ reduce service-level resource abuse; they are not a complete volumetric DDoS or
 host-capacity defense. Public ingress rate limiting, firewalling, monitoring,
 backups, host disk reservation, and dependency patching remain deployment
 responsibilities.
+
+
+Temporary `shell.elevated` grants deliberately permit execution without a sandbox
+as the selected target's OS user. The approval page requires the workspace's
+password plus browser/request CSRF proof, has bounded attempts, and exposes the
+exact Conversation and target being approved. Grants cannot be transferred
+between conversations, workspaces, targets or capabilities. Only salted password
+hashes persist; pending URLs and grants are memory-only. Approval and OAuth
+consent are independent, and neither grants administrator access.

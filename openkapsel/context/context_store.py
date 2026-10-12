@@ -25,6 +25,7 @@ from openkapsel.context.conversation import (
     initialize_conversation_schema,
     query_conversations,
     validate_conversation_id,
+    verify_writer_nonce,
 )
 
 from openkapsel.workspace.workspace_layout import CONTEXT_DIRECTORY, ensure_workspace_directory, ensure_workspace_layout
@@ -419,6 +420,16 @@ class ContextStore:
             with closing(self._connect()) as connection:
                 self._require_in_progress_plan_row(connection, plan_id)
         return plan_id
+
+    def capability_conversation(self, plan_id: Any, writer_nonce: Any) -> int:
+        """Derive ownership from a live Plan, never a caller-supplied conversation ID."""
+        with self._lock:
+            self._ensure_available()
+            with closing(self._connect()) as connection:
+                row = self._require_in_progress_plan_row(connection, plan_id)
+                if row["conversation_id"] is None:
+                    raise ValueError("plan has no owning conversation")
+                return verify_writer_nonce(connection, row["conversation_id"], writer_nonce)
 
     @classmethod
     def _plan_root(

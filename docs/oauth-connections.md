@@ -30,22 +30,26 @@ Access tokens expire after one hour. Refresh tokens rotate on every use, with a 
 
 OAuth credentials work only on the connection's MCP endpoint and the connection-scoped raw transfer URLs returned by MCP tools. Other REST endpoints require their normal read/control credentials. Use tools for task polling, Context, Memory and other operations instead of following REST examples. `discovery` identifies the OAuth mode and masks underlying capability credentials.
 
-## Control-token consent boundary
+## Workspace consent boundary
 
-Only the **current valid control token of the exact linked app_id and workspace**
-can approve. Another configuration is rejected even when it points to the same
-physical directory. Read tokens, preview tokens, expired/rotated controls and
+The **current valid control token of the exact linked app_id and workspace**
+can approve. A control token from another configuration is rejected even when it
+points to the same physical directory. When configured by an administrator, the
+**Workspace Password** can also approve connections for that workspace. The
+connection's exact configuration and displayed permissions remain pinned. OAuth
+approval creates independent OAuth credentials and never creates a temporary
+Shell capability grant. Read tokens, preview tokens, expired/rotated controls and
 controls belonging to disabled/expired configurations cannot approve. The page
 never creates an administrator session; an existing admin cookie does not bypass
-the control-token requirement. Connection creation/edit/deletion remains an
+the credential requirement. Connection creation/edit/deletion remains an
 administrator operation.
 
-The token is sent only in an HTTPS form POST to OpenKapsel's configured service
+The token or Workspace Password is sent only in an HTTPS form POST to OpenKapsel's configured service
 origin. It is never put in the authorization URL, OAuth state, callback, consent
 cookie, rendered form value or OAuth database. The OAuth client gets an
 authorization code, not the control token. The browser callback uses **303**, not
 a method-preserving 307/308. Do not enable request-body logging at a proxy or APM
-layer for consent/token endpoints. The existing private TokenStore is unchanged.
+layer for consent/token endpoints. Only password hashes are persisted; neither password is sent to the client.
 
 A short-lived HttpOnly/SameSite=Lax cookie has no access privileges. On HTTPS its
 name is `__Host-openkapsel_oauth` with Secure and Path=/; development HTTP uses
@@ -96,7 +100,7 @@ Each connection is an independent issuer:
 | `/.well-known/oauth-authorization-server/kapsel/oauth/<id>` | Authorization server metadata |
 | `/kapsel/oauth/<id>/register` | Dynamic client registration |
 | `/kapsel/oauth/<id>/authorize` | Starts an owner-consent request |
-| `/kapsel/oauth/<id>/consent` | Independent browser GET/form POST; verifies a matching control token |
+| `/kapsel/oauth/<id>/consent` | Independent browser GET/form POST; verifies a matching control token or Workspace Password |
 | `/kapsel/oauth/<id>/token` | Authorization-code exchange and refresh |
 
 Clients must supply `resource` equal to the exact MCP URL in authorization and token requests. Access tokens are opaque and bound to one connection. Authorization codes expire after two minutes and are consumed atomically. Browser authorization requests expire after ten minutes. Public registration is capped at 32 pending clients per connection; authorization requests are capped at 64 per connection. Expired pending records are pruned during registration and token requests. Bound registration remains until deletion.

@@ -20,6 +20,7 @@ class TaskHttpMixin:
     def _handle_shell_exec(self) -> None:
         body = self._read_json()
         command = self._required_string(body, "command")
+        elevated = self._optional_bool(body, "elevated", False)
         if self._start_client_shell(body):
             return
         cwd_value = body.get("cwd", "")
@@ -27,6 +28,8 @@ class TaskHttpMixin:
         if timeout is None:
             timeout = self.server.config.default_command_timeout
         interactive = self._optional_bool(body, "interactive", False)
+        if elevated:
+            self._require_capability(body, "server", "shell.elevated")
         task = start_shell_task(
             self.server,
             self.token_record,
@@ -36,6 +39,8 @@ class TaskHttpMixin:
             timeout_seconds=timeout,
             interactive=interactive,
             mount_mappings=body.get("mount_mappings", []),
+            unsandboxed=elevated,
+            authorize_launch=(lambda: self._require_capability(body, "server", "shell.elevated")) if elevated else None,
         )
         self._send_json(
             HTTPStatus.ACCEPTED,

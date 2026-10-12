@@ -327,6 +327,13 @@ class TokenStore:
             except KeyError:
                 raise KeyError("token does not exist") from None
 
+    @contextmanager
+    def app_authorization(self, app_id: str):
+        """Pin a current configuration while workspace-password OAuth is approved."""
+        with self._lock:
+            record = next((r for r in self._records.values() if r.app_id == app_id), None)
+            yield record if record is not None and record.valid else None
+
     def list(self) -> list[TokenRecord]:
         with self._lock:
             return sorted(

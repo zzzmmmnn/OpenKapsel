@@ -437,6 +437,7 @@ def render_dashboard(
         '</button><form method="post"',
         1,
     )
+    body = body.replace('</nav>', f'<a class="nav-item" href="{escaped_admin_path}/capabilities"><span class="nav-icon" aria-hidden="true">⏱</span><span class="nav-label">Workspace grants</span></a></nav>', 1)
     return _page("Workspace Administration", body, favicon_href="favicon.svg")
 
 

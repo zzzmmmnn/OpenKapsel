@@ -4,6 +4,7 @@ import base64
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,55 @@ from openkapsel.client_runtime.client_tasks import ClientTasks
 
 
 class ClientCommandTests(unittest.TestCase):
+    def test_disabled_client_accepts_only_explicit_unsandboxed_short_and_long_shell(self):
+        from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
+        from openkapsel.job_manager import shutdown
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "export"
+            root.mkdir()
+            home = Path(directory) / "manager"
+            file_class = ClientFiles
+            if os.name == "nt":
+                from openkapsel.client_runtime.client_windows import WindowsClientFiles
+                file_class = WindowsClientFiles
+            files = file_class(root, writable=True)
+            legacy = ClientTasks(files, enabled=False, sandbox=True)
+            tasks = SharedClientTasks(legacy, url="ws://localhost/mapping-connect/" + "A" * 24,
+                                      home=home, job_sandbox={"type": "current_user"})
+            try:
+                for flag in (False, None, "true", 1):
+                    with self.subTest(flag=flag), self.assertRaises(OSError):
+                        tasks.dispatch("task_start", {"task_id": "&Ab12&", "command": "echo denied", "unsandboxed": flag})
+                with self.assertRaises(OSError):
+                    tasks.dispatch("task_start", {"task_id": "rpcjob123", "rpc": {}, "unsandboxed": True})
+                for tid, timeout in (("&Ab12&", 120), ("&Ab13&", 121)):
+                    with self.subTest(timeout=timeout):
+                        tasks.dispatch("task_start", {"task_id": tid, "command": "echo approved", "timeout_seconds": timeout, "unsandboxed": True})
+                        until = time.monotonic() + 10
+                        while time.monotonic() < until:
+                            result = tasks.dispatch("task_get", {"task_id": tid})
+                            if not result["running"]:
+                                break
+                            time.sleep(.02)
+                        self.assertFalse(result["running"])
+                        self.assertEqual(0, result["exit_code"])
+                        self.assertIn(b"approved", base64.b64decode(result["output"]))
+                self.assertTrue(legacy.sandbox)
+                self.assertFalse(legacy.enabled)
+            finally:
+                tasks.close()
+                files.close()
+                try:
+                    shutdown(home, force=True)
+                except (OSError, ConnectionError):
+                    pass
+                if os.name != "nt":
+                    from openkapsel.job_manager import endpoint
+                    socket_path, _ = endpoint(home)
+                    until = time.monotonic() + 5
+                    while Path(socket_path).exists() and time.monotonic() < until:
+                        time.sleep(.02)
+
     def test_command_and_combined_input_eof(self):
         with tempfile.TemporaryDirectory() as directory:
             file_class = ClientFiles

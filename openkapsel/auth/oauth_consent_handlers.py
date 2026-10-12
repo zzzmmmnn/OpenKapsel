@@ -24,13 +24,15 @@ class OAuthConsentMixin:
         if retry_after:
             headers["Retry-After"] = str(retry_after)
         callback = urlsplit(request["params"]["redirect_uri"])
+        password_enabled = self.server.capability_grants.configured(record.path_prefix)
         self._send_html(status, consent_page(request, record,
-                        action=self._oauth_base(request["connection_id"]) + "/consent", csrf=csrf, error=error),
+                        action=self._oauth_base(request["connection_id"]) + "/consent", csrf=csrf, error=error,
+                        password_enabled=password_enabled),
                         headers=headers, script_src="'none'",
                         form_action=f"'self' {callback.scheme}://{callback.netloc}")
 
     def _consent_check_origin(self):
-        expected = urlsplit(self.server.config.public_base_url)
+        expected = urlsplit(self.server.config.public_base_url or self._public_base_url())
         def origin(value):
             parsed = urlsplit(value)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -74,7 +76,7 @@ class OAuthConsentMixin:
                 if raw_query or self._request_content_length(required=True) > 8192:
                     raise OAuthError("invalid_request", "Consent accepts a bounded form body, not query parameters")
                 form = self._oauth_fields(self._read_form())
-                if set(form) - {"request", "csrf", "decision", "control_token"}:
+                if set(form) - {"request", "csrf", "decision", "control_token", "workspace_password"}:
                     raise OAuthError("invalid_request", "Unknown consent form fields")
                 rid = form.get("request", "")
                 if form.get("decision") not in {"approve", "deny"}:
@@ -108,6 +110,26 @@ class OAuthConsentMixin:
                 params = self.server.oauth.deny(rid)
                 query = {"error": "access_denied"}
             else:
+                workspace_password = form.get("workspace_password", "")
+                if workspace_password:
+                    self._require_password_transport()
+                    retry = self.server.capability_limiter.take(self._admin_rate_limit_address(), "workspace:" + record.path_prefix)
+                    if retry:
+                        self._consent_send_page(request, record, status=429, error="Too many workspace password attempts", retry_after=retry)
+                        return
+                    with self.server.tokens.app_authorization(record.app_id) as verified:
+                        if verified is None or verified.path_prefix != request["workspace"]:
+                            raise OAuthError("access_denied", "Configuration is unavailable", 403)
+                        self.server.oauth_consent.verify(cookie, form.get("csrf"), request, verified)
+                        with self.server.capability_grants.lock:
+                            if not self.server.capability_grants.verify_workspace_password(verified.path_prefix, workspace_password):
+                                raise OAuthError("access_denied", "Workspace password incorrect", 403)
+                            params, code = self.server.oauth.approve(rid, expected_binding=(verified.app_id, verified.path_prefix))
+                    query = {"code": code}
+                    if "state" in params:
+                        query["state"] = params["state"]
+                    self._redirect(params["redirect_uri"] + ("&" if "?" in params["redirect_uri"] else "?") + urlencode(query))
+                    return
                 supplied = form.get("control_token", "").strip()
                 if not supplied or len(supplied) > 1024 or not supplied.isascii() or any(ord(c) < 32 or ord(c) > 126 for c in supplied):
                     raise OAuthError("access_denied", "A current control token for this exact configuration is required", 403)

@@ -140,7 +140,7 @@ class ClientTasks:
         return {"enabled": self.enabled, "sandbox": self.sandbox,
                 "backend": self.backend if self.sandbox else "native-unsandboxed",
                 "platform": sys.platform, "max_tasks": self.max_tasks,
-                "shell_command": True, "shell": "cmd.exe" if os.name == "nt" and not self.sandbox else "/bin/sh",
+                "shell_command": True, "unsandboxed": True, "shell": "cmd.exe" if os.name == "nt" and not self.sandbox else "/bin/sh",
                 "reconnect_persistence": True, "result_storage": "client_memory",
                 "rpc_tasks": True,
                 "max_records": self.max_tasks + 4,
@@ -168,9 +168,14 @@ class ClientTasks:
             if op == "task_start":
                 if tid in self.tasks:
                     return self._public(self.tasks[tid])
+                unsandboxed = args.get("unsandboxed", False)
+                if type(unsandboxed) is not bool:
+                    raise OSError(errno.EINVAL, "unsandboxed must be a boolean")
                 if isinstance(args.get("rpc"), dict):
+                    if unsandboxed:
+                        raise OSError(errno.EACCES, "Shell elevation cannot authorize RPC")
                     return self._start_rpc(tid, args)
-                if not self.enabled:
+                if not self.enabled and not unsandboxed:
                     raise OSError(errno.EACCES, "client execution is disabled")
                 return self._start(tid, args)
             task = self.tasks.get(tid)
@@ -212,6 +217,7 @@ class ClientTasks:
 
     def _start(self, tid, args):
         import queue
+        sandboxed = self.sandbox and not args.get("unsandboxed", False)
         if len(self.tasks) >= self.max_tasks + 4:
             collected = [t for t in self.tasks.values() if t["collected_at"] is not None]
             if collected:
@@ -224,7 +230,7 @@ class ClientTasks:
         if command is not None:
             if argv is not None or not isinstance(command, str) or not command.strip() or len(command) > 100000 or "\x00" in command:
                 raise OSError(errno.EINVAL, "provide a bounded command or argv, not both")
-            argv = (["cmd.exe", "/d", "/s", "/c", command] if os.name == "nt" and not self.sandbox
+            argv = (["cmd.exe", "/d", "/s", "/c", command] if os.name == "nt" and not sandboxed
                     else ["/bin/sh", "-c", command])
         if not isinstance(argv, list) or not argv or len(argv) > 256 or any(not isinstance(a, str) or "\x00" in a for a in argv) or sum(map(len, argv)) > 32768:
             raise OSError(errno.EINVAL, "argv must be a bounded string array")
@@ -247,7 +253,7 @@ class ClientTasks:
             raise OSError(errno.EINVAL, "local Shell timeout must be within 120 seconds")
         container = None
         env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG") if key in os.environ}
-        if self.sandbox:
+        if sandboxed:
             shell_id = tid[1:-1] if tid.startswith("&") and tid.endswith("&") else tid
             namespace = getattr(self, "shell_mapping_key", "")
             container = "openkapsel-client-" + (namespace + "-" if namespace else "") + shell_id
@@ -266,7 +272,7 @@ class ClientTasks:
                     "--tmpfs", "/workspace/.openkapsel:rw,nosuid,nodev,noexec,size=1m",
                     "--interactive", self.image, *argv]
         executable = None
-        if command is not None and os.name == "nt" and not self.sandbox:
+        if command is not None and os.name == "nt" and not sandboxed:
             # cmd's /s /c grammar is not the C-runtime argv quoting grammar
             # used by subprocess.list2cmdline. Preserve the command body
             # literally between the outer /s quotes, including embedded quotes.

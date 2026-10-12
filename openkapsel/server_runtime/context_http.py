@@ -230,6 +230,9 @@ class ContextHttpMixin:
             "data",
             "data_base64",
             "control_token",
+            "writer_nonce",
+            "password",
+            "workspace_password",
             "token",
             "variables",
             "rc",
@@ -262,6 +265,10 @@ class ContextHttpMixin:
                     "authorization",
                     "control_token",
                     "token",
+                    "password",
+                    "workspace_password",
+                    "writer_nonce",
+                    "approval_url",
                 }
             }
         return str(value)[:2_000]

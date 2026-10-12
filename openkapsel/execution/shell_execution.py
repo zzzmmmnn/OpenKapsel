@@ -206,7 +206,8 @@ def sandbox_launch(
 
 
 def start_shell_task(server, record, scope_root, *, command, cwd_value,
-                     timeout_seconds, interactive=False, mount_mappings=()):
+                     timeout_seconds, interactive=False, mount_mappings=(), unsandboxed=False,
+                     authorize_launch=None):
     """Authorize dependencies and mount before cwd resolution or sandbox setup."""
     if record.shell_mode == "none":
         raise ApiError(403, "permission_denied", "shell permission is not granted")
@@ -241,7 +242,8 @@ def start_shell_task(server, record, scope_root, *, command, cwd_value,
     try:
         return _start_shell_task(server, record, scope_root, command=command,
             cwd_value=cwd_value, timeout_seconds=timeout_seconds,
-            interactive=interactive, mount_lease=lease)
+            interactive=interactive, mount_lease=lease, unsandboxed=unsandboxed,
+            authorize_launch=authorize_launch)
     except BaseException:
         if lease is not None:
             lease.close()
@@ -258,6 +260,8 @@ def _start_shell_task(
     timeout_seconds: float | None,
     interactive: bool = False,
     mount_lease=None,
+    unsandboxed=False,
+    authorize_launch=None,
 ):
     if record.shell_mode == "none":
         raise ApiError(
@@ -293,8 +297,8 @@ def _start_shell_task(
             "environment_unavailable",
             "environment configuration is unavailable",
         ) from None
-    sandboxed = record.shell_mode == "restricted"
-    network_access = record.shell_mode == "full" or record.network_mode != "none"
+    sandboxed = record.shell_mode == "restricted" and not unsandboxed
+    network_access = unsandboxed or record.shell_mode == "full" or record.network_mode != "none"
     launch = None
     if sandboxed:
         launch = sandbox_launch(
@@ -307,6 +311,8 @@ def _start_shell_task(
         resource_limits = sandbox_limits(record, backend_name)
     controller = None if launch is None else launch.controller
     try:
+        if authorize_launch is not None:
+            authorize_launch()
         return server.tasks.start(
             command,
             cwd,

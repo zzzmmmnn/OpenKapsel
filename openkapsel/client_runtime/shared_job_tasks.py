@@ -70,6 +70,8 @@ class SharedClientTasks:
     def dispatch(self, op, args):
         # RPC (both sync and async) uses the original Client code path.
         if op == "task_start" and isinstance(args.get("rpc"), dict):
+            if args.get("unsandboxed", False) is not False:
+                raise OSError(errno.EACCES, "Shell elevation cannot authorize RPC")
             return self.legacy.dispatch(op, args)
         if op == "task_list":
             remote = request(self.home, self.id, op)
@@ -78,7 +80,10 @@ class SharedClientTasks:
         if op == "task_start":
             if not JOB_RE.fullmatch(tid):
                 raise OSError(errno.EINVAL, "Shell Job ID must be & followed by 4 alphanumeric chars and &")
-            if not self.legacy.enabled:
+            unsandboxed = args.get("unsandboxed", False)
+            if type(unsandboxed) is not bool:
+                raise OSError(errno.EINVAL, "unsandboxed must be a boolean")
+            if not self.legacy.enabled and not unsandboxed:
                 raise OSError(errno.EACCES, "client execution is disabled")
             timeout = args.get("timeout_seconds")
             if timeout is None:
@@ -87,7 +92,7 @@ class SharedClientTasks:
                     not 0.1 <= timeout < float("inf")):
                 raise OSError(errno.EINVAL, "invalid Shell timeout")
             invocation = dict(args, timeout_seconds=timeout)
-            if timeout <= 120 and self.job_sandbox is None:
+            if timeout <= 120 and (self.job_sandbox is None or unsandboxed):
                 # Legacy short Shell remains Client-owned. When native Job
                 # sandboxing is configured, *every* Shell must use the Manager
                 # or short jobs would bypass the requested restrictions.
@@ -109,6 +114,11 @@ class SharedClientTasks:
     def _prepare(self, args):
         """Apply Client execution policy before the Manager gets subprocess argv."""
         legacy = self.legacy
+        unsandboxed = args.get("unsandboxed", False)
+        if type(unsandboxed) is not bool:
+            raise OSError(errno.EINVAL, "unsandboxed must be a boolean")
+        sandboxed = legacy.sandbox and not unsandboxed
+        native_sandbox = self.job_sandbox if not unsandboxed else None
         command = args.get("command")
         argv = args.get("argv")
         if command is not None:
@@ -116,7 +126,7 @@ class SharedClientTasks:
                     or len(command) > 100000 or "\x00" in command):
                 raise OSError(errno.EINVAL, "invalid command")
             argv = ([ "cmd.exe", "/d", "/s", "/c", command ]
-                    if os.name == "nt" and not legacy.sandbox
+                    if os.name == "nt" and not sandboxed
                     else ["/bin/sh", "-c", command])
         if not isinstance(argv, list) or not argv or len(argv) > 256 or any(
             not isinstance(arg, str) or "\x00" in arg for arg in argv
@@ -144,7 +154,7 @@ class SharedClientTasks:
         ) if k in os.environ}
         executable = None
         container = None
-        if legacy.sandbox:
+        if sandboxed:
             container = "openkapsel-client-" + self.id + "-" + args["task_id"][1:-1]
             mode = "rw" if self.files.writable else "ro"
             hidden = []
@@ -176,7 +186,7 @@ class SharedClientTasks:
                 "--tmpfs", "/workspace/.openkapsel:rw,nosuid,nodev,noexec,size=1m",
                 "--interactive", legacy.image, *argv,
             ]
-        if command is not None and os.name == "nt" and not legacy.sandbox and self.job_sandbox is None:
+        if command is not None and os.name == "nt" and not sandboxed and native_sandbox is None:
             executable = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
             argv = f'"{executable}" /d /s /c "{command}"'
         prepared = {
@@ -184,8 +194,8 @@ class SharedClientTasks:
             "interactive": interactive, "timeout_seconds": float(timeout),
             "env": env, "executable": executable, "container": container,
         }
-        if self.job_sandbox is not None:
+        if native_sandbox is not None:
             prepared["sandbox"] = json.dumps(
-                self.job_sandbox, separators=(",", ":"), ensure_ascii=False,
+                native_sandbox, separators=(",", ":"), ensure_ascii=False,
             )
         return prepared

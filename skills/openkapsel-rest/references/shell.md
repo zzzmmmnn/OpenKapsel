@@ -202,3 +202,14 @@ python3 scripts/openkapsel_http.py GET tasks/<id>/stream --stream
 Interrupt and kill have no JSON body, so send all three `OpenKapsel-*` Context headers. Prefer interrupt; use force-kill when graceful termination is inappropriate or failed.
 
 `GET /sandbox/processes?offset=0&limit=100` is available only for restricted Shell when server cgroup support is enabled. It reports aggregate memory/CPU/PID/OOM counters and process rows. A task limit, PID limit, memory limit, or CPU limit is independent; consult Discovery rather than assuming defaults.
+
+
+For temporary unsandboxed execution, include `elevated: true` and the owning
+Conversation's `writer_nonce` with normal Plan Context. If the server returns
+`capability_approval_required`, display the complete `error.details.approval_url`,
+pause for the user to enter the Workspace Password, then retry. The page never
+runs the command. URLs last five minutes and grants default to ten minutes
+(maximum 24 hours), independently for Server and each Mapping. Only approved
+Mapping requests override disabled execution; other permissions stay required.
+Grants expire on revocation, password reset or Server restart. Expiry does not
+terminate an already started job. OAuth sign-in does not grant Shell elevation.

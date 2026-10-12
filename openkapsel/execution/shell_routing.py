@@ -116,6 +116,7 @@ class ShellRoutingMixin:
         self._require_permission(self.token_record.shell_mode != "none", "Shell permission is required")
 
     def _start_client_shell(self, body):
+        elevated = self._optional_bool(body, "elevated", False)
         target = body.get("target", "auto")
         if target not in ("auto", "server", "client"):
             raise ApiError(400, "invalid_target", "target must be auto, server, or client")
@@ -149,16 +150,22 @@ class ShellRoutingMixin:
             execution = session.capabilities.get("execution", {}) if session else {}
         if session is None or session.closed or not row["enabled"]:
             raise ApiError(503, "mapping_unavailable", "mapping client is offline")
-        if not row["allow_exec"] or not execution.get("enabled"):
+        if not elevated and (not row["allow_exec"] or not execution.get("enabled")):
             raise ApiError(403, "client_execution_disabled", "mapping and client execution must both be enabled")
         if not execution.get("shell_command"):
             raise ApiError(409, "client_upgrade_required", "update and reconnect client for unified Shell execution")
+        if elevated:
+            if not execution.get("unsandboxed"):
+                raise ApiError(409, "client_upgrade_required", "update and reconnect client for elevated Shell execution")
+            self._require_capability(body, row["id"], "shell.elevated")
         args = {"task_id": new_job_id(), "command": body["command"],
                 "cwd": candidate.relative_to(self.server.mappings.mount_path(row)).as_posix(),
                 "interactive": self._optional_bool(body, "interactive", False)}
+        if elevated:
+            args["unsandboxed"] = True
         if body.get("timeout_seconds") is not None:
             args["timeout_seconds"] = body["timeout_seconds"]
-        result = client_summary(row["id"], self._mapping_rpc(row, "task_start", args))
+        result = client_summary(row["id"], self._mapping_rpc(row, "task_start", args, retry=not elevated))
         result["status_url"] = f"{self._base_path()}/task/get/{result['task_id']}"
         self._send_json(202, result)
         return True
@@ -199,7 +206,7 @@ class ShellRoutingMixin:
                         else self.token_record.can_read
                     )
                 else:
-                    visible = row["allow_exec"] and self.token_record.shell_mode != "none"
+                    visible = self.token_record.shell_mode != "none"
                 if visible:
                     tasks.append(client_summary(row["id"], result))
         return tasks, unavailable

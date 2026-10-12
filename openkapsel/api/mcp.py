@@ -994,6 +994,8 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Start an asynchronous Shell job with &a1B2& reference ID. Omitted/null timeout defaults to 120s; client Shell with timeout <=120s runs in Client, >120s in shared Job Manager. Explicit finite positive timeouts have no maximum. target=auto routes mapped cwd to client, otherwise server; errors never fall back. Only Mapping Shell with timeout >120s survives Client restart via disk-backed Job Manager (16 global, 4 per Mapping key). Use family=task operations to inspect and control output.",
         _object_schema(
             {
+                "elevated": {"type": "boolean", "default": False, "description": "Request temporary shell.elevated for this conversation and execution target. On capability_approval_required, show the approval_url, pause for user approval, then retry. Approval never reruns a command."},
+                "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$", "description": "Owning Conversation writer nonce; required when elevated=true. Conversation is derived from outer plan_id."},
                 "command": {"type": "string", "minLength": 1},
                 "mount_mappings": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Server-only native mapping dependencies by name or ID. Mapped cwd is automatic; command text is not inspected."},
                 "target": {"type": "string", "enum": ["auto", "server", "client"], "default": "auto"},

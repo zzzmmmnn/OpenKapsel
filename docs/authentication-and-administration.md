@@ -68,7 +68,7 @@ New restricted tokens default to 64 workload processes/threads, 256 MiB aggregat
 
 ## OAuth owner consent
 
-OAuth approval uses an independent authorization page with the current control token for the exact linked configuration, not the administrator login. It never creates a backend session or grants administration privileges. The client receives independent OAuth credentials, not the control token. See [OAuth consent and migration](oauth-connections.md).
+OAuth approval uses an independent authorization page with the current control token for the exact linked configuration or its configured Workspace Password. It never creates a backend session or grants administration privileges. The client receives independent OAuth credentials, not the control token. See [OAuth consent and migration](oauth-connections.md).
 
 ## Renewal and rotation
 
@@ -91,3 +91,32 @@ The privileged `openkapsel-images` helper creates sparse ext4 files. `name.img` 
 - Deletion is permanent and is refused while any token references the image; the error identifies those records.
 
 Regular-directory mode remains available when the image helper is not installed.
+
+
+## Temporary capability grants
+
+Administration → Workspace grants sets/resets one password per workspace and
+lists/revokes active grants. Passwords use the existing salted PBKDF2 hash;
+resetting one revokes all pending approvals and grants for that workspace.
+Removing the last workspace configuration removes its password. Reassigning or
+disabling a configuration revokes the old workspace's temporary grants. Password
+forms require HTTPS; local loopback HTTP is supported for development.
+
+AI requests `shell.elevated` with `elevated=true`, the owning Conversation's
+`writer_nonce`, and the existing `plan_id`. The server derives the Conversation
+from an in-progress Plan. Without a grant the operation does not run and returns
+`capability_approval_required` with an `approval_url`. The user opens that URL,
+checks workspace/conversation/target/capability, enters the Workspace Password,
+and chooses 1–1440 minutes (default 10). AI retries after approval; the page never
+executes a command.
+
+Approvals are browser-cookie/CSRF-bound, script-free, single use, and valid for
+five minutes. Five incorrect passwords exhaust one URL. Shared workspace/address
+attempt budgets prevent newly requested URLs resetting password budgets. Audit
+logs contain the workspace, conversation, capability and target, never passwords
+or approval IDs. Context history also excludes writer nonces and approval URLs.
+
+Grants are independent per workspace, Conversation, target (server or Mapping ID)
+and capability. Only password hashes persist; Server restart clears approvals and
+grants. Expiry/revocation blocks new elevated jobs while running jobs remain
+queryable/controllable. `files.write` is reserved and has no execution integration.

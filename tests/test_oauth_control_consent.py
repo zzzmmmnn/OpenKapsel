@@ -289,7 +289,7 @@ class ControlConsentHTTPTests(unittest.TestCase):
         status, _, raw = self.request("GET", "/.well-known/oauth-authorization-server" + self.prefix)
         self.assertEqual(200, status)
         consent = json.loads(raw)["openkapsel_consent"]
-        self.assertEqual("matching_control_token", consent["authentication"])
+        self.assertEqual("matching_control_token_or_workspace_password", consent["authentication"])
         self.assertFalse(consent["administrator_login_required"])
         status, payload = self.rpc(token["access_token"], "tools/call", {"name": "discovery", "arguments": {"section": "authentication"}})
         self.assertEqual(200, status, payload)
