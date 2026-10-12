@@ -113,6 +113,15 @@ against the system Xcode installation layout after resolving symlinks.
 This **does not** grant all of `/Applications`, other applications or
 arbitrary user-selected paths.
 
+On macOS, `/usr/bin/python3` can be an Apple `xcrun` shim rather than an
+installed Python interpreter. Some Xcode installations (including GitHub's
+Xcode 26.6 runner) do not supply the requested `python3` tool, even when
+Seatbelt allows every Xcode library. Launch a real installed interpreter
+(e.g. the Python executable in the Client's virtual environment), rather
+than relying on the shim. Seatbelt additionally allows writes **only** to
+`/dev/null` among host device files so ordinary tool stderr redirection
+continues to work without granting arbitrary filesystem writes.
+
 On Linux, Bubblewrap creates private `/tmp`, `/var/tmp` and `/run`
 mounts. If a broad explicitly allowed directory could otherwise include the
 Manager socket, the socket parent directory is additionally masked. On macOS,

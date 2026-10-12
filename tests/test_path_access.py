@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -218,8 +219,13 @@ class PathAccessTests(unittest.TestCase):
             '\ntry: (w/"data/readonly/test").write_text("FAIL"); print("RO_WRITABLE")'
             '\nexcept OSError: print("RO_DENIED")'
             '\n(w/"data/safe.txt").write_text("OK"); print("RW_OK")'
+            '\nwith open("/dev/null", "w") as sink: sink.write("ignored")'
+            '\nprint("DEVNULL_OK")'
         )
-        launch = prepare_job(spec, ["/usr/bin/python3", "-c", code],
+        # GitHub macOS images use an xcrun shim at /usr/bin/python3. Under
+        # Xcode 26.6 it may invoke xcodebuild -find python3 and fail before
+        # exercising any sandbox path rule. Use setup-python's real runtime.
+        launch = prepare_job(spec, [sys.executable, "-c", code],
                              str(self.root), dict(os.environ), state)
         try:
             outcome = subprocess.run(
@@ -232,6 +238,7 @@ class PathAccessTests(unittest.TestCase):
             self.assertIn("config.json DENIED", outcome.stdout)
             self.assertIn("RO_DENIED", outcome.stdout)
             self.assertIn("RW_OK", outcome.stdout)
+            self.assertIn("DEVNULL_OK", outcome.stdout)
             self.assertEqual("SENSITIVE", secret.read_text())
         finally:
             launch.cleanup()

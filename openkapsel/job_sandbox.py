@@ -306,6 +306,10 @@ def prepare_job(
             "(version 1)", "(deny default)",
             "(allow process*)", "(allow sysctl-read)",
             "(allow file-read-metadata)", '(allow file-read-data (literal "/"))',
+            # Shell tools routinely redirect diagnostics to /dev/null, even
+            # with a read-only workspace. This grants only the null device,
+            # not file writes elsewhere under /dev.
+            '(allow file-write* (literal "/dev/null"))',
         ]
         # Hosted CI and source checkouts can use Python outside Apple's
         # /usr and Homebrew roots (e.g. /Users/runner/hostedtoolcache/Python).

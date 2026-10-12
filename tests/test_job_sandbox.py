@@ -83,6 +83,8 @@ class JobSandboxTests(unittest.TestCase):
             self.assertNotIn(f'(allow file-read* (subpath "{selected}"))', profile)
             self.assertNotIn('(allow file-read* (subpath "/Applications"))', profile)
             self.assertNotIn('(allow file-read* (subpath "/Users"))', profile)
+            self.assertIn('(allow file-write* (literal "/dev/null"))', profile)
+            self.assertNotIn('(allow file-write* (subpath "/dev"))', profile)
             self.assertIn('deny network-outbound (remote unix-socket)', profile)
             self.assertIn('deny file-read* (literal', profile)
         finally:
@@ -316,7 +318,7 @@ class JobSandboxTests(unittest.TestCase):
         )
         sandbox = prepare_job(
             self._spec("seatbelt", writable=False, network_mode="none"),
-            ["/usr/bin/python3", "-c", code], str(self.workspace), dict(os.environ), self.state,
+            [sys.executable, "-c", code], str(self.workspace), dict(os.environ), self.state,
         )
         try:
             result = subprocess.run(sandbox.argv, cwd=self.workspace,
@@ -347,7 +349,7 @@ class JobSandboxTests(unittest.TestCase):
         sandbox = prepare_job(
             self._spec("seatbelt", network_mode="domain_allowlist",
                        allowed_domains=["example.com"]),
-            ["/usr/bin/python3", "-c", code], str(self.workspace), dict(os.environ), self.state,
+            [sys.executable, "-c", code], str(self.workspace), dict(os.environ), self.state,
         )
         try:
             result = subprocess.run(sandbox.argv, cwd=self.workspace,
@@ -366,7 +368,7 @@ class JobSandboxTests(unittest.TestCase):
         tid = "&Sb1x&"
         args = dict(
             task_id=tid,
-            argv=["/usr/bin/python3", "-c", 'import pathlib;print(pathlib.Path("allowed.txt").read_text())'],
+            argv=[sys.executable, "-c", 'import pathlib;print(pathlib.Path("allowed.txt").read_text())'],
             cwd=str(self.workspace), timeout_seconds=10, env={},
             sandbox=json.dumps(self._spec("seatbelt", network_mode="domain_allowlist",
                                            allowed_domains=["example.com"])),
