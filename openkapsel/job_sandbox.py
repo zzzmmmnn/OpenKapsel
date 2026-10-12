@@ -23,7 +23,7 @@ from openkapsel.execution.network_proxy import DomainProxy, normalize_domain_rul
 from openkapsel.execution.sandbox_backends import (
     BubblewrapBackend, SandboxSpec,
 )
-from openkapsel.execution.tasks import RESOLVER_FD_MARKER
+from openkapsel.execution.tasks import RESOLVER_FD_MARKER, _injected_file_descriptor
 
 MODES = {"none", "full", "domain_allowlist"}
 TYPES = {"bubblewrap", "seatbelt", "srt_windows"}
@@ -274,13 +274,29 @@ def prepare_job(
             result = PreparedJob(list(launch.argv), dict(environment), controller, temp_dir=job_dir)
             if launch.stdin_data is not None:
                 fd = tempfile.TemporaryFile()
-                fd.write(launch.stdin_data)
-                fd.seek(0)
-                result.resolver = fd
-                result.argv = [
-                    str(fd.fileno()) if arg == RESOLVER_FD_MARKER else arg
-                    for arg in result.argv
-                ]
+                try:
+                    fd.write(launch.stdin_data)
+                    fd.seek(0)
+                    # RootlessKit reserves FD 3 for its control channel. As in
+                    # Server Shell's sandbox launcher, duplicate a resolver
+                    # tempfile allocated at FD 3 before entering RootlessKit.
+                    descriptor, duplicate = _injected_file_descriptor(fd)
+                    if duplicate is not None:
+                        try:
+                            replacement = os.fdopen(duplicate, "rb")
+                        except BaseException:
+                            os.close(duplicate)
+                            raise
+                        fd.close()
+                        fd = replacement
+                    result.resolver = fd
+                    result.argv = [
+                        str(descriptor) if arg == RESOLVER_FD_MARKER else arg
+                        for arg in result.argv
+                    ]
+                except BaseException:
+                    fd.close()
+                    raise
             return result
 
         executable = shutil.which("sandbox-exec")

@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import textwrap
 import tempfile
 import time
 import unittest
@@ -148,6 +149,86 @@ class JobSandboxTests(unittest.TestCase):
             self.assertFalse((self.workspace / "created.txt").exists())
         finally:
             prepared.cleanup()
+
+    @unittest.skipIf(os.name == "nt", "POSIX pass_fds is required")
+    def test_manager_bubblewrap_resolver_fd_three_survives_rootlesskit(self):
+        # Force the Job Manager's tempfile to get fd=3 in a fresh process,
+        # then simulate RootlessKit consuming/closing descriptor 3. This
+        # reproduces the actual CI failure without needing bwrap installed.
+        probe = textwrap.dedent(r"""
+            import os
+            import pathlib
+            import subprocess
+            import sys
+            import tempfile
+            from unittest.mock import patch
+
+            from openkapsel.execution.sandbox_backends import SandboxLaunch
+            from openkapsel.execution.tasks import RESOLVER_FD_MARKER
+            from openkapsel.job_sandbox import prepare_job
+
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                workspace = root / "workspace"
+                state = root / "state"
+                workspace.mkdir()
+                state.mkdir()
+                # The fake rootlesskit child closes fd3 before reading the
+                # resolver content using Bubblewrap's --file descriptor.
+                reader = (
+                    "import os,sys;"
+                    "\ntry:os.close(3)"
+                    "\nexcept OSError:pass"
+                    "\nprint(os.read(int(sys.argv[1]), 256).decode())"
+                )
+                launch = SandboxLaunch(
+                    "bubblewrap",
+                    (sys.executable, "-c", reader, RESOLVER_FD_MARKER),
+                    b"nameserver 10.0.2.3\n",
+                )
+                with (
+                    patch("openkapsel.job_sandbox.platform.system",
+                          return_value="Linux"),
+                    patch("openkapsel.job_sandbox.BubblewrapBackend.build_shell",
+                          return_value=launch),
+                ):
+                    try:
+                        os.close(3)
+                    except OSError:
+                        pass
+                    prepared = prepare_job(
+                        {"type": "bubblewrap", "root": str(workspace),
+                         "network_mode": "full"},
+                        ["/usr/bin/python3", "-c", "print('ok')"],
+                        str(workspace), {}, state,
+                    )
+                try:
+                    descriptor = prepared.pass_fds[0]
+                    assert descriptor > 3, f"fd collision: {descriptor}"
+                    child = subprocess.run(
+                        prepared.argv, pass_fds=prepared.pass_fds,
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    assert child.returncode == 0, child.stderr
+                    assert child.stdout.strip() == "nameserver 10.0.2.3"
+                    prepared.launched()
+                    try:
+                        os.fstat(descriptor)
+                    except OSError:
+                        pass
+                    else:
+                        raise AssertionError("launched() leaked resolver fd")
+                finally:
+                    prepared.cleanup()
+            print("fd-3-rootlesskit-safe")
+        """)
+        outcome = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=pathlib.Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(0, outcome.returncode, outcome.stdout + outcome.stderr)
+        self.assertIn("fd-3-rootlesskit-safe", outcome.stdout)
 
     @unittest.skipUnless(
         platform.system() == "Linux"
