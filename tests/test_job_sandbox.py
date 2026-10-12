@@ -111,6 +111,104 @@ class JobSandboxTests(unittest.TestCase):
                     prepared = prepare_job(spec, ["/bin/echo", "ok"], str(self.workspace), {}, self.state)
                     prepared.cleanup()
 
+    def test_parent_grant_and_config_deny_survive_manager_policy(self):
+        from openkapsel.execution.sandbox_backends import SandboxLaunch
+        outer = self.base / "shared"
+        outer.mkdir()
+        root = outer / "mapping"
+        root.mkdir()
+        secret = outer / "client.json"
+        secret.write_text('{"token":"private"}')
+        spec = {
+            "type": "bubblewrap", "root": str(root), "writable": False,
+            "allowed_paths": [{"path": str(outer), "access": "rw"}],
+            "hidden_paths": [str(secret)], "network_mode": "none",
+        }
+        with (
+            patch("openkapsel.job_sandbox.platform.system", return_value="Linux"),
+            patch("openkapsel.job_sandbox.BubblewrapBackend.build_shell",
+                  return_value=SandboxLaunch("bubblewrap", ("/bin/true",), None)) as build,
+        ):
+            prepared = prepare_job(spec, ["/bin/true"], str(root), {}, self.state)
+        try:
+            normalized = build.call_args.args[0]
+            self.assertEqual(str(root), str(normalized.scope_root))
+            self.assertFalse(normalized.can_write)
+            self.assertIn(secret, normalized.hidden_paths)
+            self.assertEqual("rw", normalized.allowed_paths[0].access)
+        finally:
+            prepared.cleanup()
+
+    def test_seatbelt_parent_write_grant_keeps_readonly_mapping_and_denied_config(self):
+        outer = self.base / "shared-mac"
+        outer.mkdir()
+        root = outer / "mapping"
+        root.mkdir()
+        secret = outer / "client.json"
+        secret.write_text('{"token":"private"}')
+        with (
+            patch("openkapsel.job_sandbox.platform.system", return_value="Darwin"),
+            patch("openkapsel.job_sandbox.shutil.which", return_value=sys.executable),
+            patch("openkapsel.job_sandbox._macos_xcode_developer_dir", return_value=None),
+        ):
+            prepared = prepare_job(
+                {"type": "seatbelt", "root": str(root), "writable": False,
+                 "allowed_paths": [{"path": str(outer), "access": "rw"}],
+                 "hidden_paths": [str(secret)], "network_mode": "none"},
+                ["/bin/sh", "-c", "true"], str(root), {}, self.state,
+            )
+        try:
+            profile = prepared.argv[prepared.argv.index("-p") + 1]
+            self.assertIn(f'(allow file-write* (subpath "{outer}"))', profile)
+            self.assertIn(f'(deny file-write* (subpath "{root}"))', profile)
+            self.assertIn(f'(deny file-read* (literal "{secret}"))', profile)
+            self.assertIn(f'(deny file-write* (literal "{secret}"))', profile)
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin", "requires actual macOS Seatbelt")
+    def test_real_macos_parent_rw_cannot_override_mapping_ro_or_config_deny(self):
+        import shlex
+        outer = self.base / "shared-real-mac"
+        outer.mkdir()
+        root = outer / "mapping"
+        root.mkdir()
+        visible = root / "visible.txt"
+        visible.write_text("visible")
+        secret = outer / "client.json"
+        secret.write_text('{"token":"private"}')
+        blocked = root / "blocked.txt"
+        writable = outer / "created.txt"
+        cmd = (
+            f"if (exec 3< {shlex.quote(str(visible))}) 2>/dev/null; then "
+            "echo root-readable; else echo root-unreadable; fi; "
+            f"if (printf blocked > {shlex.quote(str(blocked))}) 2>/dev/null; then "
+            "echo root-writable; else echo root-denied; fi; "
+            f"if (exec 3< {shlex.quote(str(secret))}) 2>/dev/null; then "
+            "echo config-readable; else echo config-denied; fi; "
+            f"if (printf allowed > {shlex.quote(str(writable))}) 2>/dev/null; then "
+            "echo parent-writable; else echo parent-denied; fi"
+        )
+        prepared = prepare_job(
+            {"type": "seatbelt", "root": str(root), "writable": False,
+             "allowed_paths": [{"path": str(outer), "access": "rw"}],
+             "hidden_paths": [str(secret)], "network_mode": "none"},
+            ["/bin/sh", "-c", cmd], str(root), dict(os.environ), self.state,
+        )
+        try:
+            outcome = subprocess.run(
+                prepared.argv, cwd=root, env=prepared.environment,
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(0, outcome.returncode, outcome.stderr)
+            for expected in ("root-readable", "root-denied", "config-denied",
+                             "parent-writable"):
+                self.assertIn(expected, outcome.stdout, outcome.stderr)
+            self.assertFalse(blocked.exists())
+            self.assertEqual("allowed", writable.read_text())
+        finally:
+            prepared.cleanup()
+
     def test_manager_launcher_survives_transient_request_thread(self):
         # Bubblewrap's --die-with-parent monitors the Popen caller's Linux
         # thread, not the entire process. The Manager's IPC request threads

@@ -180,6 +180,56 @@ class PodmanBackendTests(unittest.TestCase):
             self.assertEqual("--ro-bind", linux[i_hidden_file - 2])
             self.assertEqual("/dev/null", linux[i_hidden_file - 1])
 
+    def test_bubblewrap_parent_grant_cannot_reopen_mapping_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            outer = base / "shared"
+            outer.mkdir()
+            workspace = outer / "mapping"
+            workspace.mkdir()
+            config = outer / "client.json"
+            config.write_text('{"token":"sensitive"}')
+            bwrap = base / "bwrap"
+            rootlesskit = base / "rootlesskit"
+            for executable in (bwrap, rootlesskit):
+                executable.write_text("#!/bin/sh\n")
+                executable.chmod(0o755)
+            for can_write, parent_access, expected_root, expected_parent in (
+                (False, "rw", "--ro-bind", "--bind"),
+                (True, "ro", "--ro-bind", "--ro-bind"),
+                (True, "rw", "--bind", "--bind"),
+            ):
+                with self.subTest(can_write=can_write, parent_access=parent_access):
+                    spec = SandboxSpec(
+                        command="true", cwd=workspace, scope_root=workspace,
+                        can_write=can_write, network_mode="none", allowed_domains=(),
+                        proxy_root=base / "proxy",
+                        allowed_paths=(PathGrant(str(outer), access=parent_access),),
+                        hidden_paths=(config,),
+                        limits=SandboxLimits(16, 256 * 1024 * 1024, 100),
+                        owner_token="token",
+                        allow_grant_writes_when_scope_readonly=True,
+                    )
+                    with patch(
+                        "openkapsel.execution.sandbox_backends.apparmor_restricts_user_namespaces",
+                        return_value=False,
+                    ):
+                        argv = BubblewrapBackend(
+                            bwrap, rootlesskit, aggregate_resources=False
+                        ).build_shell(spec).argv
+                    def mount(path):
+                        return next((i, argv[i]) for i in range(len(argv) - 2)
+                                    if argv[i] in {"--bind", "--ro-bind"}
+                                    and argv[i + 1] == str(path) and argv[i + 2] == str(path))
+                    parent_pos, parent_mode = mount(outer)
+                    root_pos, root_mode = mount(workspace)
+                    self.assertLess(parent_pos, root_pos)
+                    self.assertEqual(expected_parent, parent_mode)
+                    self.assertEqual(expected_root, root_mode)
+                    hidden_pos = argv.index(str(config))
+                    self.assertGreater(hidden_pos, root_pos)
+                    self.assertEqual(["--ro-bind", "/dev/null"], list(argv[hidden_pos - 2:hidden_pos]))
+
     def test_controller_uses_stop_kill_and_forced_cleanup(self) -> None:
         controller = PodmanController(Path("/usr/bin/podman"), "openkapsel-test")
         completed = subprocess.CompletedProcess([], 0, "", "")

@@ -57,6 +57,21 @@ class WindowsSrtTests(unittest.TestCase):
         self.assertEqual([str(self.extra)], cfg["filesystem"]["allowWrite"])
         self.assertEqual([str(self.workspace), str(self.extra)],
                          cfg["filesystem"]["allowRead"])
+        self.assertIn(str(self.workspace), cfg["filesystem"]["denyWrite"])
+
+    def test_parent_grants_keep_mapping_root_write_policy(self):
+        parent = str(self.base)
+        readonly_root = self._settings(
+            writable=False, grants=(PathGrant(parent, access="rw"),),
+        )["filesystem"]
+        self.assertIn(parent, readonly_root["allowWrite"])
+        self.assertIn(str(self.workspace), readonly_root["denyWrite"])
+        self.assertIn(str(self.secret), readonly_root["denyRead"])
+        readonly_parent = self._settings(
+            writable=True, grants=(PathGrant(parent, access="ro"),),
+        )["filesystem"]
+        self.assertIn(str(self.workspace), readonly_parent["allowWrite"])
+        self.assertIn(parent, readonly_parent["denyWrite"])
 
     def test_domain_rule_expansion_preserves_apex_and_subdomain(self):
         cfg = self._settings(

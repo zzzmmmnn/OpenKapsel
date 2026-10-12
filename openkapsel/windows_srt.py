@@ -102,7 +102,9 @@ def srt_settings(*, root: Path, writable: bool, grants, hidden: list[Path],
                 allowed.append(rule)
     reads = [str(root)]
     writes = [str(root)] if writable else []
-    denied_writes = []
+    # Extra writable parent grants must not reopen a read-only Mapping root.
+    # SRT's explicit denyWrite overlay also covers nested grants inside root.
+    denied_writes = [] if writable else [str(root)]
     for item in grants:
         path = str(item.path)
         if path not in reads:

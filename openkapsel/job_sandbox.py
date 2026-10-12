@@ -193,8 +193,8 @@ def prepare_job(
         if access not in {"rw", "ro"}:
             raise ValueError("allowed_paths entries require rw or ro access")
         directory = _real_dir(item["path"])
-        if _contains(directory, root):
-            raise ValueError("sandbox grant must not enclose workspace root")
+        # Parent grants are valid for Shell, provided the backend reapplies
+        # the exported root's stricter access after the broader grant.
         if _contains(directory, state_root) or _contains(state_root, directory):
             raise ValueError("sandbox grant overlaps Manager state")
         grants.append(PathGrant(str(directory), access=access))
@@ -338,11 +338,14 @@ def prepare_job(
         for grant in grants:
             if not grant.read_only:
                 profile.append(f"(allow file-write* (subpath {_sb_quote(grant.path)}))")
-            else:
-                # A read-only path inside a writable workspace (or another
-                # writable ancestor) needs a deny override, not just the
-                # absence of an extra allow.
+        # macOS Seatbelt uses the last matching overlapping rule. Apply every
+        # read-only restriction AFTER broader writable grants, independently
+        # of configuration order; otherwise the parent reopens a denied child.
+        for grant in grants:
+            if grant.read_only:
                 profile.append(f"(deny file-write* (subpath {_sb_quote(grant.path)}))")
+        if not writable:
+            profile.append(f"(deny file-write* (subpath {_sb_quote(root)}))")
         profile.append(f"(allow file-read* (subpath {_sb_quote(job_dir)}))")
         profile.append(f"(allow file-write* (subpath {_sb_quote(job_dir)}))")
         for directory in excluded:

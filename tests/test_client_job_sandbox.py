@@ -128,10 +128,29 @@ class ClientJobSandboxTests(unittest.TestCase):
             self.assertIn(str(protected), runtime.tasks.job_sandbox["hidden_paths"])
         finally:
             runtime.close()
-        with self.assertRaisesRegex(ValueError, "enclose root"):
-            runtime = ClientRuntime(self._config(job_sandbox={
-                "paths": [{"path": str(self.base), "access": "ro"}],
-            }))
+        # A Shell grant may enclose the Mapping root and Client config.
+        # It must neither override the root's read-only policy nor expand
+        # file/RPC access beyond that root.
+        enclosing = self.base / "shared"
+        enclosing.mkdir()
+        exported = enclosing / "project"
+        exported.mkdir()
+        config_file = enclosing / "client.json"
+        config_file.write_text('{"token":"private"}')
+        runtime = ClientRuntime(self._config(root=str(exported), job_sandbox={
+            "paths": [
+                {"path": str(enclosing), "access": "rw"},
+                {"path": str(config_file), "access": "deny"},
+            ],
+        }), protected_paths=[config_file])
+        try:
+            spec = runtime.tasks.job_sandbox
+            self.assertIn({"path": str(enclosing), "access": "rw"}, spec["allowed_paths"])
+            self.assertIn(str(config_file), spec["hidden_paths"])
+            self.assertFalse(spec["writable"])
+            with self.assertRaises(OSError):
+                runtime.files.path("../client.json")
+        finally:
             runtime.close()
         internal = self.root / ".openkapsel"
         internal.mkdir()

@@ -73,8 +73,8 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         if access == "deny":
             denied.append(resolved)
             continue
-        if resolved == root or resolved in root.parents:
-            raise ValueError("job_sandbox additional permits must not enclose root")
+        # Extra paths are Shell-only grants. A parent of the exported root is
+        # allowed; the Manager must preserve the root's stricter write policy.
         for secret in protected:
             if secret == resolved or secret in resolved.parents:
                 raise ValueError("job_sandbox path would expose protected Client configuration")

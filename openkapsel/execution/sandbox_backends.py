@@ -159,20 +159,18 @@ class BubblewrapBackend:
             resolver_data = b"nameserver 10.0.2.3\noptions timeout:2 attempts:2\n"
             argv.extend(["--file", RESOLVER_FD_MARKER, "/etc/resolv.conf"])
         self._append_parent_dirs(argv, spec.scope_root.parent)
-        argv.extend(["--bind" if spec.can_write else "--ro-bind", scope, scope])
-        if spec.environment_file is not None:
-            argv.extend(
-                ["--ro-bind", str(spec.environment_file), ENVIRONMENT_MOUNT]
-            )
-        # Child mounts are ordered from broad to narrow. RO ancestors keep
-        # their precedence over descendant RW grants, while hidden-path
-        # masks are installed LAST so later grant binds cannot uncover them.
+        # A Shell-only grant may enclose the exported workspace. Bind broader
+        # grants first, then re-bind the workspace with its effective access:
+        # otherwise the later parent mount would overwrite the root's RO bind.
+        # Keep narrower grants after the workspace, and deny masks last.
         readonly = [spec.scope_root] if not spec.can_write else []
         readonly += [Path(p.path) for p in spec.allowed_paths if p.access == "ro"]
-        for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
+        grants = sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts))
+
+        def bind_grant(grant):
             path = Path(grant.path)
             if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
-                continue
+                return
             mode = "--ro-bind" if (grant.access != "rw" or any(
                 path == ro or ro in path.parents for ro in readonly
             ) or (
@@ -180,6 +178,23 @@ class BubblewrapBackend:
             )) else "--bind"
             self._append_parent_dirs(argv, path.parent)
             argv.extend([mode, grant.path, grant.path])
+
+        for grant in grants:
+            path = Path(grant.path)
+            if path == spec.scope_root or path in spec.scope_root.parents:
+                bind_grant(grant)
+        root_ro = any(
+            ro == spec.scope_root or ro in spec.scope_root.parents for ro in readonly
+        )
+        argv.extend(["--ro-bind" if root_ro else "--bind", scope, scope])
+        if spec.environment_file is not None:
+            argv.extend(
+                ["--ro-bind", str(spec.environment_file), ENVIRONMENT_MOUNT]
+            )
+        for grant in grants:
+            path = Path(grant.path)
+            if path != spec.scope_root and path not in spec.scope_root.parents:
+                bind_grant(grant)
         for path in spec.native_mapping_paths:
             argv.extend(["--bind" if spec.can_write else "--ro-bind", str(path), str(path)])
         for path in spec.denied_mapping_paths:

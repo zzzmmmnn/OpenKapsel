@@ -318,8 +318,12 @@ JSON **string**. The Windows implementation uses Anthropic SRT (alpha).
 ```
 
 The exported Mapping `root` is always automatically included. Its write
-permission follows the existing top-level `writable` setting. Each additional
-entry under `job_sandbox.paths` specifies `access: "rw"` (read/write),
+permission follows the existing top-level `writable` setting. Extra Shell
+Sandbox grants may also enclose the Mapping root: a writable parent **cannot**
+make a read-only Mapping root writable, and a read-only ancestor still takes
+precedence. Additional `paths` affect only Shell Sandbox visibility; File APIs
+and Git/Archive RPC remain restricted to the exported Mapping root. Each
+additional entry under `job_sandbox.paths` specifies `access: "rw"` (read/write),
 `access: "ro"` (read-only; `"r"` is an alias), or `access: "deny"`
 (no read, write or delete). Additional rw/ro paths must be existing absolute
 directories; deny paths may be existing files or directories within the
