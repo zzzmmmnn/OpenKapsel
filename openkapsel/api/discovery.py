@@ -2085,14 +2085,15 @@ class DiscoveryMixin:
                     "json": {
                         "access": "read or write",
                         "target": "server or exact Mapping ID",
+                        "path": "<optional absolute directory on that target, e.g. /Users>",
                         "writer_nonce": "<owning Conversation @xxxx@>",
                         "plan_id": "<in_progress plan_id>",
                         "taskname": "<taskname>",
                         "message": "<reason for request>",
                     },
                     "response": "HTTP 200 status=approval_required with approval_url or status=granted; no File operation occurs.",
-                    "mcp": "capability_call family=files operation=request_elevation; access/target/writer_nonce in args, Plan Context outside args.",
-                    "execution": "Pass elevated=true, writer_nonce, target and owning plan_id on each REST/MCP File operation. GET uses query parameters and/or Plan header. Separate files.read and files.write grants per Token, Conversation and execution target. Token file restrictions, denied paths, Mapping writeability and OS permissions remain enforced. This does not elevate generic Git/Archive RPC, uploads or sharing.",
+                    "mcp": "capability_call family=files operation=request_elevation; access/target/writer_nonce and optional path in args, Plan Context outside args.",
+                    "execution": "Pass elevated=true, writer_nonce, target and owning plan_id on each REST/MCP File operation. GET uses query parameters and/or Plan header. Unscoped read/write grants only override Token permissions within existing roots. For outside directories, use the optional absolute path in the approval request; the approved Token/Conversation/target/capability/path subtree remains the only external scope. Denied and readonly paths, Mapping writeability, client configuration protections and OS permissions remain enforced. Does not elevate Git/Archive RPC, uploads or sharing.",
                 },
                 "shell_elevation_request": {
                     "json": {
@@ -2338,7 +2339,7 @@ class DiscoveryMixin:
                 "idle_seconds": self.server.config.mapping_mount_idle_seconds,
                 "policy": "Only server Shell and FastAPI dependencies acquire native mounts. Provider connections and all file APIs remain RPC-only.",
             },
-            "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True},
+            "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True, "external_root_file_api": True},
             "list": "./mapping", "storage": "client-local; excluded from workspace image quota",
             "offline": "mapped operations fail; never fall back to a local directory",
             "client_execution": "requires control authorization, Shell/write permissions, mapping allow_exec, and client-local opt-in",

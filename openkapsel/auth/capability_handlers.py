@@ -35,7 +35,7 @@ class CapabilityHandlersMixin:
         if not local:
             raise ApiError(403, "https_required", "Workspace passwords require HTTPS (or local loopback development)")
 
-    def _require_capability(self, body, target, capability):
+    def _require_capability(self, body, target, capability, *, path="", match_path=False, request_path=None):
         self._require_password_transport()
         if not self.server.config.admin_enabled:
             raise ApiError(409, "capability_unavailable", "Capability approval requires administration to be enabled")
@@ -50,16 +50,23 @@ class CapabilityHandlersMixin:
         # filesystem directory shared by potentially many Tokens.
         workspace = self.token_record.app_id
         grants = self.server.capability_grants
-        if grants.granted(workspace, conversation, target, capability):
-            return
+        if match_path and path:
+            approved = grants.granted_path(workspace, conversation, target, capability, path)
+            if approved is not None:
+                return approved
+        if request_path is not None:
+            path = request_path
+        if grants.granted(workspace, conversation, target, capability, path):
+            return path
         try:
-            ticket = grants.request(workspace, conversation, target, capability)
+            ticket = grants.request(workspace, conversation, target, capability, path)
         except RuntimeError:
             raise ApiError(429, "capability_approval_capacity", "Too many pending capability approvals; retry later") from None
         LOGGER.info("approval requested workspace=%r conversation=%s target=%r capability=%s", workspace, conversation, target, capability)
         raise ApiError(403, "capability_approval_required", "Pause operation and request user approval.", {
             "approval_url": self._public_base_url() + "/admin/capability/" + ticket,
             "approval_expires_in": PENDING_SECONDS, "capability": capability, "target": target,
+            **({"path": path} if path else {}),
         })
 
     def _capability_binding(self, item):
@@ -126,11 +133,14 @@ class CapabilityHandlersMixin:
         esc = html.escape
         body = f'<h1>Approve temporary capability</h1><p class="error">{esc(error)}</p>' if error else '<h1>Approve temporary capability</h1>'
         warning = ("Shell elevation runs as the target's current OS user without sandbox restrictions. "
-                   if item.capability == "shell.elevated" else "")
+                   if item.capability == "shell.elevated" else
+                   "This approval permits File API access to the specified directory and descendants, "
+                   "only for this Token, Conversation, target and access mode. "
+                   if item.path else "")
         workspace_record = self.server.tokens.get_by_app_id(item.workspace)
         workspace_label = (f"{workspace_record.name} ({workspace_record.path_prefix})"
                            if workspace_record else "Unavailable Token")
-        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd></dl>
+        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{f"<dt>Authorized directory</dt><dd>{esc(item.path)}</dd>" if item.path else ""}</dl>
 <p class="notice">{esc(warning)}Approve only the conversation and target you intend.</p>
 <form method="post" action="{esc(self._admin_path() + '/capability/' + ticket, quote=True)}" autocomplete="off">
 <input type="hidden" name="csrf" value="{proof}"><label>Workspace password</label><input type="password" name="password" required maxlength="1024" autocomplete="off">
@@ -179,7 +189,8 @@ class CapabilityHandlersMixin:
                             return
                     elif action == "revoke":
                         grants.revoke(workspace, int(self._form_one(form, "conversation_id")),
-                                      self._form_one(form, "target"), self._form_one(form, "capability"))
+                                      self._form_one(form, "target"), self._form_one(form, "capability"),
+                                      self._form_one(form, "path"))
                         message = "Grant revoked."
                     else:
                         raise ValueError("Unknown action")
@@ -201,6 +212,6 @@ class CapabilityHandlersMixin:
             hidden = f'<input type="hidden" name="csrf" value="{esc(session.csrf, quote=True)}"><input type="hidden" name="workspace" value="{esc(workspace, quote=True)}">'
             body += f'<h2>{esc(record.name)} · {esc(record.path_prefix)}</h2><p>Password: {"Configured" if grants.configured(workspace) else "Not configured"}</p><form method="post" action="{action_url}">{hidden}<input type="hidden" name="action" value="password"><label>Set or reset workspace password</label><input type="password" name="password" minlength="6" maxlength="1024" required autocomplete="new-password"><div class="actions"><button>Save password and revoke grants</button></div></form>'
             for grant in grants.list_grants(workspace):
-                fields = "".join(f'<input type="hidden" name="{key}" value="{esc(str(grant[key]), quote=True)}">' for key in ("conversation_id", "target", "capability"))
-                body += f'<p>Conversation {grant["conversation_id"]} · {esc(grant["target"])} · {esc(grant["capability"])} · {grant["remaining_seconds"]} seconds remaining</p><form method="post" action="{action_url}">{hidden}{fields}<button name="action" value="revoke">Revoke</button></form>'
+                fields = "".join(f'<input type="hidden" name="{key}" value="{esc(str(grant[key]), quote=True)}">' for key in ("conversation_id", "target", "capability", "path"))
+                body += f'<p>Conversation {grant["conversation_id"]} · {esc(grant["target"])} · {esc(grant["capability"])} · {esc(grant["path"] or "workspace")} · {grant["remaining_seconds"]} seconds remaining</p><form method="post" action="{action_url}">{hidden}{fields}<button name="action" value="revoke">Revoke</button></form>'
         self._send_html(status, page(body), script_src="'none'")

@@ -1005,12 +1005,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "files_request_elevation",
         "Request File API elevation",
-        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. This performs no File operation. Returns approval_required with approval_url or granted. After approval, send elevated=true, writer_nonce and target on each File API call.",
+        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. An optional absolute path scopes an external directory and descendants; ordinary grants never unlock external paths. This performs no File operation. Returns approval_required with approval_url or granted. After approval, send elevated=true, writer_nonce and target on each File API call.",
         _object_schema({
             "access": {"type": "string", "enum": ["read", "write"]},
             "target": {"type": "string", "minLength": 1,
                        "description": "server or exact Mapping ID"},
             "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$"},
+            "path": {"type": "string", "minLength": 2,
+                     "description": "Optional absolute directory on the specified target. Required for temporary access outside exported roots; the approval is confined to this subtree."},
         }, ("access", "target", "writer_nonce")),
         read_only=False,
     ),

@@ -29,6 +29,7 @@ class Pending:
     target: str
     capability: str
     deadline: float
+    path: str = ""
     attempts: int = 0
 
 
@@ -41,7 +42,7 @@ class CapabilityGrants:
         self.lock = threading.RLock()
         self._browser_key = secrets.token_bytes(32)
         self.pending_requests: dict[str, Pending] = {}
-        self.active: dict[tuple[str, int, str, str], float] = {}
+        self.active: dict[tuple[str, int, str, str, str], float] = {}
         with closing(sqlite3.connect(self.path)) as db:
             # Token app_id is the stable Workspace identity. Never reuse the
             # legacy path_prefix-keyed workspace_passwords table: a directory
@@ -87,9 +88,11 @@ class CapabilityGrants:
         self.active = {key: end for key, end in self.active.items() if end > now}
         return now
 
-    def request(self, workspace: str, conversation_id: int, target: str, capability: str) -> str:
+    def request(self, workspace: str, conversation_id: int, target: str, capability: str, path: str = "") -> str:
         if not isinstance(workspace, str) or not target or capability not in CAPABILITIES:
             raise ValueError("invalid capability approval request")
+        if not isinstance(path, str) or (path and (capability not in {"files.read", "files.write"} or not path.startswith("/"))):
+            raise ValueError("invalid approval path")
         if type(conversation_id) is not int or conversation_id < 0:
             raise ValueError("invalid conversation id")
         with self.lock:
@@ -100,7 +103,7 @@ class CapabilityGrants:
                 raise RuntimeError("too many pending capability approvals for token")
             ticket = secrets.token_urlsafe(24)
             self.pending_requests[ticket] = Pending(
-                workspace, conversation_id, target, capability, now + PENDING_SECONDS)
+                workspace, conversation_id, target, capability, now + PENDING_SECONDS, path=path)
             return ticket
 
     def pending(self, ticket: str) -> Pending | None:
@@ -108,10 +111,27 @@ class CapabilityGrants:
             self._expire()
             return self.pending_requests.get(ticket)
 
-    def granted(self, workspace: str, conversation_id: int, target: str, capability: str) -> bool:
+    def granted(self, workspace: str, conversation_id: int, target: str, capability: str, path: str = "") -> bool:
         with self.lock:
             now = self._expire()
-            return self.active.get((workspace, conversation_id, target, capability), 0) > now
+            return self.active.get((workspace, conversation_id, target, capability, path), 0) > now
+
+    def granted_path(self, workspace: str, conversation_id: int, target: str,
+                     capability: str, path: str) -> str | None:
+        """Return the narrowest approved absolute directory containing path."""
+        from pathlib import PurePosixPath
+        if not path.startswith("/"):
+            return None
+        candidate = PurePosixPath(path)
+        with self.lock:
+            now = self._expire()
+            scopes = [
+                scope for (owner, conv, dest, permission, scope), expiry in self.active.items()
+                if owner == workspace and conv == conversation_id and dest == target
+                and permission == capability and scope and expiry > now
+                and (candidate == PurePosixPath(scope) or PurePosixPath(scope) in candidate.parents)
+            ]
+        return max(scopes, key=len) if scopes else None
 
     def approve(self, ticket: str, password: str, seconds: int = DEFAULT_SECONDS) -> Pending:
         if type(seconds) is not int or not 60 <= seconds <= MAX_SECONDS:
@@ -134,13 +154,13 @@ class CapabilityGrants:
                 del self.pending_requests[ticket]
                 raise ValueError("approval expired or already used")
             self.active[(item.workspace, item.conversation_id, item.target,
-                         item.capability)] = now + seconds
+                         item.capability, item.path)] = now + seconds
             del self.pending_requests[ticket]
             return item
 
-    def revoke(self, workspace: str, conversation_id: int, target: str, capability: str) -> None:
+    def revoke(self, workspace: str, conversation_id: int, target: str, capability: str, path: str = "") -> None:
         with self.lock:
-            self.active.pop((workspace, conversation_id, target, capability), None)
+            self.active.pop((workspace, conversation_id, target, capability, path), None)
 
     def revoke_workspace(self, workspace: str) -> None:
         with self.lock:
@@ -151,9 +171,9 @@ class CapabilityGrants:
     def list_grants(self, workspace: str) -> list[dict]:
         with self.lock:
             now = self._expire()
-            return [{"conversation_id": conv, "target": target, "capability": capability,
+            return [{"conversation_id": conv, "target": target, "capability": capability, "path": path,
                      "remaining_seconds": max(0, int(expiry - now))}
-                    for (scope, conv, target, capability), expiry in self.active.items()
+                    for (scope, conv, target, capability, path), expiry in self.active.items()
                     if scope == workspace]
 
     def remove_workspace(self, workspace: str) -> None:

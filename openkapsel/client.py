@@ -387,7 +387,7 @@ def _periodic_reload_check(config, runtime, reload_state, minimum_version):
 def _capabilities(files, tasks):
     capabilities = {
         "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True,
-                        "search_prefix": True},
+                        "search_prefix": True, "external_root_file_api": True},
         "protocol": 1,
         "writable": files.writable,
         "rpc": files.rpc_capabilities,

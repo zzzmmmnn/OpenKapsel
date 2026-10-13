@@ -12,7 +12,7 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants) -> str
     # compare canonical locations, including symlink targets.
     path = Path(path).resolve(strict=False)
     roots = [(Path(root), "rw" if writable else "ro")]
-    roots.extend((Path(rule.path), rule.access) for rule in grants)
+    roots.extend((Path(rule.path).resolve(strict=False), rule.access) for rule in grants)
     matches = [(base, mode) for base, mode in roots
                if path == base or base in path.parents]
     permitted = [base for base, mode in matches if mode != "deny"]

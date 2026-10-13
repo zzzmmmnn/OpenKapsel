@@ -30,8 +30,13 @@ class ClientFiles:
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("export root must be a directory")
+        # Retain *all* protected paths, even those outside the regular export:
+        # an approved external File API root must not reveal client secrets.
+        self.global_protected_paths = tuple(
+            Path(raw).expanduser().resolve(strict=False) for raw in protected_paths
+        )
         protected = set()
-        for raw in protected_paths:
+        for raw in self.global_protected_paths:
             candidate = Path(raw).expanduser().resolve(strict=False)
             try:
                 candidate.relative_to(self.root)
@@ -125,6 +130,34 @@ class ClientFiles:
     def _dispatch(self, op, args):
         if op.startswith("api_"):
             from openkapsel.client_runtime.client_file_api import ClientFileAPI
+            external_root = args.get("external_root")
+            if external_root is not None:
+                # Only coarse File API RPC supports this special path scope.
+                # FUSE, ordinary file RPC, and plugin RPC keep their export root.
+                if (not isinstance(external_root, str) or not external_root.startswith("/")
+                    or "\x00" in external_root or "\\" in external_root
+                    or any(p in {"..", ".openkapsel"} for p in external_root.split("/"))
+                    or os.path.normpath(external_root) == "/"):
+                    raise OSError(errno.EACCES, "invalid external File API root")
+                candidate = Path(external_root)
+                if candidate.is_symlink() or not candidate.is_dir():
+                    raise OSError(errno.EACCES, "external root must be a real directory")
+                if ".openkapsel" in candidate.resolve(strict=True).parts:
+                    raise OSError(errno.EACCES, "client runtime directories cannot be exported")
+                extra = ClientFiles(
+                    candidate, writable=self.writable,
+                    rpc_capabilities={key: val for key, val in self.rpc_capabilities.items()
+                                      if key != "file_search"},
+                    rpc_registry=self.rpc_registry,
+                    protected_paths=self.global_protected_paths,
+                    filename_index=None,
+                    index_owned=False,
+                )
+                extra.sandbox_denied_paths = self.sandbox_denied_paths
+                # The standard filename index is tied to the normal export.
+                # Never let an external directory consult that stale index.
+                extra.rpc_capabilities["file_search"] = {"state": "disabled"}
+                return ClientFileAPI.dispatch(extra, op[4:], args)
             return ClientFileAPI.dispatch(self, op[4:], args)
         if op == "fstat":
             return self.details(os.fstat(self.handles[int(args["handle"])]))

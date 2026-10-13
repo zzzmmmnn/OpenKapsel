@@ -73,10 +73,22 @@ class MappingHandlersMixin:
             keys = ("source", "destination") if operation == "fs_move" else ("path",)
             targets.extend((body, key, body.get(key), False) for key in keys)
 
-        selected = None
+        external_scope = getattr(self, "_file_elevation_external_scope", None)
+        selected = (self._mapping_for_caller(self._file_elevation_external_target)
+                    if external_scope else None)
         for container, key, value, is_query in targets:
             if not isinstance(value, str) or not value or "\x00" in value:
                 return False
+            if external_scope is not None:
+                if not value.startswith("/") or "\\" in value or ".." in value.split("/"):
+                    raise ApiError(403, "file_elevation_path_mismatch", "external path must be absolute")
+                candidate = Path(os.path.normpath(value))
+                root = Path(external_scope)
+                if candidate != root and root not in candidate.parents:
+                    raise ApiError(403, "file_elevation_path_mismatch", "path exceeds approved directory")
+                relative = candidate.relative_to(root).as_posix()
+                container[key] = [relative] if is_query else relative
+                continue
             candidate = Path(value).expanduser()
             if not candidate.is_absolute():
                 candidate = self.token_scope_root / candidate
@@ -121,7 +133,8 @@ class MappingHandlersMixin:
         if selected is None:
             return False
         status, payload = self._call_mapping_file_api(
-            selected, operation, query=query, body=body, min_version=min_version)
+            selected, operation, query=query, body=body, min_version=min_version,
+            external_root=external_scope)
         if operation in {"fs_manifest", "fs_mutate", "fs_read_files"} and not original.get("recursive"):
             originals = original.get("paths") if operation == "fs_read_files" else [item["path"] for item in original["items"]]
             for item in payload.get("items", []):
@@ -134,7 +147,8 @@ class MappingHandlersMixin:
         return True
 
     def _call_mapping_file_api(self, selected, operation, *, query=None, body=None,
-                               min_version=1, limits_override=None, search_prefix=None):
+                               min_version=1, limits_override=None, search_prefix=None,
+                               external_root=None):
         """Return a coarse RPC result, also usable inside mixed-root traversal."""
         from openkapsel.client_runtime.client_file_api import FILE_API_LIMITS
         from openkapsel.mapping.mapping_transport import encode
@@ -157,7 +171,16 @@ class MappingHandlersMixin:
             body.pop(key, None)
             query.pop(key, None)
         arguments = {"query": query, "body": body, "limits": limits,
-                     "display_root": str(self.server.mappings.mount_path(selected))}
+                     "display_root": external_root or str(self.server.mappings.mount_path(selected))}
+        if external_root is not None:
+            with self.server.mappings.lock:
+                session = self.server.mappings.sessions.get(selected["id"])
+                advertised = (session.capabilities.get("file_stream", {})
+                              if session is not None and not session.closed else {})
+            if not isinstance(advertised, dict) or advertised.get("external_root_file_api") is not True:
+                raise ApiError(409, "mapping_client_upgrade_required",
+                               "update Mapping Client to support approved external File API directories")
+            arguments["external_root"] = external_root
         if search_prefix is not None:
             with self.server.mappings.lock:
                 session = self.server.mappings.sessions.get(selected["id"])

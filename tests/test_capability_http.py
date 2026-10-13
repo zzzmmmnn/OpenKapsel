@@ -3,7 +3,9 @@ import json
 import os
 import re
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from contextlib import closing
 from dataclasses import replace
 from unittest.mock import patch
@@ -160,11 +162,171 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.record.app_id, self.ownership()[0], "server", "shell.elevated"
         ))
 
-    def request_file_elevation(self, access, target="server"):
+    def request_file_elevation(self, access, target="server", **values):
         return self.api("/files/elevation/request", {
             "access": access, "target": target,
-            "writer_nonce": self.ownership()[1],
+            "writer_nonce": self.ownership()[1], **values,
         })
+
+    def test_external_directory_requires_separate_path_scoped_approval(self):
+        from urllib.parse import urlencode
+        from openkapsel.auth.tokens import PathGrant
+        self.configure()
+        nonce = self.ownership()[1]
+        with tempfile.TemporaryDirectory(prefix="kapsel-outside-") as raw:
+            outer = Path(raw)
+            (outer / "public.txt").write_text("external content")
+            (outer / "denied.txt").write_text("private")
+            status, blocked = self.api("/fs/read/files", {
+                "paths": [str(outer / "public.txt")],
+            })
+            self.assertNotEqual(200, status, blocked)
+            self.assertNotIn("external content", str(blocked))
+            # An already granted unscoped files.read grant cannot read outside.
+            self.approve({"error": {"details": self.request_file_elevation("read")[1]}})
+            status, denied = self.api("/fs/read/files", {
+                "paths": [str(outer / "public.txt")], "elevated": True,
+                "target": "server", "writer_nonce": nonce,
+            })
+            self.assertEqual(403, status)
+            self.assertEqual("capability_approval_required", denied["error"]["code"])
+            self.assertEqual(str(outer), denied["error"]["details"]["path"])
+
+            status, approval = self.request_file_elevation("read", path=str(outer))
+            self.assertEqual(200, status, approval)
+            location, _, _, page = self.approval({"error": {"details": approval}})
+            self.assertIn(str(outer).encode(), page)
+            self.approve({"error": {"details": approval}})
+            query = urlencode({"path": str(outer), "elevated": "true",
+                               "target": "server", "writer_nonce": nonce,
+                               "plan_id": self.plan})
+            status, _, raw_reply = self.request(
+                "GET", self.base + "/fs/query/list?" + query, headers=self.headers)
+            self.assertEqual(200, status, raw_reply)
+            self.assertIn(b"public.txt", raw_reply)
+
+            status, response = self.api("/fs/read/files", {
+                "paths": [str(outer / "public.txt")], "elevated": True,
+                "target": "server", "writer_nonce": nonce,
+            })
+            self.assertEqual(200, status, response)
+            self.assertEqual("external content", response["items"][0]["content"])
+            # The grant is a path-component subtree, not a string prefix.
+            sibling = str(outer) + "-sibling"
+            status, blocked = self.api("/fs/read/files", {
+                "paths": [sibling], "elevated": True,
+                "target": "server", "writer_nonce": nonce,
+            })
+            self.assertEqual(403, status)
+            self.assertEqual("capability_approval_required", blocked["error"]["code"])
+            self.server.tokens.update(self.record.token, shell_mode="restricted", allowed_paths=(
+                PathGrant(str(outer), access="ro"),
+                PathGrant(str(outer / "denied.txt"), access="deny"),
+            ))
+            self.assertEqual(403, self.api("/fs/read/files", {
+                "paths": [str(outer / "denied.txt")], "elevated": True,
+                "target": "server", "writer_nonce": nonce,
+            })[0])
+            self.assertEqual(400, self.request_file_elevation("read", path="/")[0])
+            self.assertEqual(400, self.request_file_elevation(
+                "read", path="/Users/../etc")[0])
+
+    def test_external_mapping_file_rpc_directory_read_and_write(self):
+        from urllib.parse import urlencode
+        self.configure()
+        nonce = self.ownership()[1]
+        mapping = self.row["id"]
+        self.session.call = lambda operation, args: (
+            self.files.dispatch(operation, args) if operation.startswith("api_")
+            else self.tasks.dispatch(operation, args)
+        )
+        self.session.capabilities.setdefault("file_stream", {})["external_root_file_api"] = True
+        with tempfile.TemporaryDirectory(prefix="kapsel-client-external-") as raw:
+            outside = Path(raw)
+            (outside / "visible.txt").write_text("client external content")
+            (outside / "protected.txt").write_text("client secret")
+            self.files.global_protected_paths = (
+                *self.files.global_protected_paths, outside / "protected.txt",
+            )
+            plain_query = urlencode({"path": raw})
+            status, _, plain = self.request(
+                "GET", self.base + "/fs/query/list?" + plain_query, headers=self.headers)
+            self.assertEqual(403, status, plain)
+            plain_error = json.loads(plain)["error"]
+            self.assertEqual("path_outside_root", plain_error["code"])
+            self.assertEqual("read", plain_error["details"]["access"])
+            self.assertIn("request_elevation", plain_error["details"]["elevation"])
+            elevated_query = urlencode({
+                "path": raw, "elevated": "true", "target": mapping,
+                "writer_nonce": nonce, "plan_id": self.plan,
+            })
+            status, _, first_prompt = self.request(
+                "GET", self.base + "/fs/query/list?" + elevated_query,
+                headers=self.headers)
+            self.assertEqual(403, status, first_prompt)
+            first_error = json.loads(first_prompt)["error"]
+            self.assertEqual("capability_approval_required", first_error["code"])
+            self.assertEqual(raw, first_error["details"]["path"])
+            self.assertIn("approval_url", first_error["details"])
+            status, pending = self.request_file_elevation("read", mapping, path=raw)
+            self.assertEqual(200, status, pending)
+            self.approve({"error": {"details": pending}})
+            # The MCP dynamic tool must expose/forward the optional directory.
+            access, _, _ = self.authorize()
+            status, mcp_reply = self.rpc(access["access_token"], "tools/call", {
+                "name": "capability_call",
+                "arguments": {
+                    "family": "files", "operation": "request_elevation",
+                    "args": {"access": "read", "target": mapping,
+                             "writer_nonce": nonce, "path": raw},
+                    "plan_id": self.plan, "taskname": "file-elevation",
+                    "message": "Verify MCP scoped directory approval",
+                },
+            })
+            self.assertEqual(200, status, mcp_reply)
+            self.assertFalse(mcp_reply["result"]["isError"], mcp_reply)
+            self.assertEqual("granted", mcp_reply["result"]["structuredContent"]["status"])
+            query = urlencode({
+                "path": raw, "elevated": "true", "target": mapping,
+                "writer_nonce": nonce, "plan_id": self.plan,
+            })
+            status, _, raw_reply = self.request(
+                "GET", self.base + "/fs/query/list?" + query, headers=self.headers)
+            self.assertEqual(200, status, raw_reply)
+            listing = json.loads(raw_reply)
+            self.assertIn("visible.txt", [x["name"] for x in listing["entries"]])
+            self.session.capabilities["file_stream"].pop("external_root_file_api")
+            status, _, old_client = self.request(
+                "GET", self.base + "/fs/query/list?" + query, headers=self.headers)
+            self.assertEqual(409, status, old_client)
+            self.assertIn(b"mapping_client_upgrade_required", old_client)
+            self.session.capabilities["file_stream"]["external_root_file_api"] = True
+            self.assertNotIn("protected.txt", [x["name"] for x in listing["entries"]])
+            status, result = self.api("/fs/read/files", {
+                "paths": [str(outside / "visible.txt")], "elevated": True,
+                "target": mapping, "writer_nonce": nonce,
+            })
+            self.assertEqual(200, status, result)
+            self.assertEqual("client external content", result["items"][0]["content"])
+            status, protected = self.api("/fs/read/files", {
+                "paths": [str(outside / "protected.txt")], "elevated": True,
+                "target": mapping, "writer_nonce": nonce,
+            })
+            self.assertNotIn("client secret", str(protected))
+            self.assertNotEqual(200, status)
+            status, pending = self.request_file_elevation("write", mapping, path=raw)
+            self.assertEqual(200, status, pending)
+            self.approve({"error": {"details": pending}})
+            status, created = self.api("/fs/write/mkdir", {
+                "path": str(outside / "created"), "elevated": True,
+                "target": mapping, "writer_nonce": nonce,
+            })
+            self.assertIn(status, (200, 201), created)
+            self.assertTrue((outside / "created").is_dir())
+            self.assertEqual(403, self.api("/fs/write/mkdir", {
+                "path": str(outside.parent / "escape"), "elevated": True,
+                "target": mapping, "writer_nonce": nonce,
+            })[0])
 
     def test_file_read_write_temporary_elevation_needs_individual_grants(self):
         self.configure()
@@ -762,7 +924,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.approve(first)
         status, task = self.elevated(command="cat", interactive=True)
         self.assertEqual(202, status, task)
-        self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.elevated")] = 0
+        self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.elevated", "")] = 0
         self.assertEqual(403, self.elevated()[0])
         self.assertEqual(200, self.api("/task/stdin/" + task["task_id"], {"data": "still-running\n", "close": True})[0])
         self.assertEqual("still-running\n", self.finished(task["task_id"])["stdout"])
@@ -829,7 +991,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.configure()
         _, result = self.elevated()
         self.approve(result)
-        key = (self.record.app_id, self.ownership()[0], "server", "shell.elevated")
+        key = (self.record.app_id, self.ownership()[0], "server", "shell.elevated", "")
         # Environment configuration is loaded before the final authorization.
         from openkapsel.execution.environment_store import EnvironmentStore
         original = EnvironmentStore.shell_file

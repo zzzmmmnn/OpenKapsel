@@ -38,6 +38,47 @@ class ClientFileAPITests(unittest.TestCase):
         self.assertEqual(200, result["status"], result)
         return result["body"]["etag"]
 
+    @unittest.skipIf(os.name == "nt", "POSIX external directory paths")
+    def test_rpc_session_external_root_retains_config_and_sandbox_denials(self):
+        from types import SimpleNamespace
+        import threading
+        from openkapsel.client_runtime.client_rpc import ClientRpcSession
+
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw).resolve()
+            export, outside = base / "export", base / "outside"
+            export.mkdir()
+            outside.mkdir()
+            config, denied = outside / "client.json", outside / "sandbox-secret.txt"
+            config.write_text("CONFIDENTIAL CONFIG")
+            denied.write_text("CONFIDENTIAL SANDBOX")
+            (outside / "visible.txt").write_text("allowed data")
+            files = ClientFiles(export, writable=True, protected_paths=(config,))
+            files.sandbox_denied_paths = frozenset({denied})
+            session = ClientRpcSession(
+                SimpleNamespace(files=files), SimpleNamespace(), threading.Event()
+            )
+            try:
+                self.assertIn(config, session.files.global_protected_paths)
+                self.assertIn(denied, session.files.sandbox_denied_paths)
+                result = session.files.dispatch("api_fs_list", {
+                    "query": {"path": ["."]}, "body": {},
+                    "display_root": str(outside), "external_root": str(outside),
+                })
+                self.assertEqual(200, result["status"], result)
+                names = {entry["name"] for entry in result["body"]["entries"]}
+                self.assertEqual({"visible.txt"}, names)
+                result = session.files.dispatch("api_fs_read_files", {
+                    "body": {"paths": ["client.json", "sandbox-secret.txt", "visible.txt"]},
+                    "query": {}, "display_root": str(outside), "external_root": str(outside),
+                })
+                self.assertNotIn("CONFIDENTIAL CONFIG", str(result))
+                self.assertNotIn("CONFIDENTIAL SANDBOX", str(result))
+                self.assertIn("allowed data", str(result))
+            finally:
+                session.close()
+                files.close()
+
     def test_write_read_conditional_replace_and_native_paths_stay_private(self):
         content = "héllo " + str(self.root)
         self.assertEqual(201, self.call("fs_mkdir", {"path": "sub"})["status"])

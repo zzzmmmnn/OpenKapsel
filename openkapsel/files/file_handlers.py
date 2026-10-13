@@ -35,6 +35,8 @@ from openkapsel.files.uploads import UploadError, UploadRecord
 
 
 from dataclasses import replace
+from openkapsel.auth.tokens import PathGrant
+from openkapsel.auth.path_access import effective_path_access
 
 # Core File APIs supported by temporary Token-scoped read/write elevation.
 FILE_ELEVATION_READ = frozenset({
@@ -49,10 +51,23 @@ FILE_ELEVATION_WRITE = frozenset({
 
 class FileHandlersMixin(FileOperationSupportMixin):
     """File-domain methods mixed into the main request handler."""
+    @staticmethod
+    def _external_directory(value: str) -> str:
+        """A lexical POSIX directory scope; never infer a host root from '/'."""
+        if (not isinstance(value, str) or not value.startswith("/") or
+            "\x00" in value or "\\" in value or any(
+                part in {"..", ".openkapsel"} for part in value.split("/")
+            )):
+            raise ApiError(400, "invalid_path", "external path must be an absolute directory without traversal")
+        normalized = os.path.normpath(value)
+        if normalized == "/" or any(part.startswith(".openkapsel-") for part in value.split("/")):
+            raise ApiError(400, "invalid_path", "the host root and internal directories cannot be approved")
+        return normalized
+
     def _handle_files_elevation_request(self) -> None:
         """Ask for a read/write grant without performing any file operation."""
         body = self._read_json()
-        if set(body) - {"access", "target", "writer_nonce", "plan_id", "taskname", "message"}:
+        if set(body) - {"access", "target", "path", "writer_nonce", "plan_id", "taskname", "message"}:
             raise ApiError(400, "invalid_request", "unexpected file elevation request field")
         access = body.get("access")
         if access not in ("read", "write"):
@@ -65,29 +80,30 @@ class FileHandlersMixin(FileOperationSupportMixin):
             if not row["enabled"] or (access == "write" and not row["writable"]):
                 raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
             target = row["id"]
+        scope = self._external_directory(body["path"]) if "path" in body else ""
         capability = "files." + access
         try:
-            self._require_capability(body, target, capability)
+            self._require_capability(body, target, capability, path=scope)
         except ApiError as exc:
             if exc.code != "capability_approval_required":
                 raise
             self._send_json(200, {"status": "approval_required", **exc.details})
             return
-        self._send_json(200, {"status": "granted", "target": target, "capability": capability})
+        self._send_json(200, {"status": "granted", "target": target, "capability": capability,
+                              **({"path": scope} if scope else {})})
 
     def _authorize_file_elevation(self, operation: str, arguments: dict, *, query=False) -> None:
-        """Authorize an explicitly elevated File API operation for its actual target.
+        """A file approval may optionally authorize one explicit external subtree.
 
-        Never relax workspace boundaries, denied paths, or Mapping read-only
-        mode. The temporary permission override is local to this HTTP request.
+        Outside paths require an independently approved directory-scoped grant;
+        the ordinary unscoped files.read/write grant never authorizes them.
         """
         if operation not in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
             return
+        self._file_elevation_operation = operation  # actionable hint on ordinary path failures
         if query:
-            values = {
-                key: value[0] if isinstance(value, list) and len(value) == 1 else value
-                for key, value in arguments.items()
-            }
+            values = {key: value[0] if isinstance(value, list) and len(value) == 1 else value
+                      for key, value in arguments.items()}
             raw_flag = values.get("elevated", "false")
             if isinstance(raw_flag, str):
                 if raw_flag.lower() not in {"true", "false"}:
@@ -109,17 +125,18 @@ class FileHandlersMixin(FileOperationSupportMixin):
             if not row["enabled"] or (operation in FILE_ELEVATION_WRITE and not row["writable"]):
                 raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
             target = row["id"]
-        paths = []
         if operation == "fs_read_files":
             paths = values.get("paths", [])
         elif operation in {"fs_manifest", "fs_mutate"} and isinstance(values.get("items"), list):
             paths = [item.get("path") for item in values["items"] if isinstance(item, dict)]
+            if operation == "fs_manifest" and values.get("recursive"):
+                paths = [values.get("path", ".")]
         elif operation == "fs_move":
             paths = [values.get("source"), values.get("destination")]
         else:
             paths = [values.get("path", ".")]
-        # Reject cross-target and mixed-domain elevation before granting it.
-        # The native path resolver still performs the definitive path checks.
+        requested = []
+        external = []
         for value in paths:
             if not isinstance(value, str) or "\x00" in value:
                 raise ApiError(400, "invalid_path", "file elevation requires valid paths")
@@ -127,18 +144,62 @@ class FileHandlersMixin(FileOperationSupportMixin):
             if not candidate.is_absolute():
                 candidate = self.token_scope_root / candidate
             candidate = Path(os.path.abspath(candidate))
-            resolved = candidate.resolve(strict=False)
-            self._assert_inside_root(candidate)
-            self._assert_inside_root(resolved)
-            mapping = self.server.mappings.at_path(candidate)
-            mapped_resolved = self.server.mappings.at_path(resolved)
-            if mapping is not None and mapped_resolved is not None and mapping["id"] != mapped_resolved["id"]:
-                raise ApiError(403, "file_elevation_target_mismatch", "file path spans two Mapping targets")
-            actual = (mapping or mapped_resolved or {}).get("id", "server")
-            if actual != target:
-                raise ApiError(403, "file_elevation_target_mismatch", "file path does not match approved target")
+            if not effective_path_access(candidate, self.token_scope_root,
+                                         self.token_record.can_write, self.token_record.allowed_paths):
+                # No implicit host-wide approval, and no relative-path escape.
+                if not value.startswith("/"):
+                    raise ApiError(403, "path_outside_root", "external paths must be absolute")
+                external.append(self._external_directory(value))
+            else:
+                self._assert_inside_root(candidate)
+                resolved = candidate.resolve(strict=False)
+                self._assert_inside_root(resolved)
+                mapping = self.server.mappings.at_path(candidate)
+                mapped_resolved = self.server.mappings.at_path(resolved)
+                if mapping and mapped_resolved and mapping["id"] != mapped_resolved["id"]:
+                    raise ApiError(403, "file_elevation_target_mismatch", "file path spans two Mapping targets")
+                actual = (mapping or mapped_resolved or {}).get("id", "server")
+                if actual != target:
+                    raise ApiError(403, "file_elevation_target_mismatch", "file path does not match approved target")
+            requested.append(candidate)
         capability = "files.write" if operation in FILE_ELEVATION_WRITE else "files.read"
-        self._require_capability(values, target, capability)
+        if external:
+            if len(external) != len(requested):
+                raise ApiError(403, "file_elevation_target_mismatch", "cannot mix workspace and external paths")
+            directory_operations = {"fs_list", "fs_tree", "fs_find", "fs_grep"}
+            if operation == "fs_manifest" and values.get("recursive"):
+                directory_operations.add("fs_manifest")
+            # For file and destination operations approve the containing
+            # directory, not a file path that the Client cannot use as root.
+            requested_scope = (external[0] if operation in directory_operations
+                               else self._external_directory(str(Path(external[0]).parent)))
+            scope = self._require_capability(values, target, capability,
+                                             path=external[0], match_path=True,
+                                             request_path=requested_scope)
+            root = Path(scope)
+            if any(Path(item) != root and root not in Path(item).parents for item in external):
+                raise ApiError(403, "file_elevation_path_mismatch", "paths exceed the approved directory")
+            # Temporarily extend only this HTTP request's path policy. Explicit
+            # deny and read-only rules still win over the temporary grant.
+            access = "rw" if capability == "files.write" else "ro"
+            self.token_record = replace(
+                self.token_record,
+                allowed_paths=(*self.token_record.allowed_paths, PathGrant(scope, access=access)),
+            )
+            for candidate in requested:
+                self._assert_inside_root(candidate)
+                if target == "server":
+                    resolved = candidate.resolve(strict=False)
+                    if ".openkapsel" in resolved.parts:
+                        raise ApiError(403, "reserved_path", "internal directories cannot be elevated")
+                    self._assert_inside_root(resolved)
+                if capability == "files.write":
+                    self._assert_path_writable(candidate)
+            if target != "server":
+                self._file_elevation_external_scope = scope
+                self._file_elevation_external_target = target
+        else:
+            self._require_capability(values, target, capability)
         self.token_record = replace(
             self.token_record,
             **({"can_write": True} if capability == "files.write" else {"can_read": True}),

@@ -83,10 +83,26 @@ and guarded large replacement. The corresponding MCP File tools accept the
 same opt-in arguments. Approval for `files.read` never grants `files.write`
 and vice versa. Without `elevated=true` the original permission flags apply.
 
-**Security boundaries remain unchanged:** elevation does not cross the
-Token's allowed filesystem roots, bypass explicit denied/readonly paths,
-override Mapping write-protection, elevate the Server/Client OS user, or
-authorize Git/Archive RPC, recycle management, resumable uploads, or sharing.
+**External directory approval:** To access an absolute directory outside the
+Token Workspace, add `"path":"/Users"` to the File elevation request and
+set `target` to the **specific Mapping ID** hosting that directory (or
+`server` for a directory on the Server). The approval page displays the
+requested directory. Approval covers only that directory and descendants for
+this Token, Conversation, target and read/write mode. An unscoped read/write
+grant never permits access outside the configured roots. For example, after
+approving `access=read,target=<Mapping ID>,path=/Users`, call
+`fs_list(path="/Users", elevated=true, target="<Mapping ID>", writer_nonce=...,
+plan_id=...)`. For a direct File operation with `elevated=true`, an external
+path also returns an approval URL when its exact directory has not yet been
+approved. A broad filesystem root such as `/` cannot be approved. Mapping Clients must
+advertise `file_stream.external_root_file_api=true`; older Clients reject
+external File API operations with `mapping_client_upgrade_required` rather
+than silently accessing the normal export.
+
+**Security boundaries:** File approval never bypasses explicit denied/readonly
+paths, Mapping write-protection, protected client configuration, or OS user
+permissions. File API access does not authorize Git/Archive RPC, recycle
+management, resumable uploads, or sharing.
 File requests spanning multiple targets cannot borrow another target's grant.
 Approval URLs last five minutes; grants default to ten minutes and are
 scoped to the Token, Conversation, target and capability.

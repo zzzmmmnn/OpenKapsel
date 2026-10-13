@@ -80,7 +80,7 @@ class HttpSupportMixin:
         return SafePathAccess(
             (
                 self.token_scope_root,
-                *(Path(item.path) for item in self.token_record.allowed_paths
+                *(Path(item.path).resolve(strict=False) for item in self.token_record.allowed_paths
                   if item.access != "deny"),
             )
         )
@@ -114,9 +114,22 @@ class HttpSupportMixin:
         if policy == "deny":
             raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")
         if policy is None:
+            operation = getattr(self, "_file_elevation_operation", None)
+            details = None
+            if operation:
+                from openkapsel.files.file_handlers import FILE_ELEVATION_WRITE
+                details = {
+                    "elevation": "Use File API request_elevation with an explicit target "
+                                 "(server or Mapping ID), the absolute directory path, "
+                                 "writer_nonce and in-progress plan_id; approve the returned URL. "
+                                 "Retry with elevated=true, matching target and writer_nonce.",
+                    "access": "write" if operation in FILE_ELEVATION_WRITE else "read",
+                    "path": str(path),
+                }
             raise ApiError(
                 HTTPStatus.FORBIDDEN, "path_outside_root",
                 "path is outside the token workspace and extra accessible paths",
+                details,
             )
 
     @staticmethod
