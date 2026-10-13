@@ -32,10 +32,7 @@ from openkapsel.files.find_order import TopResults, stat_item, SORT_FIELDS, SORT
 from openkapsel.files.recycle import RecycleError
 from openkapsel.files.safe_paths import SafePathError
 from openkapsel.files.uploads import UploadError, UploadRecord
-
-
 from dataclasses import replace
-from openkapsel.auth.tokens import PathGrant
 from openkapsel.auth.path_access import effective_path_access
 
 # Core File APIs supported by temporary Token-scoped read/write elevation.
@@ -256,6 +253,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 self._file_elevation_approved_directory = root
             # Temporarily extend only this HTTP request's path policy. Explicit
             # deny and read-only rules still win over the temporary grant.
+            # PathGrant lives in Server token storage, which imports the Unix
+            # network proxy; never load it during lightweight Client imports.
+            from openkapsel.auth.tokens import PathGrant
             access = "rw" if capability == "files.write" else "ro"
             self.token_record = replace(
                 self.token_record,
