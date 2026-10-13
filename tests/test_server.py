@@ -3311,9 +3311,30 @@ class WorkspaceServerTests(unittest.TestCase):
         _, files_result, _ = self.mcp_request(token, 299, "tools/call", {
             "name": "discovery", "arguments": {"section": "files"},
         })
-        specs = files_result["result"]["structuredContent"]["capabilities"]["mcp"]["operation_families"]["file_transfer"]["operation_specs"]
+        file_families = files_result["result"]["structuredContent"]["capabilities"]["mcp"]["operation_families"]
+        specs = file_families["file_transfer"]["operation_specs"]
         self.assertEqual({"download", "read_binary", "read_large", "replace_large"}, set(specs))
         self.assertEqual(256 * 1024, specs["read_large"]["input_schema"]["properties"]["length"]["maximum"])
+        elevation = file_families["files"]["operation_specs"]["request_elevation"]
+        self.assertEqual(
+            ["access", "target", "writer_nonce"],
+            elevation["input_schema"]["required"],
+        )
+        self.assertEqual(
+            {"access", "target", "writer_nonce", "path"},
+            set(elevation["input_schema"]["properties"]),
+        )
+        self.assertFalse(elevation["input_schema"]["additionalProperties"])
+        self.assertTrue(elevation["write"])
+        self.assertTrue(elevation["mutation_context"])
+        self.assertFalse(elevation["optional_read_context"])
+
+        _, main_result, _ = self.mcp_request(token, 298, "tools/call", {
+            "name": "discovery", "arguments": {"section": "main"},
+        })
+        main_mcp = main_result["result"]["structuredContent"]["capabilities"]["mcp"]
+        self.assertIn("files", main_mcp["dynamic_families"])
+        self.assertEqual("./discovery/files", main_mcp["operation_specs_discovery"]["files"])
         mutate_tool = next(
             tool for tool in listed["result"]["tools"] if tool["name"] == "fs_mutate"
         )

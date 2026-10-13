@@ -14,7 +14,7 @@ SECTION_NAMES = ("transport", "files", "context", "memory", "paths", "rpc", "net
 
 SECTION_MCP_FAMILIES = {
     "authentication": {"credential"},
-    "files": {"upload", "file_transfer"},
+    "files": {"files", "upload", "file_transfer"},
     "shell": {"shell", "task"},
     "schedules": {"schedule"},
     "web": {"web"},
