@@ -128,6 +128,28 @@ class ClientFiles:
             return self._dispatch(operation, args)
 
     def _dispatch(self, op, args):
+        if op == "resolve_path":
+            # A private, read-only Mapping RPC for File approval. Resolve on
+            # the CLIENT: the Server's filesystem cannot resolve these links.
+            raw = args.get("path")
+            directory = args.get("directory", False)
+            if (not isinstance(raw, str) or not raw.startswith("/")
+                or not isinstance(directory, bool) or len(raw) > 4096
+                or "\\x00" in raw or "\\\\" in raw
+                or any(part in {"..", ".openkapsel"} or part.startswith(".openkapsel-")
+                       for part in raw.split("/"))):
+                raise OSError(errno.EACCES, "invalid client absolute path")
+            try:
+                resolved = Path(raw).resolve(strict=directory)
+            except (OSError, RuntimeError):
+                raise OSError(errno.EACCES, "client path could not be resolved") from None
+            if (not resolved.is_absolute() or str(resolved) == "/"
+                or ".openkapsel" in resolved.parts
+                or any(part.startswith(".openkapsel-") for part in resolved.parts)):
+                raise OSError(errno.EACCES, "client path cannot be approved")
+            if directory and not resolved.is_dir():
+                raise OSError(errno.ENOTDIR, "approval scope is not a directory")
+            return str(resolved)
         if op.startswith("api_"):
             from openkapsel.client_runtime.client_file_api import ClientFileAPI
             external_root = args.get("external_root")
@@ -139,10 +161,18 @@ class ClientFiles:
                     or any(p in {"..", ".openkapsel"} for p in external_root.split("/"))
                     or os.path.normpath(external_root) == "/"):
                     raise OSError(errno.EACCES, "invalid external File API root")
-                candidate = Path(external_root)
-                if candidate.is_symlink() or not candidate.is_dir():
-                    raise OSError(errno.EACCES, "external root must be a real directory")
-                if ".openkapsel" in candidate.resolve(strict=True).parts:
+                candidate = Path(os.path.abspath(external_root))
+                # A symlink in *any* ancestor, not only the last component,
+                # permits retargeting an already approved lexical directory.
+                # Require the canonical real pathname on the Client host.
+                try:
+                    canonical = candidate.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    raise OSError(errno.EACCES, "external root must exist") from None
+                if canonical != candidate or not candidate.is_dir():
+                    raise OSError(errno.EACCES,
+                                  "external root must be a canonical real directory without symlinks")
+                if ".openkapsel" in canonical.parts:
                     raise OSError(errno.EACCES, "client runtime directories cannot be exported")
                 extra = ClientFiles(
                     candidate, writable=self.writable,
@@ -153,10 +183,32 @@ class ClientFiles:
                     filename_index=None,
                     index_owned=False,
                 )
+                # Check again after constructing ClientFiles: the pathname
+                # may have been swapped while its root was being resolved.
+                if extra.root != canonical:
+                    extra.close()
+                    raise OSError(errno.EACCES, "external root changed during authorization")
                 extra.sandbox_denied_paths = self.sandbox_denied_paths
                 # The standard filename index is tied to the normal export.
                 # Never let an external directory consult that stale index.
                 extra.rpc_capabilities["file_search"] = {"state": "disabled"}
+                # Reject a requested alias that changed since the Server
+                # resolved it. Operations themselves use ONLY the canonical
+                # paths relative to a descriptor-anchored real root.
+                checks = args.get("external_checks", [])
+                if not isinstance(checks, list) or len(checks) > 1000:
+                    raise OSError(errno.EACCES, "invalid external path checks")
+                for check in checks:
+                    if not isinstance(check, dict) or set(check) != {"original", "resolved"}:
+                        raise OSError(errno.EACCES, "invalid external path check")
+                    original, expected = check["original"], check["resolved"]
+                    if (not isinstance(original, str) or not isinstance(expected, str)
+                        or not original.startswith("/") or len(original) > 4096
+                        or "\x00" in original or "\\" in original
+                        or ".." in original.split("/")):
+                        raise OSError(errno.EACCES, "invalid external path check")
+                    if str(Path(original).resolve(strict=False)) != expected:
+                        raise OSError(errno.EACCES, "external path changed after approval")
                 return ClientFileAPI.dispatch(extra, op[4:], args)
             return ClientFileAPI.dispatch(self, op[4:], args)
         if op == "fstat":

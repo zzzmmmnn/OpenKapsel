@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import re
 import secrets
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from openkapsel.auth.capability_grants import PENDING_SECONDS
@@ -35,7 +36,8 @@ class CapabilityHandlersMixin:
         if not local:
             raise ApiError(403, "https_required", "Workspace passwords require HTTPS (or local loopback development)")
 
-    def _require_capability(self, body, target, capability, *, path="", match_path=False, request_path=None):
+    def _require_capability(self, body, target, capability, *, path="", match_path=False,
+                            request_path=None, original_path="", resolved_path=""):
         self._require_password_transport()
         if not self.server.config.admin_enabled:
             raise ApiError(409, "capability_unavailable", "Capability approval requires administration to be enabled")
@@ -59,7 +61,8 @@ class CapabilityHandlersMixin:
         if grants.granted(workspace, conversation, target, capability, path):
             return path
         try:
-            ticket = grants.request(workspace, conversation, target, capability, path)
+            ticket = grants.request(workspace, conversation, target, capability, path,
+                                    original_path=original_path, resolved_path=resolved_path)
         except RuntimeError:
             raise ApiError(429, "capability_approval_capacity", "Too many pending capability approvals; retry later") from None
         LOGGER.info("approval requested workspace=%r conversation=%s target=%r capability=%s", workspace, conversation, target, capability)
@@ -67,6 +70,8 @@ class CapabilityHandlersMixin:
             "approval_url": self._public_base_url() + "/admin/capability/" + ticket,
             "approval_expires_in": PENDING_SECONDS, "capability": capability, "target": target,
             **({"path": path} if path else {}),
+            **({"original_path": original_path}
+               if original_path and original_path != path else {}),
         })
 
     def _capability_binding(self, item):
@@ -114,6 +119,20 @@ class CapabilityHandlersMixin:
                 minutes = int(self._form_one(form, "minutes") or "10")
                 with self.server.workspace_admin_lock:
                     self._capability_binding(item)
+                    # The user saw a resolved destination. If an alias was
+                    # retargeted while the form was open, this ticket is stale.
+                    if item.path and item.original_path:
+                        expected = item.resolved_path or item.path
+                        directory = expected == item.path
+                        try:
+                            actual = (str(Path(item.original_path).resolve(strict=directory))
+                                      if item.target == "server" else
+                                      self._resolve_mapping_external_path(
+                                          item.target, item.original_path, directory=directory))
+                        except (OSError, RuntimeError, ApiError) as exc:
+                            raise ValueError("Approval path is no longer available") from exc
+                        if actual != expected:
+                            raise ValueError("Approval path changed; request a new approval")
                     grants.approve(ticket, self._form_one(form, "password"), minutes * 60)
                 LOGGER.info("approved workspace=%r conversation=%s target=%r capability=%s seconds=%s", item.workspace, item.conversation_id, item.target, item.capability, minutes * 60)
                 self._send_html(200, page("<h1>Capability approved</h1><p>The AI may retry its operation now. This page has not executed any command.</p>"), script_src="'none'")
@@ -140,7 +159,18 @@ class CapabilityHandlersMixin:
         workspace_record = self.server.tokens.get_by_app_id(item.workspace)
         workspace_label = (f"{workspace_record.name} ({workspace_record.path_prefix})"
                            if workspace_record else "Unavailable Token")
-        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{f"<dt>Authorized directory</dt><dd>{esc(item.path)}</dd>" if item.path else ""}</dl>
+        path_details = ""
+        if item.path:
+            if item.original_path and item.original_path != item.path:
+                path_details = (f'<dt>Original requested path (symlink/alias)</dt><dd>{esc(item.original_path)}</dd>'
+                                f'<dt><strong>Actual authorized directory</strong></dt>'
+                                f'<dd><strong>{esc(item.path)}</strong></dd>')
+                warning = ("IMPORTANT: The requested directory resolves to a different real location. "
+                           "Approval authorizes the ACTUAL directory above, not whatever the "
+                           "symlink may point to later. " + warning)
+            else:
+                path_details = f'<dt>Authorized directory</dt><dd>{esc(item.path)}</dd>'
+        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{path_details}</dl>
 <p class="notice">{esc(warning)}Approve only the conversation and target you intend.</p>
 <form method="post" action="{esc(self._admin_path() + '/capability/' + ticket, quote=True)}" autocomplete="off">
 <input type="hidden" name="csrf" value="{proof}"><label>Workspace password</label><input type="password" name="password" required maxlength="1024" autocomplete="off">

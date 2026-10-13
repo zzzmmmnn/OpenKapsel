@@ -30,6 +30,8 @@ class Pending:
     capability: str
     deadline: float
     path: str = ""
+    original_path: str = ""
+    resolved_path: str = ""
     attempts: int = 0
 
 
@@ -88,11 +90,26 @@ class CapabilityGrants:
         self.active = {key: end for key, end in self.active.items() if end > now}
         return now
 
-    def request(self, workspace: str, conversation_id: int, target: str, capability: str, path: str = "") -> str:
+    def request(self, workspace: str, conversation_id: int, target: str, capability: str,
+                path: str = "", *, original_path: str = "",
+                resolved_path: str = "") -> str:
         if not isinstance(workspace, str) or not target or capability not in CAPABILITIES:
             raise ValueError("invalid capability approval request")
-        if not isinstance(path, str) or (path and (capability not in {"files.read", "files.write"} or not path.startswith("/"))):
+        if (not isinstance(path, str) or
+            (path and (capability not in {"files.read", "files.write"}
+                       or not path.startswith("/") or ".." in path.split("/")
+                       or "\\x00" in path or "\\\\" in path))):
             raise ValueError("invalid approval path")
+        if (not isinstance(original_path, str) or len(original_path) > 4096
+            or (original_path and (not original_path.startswith("/")
+                or ".." in original_path.split("/") or "\x00" in original_path
+                or "\\" in original_path))):
+            raise ValueError("invalid approval original path")
+        if (not isinstance(resolved_path, str) or len(resolved_path) > 4096
+            or (resolved_path and (not resolved_path.startswith("/")
+                or ".." in resolved_path.split("/") or "\x00" in resolved_path
+                or "\\" in resolved_path))):
+            raise ValueError("invalid resolved approval path")
         if type(conversation_id) is not int or conversation_id < 0:
             raise ValueError("invalid conversation id")
         with self.lock:
@@ -103,7 +120,9 @@ class CapabilityGrants:
                 raise RuntimeError("too many pending capability approvals for token")
             ticket = secrets.token_urlsafe(24)
             self.pending_requests[ticket] = Pending(
-                workspace, conversation_id, target, capability, now + PENDING_SECONDS, path=path)
+                workspace, conversation_id, target, capability, now + PENDING_SECONDS,
+                path=path, original_path=original_path,
+                resolved_path=resolved_path)
             return ticket
 
     def pending(self, ticket: str) -> Pending | None:
@@ -121,6 +140,10 @@ class CapabilityGrants:
         """Return the narrowest approved absolute directory containing path."""
         from pathlib import PurePosixPath
         if not path.startswith("/"):
+            return None
+        # PurePosixPath preserves '..' rather than resolving it. Never let a
+        # lexical ancestor match authorize a path that escapes the subtree.
+        if ".." in path.split("/") or "\\x00" in path or "\\\\" in path:
             return None
         candidate = PurePosixPath(path)
         with self.lock:

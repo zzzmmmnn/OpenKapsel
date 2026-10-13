@@ -79,6 +79,59 @@ class ClientFileAPITests(unittest.TestCase):
                 session.close()
                 files.close()
 
+    @unittest.skipIf(os.name == "nt", "POSIX client realpath approval protocol")
+    def test_external_realpath_rpc_and_alias_recheck(self):
+        with tempfile.TemporaryDirectory(prefix="kapsel-client-realpath-") as raw:
+            base = Path(raw).resolve()
+            actual, other = base / "actual", base / "other"
+            actual.mkdir()
+            other.mkdir()
+            (actual / "visible.txt").write_text("VISIBLE", encoding="utf-8")
+            (other / "secret.txt").write_text("PRIVATE", encoding="utf-8")
+            alias = base / "alias"
+            alias.symlink_to(actual, target_is_directory=True)
+            self.assertEqual(str(actual), self.files.dispatch(
+                "resolve_path", {"path": str(alias), "directory": True}))
+            self.assertEqual(str(actual / "new.txt"), self.files.dispatch(
+                "resolve_path", {"path": str(alias / "new.txt")}))
+            with self.assertRaises(OSError):
+                self.files.dispatch("resolve_path", {"path": str(actual) + "/../other"})
+            arguments = {
+                "external_root": str(actual), "display_root": str(alias),
+                "query": {}, "body": {"paths": ["visible.txt"]},
+                "external_checks": [{
+                    "original": str(alias / "visible.txt"),
+                    "resolved": str(actual / "visible.txt"),
+                }],
+            }
+            response = self.files.dispatch("api_fs_read_files", arguments)
+            self.assertEqual(200, response["status"], response)
+            self.assertIn("VISIBLE", str(response))
+            alias.unlink()
+            alias.symlink_to(other, target_is_directory=True)
+            with self.assertRaises(OSError):
+                self.files.dispatch("api_fs_read_files", arguments)
+            self.assertEqual(str(other), self.files.dispatch(
+                "resolve_path", {"path": str(alias), "directory": True}))
+
+    @unittest.skipIf(os.name == "nt", "POSIX openat no-follow traversal")
+    def test_descriptor_root_parent_symlink_swap_cannot_escape(self):
+        from openkapsel.files.safe_paths import SafePathAccess, SafePathError
+
+        with tempfile.TemporaryDirectory(prefix="kapsel-root-swap-") as raw:
+            base = Path(raw).resolve()
+            original, replacement = base / "original", base / "replacement"
+            for path in (original / "approved", replacement / "approved"):
+                path.mkdir(parents=True)
+            (replacement / "approved" / "private.txt").write_text("SECRET")
+            scoped_path = original / "approved"
+            access = SafePathAccess((scoped_path,))
+            original.rename(base / "original-old")
+            original.symlink_to(replacement, target_is_directory=True)
+            with self.assertRaises(SafePathError):
+                fd = access.open(scoped_path / "private.txt", os.O_RDONLY)
+                os.close(fd)
+
     def test_write_read_conditional_replace_and_native_paths_stay_private(self):
         content = "héllo " + str(self.root)
         self.assertEqual(201, self.call("fs_mkdir", {"path": "sub"})["status"])

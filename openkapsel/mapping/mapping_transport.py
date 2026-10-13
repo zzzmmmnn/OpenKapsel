@@ -28,7 +28,7 @@ SERVER_SOURCE_FINGERPRINT = running_fingerprint("server")
 FILE_API_READ_OPERATIONS = frozenset({"fs_list", "fs_stat", "fs_read_files", "fs_read_large", "fs_tree", "fs_grep", "fs_find", "fs_manifest"})
 FILE_API_WRITE_OPERATIONS = frozenset({"fs_replace_large", "fs_mutate", "fs_mkdir", "fs_move"})
 FILE_API_OPERATIONS = FILE_API_READ_OPERATIONS | FILE_API_WRITE_OPERATIONS
-READ_OPERATIONS = frozenset({"fstat", "stat", "list", "read", "open", "close", "flush", "statfs", "recycle_list",
+READ_OPERATIONS = frozenset({"fstat", "stat", "list", "read", "open", "close", "flush", "statfs", "recycle_list", "resolve_path",
                              "task_get", "task_list"}) | frozenset("api_" + op for op in FILE_API_READ_OPERATIONS)
 
 

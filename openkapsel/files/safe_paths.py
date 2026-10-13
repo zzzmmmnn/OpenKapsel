@@ -159,9 +159,27 @@ class SafePathAccess:
 
     @staticmethod
     def _open_root(root: Path) -> int:
+        # O_NOFOLLOW on os.open("/a/b/root") only protects the FINAL
+        # component. If /a/b becomes a symlink after authorization the old
+        # implementation could open an entirely different approved subtree.
+        # Walk from / with an anchored fd and refuse symlinks at EVERY level.
+        if os.name == "nt":
+            try:
+                return os.open(root, DIRECTORY_FLAGS)
+            except OSError as exc:
+                raise SafePathAccess._safe_error(root, exc) from None
+        path = Path(root).absolute()
+        descriptor = -1
         try:
-            return os.open(root, DIRECTORY_FLAGS)
+            descriptor = os.open(path.anchor, DIRECTORY_FLAGS)
+            for component in path.parts[1:]:
+                next_descriptor = os.open(component, DIRECTORY_FLAGS, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
         except OSError as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
             raise SafePathAccess._safe_error(root, exc) from None
 
     @staticmethod

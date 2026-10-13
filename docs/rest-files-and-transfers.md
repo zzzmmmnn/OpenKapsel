@@ -86,8 +86,16 @@ and vice versa. Without `elevated=true` the original permission flags apply.
 **External directory approval:** To access an absolute directory outside the
 Token Workspace, add `"path":"/Users"` to the File elevation request and
 set `target` to the **specific Mapping ID** hosting that directory (or
-`server` for a directory on the Server). The approval page displays the
-requested directory. Approval covers only that directory and descendants for
+`server` for a directory on the Server). The Server resolves Server paths
+locally; for a Mapping it uses the Client's private read-only `resolve_path`
+RPC, so remote symlinks are interpreted on the correct host. The browser
+approval page shows both the **requested path** and an emphasized **actual
+authorized directory** when they differ (otherwise one path). The grant is
+bound to the actual canonical directory and cannot migrate when the alias is
+retargeted. Approval submission rechecks the original symlink destination;
+File RPC validates path aliases again and operates only on canonical paths
+using descriptor-anchored access, refusing substituted symlink ancestors.
+Elevated File operation paths containing `..` are rejected before normalization. Approval covers only that directory and descendants for
 this Token, Conversation, target and read/write mode. An unscoped read/write
 grant never permits access outside the configured roots. For example, after
 approving `access=read,target=<Mapping ID>,path=/Users`, call
@@ -95,8 +103,9 @@ approving `access=read,target=<Mapping ID>,path=/Users`, call
 plan_id=...)`. For a direct File operation with `elevated=true`, an external
 path also returns an approval URL when its exact directory has not yet been
 approved. A broad filesystem root such as `/` cannot be approved. Mapping Clients must
-advertise `file_stream.external_root_file_api=true`; older Clients reject
-external File API operations with `mapping_client_upgrade_required` rather
+advertise `file_stream.external_root_file_api=true` and
+`file_stream.external_realpath=true`; older Clients reject
+external File API approvals/operations with `mapping_client_upgrade_required` rather
 than silently accessing the normal export.
 
 **Security boundaries:** File approval never bypasses explicit denied/readonly

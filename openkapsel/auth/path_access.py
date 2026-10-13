@@ -7,12 +7,14 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def effective_path_access(path: Path, root: Path, writable: bool, grants) -> str | None:
-    # macOS may expose the same path through /tmp and /private/tmp;
-    # compare canonical locations, including symlink targets.
-    path = Path(path).resolve(strict=False)
+def effective_path_access(path: Path, root: Path, writable: bool, grants,
+                          *, resolve_symlinks: bool = True) -> str | None:
+    # Server paths resolve on this host; Mapping external paths have already
+    # been resolved on the CLIENT and must not be resolved again on Server.
+    normalize = (lambda raw: Path(raw).resolve(strict=False)) if resolve_symlinks else Path
+    path = normalize(path)
     roots = [(Path(root), "rw" if writable else "ro")]
-    roots.extend((Path(rule.path).resolve(strict=False), rule.access) for rule in grants)
+    roots.extend((normalize(rule.path), rule.access) for rule in grants)
     matches = [(base, mode) for base, mode in roots
                if path == base or base in path.parents]
     permitted = [base for base, mode in matches if mode != "deny"]

@@ -169,13 +169,176 @@ class CapabilityHTTPTests(unittest.TestCase):
             "writer_nonce": self.ownership()[1], **values,
         })
 
+    def test_server_external_approval_is_bound_to_actual_symlink_target(self):
+        self.configure()
+        nonce = self.ownership()[1]
+        with tempfile.TemporaryDirectory(prefix="kapsel-symlink-grant-") as raw:
+            base = Path(raw).resolve()
+            allowed = base / "approved"
+            other = base / "private"
+            allowed.mkdir()
+            other.mkdir()
+            (allowed / "public.txt").write_text("permitted", encoding="utf-8")
+            (other / "private.txt").write_text("MUST_NOT_DISCLOSE", encoding="utf-8")
+            alias = base / "alias"
+            alias.symlink_to(allowed, target_is_directory=True)
+
+            status, pending = self.request_file_elevation(
+                "read", path=str(alias)
+            )
+            self.assertEqual(200, status, pending)
+            # The human must approve the real, immutable target, not a
+            # symbolic link whose destination could be changed afterward.
+            self.assertEqual(str(allowed), pending["path"])
+            self.assertEqual(str(alias), pending["original_path"])
+            _, _, _, page = self.approval({"error": {"details": pending}})
+            self.assertIn(b"Actual authorized directory", page)
+            self.assertIn(str(alias).encode(), page)
+            self.assertIn(str(allowed).encode(), page)
+            self.approve({"error": {"details": pending}})
+            args = {
+                "paths": [str(alias / "public.txt")],
+                "elevated": True, "target": "server", "writer_nonce": nonce,
+            }
+            status, readable = self.api("/fs/read/files", args)
+            self.assertEqual(200, status, readable)
+            self.assertEqual("permitted", readable["items"][0]["content"])
+
+            alias.unlink()
+            alias.symlink_to(other, target_is_directory=True)
+            status, denied = self.api(
+                "/fs/read/files",
+                dict(args, paths=[str(alias / "private.txt")]),
+            )
+            self.assertNotEqual(200, status, denied)
+            self.assertNotIn("MUST_NOT_DISCLOSE", str(denied))
+            self.assertFalse(self.server.capability_grants.granted_path(
+                self.record.app_id, self.ownership()[0],
+                "server", "files.read", str(other / "private.txt")
+            ))
+
+    def test_external_approval_rejects_dot_dot_and_cannot_escape(self):
+        self.configure()
+        nonce = self.ownership()[1]
+        with tempfile.TemporaryDirectory(prefix="kapsel-dotdot-grant-") as raw:
+            base = Path(raw).resolve()
+            allowed = base / "approved"
+            allowed.mkdir()
+            (base / "private.txt").write_text("SECRET", encoding="utf-8")
+            self.assertEqual(400, self.request_file_elevation(
+                "read", path=str(allowed) + "/../"
+            )[0])
+            status, pending = self.request_file_elevation("read", path=str(allowed))
+            self.assertEqual(200, status, pending)
+            self.approve({"error": {"details": pending}})
+            status, denied = self.api("/fs/read/files", {
+                "paths": [str(allowed) + "/../private.txt"],
+                "elevated": True, "target": "server", "writer_nonce": nonce,
+            })
+            self.assertEqual(400, status, denied)
+            self.assertEqual("invalid_path", denied["error"]["code"])
+            self.assertNotIn("SECRET", str(denied))
+            self.assertIsNone(self.server.capability_grants.granted_path(
+                self.record.app_id, self.ownership()[0],
+                "server", "files.read", str(allowed) + "/../private.txt"
+            ))
+
+    def test_mapping_external_approval_cannot_follow_symlink_parent(self):
+        self.configure()
+        nonce = self.ownership()[1]
+        mapping = self.row["id"]
+        self.session.call = lambda operation, args: (
+            self.files.dispatch(operation, args) if (operation.startswith("api_") or operation == "resolve_path")
+            else self.tasks.dispatch(operation, args)
+        )
+        self.session.capabilities.setdefault("file_stream", {}).update(
+            external_root_file_api=True, external_realpath=True)
+        with tempfile.TemporaryDirectory(prefix="kapsel-remote-symlink-") as raw:
+            base = Path(raw).resolve()
+            first = base / "first"
+            second = base / "second"
+            for directory in (first, second):
+                (directory / "sub").mkdir(parents=True)
+            (first / "sub" / "visible.txt").write_text("public", encoding="utf-8")
+            (second / "sub" / "private.txt").write_text("MUST_NOT_DISCLOSE", encoding="utf-8")
+            alias = base / "alias"
+            alias.symlink_to(first, target_is_directory=True)
+            scope = str(alias / "sub")
+            status, approval = self.request_file_elevation("read", mapping, path=scope)
+            self.assertEqual(200, status, approval)
+            self.assertEqual(str(first / "sub"), approval["path"])
+            self.assertEqual(scope, approval["original_path"])
+            location, headers, form, page = self.approval({"error": {"details": approval}})
+            self.assertIn(scope.encode(), page)
+            self.assertIn(str(first / "sub").encode(), page)
+            self.assertIn(b"Actual authorized directory", page)
+            self.assertIn(b"IMPORTANT:", page)
+            # A link that changes while the approval page is open must not
+            # be authorized by the old ticket.
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+            self.assertEqual(400, self.form(location, form, headers)[0])
+            alias.unlink()
+            alias.symlink_to(first, target_is_directory=True)
+            self.approve({"error": {"details": self.request_file_elevation(
+                "read", mapping, path=scope)[1]}})
+            args = {
+                "paths": [scope + "/visible.txt"], "elevated": True,
+                "target": mapping, "writer_nonce": nonce,
+            }
+            status, allowed = self.api("/fs/read/files", args)
+            self.assertEqual(200, status, allowed)
+            self.assertEqual("public", allowed["items"][0]["content"])
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+            status, denied = self.api("/fs/read/files", dict(
+                args, paths=[scope + "/private.txt"],
+            ))
+            self.assertNotEqual(200, status, denied)
+            self.assertNotIn("MUST_NOT_DISCLOSE", str(denied))
+
+    def test_mapping_file_symlink_approval_binds_leaf_destination(self):
+        self.configure()
+        mapping = self.row["id"]
+        self.session.call = lambda operation, args: (
+            self.files.dispatch(operation, args)
+            if (operation.startswith("api_") or operation == "resolve_path")
+            else self.tasks.dispatch(operation, args)
+        )
+        self.session.capabilities.setdefault("file_stream", {}).update(
+            external_root_file_api=True, external_realpath=True)
+        with tempfile.TemporaryDirectory(prefix="kapsel-remote-leaf-link-") as raw:
+            base = Path(raw).resolve()
+            allowed, other = base / "allowed", base / "other"
+            allowed.mkdir()
+            other.mkdir()
+            (allowed / "ok.txt").write_text("SAFE")
+            (other / "secret.txt").write_text("PRIVATE")
+            alias = base / "alias.txt"
+            alias.symlink_to(allowed / "ok.txt")
+            args = {"paths": [str(alias)], "elevated": True,
+                    "target": mapping, "writer_nonce": self.ownership()[1]}
+            status, prompted = self.api("/fs/read/files", args)
+            self.assertEqual(403, status, prompted)
+            self.assertEqual(str(allowed), prompted["error"]["details"]["path"])
+            self.assertEqual(str(alias), prompted["error"]["details"]["original_path"])
+            self.approve(prompted)
+            status, readable = self.api("/fs/read/files", args)
+            self.assertEqual(200, status, readable)
+            self.assertEqual("SAFE", readable["items"][0]["content"])
+            alias.unlink()
+            alias.symlink_to(other / "secret.txt")
+            status, blocked = self.api("/fs/read/files", args)
+            self.assertNotEqual(200, status, blocked)
+            self.assertNotIn("PRIVATE", str(blocked))
+
     def test_external_directory_requires_separate_path_scoped_approval(self):
         from urllib.parse import urlencode
         from openkapsel.auth.tokens import PathGrant
         self.configure()
         nonce = self.ownership()[1]
         with tempfile.TemporaryDirectory(prefix="kapsel-outside-") as raw:
-            outer = Path(raw)
+            outer = Path(raw).resolve()
             (outer / "public.txt").write_text("external content")
             (outer / "denied.txt").write_text("private")
             status, blocked = self.api("/fs/read/files", {
@@ -295,12 +458,14 @@ class CapabilityHTTPTests(unittest.TestCase):
         nonce = self.ownership()[1]
         mapping = self.row["id"]
         self.session.call = lambda operation, args: (
-            self.files.dispatch(operation, args) if operation.startswith("api_")
+            self.files.dispatch(operation, args) if (operation.startswith("api_") or operation == "resolve_path")
             else self.tasks.dispatch(operation, args)
         )
-        self.session.capabilities.setdefault("file_stream", {})["external_root_file_api"] = True
+        self.session.capabilities.setdefault("file_stream", {}).update(
+            external_root_file_api=True, external_realpath=True)
 
         with tempfile.TemporaryDirectory(prefix="kapsel-client-keepalive-") as raw:
+            raw = str(Path(raw).resolve())
             outside = Path(raw)
             (outside / "visible.txt").write_text("keepalive external content")
             status, pending = self.request_file_elevation("read", mapping, path=raw)
@@ -364,11 +529,13 @@ class CapabilityHTTPTests(unittest.TestCase):
         nonce = self.ownership()[1]
         mapping = self.row["id"]
         self.session.call = lambda operation, args: (
-            self.files.dispatch(operation, args) if operation.startswith("api_")
+            self.files.dispatch(operation, args) if (operation.startswith("api_") or operation == "resolve_path")
             else self.tasks.dispatch(operation, args)
         )
-        self.session.capabilities.setdefault("file_stream", {})["external_root_file_api"] = True
+        self.session.capabilities.setdefault("file_stream", {}).update(
+            external_root_file_api=True, external_realpath=True)
         with tempfile.TemporaryDirectory(prefix="kapsel-client-external-") as raw:
+            raw = str(Path(raw).resolve())
             outside = Path(raw)
             (outside / "visible.txt").write_text("client external content")
             (outside / "protected.txt").write_text("client secret")
@@ -428,6 +595,11 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(409, status, old_client)
             self.assertIn(b"mapping_client_upgrade_required", old_client)
             self.session.capabilities["file_stream"]["external_root_file_api"] = True
+            self.session.capabilities["file_stream"].pop("external_realpath")
+            status, unsupported = self.request_file_elevation("read", mapping, path=raw)
+            self.assertEqual(409, status, unsupported)
+            self.assertEqual("mapping_client_upgrade_required", unsupported["error"]["code"])
+            self.session.capabilities["file_stream"]["external_realpath"] = True
             self.assertNotIn("protected.txt", [x["name"] for x in listing["entries"]])
             status, result = self.api("/fs/read/files", {
                 "paths": [str(outside / "visible.txt")], "elevated": True,
@@ -538,7 +710,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         # does not implement the independent File API RPC protocol. Delegate
         # only file RPC operations to the separate ClientFiles fixture.
         self.session.call = lambda operation, args: (
-            self.files.dispatch(operation, args) if operation.startswith("api_")
+            self.files.dispatch(operation, args) if (operation.startswith("api_") or operation == "resolve_path")
             else self.tasks.dispatch(operation, args)
         )
         query = urlencode({

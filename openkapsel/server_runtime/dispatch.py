@@ -91,6 +91,7 @@ class RequestDispatchMixin:
         self._file_elevation_operation = None
         self._file_elevation_external_scope = None
         self._file_elevation_external_target = None
+        self._file_elevation_approved_directory = None
         self.__dict__.pop("_file_elevation_cached_body", None)
         self.oauth_connection_id = None
         self.static_mcp_connection_id = None

@@ -49,6 +49,10 @@ class HttpSupportMixin:
                 "Storage Provider mapping is protected, read-only, or offline",
             ) from None
         resolved = candidate if self.server.mappings.at_path(candidate) else candidate.resolve(strict=False)
+        approved = getattr(self, "_file_elevation_approved_directory", None)
+        if approved is not None and resolved != approved and approved not in resolved.parents:
+            raise ApiError(403, "file_elevation_path_mismatch",
+                           "resolved file path no longer belongs to the approved directory")
         for checked in (candidate.absolute(), resolved):
             try:
                 relative_to_workspace = checked.relative_to(self.token_scope_root)

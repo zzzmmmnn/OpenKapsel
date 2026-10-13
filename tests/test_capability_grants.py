@@ -52,6 +52,24 @@ class CapabilityGrantTests(unittest.TestCase):
                     self.store.set_password(self.workspace, invalid)
         self.assertTrue(self.store.verify_workspace_password(self.workspace, "abc123"))
 
+    def test_path_scoped_approval_rejects_dotdot_at_store_boundary(self):
+        with self.assertRaisesRegex(ValueError, "invalid approval path"):
+            self.store.request(
+                self.workspace, 9, "server", "files.read",
+                "/approved/../private",
+            )
+        ticket = self.store.request(
+            self.workspace, 9, "server", "files.read", "/approved"
+        )
+        self.store.approve(ticket, "passphrase-for-test-123")
+        self.assertIsNone(self.store.granted_path(
+            self.workspace, 9, "server", "files.read",
+            "/approved/../private.txt",
+        ))
+        self.assertEqual("/approved", self.store.granted_path(
+            self.workspace, 9, "server", "files.read", "/approved/public.txt"
+        ))
+
     def test_default_approval_scoped_by_workspace_conversation_target_capability(self):
         ticket = self.store.request(self.workspace, 12, "server", "shell.elevated")
         self.assertFalse(self.store.granted(self.workspace, 12, "server", "shell.elevated"))
