@@ -134,3 +134,67 @@ jobs:
 
       - name: Run tests
         run: python3.12 -m unittest discover -s tests -v
+
+  linux-distro-additional:
+    name: Linux distro / ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:bookworm
+            distro: debian
+          - image: opensuse/tumbleweed:latest
+            distro: opensuse
+          - image: archlinux:latest
+            distro: arch
+    container:
+      image: ${{ matrix.image }}
+
+    steps:
+      # Install Git before checkout: minimal distribution images do not ship it.
+      - name: Install distribution Python and Git
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "${{ matrix.distro }}" in
+            debian)
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                git ca-certificates python3 python3-pip python3-venv
+              ;;
+            opensuse)
+              zypper --non-interactive refresh
+              zypper --non-interactive install --no-recommends \
+                git ca-certificates python3 python3-pip
+              ;;
+            arch)
+              pacman -Syu --noconfirm --needed \
+                git ca-certificates python python-pip
+              ;;
+          esac
+          cat /etc/os-release
+          python3 --version
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Debian/Arch system Python enforces PEP 668. A venv also keeps the
+      # installation identical across all three distribution environments.
+      - name: Install project in an isolated virtual environment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install --editable '.[client,data-rpc]'
+
+      - name: Check installed package version and compile sources
+        shell: bash
+        run: |
+          .venv/bin/python -c "import importlib.metadata, openkapsel; assert openkapsel.__version__ == importlib.metadata.version('openkapsel')"
+          .venv/bin/python -m compileall -q openkapsel openkapsel_runtime
+
+      - name: Run full test suite
+        run: .venv/bin/python -m unittest discover -s tests -v
