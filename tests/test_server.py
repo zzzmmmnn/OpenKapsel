@@ -4004,9 +4004,18 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         read_names = {tool["name"] for tool in read_tools["result"]["tools"]}
         self.assertTrue({"discovery", "fs_list", "fs_read_files", "recycle_list"}.issubset(read_names))
-        self.assertTrue(
-            {"fs_write", "fs_delete", "recycle_restore", "shell_exec"}.isdisjoint(read_names)
+        # File write tools remain discoverable so a Token can request a
+        # temporary files.write grant. Visibility does not authorize writes.
+        self.assertTrue({"fs_write", "fs_delete"}.issubset(read_names))
+        self.assertTrue({"recycle_restore", "shell_exec"}.isdisjoint(read_names))
+        status, denied, _ = self.mcp_request(
+            read_only.token, 105, "tools/call",
+            {"name": "fs_write",
+             "arguments": {"path": "not-authorized.txt", "content": "denied"}},
         )
+        self.assertEqual(200, status)
+        self.assertTrue(denied["result"]["isError"])
+        self.assertFalse((self.root / "mcp-read-only" / "not-authorized.txt").exists())
         status, read_discovery = self.request(
             "GET", f"/kapsel/w/{read_only.token}/discovery/full"
         )
@@ -4014,9 +4023,9 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(
             discovery_operation(read_discovery, "fs_read", "files")["available"]
         )
-        self.assertFalse(
+        self.assertTrue(
             discovery_operation(read_discovery, "fs_write", "mutate")["available"]
-        )
+        )  # Available for an explicit approved files.write request only.
         self.assertFalse(
             discovery_operation(read_discovery, "task", "kill")["available"]
         )
