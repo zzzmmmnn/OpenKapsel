@@ -36,6 +36,12 @@ class HttpSupportMixin:
         if not candidate.is_absolute():
             candidate = root / candidate
         candidate = Path(os.path.abspath(candidate))
+        # A permanently allowed extra path never substitutes for the separate
+        # Conversation-scoped external File elevation grant. In batch reads,
+        # denied items are still reported individually instead of globally.
+        if str(candidate) in getattr(self, "_file_elevation_denied_paths", ()):
+            raise ApiError(404, "path_unavailable",
+                           "path does not exist or access is denied")
         try:
             self.server.mappings.check_path(candidate, write=write, protect_root=write)
         except OSError as exc:

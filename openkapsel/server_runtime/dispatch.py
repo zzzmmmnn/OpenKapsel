@@ -89,6 +89,8 @@ class RequestDispatchMixin:
         # File elevation is explicitly opt-in per request, so never retain its
         # temporary path/routing hints across requests on the same connection.
         self._file_elevation_operation = None
+        self._file_elevation_active = False
+        self._file_elevation_denied_paths = frozenset()
         self._file_elevation_external_scope = None
         self._file_elevation_external_target = None
         self._file_elevation_approved_directory = None
@@ -248,6 +250,13 @@ class RequestDispatchMixin:
                     self._discard_request_body()
                 self._dispatch_endpoint(endpoint, route_match, query, effective_method)
         except ApiError as exc:
+            if (getattr(self, "_file_elevation_active", False)
+                    and exc.code in {"path_not_found", "path_outside_root",
+                                     "path_access_denied", "read_only_path",
+                                     "not_a_directory", "file_elevation_path_mismatch",
+                                     "file_elevation_target_mismatch"}):
+                exc = ApiError(404, "path_unavailable",
+                               "path does not exist or access is denied")
             error_payload: dict[str, Any] = {
                 "error": {"code": exc.code, "message": exc.message}
             }

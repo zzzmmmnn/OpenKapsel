@@ -90,7 +90,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
     def _handle_files_elevation_request(self) -> None:
         """Ask for a read/write grant without performing any file operation."""
         body = self._read_json()
-        if set(body) - {"access", "target", "path", "writer_nonce", "plan_id", "taskname", "message"}:
+        if set(body) - {"access", "target", "path", "scope_is_directory", "writer_nonce", "plan_id", "taskname", "message"}:
             raise ApiError(400, "invalid_request", "unexpected file elevation request field")
         access = body.get("access")
         if access not in ("read", "write"):
@@ -106,6 +106,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
         # Do not resolve any path (locally or through Mapping RPC) before
         # the Workspace password is verified in the browser.
         scope = self._external_directory(body["path"]) if "path" in body else ""
+        scope_is_directory = self._optional_bool(body, "scope_is_directory", True)
+        if not scope and not scope_is_directory:
+            raise ApiError(400, "invalid_request", "scope_is_directory=false requires path")
         capability = "files." + access
         if scope and target != "server":
             self._require_mapping_realpath_support(target)
@@ -127,7 +130,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
             return
         try:
             self._require_capability(body, target, capability, path=scope,
-                                     original_path=scope)
+                                     original_path=scope,
+                                     scope_is_directory=scope_is_directory)
         except ApiError as exc:
             if exc.code != "capability_approval_required":
                 raise
@@ -180,6 +184,13 @@ class FileHandlersMixin(FileOperationSupportMixin):
             paths = [values.get("source"), values.get("destination")]
         else:
             paths = [values.get("path", ".")]
+        # Authenticate File capability before looking at symlink destinations;
+        # an existing scoped grant already proves password authorization.
+        capability = "files.write" if operation in FILE_ELEVATION_WRITE else "files.read"
+        scoped_grant = self._has_scoped_file_grant(values, target, capability)
+        if not scoped_grant:
+            self._require_capability(values, target, capability)
+        self._file_elevation_active = True
         requested = []
         external = []
         original_external = []
@@ -203,22 +214,25 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 external.append(self._external_directory(value))
                 original_external.append(self._external_directory(value))
             else:
-                # A symlink anywhere inside the workspace may point to an
-                # external host directory. Queue a scoped approval on its
-                # lexical spelling, and only resolve the destination *after*
-                # the user supplies their Workspace password. Do not classify
-                # based on the secret destination before authentication.
-                if target == "server" and any(
-                    part.is_symlink() for part in (candidate, *candidate.parents)
-                    if part == self.token_scope_root or self.token_scope_root in part.parents
-                ):
+                # Only password-authenticated callers may trigger realpath
+                # lookup here. Internal symlinks use ordinary Workspace access;
+                # external ones require an independently approved real scope.
+                try:
+                    resolved = candidate.resolve(strict=False)
+                except (OSError, RuntimeError):
+                    raise ApiError(404, "path_unavailable",
+                                   "path does not exist or access is denied") from None
+                if (target == "server" and resolved != self.token_scope_root
+                        and self.token_scope_root not in resolved.parents):
                     original_external.append(self._external_directory(str(candidate)))
                     external.append(self._external_directory(str(candidate)))
                     requested.append(candidate)
                     continue
-                self._assert_inside_root(candidate)
-                resolved = candidate.resolve(strict=False)
-                self._assert_inside_root(resolved)
+                # Batch reads report per-item missing/denied results. Do not
+                # turn a protected path into a distinguishable top-level error.
+                if not (target == "server" and operation == "fs_read_files"):
+                    self._assert_inside_root(candidate)
+                    self._assert_inside_root(resolved)
                 mapping = self.server.mappings.at_path(candidate)
                 mapped_resolved = self.server.mappings.at_path(resolved)
                 if mapping and mapped_resolved and mapping["id"] != mapped_resolved["id"]:
@@ -227,28 +241,21 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 if actual != target:
                     raise ApiError(403, "file_elevation_target_mismatch", "file path does not match approved target")
             requested.append(candidate)
-        capability = "files.write" if operation in FILE_ELEVATION_WRITE else "files.read"
         if external:
-            if len(external) != len(requested):
-                raise ApiError(403, "file_elevation_target_mismatch", "cannot mix workspace and external paths")
-            directory_operations = {"fs_list", "fs_tree", "fs_find", "fs_grep"}
-            if operation == "fs_manifest" and values.get("recursive"):
-                directory_operations.add("fs_manifest")
-            is_directory = operation in directory_operations
-            original_scope = (external[0] if is_directory else
-                              self._external_directory(str(Path(external[0]).parent)))
+            if len(external) != len(requested) or not scoped_grant:
+                # Ordinary operations do not distinguish unknown paths from
+                # unauthorized realpaths. Scope approval uses the explicit
+                # /files/elevation/request endpoint instead.
+                if target == "server" and operation == "fs_read_files":
+                    self._file_elevation_denied_paths = frozenset(external)
+                    self.token_record = replace(self.token_record, can_read=True)
+                    return  # batch handler normalizes inaccessible item errors
+                raise ApiError(404, "path_unavailable",
+                               "path does not exist or access is denied")
             if target != "server":
                 self._require_mapping_realpath_support(target)
-            # With no prior authenticated scoped grant, queue the lexical
-            # request *without* probing any external paths.
-            if not self._has_scoped_file_grant(values, target, capability):
-                self._require_capability(values, target, capability,
-                                         path=original_scope,
-                                         original_path=original_external[0],
-                                         scope_is_directory=is_directory)
-                raise AssertionError("Unapproved scoped File access must require approval")
             # A prior password-authorized scope exists: resolve for an exact
-            # grant lookup, but an unrelated/missing target always prompts
+            # grant lookup, but an unrelated/missing target always fails
             # identically and never returns a canonical path or failure class.
             real_paths = []
             try:
@@ -262,11 +269,12 @@ class FileHandlersMixin(FileOperationSupportMixin):
             except (OSError, ValueError, RuntimeError, ApiError):
                 found = None
             if found is None:
-                self._require_capability(values, target, capability,
-                                         path=original_scope,
-                                         original_path=original_external[0],
-                                         scope_is_directory=is_directory)
-                raise AssertionError("Unapproved scoped File access must require approval")
+                if target == "server" and operation == "fs_read_files":
+                    self._file_elevation_denied_paths = frozenset(external)
+                    self.token_record = replace(self.token_record, can_read=True)
+                    return
+                raise ApiError(404, "path_unavailable",
+                               "path does not exist or access is denied")
             scope = found
             root = Path(scope)
             if any(Path(item) != root and root not in Path(item).parents for item in real_paths):
@@ -291,11 +299,13 @@ class FileHandlersMixin(FileOperationSupportMixin):
             )
             for index, candidate in enumerate(requested):
                 if target == "server":
-                    self._assert_inside_root(candidate)
+                    if operation != "fs_read_files":
+                        self._assert_inside_root(candidate)
                     resolved = candidate.resolve(strict=False)
                     if ".openkapsel" in resolved.parts:
                         raise ApiError(403, "reserved_path", "internal directories cannot be elevated")
-                    self._assert_inside_root(resolved)
+                    if operation != "fs_read_files":
+                        self._assert_inside_root(resolved)
                     if capability == "files.write":
                         self._assert_path_writable(candidate)
                 else:
@@ -1181,12 +1191,24 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 error = decode_error(encoding)
                 item.update(status=415, error={"code": error.code, "message": error.message})
             except ApiError as exc:
-                item.update(status=int(exc.status), error={"code": exc.code, "message": exc.message})
+                if (getattr(self, "_file_elevation_active", False)
+                        and exc.code in {"path_not_found", "path_outside_root",
+                                         "path_access_denied", "read_only_path",
+                                         "not_a_directory", "file_elevation_path_mismatch"}):
+                    item.update(status=404, error={"code": "path_unavailable",
+                                                   "message": "path does not exist or access is denied"})
+                else:
+                    item.update(status=int(exc.status), error={"code": exc.code, "message": exc.message})
             except OSError as exc:
-                status, code = {errno.ENOENT: (404, "path_not_found"), errno.EPERM: (403, "path_access_denied"),
-                                errno.EACCES: (403, "path_access_denied"), errno.EINVAL: (400, "invalid_request")}.get(
-                                    exc.errno, (409, "file_operation_failed"))
-                item.update(status=status, error={"code": code, "message": "file could not be read"})
+                if (getattr(self, "_file_elevation_active", False)
+                        and exc.errno in {errno.ENOENT, errno.ENOTDIR, errno.EPERM, errno.EACCES}):
+                    item.update(status=404, error={"code": "path_unavailable",
+                                                   "message": "path does not exist or access is denied"})
+                else:
+                    status, code = {errno.ENOENT: (404, "path_not_found"), errno.EPERM: (403, "path_access_denied"),
+                                    errno.EACCES: (403, "path_access_denied"), errno.EINVAL: (400, "invalid_request")}.get(
+                                        exc.errno, (409, "file_operation_failed"))
+                    item.update(status=status, error={"code": code, "message": "file could not be read"})
             items.append(item)
         self._send_json(207 if any(item["status"] != 200 for item in items) else 200,
                         {"items": items, "total": len(items), "total_chars": total})

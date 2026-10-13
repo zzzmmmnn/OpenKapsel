@@ -288,10 +288,84 @@ class CapabilityHTTPTests(unittest.TestCase):
         status, prompt = self.api("/fs/write/mkdir", args)
         self.assertEqual(403, status, prompt)
         self.assertEqual("capability_approval_required", prompt["error"]["code"])
+        # The ordinary files.write password grant is sufficient; the real
+        # directory is inside the Workspace and needs no scoped grant.
+        self.assertNotIn("path", prompt["error"]["details"])
         self.approve(prompt)
         status, result = self.api("/fs/write/mkdir", args)
         self.assertIn(status, (200, 201), result)
         self.assertTrue((original / "new-folder").is_dir())
+        (root / "second-shortcut").symlink_to(original, target_is_directory=True)
+        status, result = self.api("/fs/write/mkdir", dict(args, path="second-shortcut/another"))
+        self.assertIn(status, (200, 201), result)
+        self.assertTrue((original / "another").is_dir())
+        self.assertFalse(self.server.capability_grants.has_scoped_grant(
+            self.record.app_id, self.ownership()[0], "server", "files.write"))
+
+    def test_elevated_internal_symlink_and_unavailable_paths_share_safe_errors(self):
+        from urllib.parse import urlencode
+        from openkapsel.auth.tokens import PathGrant
+        self.configure()
+        root = self.server.tokens.scope_root(self.record)
+        real = root / "actual"
+        real.mkdir()
+        (real / "visible.txt").write_text("WORKSPACE DATA")
+        alias = root / "inside-alias"
+        alias.symlink_to(real, target_is_directory=True)
+        with tempfile.TemporaryDirectory(prefix="kapsel-unavailable-alias-") as raw:
+            outside = Path(raw).resolve()
+            (outside / "hidden.txt").write_text("MUST STAY PRIVATE")
+            external_alias = root / "external-alias"
+            external_alias.symlink_to(outside, target_is_directory=True)
+            secret = root / "blocked.txt"
+            secret.write_text("DO NOT READ")
+            self.server.tokens.update(
+                self.record.token, shell_mode="restricted", allowed_paths=(
+                    PathGrant(str(outside), access="ro"),
+                    PathGrant(str(secret), access="deny"),
+                ),
+            )
+            status, pending = self.request_file_elevation("read")
+            self.assertEqual(200, status)
+            self.approve({"error": {"details": pending}})
+            base = {"elevated": True, "target": "server",
+                    "writer_nonce": self.ownership()[1]}
+            status, visible = self.api("/fs/read/files", dict(base, paths=["inside-alias/visible.txt"]))
+            self.assertEqual(200, status, visible)
+            self.assertEqual("WORKSPACE DATA", visible["items"][0]["content"])
+            mixed_status, mixed = self.api("/fs/read/files", dict(
+                base, paths=["inside-alias/visible.txt", "external-alias/hidden.txt"]))
+            self.assertEqual(207, mixed_status, mixed)
+            self.assertEqual("WORKSPACE DATA", mixed["items"][0]["content"])
+            self.assertEqual(404, mixed["items"][1]["status"])
+            self.assertEqual("path_unavailable", mixed["items"][1]["error"]["code"])
+            outcomes = []
+            for path in ("missing.txt", "external-alias/hidden.txt",
+                         str(outside / "hidden.txt"), "blocked.txt"):
+                status, result = self.api("/fs/read/files", dict(base, paths=[path]))
+                self.assertEqual(207, status, result)
+                self.assertEqual(404, result["items"][0]["status"])
+                outcomes.append(result["items"][0]["error"])
+                self.assertNotIn("MUST STAY PRIVATE", str(result))
+            self.assertTrue(all(outcome == outcomes[0] for outcome in outcomes))
+            self.assertEqual("path_unavailable", outcomes[0]["code"])
+            query_base = {"elevated": "true", "target": "server",
+                          "writer_nonce": self.ownership()[1], "plan_id": self.plan}
+            errors = []
+            for path in ("not-here", "external-alias", str(outside)):
+                query = urlencode(dict(query_base, path=path))
+                status, _, raw_body = self.request(
+                    "GET", self.base + "/fs/query/list?" + query, headers=self.headers)
+                self.assertEqual(404, status, raw_body)
+                errors.append(json.loads(raw_body)["error"])
+            self.assertEqual(errors[0], errors[1])
+            self.assertEqual(errors[1], errors[2])
+            # A symlink retarget between requests is checked again.
+            alias.unlink()
+            alias.symlink_to(outside, target_is_directory=True)
+            status, blocked = self.api("/fs/read/files", dict(base, paths=["inside-alias/hidden.txt"]))
+            self.assertEqual(207, status, blocked)
+            self.assertEqual(outcomes[0], blocked["items"][0]["error"])
 
     def test_workspace_symlink_to_external_directory_stays_usable_after_approval(self):
         self.configure()
@@ -310,11 +384,23 @@ class CapabilityHTTPTests(unittest.TestCase):
                     "target": "server", "writer_nonce": nonce}
             status, prompt = self.api("/fs/read/files", args)
             self.assertEqual(403, status, prompt)
-            details = prompt["error"]["details"]
             self.assertEqual("capability_approval_required", prompt["error"]["code"])
-            self.assertEqual(str(alias), details["path"])
+            self.assertNotIn("path", prompt["error"]["details"])
             self.assertNotIn(str(allowed), str(prompt))
-            location, headers, form, initial = self.approval(prompt)
+            # Once the broad read grant exists, neither an external symlink
+            # nor a missing Workspace file reveals whether a target exists.
+            self.approve(prompt)
+            status, unavailable = self.api("/fs/read/files", args)
+            status_missing, missing = self.api(
+                "/fs/read/files", dict(args, paths=["nonexistent-file.txt"]))
+            self.assertEqual(status_missing, status)
+            self.assertEqual(missing["items"][0]["error"], unavailable["items"][0]["error"])
+            self.assertEqual("path_unavailable", unavailable["items"][0]["error"]["code"])
+            status, pending = self.request_file_elevation("read", path=str(alias))
+            self.assertEqual(200, status, pending)
+            self.assertEqual(str(alias), pending["path"])
+            approval = {"error": {"details": pending}}
+            location, headers, form, initial = self.approval(approval)
             self.assertNotIn(str(allowed).encode(), initial)
             status, _, confirmation = self.form(location, form, headers)
             self.assertEqual(200, status, confirmation)
@@ -526,9 +612,18 @@ class CapabilityHTTPTests(unittest.TestCase):
                     "target": mapping, "writer_nonce": self.ownership()[1]}
             status, prompted = self.api("/fs/read/files", args)
             self.assertEqual(403, status, prompted)
-            self.assertEqual(str(alias.parent), prompted["error"]["details"]["path"])
-            self.assertNotIn("original_path", prompted["error"]["details"])
-            self.approve(prompted)
+            self.assertNotIn("path", prompted["error"]["details"])
+            self.approve(prompted)  # broad files.read, not the external scope
+            status, unavailable = self.api("/fs/read/files", args)
+            self.assertEqual(404, status)
+            self.assertEqual("path_unavailable", unavailable["error"]["code"])
+            # A leaf symlink cannot be approved as a directory. Request a
+            # file-scoped confirmation to approve the REAL parent directory.
+            status, pending = self.request_file_elevation(
+                "read", mapping, path=str(alias), scope_is_directory=False)
+            self.assertEqual(200, status, pending)
+            self.assertEqual(str(alias), pending["path"])
+            self.approve({"error": {"details": pending}})
             status, readable = self.api("/fs/read/files", args)
             self.assertEqual(200, status, readable)
             self.assertEqual("SAFE", readable["items"][0]["content"])
@@ -558,9 +653,9 @@ class CapabilityHTTPTests(unittest.TestCase):
                 "paths": [str(outer / "public.txt")], "elevated": True,
                 "target": "server", "writer_nonce": nonce,
             })
-            self.assertEqual(403, status)
-            self.assertEqual("capability_approval_required", denied["error"]["code"])
-            self.assertEqual(str(outer), denied["error"]["details"]["path"])
+            self.assertEqual(207, status)
+            self.assertEqual("path_unavailable", denied["items"][0]["error"]["code"])
+            self.assertNotIn(str(outer), str(denied["items"][0]["error"]))
 
             status, approval = self.request_file_elevation("read", path=str(outer))
             self.assertEqual(200, status, approval)
@@ -587,16 +682,20 @@ class CapabilityHTTPTests(unittest.TestCase):
                 "paths": [sibling], "elevated": True,
                 "target": "server", "writer_nonce": nonce,
             })
-            self.assertEqual(403, status)
-            self.assertEqual("capability_approval_required", blocked["error"]["code"])
+            self.assertEqual(207, status)
+            self.assertEqual("path_unavailable", blocked["items"][0]["error"]["code"])
             self.server.tokens.update(self.record.token, shell_mode="restricted", allowed_paths=(
                 PathGrant(str(outer), access="ro"),
                 PathGrant(str(outer / "denied.txt"), access="deny"),
             ))
-            self.assertEqual(403, self.api("/fs/read/files", {
+            status, denied_path = self.api("/fs/read/files", {
                 "paths": [str(outer / "denied.txt")], "elevated": True,
                 "target": "server", "writer_nonce": nonce,
-            })[0])
+            })
+            self.assertEqual(207, status)
+            self.assertEqual("path_unavailable", denied_path["items"][0]["error"]["code"])
+            self.assertEqual(400, self.request_file_elevation(
+                "read", scope_is_directory=False)[0])
             self.assertEqual(400, self.request_file_elevation("read", path="/")[0])
             self.assertEqual(400, self.request_file_elevation(
                 "read", path="/Users/../etc")[0])
@@ -766,8 +865,14 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(403, status, first_prompt)
             first_error = json.loads(first_prompt)["error"]
             self.assertEqual("capability_approval_required", first_error["code"])
-            self.assertEqual(raw, first_error["details"]["path"])
+            self.assertNotIn("path", first_error["details"])
             self.assertIn("approval_url", first_error["details"])
+            self.approve({"error": {"details": first_error["details"]}})
+            status, _, unavailable = self.request(
+                "GET", self.base + "/fs/query/list?" + elevated_query,
+                headers=self.headers)
+            self.assertEqual(404, status, unavailable)
+            self.assertEqual("path_unavailable", json.loads(unavailable)["error"]["code"])
             status, pending = self.request_file_elevation("read", mapping, path=raw)
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
@@ -828,10 +933,12 @@ class CapabilityHTTPTests(unittest.TestCase):
             })
             self.assertIn(status, (200, 201), created)
             self.assertTrue((outside / "created").is_dir())
-            self.assertEqual(403, self.api("/fs/write/mkdir", {
+            status, blocked = self.api("/fs/write/mkdir", {
                 "path": str(outside.parent / "escape"), "elevated": True,
                 "target": mapping, "writer_nonce": nonce,
-            })[0])
+            })
+            self.assertEqual(404, status)
+            self.assertEqual("path_unavailable", blocked["error"]["code"])
 
     def test_file_read_write_temporary_elevation_needs_individual_grants(self):
         self.configure()
@@ -907,8 +1014,8 @@ class CapabilityHTTPTests(unittest.TestCase):
         })
         status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
                                       headers=self.headers)
-        self.assertEqual(403, status, raw)
-        self.assertIn(b"file_elevation_target_mismatch", raw)
+        self.assertEqual(404, status, raw)
+        self.assertIn(b"path_unavailable", raw)
         status, pending = self.request_file_elevation("read", self.row["id"])
         self.assertEqual(200, status, pending)
         self.approve({"error": {"details": pending}})
@@ -1007,14 +1114,18 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
         nonce = self.ownership()[1]
-        self.assertEqual(403, self.api("/fs/read/files", {
+        status, denied = self.api("/fs/read/files", {
             "paths": ["secret.txt"], "elevated": True,
             "target": "server", "writer_nonce": nonce,
-        })[0])
-        self.assertEqual(403, self.api("/fs/write/mkdir", {
+        })
+        self.assertEqual(207, status)
+        self.assertEqual("path_unavailable", denied["items"][0]["error"]["code"])
+        status, denied = self.api("/fs/write/mkdir", {
             "path": "readonly/newdir", "elevated": True,
             "target": "server", "writer_nonce": nonce,
-        })[0])
+        })
+        self.assertEqual(404, status)
+        self.assertEqual("path_unavailable", denied["error"]["code"])
         self.assertFalse((root / "readonly/newdir").exists())
         # The same read/write approvals do not authorize Shell tasks.
         status, body = self.elevated()

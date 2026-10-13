@@ -105,9 +105,18 @@ this Token, Conversation, target and read/write mode. An unscoped read/write
 grant never permits access outside the configured roots. For example, after
 approving `access=read,target=<Mapping ID>,path=/Users`, call
 `fs_list(path="/Users", elevated=true, target="<Mapping ID>", writer_nonce=...,
-plan_id=...)`. For a direct File operation with `elevated=true`, an external
-path also returns an approval URL when its exact directory has not yet been
-approved. A broad filesystem root such as `/` cannot be approved. Mapping Clients must
+plan_id=...)`. After the broad File elevation grant is approved, direct File operations
+with `elevated=true` return the same generic `path_unavailable` result for
+missing, inaccessible and unapproved external paths, without revealing a
+symlink destination. Before broad approval, all those operations request the
+same unscoped files.read/write approval, regardless of the path. Use the separate
+`files/elevation/request` action with `path` to initiate approval; the user
+enters the Workspace password before seeing the real directory. For a file or
+file symlink rather than a directory, pass `scope_is_directory=false` with
+its absolute path; approval covers the resolved **parent directory**, not the
+lexical alias's parent. An internal symlink needs no extra directory approval
+once the broad files.read/write capability is granted. A broad filesystem
+root such as `/` cannot be approved. Mapping Clients must
 advertise `file_stream.external_root_file_api=true` and
 `file_stream.external_realpath=true`; older Clients reject
 external File API approvals/operations with `mapping_client_upgrade_required` rather
