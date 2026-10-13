@@ -1,4 +1,5 @@
 """Temporary capability workflow across REST, MCP, browser and Mapping jobs."""
+import http.client
 import json
 import os
 import re
@@ -230,6 +231,76 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(400, self.request_file_elevation("read", path="/")[0])
             self.assertEqual(400, self.request_file_elevation(
                 "read", path="/Users/../etc")[0])
+
+    def test_mapping_external_elevation_state_does_not_leak_across_keepalive(self):
+        from urllib.parse import urlencode
+
+        self.configure()
+        nonce = self.ownership()[1]
+        mapping = self.row["id"]
+        self.session.call = lambda operation, args: (
+            self.files.dispatch(operation, args) if operation.startswith("api_")
+            else self.tasks.dispatch(operation, args)
+        )
+        self.session.capabilities.setdefault("file_stream", {})["external_root_file_api"] = True
+
+        with tempfile.TemporaryDirectory(prefix="kapsel-client-keepalive-") as raw:
+            outside = Path(raw)
+            (outside / "visible.txt").write_text("keepalive external content")
+            status, pending = self.request_file_elevation("read", mapping, path=raw)
+            self.assertEqual(200, status, pending)
+            self.approve({"error": {"details": pending}})
+
+            elevated = urlencode({
+                "path": raw,
+                "elevated": "true",
+                "target": mapping,
+                "writer_nonce": nonce,
+                "plan_id": self.plan,
+            })
+            plain = urlencode({"path": raw})
+            unrelated = urlencode({"path": str(outside.parent)})
+
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", self.server.server_address[1], timeout=5
+            )
+            try:
+                def get(query):
+                    conn.request(
+                        "GET",
+                        self.base + "/fs/query/list?" + query,
+                        headers=self.headers,
+                    )
+                    response = conn.getresponse()
+                    return response.status, json.loads(response.read())
+
+                status, first = get(elevated)
+                self.assertEqual(200, status, first)
+                self.assertIn(
+                    "visible.txt", [entry["name"] for entry in first["entries"]]
+                )
+
+                # Same TCP connection and therefore the same HTTP handler:
+                # request-local elevation must not survive without elevated=true.
+                status, second = get(plain)
+                self.assertEqual(403, status, second)
+                self.assertEqual("path_outside_root", second["error"]["code"])
+
+                status, third = get(unrelated)
+                self.assertEqual(403, status, third)
+                self.assertEqual("path_outside_root", third["error"]["code"])
+                self.assertNotEqual(
+                    "file_elevation_path_mismatch", third["error"]["code"]
+                )
+
+                # The approved grant still works when explicitly opted into again.
+                status, fourth = get(elevated)
+                self.assertEqual(200, status, fourth)
+                self.assertIn(
+                    "visible.txt", [entry["name"] for entry in fourth["entries"]]
+                )
+            finally:
+                conn.close()
 
     def test_external_mapping_file_rpc_directory_read_and_write(self):
         from urllib.parse import urlencode

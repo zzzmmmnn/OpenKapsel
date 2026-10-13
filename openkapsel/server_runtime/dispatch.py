@@ -85,6 +85,12 @@ class RequestDispatchMixin:
 
 
     def _dispatch(self, method: str) -> None:
+        # BaseHTTPRequestHandler reuses this instance for HTTP/1.1 keep-alive.
+        # File elevation is explicitly opt-in per request, so never retain its
+        # temporary path/routing hints across requests on the same connection.
+        self._file_elevation_operation = None
+        self._file_elevation_external_scope = None
+        self._file_elevation_external_target = None
         self.oauth_connection_id = None
         self.static_mcp_connection_id = None
         self.control_authorized = False
