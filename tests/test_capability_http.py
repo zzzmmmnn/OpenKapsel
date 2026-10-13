@@ -232,6 +232,62 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(400, self.request_file_elevation(
                 "read", path="/Users/../etc")[0])
 
+    def test_file_json_body_cache_does_not_leak_across_keepalive(self):
+        self.configure()
+        nonce = self.ownership()[1]
+        conn = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=5
+        )
+        try:
+            first_body = json.dumps({"paths": ["hello.txt"]})
+            conn.request(
+                "POST",
+                self.base + "/fs/read/files",
+                first_body,
+                self.headers,
+            )
+            response = conn.getresponse()
+            first = json.loads(response.read())
+            self.assertEqual(200, response.status, first)
+            self.assertEqual("hello", first["items"][0]["content"])
+
+            # The next request on the same HTTP/1.1 handler must parse its own
+            # body, not the body cached while authorizing the previous File API.
+            second_body = json.dumps({
+                "access": "read",
+                "target": "server",
+                "writer_nonce": nonce,
+                "plan_id": self.plan,
+                "taskname": "body-cache",
+                "message": "Verify request body isolation",
+            })
+            conn.request(
+                "POST",
+                self.base + "/files/elevation/request",
+                second_body,
+                self.headers,
+            )
+            response = conn.getresponse()
+            second = json.loads(response.read())
+            self.assertEqual(200, response.status, second)
+            self.assertEqual("approval_required", second["status"])
+            self.assertEqual("files.read", second["capability"])
+            self.assertEqual("server", second["target"])
+
+            # The second body must also have been consumed completely, leaving
+            # framing intact for another request on this same connection.
+            conn.request(
+                "GET",
+                self.base + "/fs/query/list?path=.",
+                headers=self.headers,
+            )
+            response = conn.getresponse()
+            third = json.loads(response.read())
+            self.assertEqual(200, response.status, third)
+            self.assertIn("hello.txt", [entry["name"] for entry in third["entries"]])
+        finally:
+            conn.close()
+
     def test_mapping_external_elevation_state_does_not_leak_across_keepalive(self):
         from urllib.parse import urlencode
 
