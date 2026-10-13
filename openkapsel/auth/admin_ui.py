@@ -686,7 +686,7 @@ def _collapsible_token_card(
         '<input type="hidden" name="return_to" value="token">'
         f'<input type="hidden" name="token_app_id" value="{app_id}">'
         '<label>Set or reset Workspace password</label>'
-        '<input name="password" type="password" minlength="12" maxlength="1024" '
+        '<input name="password" type="password" minlength="6" maxlength="1024" '
         'autocomplete="new-password" required>'
         '<div class="actions" style="margin-top:10px">'
         '<button type="submit">Save Workspace password</button></div>'

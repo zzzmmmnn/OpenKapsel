@@ -57,9 +57,9 @@ class CapabilityGrants:
             return row is not None
 
     def set_password(self, workspace: str, password: str) -> None:
-        if not isinstance(workspace, str) or not isinstance(password, str) or not 12 <= len(password) <= 1024:
-            raise ValueError("workspace password must contain 12-1024 characters")
-        encoded = hash_password(password)
+        if not isinstance(workspace, str) or not isinstance(password, str) or not 6 <= len(password) <= 1024:
+            raise ValueError("workspace password must contain 6-1024 characters")
+        encoded = hash_password(password, min_length=6)
         with self.lock, closing(sqlite3.connect(self.path)) as db:
             db.execute("INSERT INTO token_passwords (token_app_id,password_hash) "
                        "VALUES (?,?) ON CONFLICT(token_app_id) DO UPDATE SET "

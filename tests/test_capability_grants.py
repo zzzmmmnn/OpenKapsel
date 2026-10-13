@@ -33,6 +33,25 @@ class CapabilityGrantTests(unittest.TestCase):
         self.assertFalse(reopened.verify_workspace_password("token-a", legacy_password))
         self.assertFalse(reopened.verify_workspace_password("token-b", "token-a-secret-456"))
 
+    def test_six_character_workspace_approval_password(self):
+        from openkapsel.auth.security import hash_password
+
+        # Administrator hashes retain their separate 12-character minimum.
+        with self.assertRaisesRegex(ValueError, "at least 12"):
+            hash_password("abc123")
+
+        self.store.set_password(self.workspace, "abc123")
+        self.assertTrue(self.store.verify_workspace_password(self.workspace, "abc123"))
+        ticket = self.store.request(self.workspace, 19, "server", "files.read")
+        self.store.approve(ticket, "abc123")
+        self.assertTrue(self.store.granted(self.workspace, 19, "server", "files.read"))
+
+        for invalid in ("abc12", "z" * 1025):
+            with self.subTest(length=len(invalid)):
+                with self.assertRaisesRegex(ValueError, "6-1024"):
+                    self.store.set_password(self.workspace, invalid)
+        self.assertTrue(self.store.verify_workspace_password(self.workspace, "abc123"))
+
     def test_default_approval_scoped_by_workspace_conversation_target_capability(self):
         ticket = self.store.request(self.workspace, 12, "server", "shell.elevated")
         self.assertFalse(self.store.granted(self.workspace, 12, "server", "shell.elevated"))

@@ -573,6 +573,50 @@ class CapabilityHTTPTests(unittest.TestCase):
         location, headers, form, _ = self.approval(new)
         self.assertEqual(429, self.form(location, form, headers)[0])
 
+    def test_six_character_workspace_password_admin_and_approval(self):
+        session = self.server.admin_sessions.create()
+        headers = {"Cookie": "ws_admin=" + session.id}
+        status, _, dashboard = self.request("GET", "/kapsel/admin", headers=headers)
+        self.assertEqual(200, status)
+        self.assertIn(b'name="password" type="password" minlength="6"', dashboard)
+        self.assertIn(b'name="new_password" type="password"', dashboard)
+        self.assertIn(b'name="new_password" type="password" autocomplete="new-password" minlength="12"', dashboard)
+        status, _, legacy = self.request("GET", "/kapsel/admin/capabilities", headers=headers)
+        self.assertEqual(200, status)
+        self.assertIn(b'name="password" minlength="6"', legacy)
+
+        values = {
+            "csrf": session.csrf, "workspace": self.record.app_id,
+            "action": "password", "password": "abc123",
+            "return_to": "token", "token_app_id": self.record.app_id,
+        }
+        status, response_headers, _ = self.form(
+            "/kapsel/admin/capabilities", values, headers
+        )
+        self.assertEqual(303, status)
+        self.assertIn(f"#token-{self.record.app_id}-credentials",
+                      response_headers["Location"])
+        grants = self.server.capability_grants
+        self.assertTrue(grants.verify_workspace_password(self.record.app_id, "abc123"))
+
+        self.assertEqual(400, self.form(
+            "/kapsel/admin/capabilities",
+            dict(values, password="abc12"), headers,
+        )[0])
+        self.assertTrue(grants.verify_workspace_password(self.record.app_id, "abc123"))
+
+        status, pending = self.request_elevation()
+        self.assertEqual(200, status, pending)
+        location, approval_headers, form, _ = self.approval({
+            "error": {"details": pending},
+        })
+        form["password"] = "abc123"
+        status, _, response = self.form(location, form, approval_headers)
+        self.assertEqual(200, status, response)
+        self.assertTrue(grants.granted(
+            self.record.app_id, self.ownership()[0], "server", "shell.elevated"
+        ))
+
     def test_admin_token_tabs_include_workspace_password_settings(self):
         import re
         session = self.server.admin_sessions.create()

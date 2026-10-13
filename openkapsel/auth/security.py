@@ -57,10 +57,10 @@ def password_hash_needs_upgrade(encoded: str) -> bool:
     return parsed is None or parsed[0] < PASSWORD_HASH_ITERATIONS
 
 
-def hash_password(password: str) -> str:
+def hash_password(password: str, *, min_length: int = 12) -> str:
     """Hash a password with PBKDF2-HMAC-SHA256 and a per-password salt."""
-    if len(password) < 12:
-        raise ValueError("password must contain at least 12 characters")
+    if len(password) < min_length:
+        raise ValueError(f"password must contain at least {min_length} characters")
     salt = secrets.token_bytes(PASSWORD_SALT_BYTES)
     digest = hashlib.pbkdf2_hmac(
         "sha256",

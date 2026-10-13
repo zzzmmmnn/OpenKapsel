@@ -106,8 +106,10 @@ The password is separate from the administrator login. The legacy
 `/admin/capabilities` page remains available for inspecting and revoking
 active per-Token grants. Existing passwords previously stored under the shared
 directory are **not** assigned to Tokens during upgrade; set each Token's
-password explicitly. Passwords use salted PBKDF2 hashes, and resetting a
-Token's password revokes only that Token's pending approvals and grants.
+password explicitly. Workspace approval passwords accept 6–1024 characters,
+while the separate administrator login password still requires at least 12.
+Passwords use salted PBKDF2 hashes, and resetting a Token's password revokes
+only that Token's pending approvals and grants.
 Password forms require HTTPS; local loopback HTTP is supported for development.
 
 AI may proactively request `shell.elevated` using REST `POST
