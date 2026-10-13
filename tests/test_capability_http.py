@@ -1340,6 +1340,8 @@ class CapabilityHTTPTests(unittest.TestCase):
         page = dashboard.decode()
         css = page.split("<style>", 1)[1].split("</style>", 1)[0]
         self.assertIn(".token-tablist{display:flex", css)
+        self.assertIn(".token-password-settings{margin:0;padding:0}", css)
+        self.assertNotIn(".token-password-settings{margin-top:", css)
         self.assertIn("border-bottom:1px solid var(--line)", css)
         self.assertIn("overflow-x:auto", css)
         self.assertIn('border-bottom-color:var(--brand)', css)
