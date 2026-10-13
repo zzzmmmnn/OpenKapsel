@@ -61,16 +61,19 @@ class FileHandlersMixin(FileOperationSupportMixin):
             raise ApiError(400, "invalid_path", "the host root and internal directories cannot be approved")
         return normalized
 
-    def _resolve_mapping_external_path(self, mapping_id: str, path: str, *, directory=False) -> str:
-        """Resolve an external path on the selected Client, not on this Server."""
-        raw = self._external_directory(path)
+    def _require_mapping_realpath_support(self, mapping_id: str) -> None:
         with self.server.mappings.lock:
             session = self.server.mappings.sessions.get(mapping_id)
             advertised = (session.capabilities.get("file_stream", {})
                           if session is not None and session.ready and not session.closed else {})
-        if not isinstance(advertised, dict) or not advertised.get("external_realpath"):
+        if not isinstance(advertised, dict) or advertised.get("external_realpath") is not True:
             raise ApiError(409, "mapping_client_upgrade_required",
                            "Mapping Client must advertise external_realpath to approve external paths")
+
+    def _resolve_mapping_external_path(self, mapping_id: str, path: str, *, directory=False) -> str:
+        """Resolve an external path on the selected Client, not on this Server."""
+        raw = self._external_directory(path)
+        self._require_mapping_realpath_support(mapping_id)
         try:
             real = self.server.mappings.call(
                 mapping_id, "resolve_path", {"path": raw, "directory": bool(directory)}
@@ -100,34 +103,39 @@ class FileHandlersMixin(FileOperationSupportMixin):
             if not row["enabled"] or (access == "write" and not row["writable"]):
                 raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
             target = row["id"]
+        # Do not resolve any path (locally or through Mapping RPC) before
+        # the Workspace password is verified in the browser.
         scope = self._external_directory(body["path"]) if "path" in body else ""
-        original_scope = scope
-        if scope and target != "server":
-            scope = self._resolve_mapping_external_path(target, scope, directory=True)
-        if scope and target == "server":
-            # Approval must bind the actual directory, never a symlink alias
-            # that can be redirected after the user enters the password.
-            try:
-                real_directory = Path(scope).resolve(strict=True)
-                if not real_directory.is_dir():
-                    raise ValueError("approval scope must be an existing directory")
-            except (OSError, RuntimeError, ValueError):
-                raise ApiError(400, "invalid_path",
-                               "approval scope must be an existing, resolvable directory") from None
-            scope = self._external_directory(str(real_directory))
         capability = "files." + access
+        if scope and target != "server":
+            self._require_mapping_realpath_support(target)
+        approved = None
+        if scope and self._has_scoped_file_grant(body, target, capability):
+            try:
+                real = (str(Path(scope).resolve(strict=True)) if target == "server"
+                        else self._resolve_mapping_external_path(target, scope, directory=True))
+                approved = self.server.capability_grants.granted_path(
+                    self.token_record.app_id, self._file_elevation_conversation(body),
+                    target, capability, real)
+            except (OSError, ValueError, RuntimeError, ApiError):
+                # Do not disclose whether an unapproved path resolves. An
+                # unrelated grant must never turn this endpoint into an oracle.
+                approved = None
+        if approved is not None:
+            self._send_json(200, {"status": "granted", "target": target,
+                                  "capability": capability, "path": scope})
+            return
         try:
             self._require_capability(body, target, capability, path=scope,
-                                     original_path=original_scope)
+                                     original_path=scope)
         except ApiError as exc:
             if exc.code != "capability_approval_required":
                 raise
             self._send_json(200, {"status": "approval_required", **exc.details})
             return
-        self._send_json(200, {"status": "granted", "target": target, "capability": capability,
-                              **({"path": scope} if scope else {}),
-                              **({"original_path": original_scope}
-                                 if original_scope and original_scope != scope else {})})
+        self._send_json(200, {"status": "granted", "target": target,
+                              "capability": capability,
+                              **({"path": scope} if scope else {})})
 
     def _authorize_file_elevation(self, operation: str, arguments: dict, *, query=False) -> None:
         """A file approval may optionally authorize one explicit external subtree.
@@ -184,23 +192,16 @@ class FileHandlersMixin(FileOperationSupportMixin):
             if not candidate.is_absolute():
                 candidate = self.token_scope_root / candidate
             candidate = Path(os.path.abspath(candidate))
-            if not effective_path_access(candidate, self.token_scope_root,
-                                         self.token_record.can_write, self.token_record.allowed_paths):
-                # No implicit host-wide approval, and no relative-path escape.
+            # Only lexical checks here: no client realpath request and no
+            # filesystem-based denial difference before password approval.
+            lexical_policy = effective_path_access(
+                candidate, self.token_scope_root, self.token_record.can_write,
+                self.token_record.allowed_paths, resolve_symlinks=False)
+            if lexical_policy is None:
                 if not value.startswith("/"):
                     raise ApiError(403, "path_outside_root", "external paths must be absolute")
-                if target == "server":
-                    # Resolve before grant lookup, so /alias/file must match
-                    # the fixed real directory approved by the user. A changed
-                    # symlink points elsewhere and cannot borrow the grant.
-                    candidate = candidate.resolve(strict=False)
-                    external.append(self._external_directory(str(candidate)))
-                    original_external.append(self._external_directory(value))
-                else:
-                    # Map aliases on the remote Client, then authorize the
-                    # REAL target, never the Server's lexical interpretation.
-                    original_external.append(self._external_directory(value))
-                    external.append(self._resolve_mapping_external_path(target, value))
+                external.append(self._external_directory(value))
+                original_external.append(self._external_directory(value))
             else:
                 self._assert_inside_root(candidate)
                 resolved = candidate.resolve(strict=False)
@@ -220,36 +221,45 @@ class FileHandlersMixin(FileOperationSupportMixin):
             directory_operations = {"fs_list", "fs_tree", "fs_find", "fs_grep"}
             if operation == "fs_manifest" and values.get("recursive"):
                 directory_operations.add("fs_manifest")
-            # For file and destination operations approve the containing
-            # directory, not a file path that the Client cannot use as root.
-            requested_scope = (external[0] if operation in directory_operations
-                               else self._external_directory(str(Path(external[0]).parent)))
-            original_scope = (original_external[0] if operation in directory_operations
-                              else self._external_directory(str(Path(original_external[0]).parent)))
-            resolved_check_path = requested_scope
-            if operation not in directory_operations:
-                # A file itself may be a symlink into a different directory.
-                # Checking only its original parent at browser confirmation
-                # would miss retargeting of that final link.
-                parent_real = (str(Path(original_scope).resolve(strict=False))
-                               if target == "server" else
-                               self._resolve_mapping_external_path(target, original_scope,
-                                                                   directory=True))
-                if parent_real != requested_scope:
-                    original_scope = original_external[0]
-                    resolved_check_path = external[0]
-            scope = self._require_capability(values, target, capability,
-                                             path=external[0], match_path=True,
-                                             request_path=requested_scope,
-                                             original_path=original_scope,
-                                             resolved_path=resolved_check_path)
+            is_directory = operation in directory_operations
+            original_scope = (external[0] if is_directory else
+                              self._external_directory(str(Path(external[0]).parent)))
+            if target != "server":
+                self._require_mapping_realpath_support(target)
+            # With no prior authenticated scoped grant, queue the lexical
+            # request *without* probing any external paths.
+            if not self._has_scoped_file_grant(values, target, capability):
+                self._require_capability(values, target, capability,
+                                         path=original_scope,
+                                         original_path=original_external[0],
+                                         scope_is_directory=is_directory)
+                raise AssertionError("Unapproved scoped File access must require approval")
+            # A prior password-authorized scope exists: resolve for an exact
+            # grant lookup, but an unrelated/missing target always prompts
+            # identically and never returns a canonical path or failure class.
+            real_paths = []
+            try:
+                for original in external:
+                    real = (str(Path(original).resolve(strict=False)) if target == "server"
+                            else self._resolve_mapping_external_path(target, original))
+                    real_paths.append(self._external_directory(real))
+                found = self.server.capability_grants.granted_path(
+                    self.token_record.app_id, self._file_elevation_conversation(values),
+                    target, capability, real_paths[0])
+            except (OSError, ValueError, RuntimeError, ApiError):
+                found = None
+            if found is None:
+                self._require_capability(values, target, capability,
+                                         path=original_scope,
+                                         original_path=original_external[0],
+                                         scope_is_directory=is_directory)
+                raise AssertionError("Unapproved scoped File access must require approval")
+            scope = found
             root = Path(scope)
-            if any(Path(item) != root and root not in Path(item).parents for item in external):
+            if any(Path(item) != root and root not in Path(item).parents for item in real_paths):
                 raise ApiError(403, "file_elevation_path_mismatch", "paths exceed the approved directory")
+            external = real_paths
             if target == "server":
-                # Freeze the approved real path for this operation as well:
-                # subsequent path resolution must not follow a changed alias
-                # to a different directory after the permission check.
                 self._file_elevation_approved_directory = root
             # Temporarily extend only this HTTP request's path policy. Explicit
             # deny and read-only rules still win over the temporary grant.

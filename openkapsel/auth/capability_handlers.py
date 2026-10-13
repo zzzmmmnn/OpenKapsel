@@ -36,8 +36,26 @@ class CapabilityHandlersMixin:
         if not local:
             raise ApiError(403, "https_required", "Workspace passwords require HTTPS (or local loopback development)")
 
+    def _file_elevation_conversation(self, body):
+        plan = self._parse_operation_plan_id(
+            body.get("plan_id", self._context_header_plan_id()), required=True)
+        try:
+            return self.server.context_for(self.token_scope_root).capability_conversation(
+                plan, body.get("writer_nonce"))
+        except PermissionError:
+            raise ApiError(403, "conversation_writer_nonce_mismatch",
+                           "Conversation writer_nonce does not match") from None
+        except (ValueError, KeyError) as exc:
+            raise ApiError(400, "invalid_capability_conversation", str(exc)) from None
+
+    def _has_scoped_file_grant(self, body, target, capability):
+        return self.server.capability_grants.has_scoped_grant(
+            self.token_record.app_id, self._file_elevation_conversation(body),
+            target, capability)
+
     def _require_capability(self, body, target, capability, *, path="", match_path=False,
-                            request_path=None, original_path="", resolved_path=""):
+                            request_path=None, original_path="", resolved_path="",
+                            scope_is_directory=True):
         self._require_password_transport()
         if not self.server.config.admin_enabled:
             raise ApiError(409, "capability_unavailable", "Capability approval requires administration to be enabled")
@@ -62,7 +80,8 @@ class CapabilityHandlersMixin:
             return path
         try:
             ticket = grants.request(workspace, conversation, target, capability, path,
-                                    original_path=original_path, resolved_path=resolved_path)
+                                    original_path=original_path, resolved_path=resolved_path,
+                                    scope_is_directory=scope_is_directory)
         except RuntimeError:
             raise ApiError(429, "capability_approval_capacity", "Too many pending capability approvals; retry later") from None
         LOGGER.info("approval requested workspace=%r conversation=%s target=%r capability=%s", workspace, conversation, target, capability)
@@ -70,8 +89,6 @@ class CapabilityHandlersMixin:
             "approval_url": self._public_base_url() + "/admin/capability/" + ticket,
             "approval_expires_in": PENDING_SECONDS, "capability": capability, "target": target,
             **({"path": path} if path else {}),
-            **({"original_path": original_path}
-               if original_path and original_path != path else {}),
         })
 
     def _capability_binding(self, item):
@@ -84,6 +101,24 @@ class CapabilityHandlersMixin:
         if row["workspace"] != record.path_prefix or not row["enabled"]:
             raise ValueError("Mapping is unavailable or ownership changed")
         return row["name"] + " (" + item.target + ")"
+
+    def _resolve_approval_target(self, item):
+        original = item.original_path or item.path
+        if item.target == "server":
+            resolved = Path(original).resolve(strict=item.scope_is_directory)
+            if item.scope_is_directory and not resolved.is_dir():
+                raise ValueError("Approval directory is unavailable")
+            if not item.scope_is_directory and not resolved.parent.is_dir():
+                raise ValueError("Approval parent directory is unavailable")
+            return str(resolved)
+        actual = self._resolve_mapping_external_path(
+            item.target, original, directory=item.scope_is_directory)
+        if not item.scope_is_directory:
+            # An unresolved file is valid only when its real parent exists.
+            # This runs only after password verification, not at ticket creation.
+            self._resolve_mapping_external_path(
+                item.target, str(Path(actual).parent), directory=True)
+        return actual
 
     def _handle_capability_approval(self, method, ticket, raw_query):
         grants = self.server.capability_grants
@@ -102,39 +137,69 @@ class CapabilityHandlersMixin:
                 if self._request_content_length(required=True) > 8192:
                     raise ValueError("Approval form is too large")
                 form = self._read_form()
-                if any(len(values) != 1 for values in form.values()) or set(form) - {"csrf", "password", "minutes"}:
+                if (any(len(values) != 1 for values in form.values())
+                    or set(form) - {"csrf", "password", "minutes", "confirm"}):
                     raise ValueError("Invalid approval form")
-                # Reuse the OAuth browser origin checks, independent of OAuth credentials.
                 try:
                     self._consent_check_origin()
                 except OAuthError as exc:
                     raise ApiError(exc.status, "csrf_failed", str(exc)) from None
                 if not grants.verify_browser(ticket, cookie, self._form_one(form, "csrf")):
                     raise ApiError(403, "csrf_failed", "Approval verification failed; reload this page")
-                retry = self.server.capability_limiter.take(self._admin_rate_limit_address(), "workspace:" + item.workspace)
-                if retry:
-                    self._send_html(429, page("<h1>Too many approval attempts</h1><p>Retry after the indicated delay.</p>"),
-                                    headers={"Retry-After": str(retry)}, script_src="'none'")
-                    return
-                minutes = int(self._form_one(form, "minutes") or "10")
+                # Only password submissions consume the password-attempt
+                # budget. A confirmation button does not try any password;
+                # its authenticated browser binding is enforced below.
+                if not self._form_one(form, "confirm"):
+                    retry = self.server.capability_limiter.take(
+                        self._admin_rate_limit_address(), "workspace:" + item.workspace)
+                    if retry:
+                        self._send_html(429, page("<h1>Too many approval attempts</h1><p>Retry after the indicated delay.</p>"),
+                                        headers={"Retry-After": str(retry)}, script_src="'none'")
+                        return
                 with self.server.workspace_admin_lock:
                     self._capability_binding(item)
-                    # The user saw a resolved destination. If an alias was
-                    # retargeted while the form was open, this ticket is stale.
-                    if item.path and item.original_path:
-                        expected = item.resolved_path or item.path
-                        directory = expected == item.path
+                    if self._form_one(form, "confirm"):
+                        if self._form_one(form, "confirm") != "actual_path":
+                            raise ValueError("Invalid confirmation")
+                        if not grants.verify_file_confirmation_browser(ticket, cookie):
+                            raise PermissionError("File confirmation requires password-verified browser")
+                        # Re-resolve after the human reviews the actual target.
+                        # A symlink swap between stages must fail closed.
                         try:
-                            actual = (str(Path(item.original_path).resolve(strict=directory))
-                                      if item.target == "server" else
-                                      self._resolve_mapping_external_path(
-                                          item.target, item.original_path, directory=directory))
-                        except (OSError, RuntimeError, ApiError) as exc:
-                            raise ValueError("Approval path is no longer available") from exc
-                        if actual != expected:
+                            actual = self._resolve_approval_target(item)
+                        except (OSError, RuntimeError, ApiError, ValueError) as exc:
+                            raise ValueError("Approval path changed; request a new approval") from exc
+                        if actual != item.resolved_path:
                             raise ValueError("Approval path changed; request a new approval")
-                    grants.approve(ticket, self._form_one(form, "password"), minutes * 60)
-                LOGGER.info("approved workspace=%r conversation=%s target=%r capability=%s seconds=%s", item.workspace, item.conversation_id, item.target, item.capability, minutes * 60)
+                        grants.confirm_file(ticket, cookie)
+                    elif item.path and item.capability in {"files.read", "files.write"}:
+                        minutes = int(self._form_one(form, "minutes") or "10")
+                        grants.authenticate_file(ticket, self._form_one(form, "password"), minutes * 60)
+                        try:
+                            actual = self._resolve_approval_target(item)
+                            scope = actual if item.scope_is_directory else str(Path(actual).parent)
+                            scope = self._external_directory(scope)
+                        except (OSError, RuntimeError, ApiError, ValueError) as exc:
+                            raise ValueError("Approval path is unavailable") from exc
+                        grants.prepare_file_confirmation(ticket, cookie, scope, actual, minutes * 60)
+                        esc = html.escape
+                        original = item.original_path or item.path
+                        warning = ("This is the ACTUAL directory the grant authorizes. "
+                                   "Verify it before confirming; the requested alias may point elsewhere.")
+                        body = ("<h1>Confirm actual File access directory</h1>"
+                                f"<dl><dt>Original requested path</dt><dd>{esc(original)}</dd>"
+                                f"<dt><strong>Actual authorized directory</strong></dt>"
+                                f"<dd><strong>{esc(scope)}</strong></dd></dl>"
+                                f"<p class=\"notice\">{esc(warning)}</p>"
+                                f"<form method=\"post\" action=\"{esc(self._admin_path() + '/capability/' + ticket, quote=True)}\">"
+                                f"<input type=\"hidden\" name=\"csrf\" value=\"{esc(self._form_one(form, 'csrf'), quote=True)}\">"
+                                "<button name=\"confirm\" value=\"actual_path\">Confirm actual directory and approve</button></form>")
+                        self._send_html(200, page(body), script_src="'none'")
+                        return
+                    else:
+                        minutes = int(self._form_one(form, "minutes") or "10")
+                        grants.approve(ticket, self._form_one(form, "password"), minutes * 60)
+                LOGGER.info("approved workspace=%r conversation=%s target=%r capability=%s", item.workspace, item.conversation_id, item.target, item.capability)
                 self._send_html(200, page("<h1>Capability approved</h1><p>The AI may retry its operation now. This page has not executed any command.</p>"), script_src="'none'")
                 return
             if method != "GET":
@@ -161,15 +226,13 @@ class CapabilityHandlersMixin:
                            if workspace_record else "Unavailable Token")
         path_details = ""
         if item.path:
-            if item.original_path and item.original_path != item.path:
-                path_details = (f'<dt>Original requested path (symlink/alias)</dt><dd>{esc(item.original_path)}</dd>'
-                                f'<dt><strong>Actual authorized directory</strong></dt>'
-                                f'<dd><strong>{esc(item.path)}</strong></dd>')
-                warning = ("IMPORTANT: The requested directory resolves to a different real location. "
-                           "Approval authorizes the ACTUAL directory above, not whatever the "
-                           "symlink may point to later. " + warning)
-            else:
-                path_details = f'<dt>Authorized directory</dt><dd>{esc(item.path)}</dd>'
+            # A ticket URL alone must never reveal server/client filesystem
+            # existence or the canonical path, even after password validation
+            # in a different browser. Show only the originally requested path.
+            shown = item.original_path or item.path
+            path_details = f'<dt>Requested directory / path</dt><dd>{esc(shown)}</dd>'
+            warning = ("The actual authorized directory is shown only after "
+                       "the Workspace password is verified. " + warning)
         body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{path_details}</dl>
 <p class="notice">{esc(warning)}Approve only the conversation and target you intend.</p>
 <form method="post" action="{esc(self._admin_path() + '/capability/' + ticket, quote=True)}" autocomplete="off">

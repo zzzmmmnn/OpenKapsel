@@ -47,9 +47,20 @@ class CapabilityHTTPTests(unittest.TestCase):
         return location, {"Cookie": headers["Set-Cookie"].split(";", 1)[0], "Origin": "https://example.test"}, {"csrf": proof, "password": self.PASSWORD, "minutes": "10"}, raw
 
     def approve(self, result):
-        location, headers, form, _ = self.approval(result)
+        location, headers, form, first_page = self.approval(result)
         status, _, raw = self.form(location, form, headers)
         self.assertEqual(200, status, raw)
+        if b"Confirm actual File access directory" in raw:
+            self.assertNotIn(b"Actual authorized directory", first_page)
+            self.assertFalse(self.server.capability_grants.granted(
+                self.record.app_id, self.ownership()[0],
+                result["error"]["details"]["target"],
+                result["error"]["details"]["capability"],
+                result["error"]["details"].get("path", "")))
+            status, _, raw = self.form(location, {
+                "csrf": form["csrf"], "confirm": "actual_path",
+            }, headers)
+            self.assertEqual(200, status, raw)
         self.assertIn(b"Capability approved", raw)
         return location
 
@@ -169,6 +180,102 @@ class CapabilityHTTPTests(unittest.TestCase):
             "writer_nonce": self.ownership()[1], **values,
         })
 
+    def test_explicit_server_request_does_not_reveal_directory_existence(self):
+        self.configure()
+        with tempfile.TemporaryDirectory(prefix="kapsel-existence-oracle-") as raw:
+            base = Path(raw).resolve()
+            real = base / "private-real"
+            real.mkdir()
+            alias = base / "public-alias"
+            alias.symlink_to(real, target_is_directory=True)
+            missing = base / "missing"
+            for requested in (alias, missing):
+                status, pending = self.request_file_elevation("read", path=str(requested))
+                self.assertEqual(200, status, pending)
+                self.assertEqual("approval_required", pending["status"])
+                self.assertEqual(str(requested), pending["path"])
+                self.assertNotIn("original_path", pending)
+                self.assertNotIn(str(real), str(pending))
+                location, headers, form, page = self.approval(
+                    {"error": {"details": pending}})
+                self.assertNotIn(b"Actual authorized directory", page)
+                self.assertNotIn(str(real).encode(), page)
+                if requested == alias:
+                    status, _, wrong = self.form(location, dict(form, password="bad-secret"), headers)
+                    self.assertEqual(403, status, wrong)
+                    self.assertNotIn(str(real).encode(), wrong)
+                    status, _, confirmation = self.form(location, form, headers)
+                    self.assertEqual(200, status, confirmation)
+                    self.assertIn(str(real).encode(), confirmation)
+                    self.assertFalse(self.server.capability_grants.granted_path(
+                        self.record.app_id, self.ownership()[0],
+                        "server", "files.read", str(real)))
+                    # Possession of an approval URL is NOT enough to finish
+                    # confirmation from a different unauthenticated browser.
+                    _, attacker_headers, attacker_form, leaked_get = self.approval(
+                        {"error": {"details": pending}})
+                    self.assertNotIn(str(real).encode(), leaked_get)
+                    status, _, failed = self.form(location, {
+                        "csrf": attacker_form["csrf"], "confirm": "actual_path",
+                    }, attacker_headers)
+                    self.assertEqual(403, status, failed)
+                    self.assertNotIn(str(real).encode(), failed)
+                    status, _, completed = self.form(location, {
+                        "csrf": form["csrf"], "confirm": "actual_path",
+                    }, headers)
+                    self.assertEqual(200, status, completed)
+                    self.assertIn(b"Capability approved", completed)
+                else:
+                    self.assertEqual(400, self.form(location, form, headers)[0])
+
+    def test_mapping_file_approval_never_resolves_without_correct_password(self):
+        self.configure()
+        mapping = self.row["id"]
+        self.session.capabilities.setdefault("file_stream", {}).update(
+            external_root_file_api=True, external_realpath=True)
+        observed = []
+        def client_call(operation, args):
+            if operation == "resolve_path":
+                observed.append(args["path"])
+            if operation.startswith("api_") or operation == "resolve_path":
+                return self.files.dispatch(operation, args)
+            return self.tasks.dispatch(operation, args)
+        self.session.call = client_call
+        with tempfile.TemporaryDirectory(prefix="kapsel-mapping-oracle-") as raw:
+            base = Path(raw).resolve()
+            real = base / "sensitive-real"
+            real.mkdir()
+            alias = base / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            missing = base / "missing"
+            for requested in (alias, missing):
+                status, pending = self.request_file_elevation(
+                    "read", mapping, path=str(requested))
+                self.assertEqual(200, status, pending)
+                self.assertEqual("approval_required", pending["status"])
+                self.assertEqual(str(requested), pending["path"])
+                location, headers, form, page = self.approval(
+                    {"error": {"details": pending}})
+                self.assertNotIn(str(real).encode(), page)
+                self.assertEqual([], observed)
+                self.assertEqual(403, self.form(
+                    location, dict(form, password="incorrect"), headers)[0])
+                self.assertEqual([], observed)
+            # The implicit elevated File API is also a prompt, not an oracle.
+            for requested in (alias / "unused.txt", missing / "unused.txt"):
+                status, error = self.api("/fs/read/files", {
+                    "paths": [str(requested)], "elevated": True,
+                    "target": mapping, "writer_nonce": self.ownership()[1]})
+                self.assertEqual(403, status, error)
+                self.assertEqual("capability_approval_required", error["error"]["code"])
+                self.assertNotIn(str(real), str(error))
+                self.assertEqual([], observed)
+            # Correct password may now resolve and reveal the target to
+            # this authenticated browser only.
+            status, _, confirmation = self.form(location, form, headers)
+            self.assertEqual(400, status)  # Last requested directory is absent.
+            self.assertIn(str(missing), observed)
+
     def test_server_external_approval_is_bound_to_actual_symlink_target(self):
         self.configure()
         nonce = self.ownership()[1]
@@ -189,13 +296,20 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, pending)
             # The human must approve the real, immutable target, not a
             # symbolic link whose destination could be changed afterward.
-            self.assertEqual(str(allowed), pending["path"])
-            self.assertEqual(str(alias), pending["original_path"])
-            _, _, _, page = self.approval({"error": {"details": pending}})
-            self.assertIn(b"Actual authorized directory", page)
+            self.assertEqual(str(alias), pending["path"])
+            self.assertNotIn("original_path", pending)
+            location, headers, form, page = self.approval({"error": {"details": pending}})
+            self.assertNotIn(b"Actual authorized directory", page)
             self.assertIn(str(alias).encode(), page)
-            self.assertIn(str(allowed).encode(), page)
-            self.approve({"error": {"details": pending}})
+            self.assertNotIn(str(allowed).encode(), page)
+            status, _, confirmed_page = self.form(location, form, headers)
+            self.assertEqual(200, status)
+            self.assertIn(b"Actual authorized directory", confirmed_page)
+            self.assertIn(str(allowed).encode(), confirmed_page)
+            status, _, done_page = self.form(location, {"csrf": form["csrf"],
+                                                        "confirm": "actual_path"}, headers)
+            self.assertEqual(200, status, done_page)
+            self.assertIn(b"Capability approved", done_page)
             args = {
                 "paths": [str(alias / "public.txt")],
                 "elevated": True, "target": "server", "writer_nonce": nonce,
@@ -266,18 +380,24 @@ class CapabilityHTTPTests(unittest.TestCase):
             scope = str(alias / "sub")
             status, approval = self.request_file_elevation("read", mapping, path=scope)
             self.assertEqual(200, status, approval)
-            self.assertEqual(str(first / "sub"), approval["path"])
-            self.assertEqual(scope, approval["original_path"])
+            self.assertEqual(scope, approval["path"])
+            self.assertNotIn("original_path", approval)
             location, headers, form, page = self.approval({"error": {"details": approval}})
             self.assertIn(scope.encode(), page)
-            self.assertIn(str(first / "sub").encode(), page)
-            self.assertIn(b"Actual authorized directory", page)
-            self.assertIn(b"IMPORTANT:", page)
-            # A link that changes while the approval page is open must not
-            # be authorized by the old ticket.
+            self.assertNotIn(str(first / "sub").encode(), page)
+            self.assertNotIn(b"Actual authorized directory", page)
+            # Only the authenticated response reveals the real path.
+            status, _, confirmation = self.form(location, form, headers)
+            self.assertEqual(200, status, confirmation)
+            self.assertIn(str(first / "sub").encode(), confirmation)
+            self.assertIn(b"Actual authorized directory", confirmation)
+            # An alias that moves after password but before final confirmation
+            # must not receive a grant to either destination.
             alias.unlink()
             alias.symlink_to(second, target_is_directory=True)
-            self.assertEqual(400, self.form(location, form, headers)[0])
+            self.assertEqual(400, self.form(location, {
+                "csrf": form["csrf"], "confirm": "actual_path",
+            }, headers)[0])
             alias.unlink()
             alias.symlink_to(first, target_is_directory=True)
             self.approve({"error": {"details": self.request_file_elevation(
@@ -320,8 +440,8 @@ class CapabilityHTTPTests(unittest.TestCase):
                     "target": mapping, "writer_nonce": self.ownership()[1]}
             status, prompted = self.api("/fs/read/files", args)
             self.assertEqual(403, status, prompted)
-            self.assertEqual(str(allowed), prompted["error"]["details"]["path"])
-            self.assertEqual(str(alias), prompted["error"]["details"]["original_path"])
+            self.assertEqual(str(alias.parent), prompted["error"]["details"]["path"])
+            self.assertNotIn("original_path", prompted["error"]["details"])
             self.approve(prompted)
             status, readable = self.api("/fs/read/files", args)
             self.assertEqual(200, status, readable)

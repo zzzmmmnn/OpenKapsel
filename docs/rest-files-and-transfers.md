@@ -86,15 +86,20 @@ and vice versa. Without `elevated=true` the original permission flags apply.
 **External directory approval:** To access an absolute directory outside the
 Token Workspace, add `"path":"/Users"` to the File elevation request and
 set `target` to the **specific Mapping ID** hosting that directory (or
-`server` for a directory on the Server). The Server resolves Server paths
-locally; for a Mapping it uses the Client's private read-only `resolve_path`
-RPC, so remote symlinks are interpreted on the correct host. The browser
-approval page shows both the **requested path** and an emphasized **actual
-authorized directory** when they differ (otherwise one path). The grant is
-bound to the actual canonical directory and cannot migrate when the alias is
-retargeted. Approval submission rechecks the original symlink destination;
-File RPC validates path aliases again and operates only on canonical paths
-using descriptor-anchored access, refusing substituted symlink ancestors.
+`server` for a directory on the Server). The initial API response and
+approval URL **do not check directory existence or reveal canonical paths**.
+The browser first shows the requested path and prompts for that Token's
+Workspace password. **Only after the correct password** does the Server
+resolve the real path locally, or call the Mapping Client's private read-only
+`resolve_path` RPC. A second browser page then shows both the original path
+and the emphasized **actual authorized directory**. The user must explicitly
+confirm that actual directory before any grant is issued; a missing directory
+fails only after password verification. Confirmation is tied to the browser
+that provided the password, and immediately rechecks the original symlink
+before granting access. The grant binds to the canonical directory; File RPC
+checks aliases again and operates through descriptor-anchored paths to prevent
+symlink substitution. Unauthenticated requests cannot distinguish whether
+an unapproved directory exists or discover where an alias points.
 Elevated File operation paths containing `..` are rejected before normalization. Approval covers only that directory and descendants for
 this Token, Conversation, target and read/write mode. An unscoped read/write
 grant never permits access outside the configured roots. For example, after

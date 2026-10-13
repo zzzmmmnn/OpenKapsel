@@ -32,6 +32,9 @@ class Pending:
     path: str = ""
     original_path: str = ""
     resolved_path: str = ""
+    scope_is_directory: bool = True
+    confirmation_cookie: str = ""
+    confirmation_seconds: int = 0
     attempts: int = 0
 
 
@@ -92,7 +95,7 @@ class CapabilityGrants:
 
     def request(self, workspace: str, conversation_id: int, target: str, capability: str,
                 path: str = "", *, original_path: str = "",
-                resolved_path: str = "") -> str:
+                resolved_path: str = "", scope_is_directory: bool = True) -> str:
         if not isinstance(workspace, str) or not target or capability not in CAPABILITIES:
             raise ValueError("invalid capability approval request")
         if (not isinstance(path, str) or
@@ -122,7 +125,7 @@ class CapabilityGrants:
             self.pending_requests[ticket] = Pending(
                 workspace, conversation_id, target, capability, now + PENDING_SECONDS,
                 path=path, original_path=original_path,
-                resolved_path=resolved_path)
+                resolved_path=resolved_path, scope_is_directory=scope_is_directory)
             return ticket
 
     def pending(self, ticket: str) -> Pending | None:
@@ -178,6 +181,74 @@ class CapabilityGrants:
                 raise ValueError("approval expired or already used")
             self.active[(item.workspace, item.conversation_id, item.target,
                          item.capability, item.path)] = now + seconds
+            del self.pending_requests[ticket]
+            return item
+
+    def has_scoped_grant(self, workspace: str, conversation_id: int,
+                         target: str, capability: str) -> bool:
+        """Presence only: never disclose approved canonical scopes in a prompt."""
+        with self.lock:
+            now = self._expire()
+            return any(owner == workspace and conv == conversation_id and dest == target
+                       and permission == capability and scope and deadline > now
+                       for (owner, conv, dest, permission, scope), deadline in self.active.items())
+
+    def authenticate_file(self, ticket: str, password: str, seconds: int) -> Pending:
+        """Validate password before touching an external path; do NOT grant yet."""
+        if type(seconds) is not int or not 60 <= seconds <= MAX_SECONDS:
+            raise ValueError("grant duration must be 1 to 1440 minutes")
+        with self.lock:
+            self._expire()
+            item = self.pending_requests.get(ticket)
+            if item is None or not item.path or item.capability not in {"files.read", "files.write"}:
+                raise ValueError("approval expired or not a scoped File request")
+            if item.confirmation_cookie:
+                raise ValueError("approval already verified; confirm the displayed real path")
+            if item.attempts >= MAX_ATTEMPTS:
+                self.pending_requests.pop(ticket, None)
+                raise PermissionError("approval attempts exhausted")
+            item.attempts += 1
+            if not self._check_password(item.workspace, password):
+                if item.attempts >= MAX_ATTEMPTS:
+                    self.pending_requests.pop(ticket, None)
+                raise PermissionError("workspace password incorrect")
+            return item
+
+    def prepare_file_confirmation(self, ticket: str, cookie: str, path: str,
+                                  resolved_path: str, seconds: int) -> None:
+        """Bind a password-verified ticket to the actual real directory and browser."""
+        with self.lock:
+            self._expire()
+            item = self.pending_requests.get(ticket)
+            if item is None or item.confirmation_cookie:
+                raise ValueError("approval expired or already verified")
+            if (not path.startswith("/") or ".." in path.split("/")
+                or not resolved_path.startswith("/") or ".." in resolved_path.split("/")):
+                raise ValueError("invalid resolved approval directory")
+            item.path = path
+            item.resolved_path = resolved_path
+            item.confirmation_seconds = seconds
+            item.confirmation_cookie = self.browser_proof(ticket, cookie)
+
+    def verify_file_confirmation_browser(self, ticket: str, cookie: str) -> bool:
+        with self.lock:
+            self._expire()
+            item = self.pending_requests.get(ticket)
+            return bool(item and item.confirmation_cookie and
+                        hmac.compare_digest(item.confirmation_cookie,
+                                            self.browser_proof(ticket, cookie)))
+
+    def confirm_file(self, ticket: str, cookie: str) -> Pending:
+        """Grant only the browser that passed the password and reviewed the path."""
+        with self.lock:
+            now = self._expire()
+            item = self.pending_requests.get(ticket)
+            if (item is None or not item.confirmation_cookie or
+                not hmac.compare_digest(item.confirmation_cookie,
+                                        self.browser_proof(ticket, cookie))):
+                raise PermissionError("file confirmation requires the authenticated browser")
+            self.active[(item.workspace, item.conversation_id, item.target,
+                         item.capability, item.path)] = now + item.confirmation_seconds
             del self.pending_requests[ticket]
             return item
 
