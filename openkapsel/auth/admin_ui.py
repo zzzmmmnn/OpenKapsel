@@ -457,9 +457,9 @@ function setTokenPane(card,name){
         pane.hidden=pane.dataset.tokenPane!==name;
     });
     const save=card.querySelector('[data-token-save]');
-    if(save)save.hidden=name==='credentials';
+    if(save)save.hidden=name==='credentials'||name==='workspace-password';
     const field=card.querySelector('[data-token-pane-field]');
-    if(field&&name!=='credentials')field.value=name;
+    if(field&&(name==='basic'||name==='permissions'))field.value=name;
 }
 document.querySelectorAll('details.token-card').forEach(card=>{
     card.querySelectorAll('[data-token-tab]').forEach(button=>{
@@ -481,7 +481,7 @@ document.querySelectorAll('details.token-card').forEach(card=>{
         if(pane&&pane.hidden)setTokenPane(card,pane.dataset.tokenPane);
     },true);
 });
-const restored=location.hash.match(/^#token-([A-Za-z0-9_-]+)-(basic|permissions|credentials)$/);
+const restored=location.hash.match(/^#token-([A-Za-z0-9_-]+)-(basic|permissions|credentials|workspace-password)$/);
 if(restored){
     const card=Array.from(document.querySelectorAll('details.token-card'))
         .find(item=>item.dataset.tokenApp===restored[1]);
@@ -666,7 +666,8 @@ def _collapsible_token_card(
             for key, label in (
                 ("basic", "Basic information"),
                 ("permissions", "Permissions"),
-                ("credentials", "Credentials &amp; password"),
+                ("credentials", "Credentials"),
+                ("workspace-password", "Workspace password"),
             )
         ) + '</div>'
     )
@@ -697,7 +698,17 @@ def _collapsible_token_card(
         '<div class="actions" style="margin-top:10px">'
         '<button type="submit">Save Workspace password</button></div>'
         '<p class="muted">Changing it revokes existing temporary approvals and grants '
-        'for this Workspace.</p></form></section>'
+        'for this Workspace.</p></form>'
+        '<h3>Delegate password setup</h3>'
+        '<p class="muted">Generate a one-use link for the Workspace user. It expires after 15 minutes. '
+        'The recipient can set a new password without the existing password or admin access. '
+        'Generating another link invalidates the previous one.</p>'
+        f'<form method="post" action="{admin_path}/capabilities">'
+        f'<input type="hidden" name="csrf" value="{csrf}">'
+        f'<input type="hidden" name="workspace" value="{app_id}">'
+        '<input type="hidden" name="action" value="password_link">'
+        '<button type="submit" class="secondary">Generate temporary password URL</button>'
+        '</form></section>'
     )
     editor = (
         tabs
@@ -711,7 +722,8 @@ def _collapsible_token_card(
         + '<div class="token-save-actions" data-token-save>'
         '<button type="submit">Save changes</button></div></form>'
         + pane_open("credentials", hidden=True)
-        + marker + credentials + password_panel + delete_form + '</section>'
+        + marker + credentials + delete_form + '</section>'
+        + pane_open("workspace-password", hidden=True) + password_panel + '</section>'
     )
     return (
         f'<details class="card token-card{invalid_class}" data-token-app="{app_id}">'

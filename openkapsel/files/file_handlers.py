@@ -203,6 +203,19 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 external.append(self._external_directory(value))
                 original_external.append(self._external_directory(value))
             else:
+                # A symlink anywhere inside the workspace may point to an
+                # external host directory. Queue a scoped approval on its
+                # lexical spelling, and only resolve the destination *after*
+                # the user supplies their Workspace password. Do not classify
+                # based on the secret destination before authentication.
+                if target == "server" and any(
+                    part.is_symlink() for part in (candidate, *candidate.parents)
+                    if part == self.token_scope_root or self.token_scope_root in part.parents
+                ):
+                    original_external.append(self._external_directory(str(candidate)))
+                    external.append(self._external_directory(str(candidate)))
+                    requested.append(candidate)
+                    continue
                 self._assert_inside_root(candidate)
                 resolved = candidate.resolve(strict=False)
                 self._assert_inside_root(resolved)
@@ -270,6 +283,11 @@ class FileHandlersMixin(FileOperationSupportMixin):
             self.token_record = replace(
                 self.token_record,
                 allowed_paths=(*self.token_record.allowed_paths, PathGrant(scope, access=access)),
+                # A symlink can resolve *inside* the Workspace. When this
+                # request holds approved files.write elevation, the default
+                # Workspace read-only flag must no longer override the
+                # temporary grant. Explicit readonly/deny rules still win.
+                **({"can_write": True} if capability == "files.write" else {}),
             )
             for index, candidate in enumerate(requested):
                 if target == "server":

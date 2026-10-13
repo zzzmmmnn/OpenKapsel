@@ -20,6 +20,7 @@ DEFAULT_SECONDS = 600
 MAX_SECONDS = 24 * 3600
 MAX_PENDING_PER_TOKEN = 32
 MAX_ATTEMPTS = 5
+PASSWORD_SETUP_SECONDS = 15 * 60
 
 
 @dataclass
@@ -46,6 +47,9 @@ class CapabilityGrants:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self._browser_key = secrets.token_bytes(32)
+        # Password setup links are volatile, one at a time per Token. They
+        # never leave process memory, and a restart revokes all outstanding URLs.
+        self.password_setup_links: dict[str, tuple[str, float]] = {}
         self.pending_requests: dict[str, Pending] = {}
         self.active: dict[tuple[str, int, str, str, str], float] = {}
         with closing(sqlite3.connect(self.path)) as db:
@@ -72,6 +76,48 @@ class CapabilityGrants:
                        "password_hash=excluded.password_hash", (workspace, encoded))
             db.commit()
             self.revoke_workspace(workspace)
+            self.password_setup_links = {
+                ticket: item for ticket, item in self.password_setup_links.items()
+                if item[0] != workspace
+            }
+
+    def create_password_setup_link(self, workspace: str) -> str:
+        """Admin-only caller creates a single live, 15-minute, one-use link."""
+        if not isinstance(workspace, str) or not workspace:
+            raise ValueError("invalid Token Workspace")
+        with self.lock:
+            now = time.monotonic()
+            self.password_setup_links = {
+                key: (owner, expires) for key, (owner, expires)
+                in self.password_setup_links.items()
+                if expires > now and owner != workspace
+            }
+            ticket = secrets.token_urlsafe(32)
+            self.password_setup_links[ticket] = (workspace, now + PASSWORD_SETUP_SECONDS)
+            return ticket
+
+    def password_setup_workspace(self, ticket: str) -> str | None:
+        with self.lock:
+            entry = self.password_setup_links.get(ticket)
+            if entry is None:
+                return None
+            if entry[1] <= time.monotonic():
+                self.password_setup_links.pop(ticket, None)
+                return None
+            return entry[0]
+
+    def consume_password_setup_link(self, ticket: str, password: str, confirmation: str) -> str:
+        """Atomically replace the Token password and redeem this link once."""
+        if not isinstance(password, str) or not isinstance(confirmation, str):
+            raise ValueError("password fields are required")
+        if not hmac.compare_digest(password.encode(), confirmation.encode()):
+            raise ValueError("passwords do not match")
+        with self.lock:
+            workspace = self.password_setup_workspace(ticket)
+            if workspace is None:
+                raise ValueError("password setup link is expired or already used")
+            self.set_password(workspace, password)
+            return workspace
 
     def _check_password(self, workspace: str, password: str) -> bool:
         if not isinstance(password, str) or len(password) > 1024:
@@ -202,13 +248,11 @@ class CapabilityGrants:
             item = self.pending_requests.get(ticket)
             if item is None or not item.path or item.capability not in {"files.read", "files.write"}:
                 raise ValueError("approval expired or not a scoped File request")
-            if item.confirmation_cookie:
-                raise ValueError("approval already verified; confirm the displayed real path")
             if item.attempts >= MAX_ATTEMPTS:
                 self.pending_requests.pop(ticket, None)
                 raise PermissionError("approval attempts exhausted")
-            item.attempts += 1
             if not self._check_password(item.workspace, password):
+                item.attempts += 1
                 if item.attempts >= MAX_ATTEMPTS:
                     self.pending_requests.pop(ticket, None)
                 raise PermissionError("workspace password incorrect")
@@ -220,11 +264,13 @@ class CapabilityGrants:
         with self.lock:
             self._expire()
             item = self.pending_requests.get(ticket)
-            if item is None or item.confirmation_cookie:
-                raise ValueError("approval expired or already verified")
+            if item is None:
+                raise ValueError("approval expired")
             if (not path.startswith("/") or ".." in path.split("/")
                 or not resolved_path.startswith("/") or ".." in resolved_path.split("/")):
                 raise ValueError("invalid resolved approval directory")
+            if not item.original_path:
+                item.original_path = item.path
             item.path = path
             item.resolved_path = resolved_path
             item.confirmation_seconds = seconds
@@ -261,6 +307,12 @@ class CapabilityGrants:
             self.active = {key: end for key, end in self.active.items() if key[0] != workspace}
             self.pending_requests = {ticket: item for ticket, item in self.pending_requests.items()
                                      if item.workspace != workspace}
+            # Rotating, disabling or reassigning the Token must also revoke
+            # outstanding delegated password setup URLs.
+            self.password_setup_links = {
+                ticket: item for ticket, item in self.password_setup_links.items()
+                if item[0] != workspace
+            }
 
     def list_grants(self, workspace: str) -> list[dict]:
         with self.lock:
@@ -275,6 +327,10 @@ class CapabilityGrants:
             db.execute("DELETE FROM token_passwords WHERE token_app_id=?", (workspace,))
             db.commit()
             self.revoke_workspace(workspace)
+            self.password_setup_links = {
+                key: item for key, item in self.password_setup_links.items()
+                if item[0] != workspace
+            }
 
     def browser_proof(self, ticket: str, cookie: str) -> str:
         return hmac.new(self._browser_key, (ticket + ":" + cookie).encode(), hashlib.sha256).hexdigest()

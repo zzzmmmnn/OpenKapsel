@@ -276,6 +276,92 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(400, status)  # Last requested directory is absent.
             self.assertIn(str(missing), observed)
 
+    def test_workspace_symlink_to_internal_directory_supports_elevated_write(self):
+        self.configure()
+        root = self.server.tokens.scope_root(self.record)
+        original = root / "original"
+        original.mkdir()
+        (root / "shortcut").symlink_to(original, target_is_directory=True)
+        self.server.tokens.update(self.record.token, can_write=False)
+        args = {"path": "shortcut/new-folder", "elevated": True,
+                "target": "server", "writer_nonce": self.ownership()[1]}
+        status, prompt = self.api("/fs/write/mkdir", args)
+        self.assertEqual(403, status, prompt)
+        self.assertEqual("capability_approval_required", prompt["error"]["code"])
+        self.approve(prompt)
+        status, result = self.api("/fs/write/mkdir", args)
+        self.assertIn(status, (200, 201), result)
+        self.assertTrue((original / "new-folder").is_dir())
+
+    def test_workspace_symlink_to_external_directory_stays_usable_after_approval(self):
+        self.configure()
+        nonce = self.ownership()[1]
+        with tempfile.TemporaryDirectory(prefix="kapsel-linked-external-") as raw:
+            base = Path(raw).resolve()
+            allowed = base / "allowed"
+            hidden = base / "hidden"
+            allowed.mkdir()
+            hidden.mkdir()
+            (allowed / "safe.txt").write_text("SAFE CONTENT")
+            (hidden / "secret.txt").write_text("PRIVATE CONTENT")
+            alias = self.server.tokens.scope_root(self.record) / "linked"
+            alias.symlink_to(allowed, target_is_directory=True)
+            args = {"paths": ["linked/safe.txt"], "elevated": True,
+                    "target": "server", "writer_nonce": nonce}
+            status, prompt = self.api("/fs/read/files", args)
+            self.assertEqual(403, status, prompt)
+            details = prompt["error"]["details"]
+            self.assertEqual("capability_approval_required", prompt["error"]["code"])
+            self.assertEqual(str(alias), details["path"])
+            self.assertNotIn(str(allowed), str(prompt))
+            location, headers, form, initial = self.approval(prompt)
+            self.assertNotIn(str(allowed).encode(), initial)
+            status, _, confirmation = self.form(location, form, headers)
+            self.assertEqual(200, status, confirmation)
+            self.assertIn(str(allowed).encode(), confirmation)
+            self.assertEqual(200, self.form(location, {
+                "csrf": form["csrf"], "confirm": "actual_path",
+            }, headers)[0])
+            status, result = self.api("/fs/read/files", args)
+            self.assertEqual(200, status, result)
+            self.assertEqual("SAFE CONTENT", result["items"][0]["content"])
+            alias.unlink()
+            alias.symlink_to(hidden, target_is_directory=True)
+            status, blocked = self.api("/fs/read/files", dict(args, paths=["linked/secret.txt"]))
+            self.assertNotEqual(200, status, blocked)
+            self.assertNotIn("PRIVATE CONTENT", str(blocked))
+
+    def test_approval_back_to_password_is_repeatable_but_still_browser_bound(self):
+        self.configure()
+        with tempfile.TemporaryDirectory(prefix="kapsel-approval-back-") as raw:
+            real = Path(raw).resolve() / "real"
+            real.mkdir()
+            alias = real.parent / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            status, pending = self.request_file_elevation("read", path=str(alias))
+            self.assertEqual(200, status, pending)
+            approval = {"error": {"details": pending}}
+            location, headers, form, initial = self.approval(approval)
+            status, _, page = self.form(location, form, headers)
+            self.assertEqual(200, status, page)
+            self.assertIn(str(real).encode(), page)
+            # Returning to the URL in the same browser restores confirmation.
+            status, _, refreshed = self.request("GET", location, headers=headers)
+            self.assertEqual(200, status)
+            self.assertIn(str(real).encode(), refreshed)
+            # Browser Back -> re-submit the old password form also works.
+            status, _, repeated = self.form(location, form, headers)
+            self.assertEqual(200, status, repeated)
+            self.assertIn(b"Confirm actual File access directory", repeated)
+            # A different browser holding the link cannot read the real target.
+            _, _, _, stranger_page = self.approval(approval)
+            self.assertNotIn(str(real).encode(), stranger_page)
+            status, _, complete = self.form(location, {
+                "csrf": form["csrf"], "confirm": "actual_path",
+            }, headers)
+            self.assertEqual(200, status, complete)
+            self.assertIn(b"Capability approved", complete)
+
     def test_server_external_approval_is_bound_to_actual_symlink_target(self):
         self.configure()
         nonce = self.ownership()[1]
@@ -1154,6 +1240,52 @@ class CapabilityHTTPTests(unittest.TestCase):
         location, headers, form, _ = self.approval(new)
         self.assertEqual(429, self.form(location, form, headers)[0])
 
+    def test_delegated_workspace_password_setup_link(self):
+        session = self.server.admin_sessions.create()
+        admin = {"Cookie": "ws_admin=" + session.id, "Origin": "https://example.test"}
+        grants = self.server.capability_grants
+        self.configure()
+        payload = {"csrf": session.csrf, "workspace": self.record.app_id, "action": "password_link"}
+        self.assertNotEqual(200, self.form("/kapsel/admin/capabilities", payload, {})[0])
+        self.assertEqual(403, self.form("/kapsel/admin/capabilities",
+                                        dict(payload, csrf="bad"), admin)[0])
+        status, response_headers, response = self.form("/kapsel/admin/capabilities", payload, admin)
+        self.assertEqual(200, status, response)
+        self.assertEqual("no-store", response_headers["Cache-Control"])
+        matches = re.findall(rb'/admin/password-setup/([A-Za-z0-9_-]{43})', response)
+        self.assertEqual(1, len(matches))
+        old_ticket = matches[0].decode()
+        self.assertEqual(self.record.app_id, grants.password_setup_workspace(old_ticket))
+        status, _, response = self.form("/kapsel/admin/capabilities", payload, admin)
+        self.assertEqual(200, status, response)
+        ticket = re.search(rb'/admin/password-setup/([A-Za-z0-9_-]{43})', response).group(1).decode()
+        self.assertNotEqual(old_ticket, ticket)
+        self.assertIsNone(grants.password_setup_workspace(old_ticket))
+        self.assertEqual(400, self.request("GET", "/kapsel/admin/password-setup/" + old_ticket)[0])
+        location = "/kapsel/admin/password-setup/" + ticket
+        status, headers, page = self.request("GET", location)
+        self.assertEqual(200, status, page)
+        self.assertIn(b'name="confirm_password"', page)
+        self.assertNotIn(self.record.control_token.encode(), page)
+        self.assertIn("Secure", headers["Set-Cookie"])
+        recipient = {"Cookie": headers["Set-Cookie"].split(";", 1)[0],
+                     "Origin": "https://example.test"}
+        csrf = re.search(rb'name="csrf" value="([0-9a-f]{64})"', page).group(1).decode()
+        form = {"csrf": csrf, "password": "new-pass-123", "confirm_password": "new-pass-123"}
+        self.assertEqual(403, self.form(location, form, {})[0])
+        self.assertEqual(403, self.form(location, dict(form, csrf="bad"), recipient)[0])
+        self.assertEqual(403, self.form(location, form, dict(recipient, Origin="https://evil.test"))[0])
+        self.assertEqual(400, self.form(location, dict(form, confirm_password="other-pass"), recipient)[0])
+        self.assertTrue(grants.verify_workspace_password(self.record.app_id, self.PASSWORD))
+        status, _, result = self.form(location, form, recipient)
+        self.assertEqual(200, status, result)
+        self.assertIn(b"Workspace password saved", result)
+        self.assertTrue(grants.verify_workspace_password(self.record.app_id, "new-pass-123"))
+        self.assertFalse(grants.verify_workspace_password(self.record.app_id, self.PASSWORD))
+        self.assertIsNone(grants.password_setup_workspace(ticket))
+        self.assertEqual(400, self.request("GET", location)[0])
+        self.assertEqual(400, self.form(location, form, recipient)[0])
+
     def test_six_character_workspace_password_admin_and_approval(self):
         session = self.server.admin_sessions.create()
         headers = {"Cookie": "ws_admin=" + session.id}
@@ -1175,7 +1307,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             "/kapsel/admin/capabilities", values, headers
         )
         self.assertEqual(303, status)
-        self.assertIn(f"#token-{self.record.app_id}-credentials",
+        self.assertIn(f"#token-{self.record.app_id}-workspace-password",
                       response_headers["Location"])
         grants = self.server.capability_grants
         self.assertTrue(grants.verify_workspace_password(self.record.app_id, "abc123"))
@@ -1220,9 +1352,9 @@ class CapabilityHTTPTests(unittest.TestCase):
         )[0]
         self.assertIn('role="tablist"', card)
         buttons = re.findall(r'<button type="button" role="tab"[^>]*>', card)
-        self.assertEqual(3, len(buttons))
+        self.assertEqual(4, len(buttons))
         self.assertEqual(
-            ["true", "false", "false"],
+            ["true", "false", "false", "false"],
             [re.search(r'aria-selected="([^"]+)"', button).group(1)
              for button in buttons],
         )
@@ -1233,7 +1365,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         headers = {"Cookie": "ws_admin=" + session.id}
         status, _, dashboard = self.request("GET", "/kapsel/admin", headers=headers)
         self.assertEqual(200, status, dashboard)
-        self.assertNotIn(b"Workspace password</span>", dashboard)
+        self.assertIn(b"Workspace password</button>", dashboard)
         page = dashboard.decode()
         scripts = re.findall(r'<script>(.*?)</script>', page, re.S)
         admin_script = next(script for script in scripts
@@ -1249,14 +1381,15 @@ class CapabilityHTTPTests(unittest.TestCase):
         card = page.split(f'data-token-app="{self.record.app_id}"', 1)[1].split(
             '</details>', 1)[0]
         self.assertEqual(
-            ["basic", "permissions", "credentials"],
+            ["basic", "permissions", "credentials", "workspace-password"],
             re.findall(r'<button[^>]*data-token-tab="([^"]+)"', card),
         )
         panes = re.findall(r'<section class="token-pane"[^>]*>', card)
-        self.assertEqual(3, len(panes))
+        self.assertEqual(4, len(panes))
         self.assertNotIn(" hidden", panes[0])
         self.assertIn(" hidden", panes[1])
         self.assertIn(" hidden", panes[2])
+        self.assertIn(" hidden", panes[3])
         update = card.split('<form data-token-update ', 1)[1].split('</form>', 1)[0]
         self.assertNotIn("<form ", update)  # no nested forms
         names = re.findall(r'<(?:input|select|textarea)[^>]*name="([^"]+)"', update)
@@ -1265,12 +1398,15 @@ class CapabilityHTTPTests(unittest.TestCase):
                      "can_schedule", "enabled", "shell_mode", "network_mode",
                      "sandbox_max_processes", "allowed_domains"):
             self.assertIn(name, names)
-        credentials = card.split('data-token-pane="credentials"', 1)[1]
-        self.assertIn('action="/kapsel/admin/capabilities"', credentials)
+        credentials = card.split('data-token-pane="credentials"', 1)[1].split('</section>', 1)[0]
+        self.assertNotIn('name="action" value="password"', credentials)
+        password_pane = card.split('data-token-pane="workspace-password"', 1)[1]
+        self.assertIn('action="/kapsel/admin/capabilities"', password_pane)
         self.assertIn(f'name="workspace" value="{self.record.app_id}"',
-                      credentials)
+                      password_pane)
         self.assertIn(f'name="token_app_id" value="{self.record.app_id}"',
-                      credentials)
+                      password_pane)
+        self.assertIn('name="action" value="password_link"', password_pane)
         self.assertFalse(self.server.capability_grants.configured(self.record.app_id))
         values = {"workspace": self.record.app_id, "action": "password",
                   "password": self.PASSWORD, "csrf": session.csrf,
@@ -1281,7 +1417,7 @@ class CapabilityHTTPTests(unittest.TestCase):
                                          dict(values, token_app_id="unknown"), headers)[0])
         status, post_headers, _ = self.form("/kapsel/admin/capabilities", values, headers)
         self.assertEqual(303, status)
-        self.assertIn(f"#token-{self.record.app_id}-credentials",
+        self.assertIn(f"#token-{self.record.app_id}-workspace-password",
                       post_headers["Location"])
         self.assertTrue(self.server.capability_grants.configured(self.record.app_id))
         self.assertIn(b"Configured", self.request("GET", "/kapsel/admin",

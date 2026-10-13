@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hmac
+import html
+import secrets
 import ipaddress
 import logging
 import re
@@ -12,7 +14,9 @@ from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from openkapsel.auth.admin_ui import render_dashboard, render_login
-from openkapsel.auth.capability_handlers import CapabilityHandlersMixin
+from openkapsel.auth.oauth_consent import consent_cookie
+from openkapsel.auth.oauth_store import OAuthError
+from openkapsel.auth.capability_handlers import CapabilityHandlersMixin, page
 from openkapsel.execution.cgroups import SandboxLimits
 from openkapsel.errors import ApiError
 from openkapsel.auth.security import (
@@ -34,6 +38,9 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
             return
         if method in {"GET", "HEAD"} and path.endswith("/favicon.svg"):
             self._send_builtin_favicon(head_only=method == "HEAD")
+            return
+        if path.startswith("/admin/password-setup/"):
+            self._handle_workspace_password_setup(method, path.removeprefix("/admin/password-setup/"), raw_query)
             return
         if path.startswith("/admin/capability/"):
             self._handle_capability_approval(method, path.removeprefix("/admin/capability/"), raw_query)
@@ -105,6 +112,74 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
             self._handle_admin_password()
             return
         self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
+
+    def _handle_workspace_password_setup(self, method: str, ticket: str, raw_query: str) -> None:
+        """A single-use bearer link for a Token password, without admin login."""
+        self._require_password_transport()
+        grants = self.server.capability_grants
+        if raw_query or not re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
+            self._send_html(400, page("<h1>Password setup unavailable</h1>"), script_src="'none'")
+            return
+        workspace = grants.password_setup_workspace(ticket)
+        record = self.server.tokens.get_by_app_id(workspace) if workspace else None
+        if record is None or not record.valid:
+            self._send_html(400, page("<h1>Password setup unavailable</h1><p>The link has expired or was used.</p>"), script_src="'none'")
+            return
+        if method not in {"GET", "POST"}:
+            self._send_html(405, page("<h1>Use GET or POST</h1>"), headers={"Allow": "GET, POST"}, script_src="'none'")
+            return
+        name = "__Host-openkapsel_password_setup" if self._request_is_https() else "openkapsel_password_setup"
+        cookie = consent_cookie(self.headers, name)
+        error = ""
+        if method == "POST":
+            if self._request_content_length(required=True) > 8192:
+                raise ValueError("Password setup form too large")
+            form = self._read_form()
+            if (any(len(values) != 1 for values in form.values())
+                    or set(form) != {"csrf", "password", "confirm_password"}):
+                raise ValueError("Invalid password setup form")
+            try:
+                self._consent_check_origin()
+            except OAuthError:
+                self._send_html(403, page("<h1>Password setup verification failed</h1>"), script_src="'none'")
+                return
+            if not grants.verify_browser(ticket, cookie, self._form_one(form, "csrf")):
+                self._send_html(403, page("<h1>Password setup verification failed</h1>"), script_src="'none'")
+                return
+            try:
+                with self.server.workspace_admin_lock:
+                    current = grants.password_setup_workspace(ticket)
+                    active = self.server.tokens.get_by_app_id(current) if current else None
+                    if active is None or not active.valid:
+                        raise ValueError("Password setup link is no longer valid")
+                    grants.consume_password_setup_link(
+                        ticket, self._form_one(form, "password"),
+                        self._form_one(form, "confirm_password"))
+                LOGGER.info("delegated Workspace password set for Token app_id=%s", workspace)
+                self._send_html(200, page("<h1>Workspace password saved</h1><p>The link was consumed. Temporary approvals for this Token have been revoked.</p>"),
+                                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}, script_src="'none'")
+                return
+            except ValueError as exc:
+                error = str(exc)
+        cookie = cookie or secrets.token_urlsafe(32)
+        proof = grants.browser_proof(ticket, cookie)
+        esc = html.escape
+        action = esc(self._admin_path() + "/password-setup/" + ticket, quote=True)
+        notice = f'<p class="error">{esc(error)}</p>' if error else ""
+        body = (f'<h1>Set Workspace password</h1><p>Token: <strong>{esc(record.name)}</strong></p>'
+                '<p>Set a new password for this Workspace Token without administrator access or the old password.</p>'
+                + notice + f'<form method="post" action="{action}" autocomplete="off">'
+                f'<input type="hidden" name="csrf" value="{proof}">'
+                '<label>New Workspace password</label>'
+                '<input type="password" name="password" autocomplete="new-password" minlength="6" maxlength="1024" required>'
+                '<label>Repeat new password</label>'
+                '<input type="password" name="confirm_password" autocomplete="new-password" minlength="6" maxlength="1024" required>'
+                '<div class="actions"><button type="submit">Set Workspace password</button></div></form>'
+                '<p>This link is one-use and expires 15 minutes after creation.</p>')
+        new_cookie = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=900" + ("; Secure" if self._request_is_https() else "")
+        self._send_html(400 if error else 200, page(body),
+                        headers={"Set-Cookie": new_cookie, "Cache-Control": "no-store",
+                                 "Referrer-Policy": "no-referrer"}, script_src="'none'")
 
     def _handle_admin_login(self) -> None:
         address = self._admin_rate_limit_address()

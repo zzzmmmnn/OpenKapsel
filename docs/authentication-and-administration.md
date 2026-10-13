@@ -95,8 +95,20 @@ Regular-directory mode remains available when the image helper is not installed.
 
 ## Temporary capability grants
 
-In Administration → Token management, expand a Token and select **Credentials & password**
-to set or reset its Workspace approval password. **Each Token is its own
+In Administration → Token management, expand a Token. **Credentials**
+and **Workspace password** are separate settings tabs. Use the Workspace
+password tab to set or reset that Token's approval password, or generate a
+**temporary password setup URL** to share with its user. A recipient holding
+that URL needs no administrator login or old password: they enter and confirm
+the new password twice (6–1024 characters). Each URL is single-use, valid for
+15 minutes, and stored in server memory only. Generating a replacement URL
+invalidates the earlier unused link for the same Token; changing/deleting or
+reassigning the Token revokes its links. Successful setup invalidates the
+link and existing temporary approvals/grants for that Token. Only an
+authenticated administrator with a valid CSRF token can create such a URL.
+Treat it as a secret bearer credential and share it securely.
+
+**Each Token is its own
 Workspace for passwords and temporary grants**: even two Tokens pointing at the
 same filesystem directory have independent passwords. The stable Token
 `app_id` is the internal password and grant identity, so rotating Read/Control

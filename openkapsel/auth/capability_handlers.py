@@ -120,6 +120,21 @@ class CapabilityHandlersMixin:
                 item.target, str(Path(actual).parent), directory=True)
         return actual
 
+    def _file_confirmation_page(self, item, ticket, csrf):
+        esc = html.escape
+        original = item.original_path or item.path
+        actual = item.path
+        warning = ("This is the ACTUAL directory the grant authorizes. "
+                   "Verify it before confirming; the requested alias may point elsewhere.")
+        return ("<h1>Confirm actual File access directory</h1>"
+                f"<dl><dt>Original requested path</dt><dd>{esc(original)}</dd>"
+                f"<dt><strong>Actual authorized directory</strong></dt>"
+                f"<dd><strong>{esc(actual)}</strong></dd></dl>"
+                f'<p class="notice">{esc(warning)}</p>'
+                f'<form method="post" action="{esc(self._admin_path() + "/capability/" + ticket, quote=True)}">'
+                f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
+                '<button name="confirm" value="actual_path">Confirm actual directory and approve</button></form>')
+
     def _handle_capability_approval(self, method, ticket, raw_query):
         grants = self.server.capability_grants
         status, error = 200, ""
@@ -182,18 +197,7 @@ class CapabilityHandlersMixin:
                         except (OSError, RuntimeError, ApiError, ValueError) as exc:
                             raise ValueError("Approval path is unavailable") from exc
                         grants.prepare_file_confirmation(ticket, cookie, scope, actual, minutes * 60)
-                        esc = html.escape
-                        original = item.original_path or item.path
-                        warning = ("This is the ACTUAL directory the grant authorizes. "
-                                   "Verify it before confirming; the requested alias may point elsewhere.")
-                        body = ("<h1>Confirm actual File access directory</h1>"
-                                f"<dl><dt>Original requested path</dt><dd>{esc(original)}</dd>"
-                                f"<dt><strong>Actual authorized directory</strong></dt>"
-                                f"<dd><strong>{esc(scope)}</strong></dd></dl>"
-                                f"<p class=\"notice\">{esc(warning)}</p>"
-                                f"<form method=\"post\" action=\"{esc(self._admin_path() + '/capability/' + ticket, quote=True)}\">"
-                                f"<input type=\"hidden\" name=\"csrf\" value=\"{esc(self._form_one(form, 'csrf'), quote=True)}\">"
-                                "<button name=\"confirm\" value=\"actual_path\">Confirm actual directory and approve</button></form>")
+                        body = self._file_confirmation_page(item, ticket, self._form_one(form, "csrf"))
                         self._send_html(200, page(body), script_src="'none'")
                         return
                     else:
@@ -215,6 +219,15 @@ class CapabilityHandlersMixin:
         cookie = cookie or secrets.token_urlsafe(32)
         proof = grants.browser_proof(ticket, cookie)
         esc = html.escape
+        # Reloading the URL or returning from the confirmation page in the
+        # authenticated browser must restore that confirmation, not strand the
+        # ticket. Another browser never receives the canonical path.
+        if (status == 200 and item.confirmation_cookie and
+            grants.verify_file_confirmation_browser(ticket, cookie)):
+            body = self._file_confirmation_page(item, ticket, proof)
+            header = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300" + ("; Secure" if self._request_is_https() else "")
+            self._send_html(200, page(body), headers={"Set-Cookie": header}, script_src="'none'")
+            return
         body = f'<h1>Approve temporary capability</h1><p class="error">{esc(error)}</p>' if error else '<h1>Approve temporary capability</h1>'
         warning = ("Shell elevation runs as the target's current OS user without sandbox restrictions. "
                    if item.capability == "shell.elevated" else
@@ -277,9 +290,25 @@ class CapabilityHandlersMixin:
                         if return_to == "token":
                             self._redirect(
                                 f"{self._admin_path()}?workspace_password_changed=1"
-                                f"#token-{token_app_id}-credentials"
+                                f"#token-{token_app_id}-workspace-password"
                             )
                             return
+                    elif action == "password_link":
+                        ticket = grants.create_password_setup_link(workspace)
+                        url = self._public_base_url() + "/admin/password-setup/" + ticket
+                        esc = html.escape
+                        body = ("<h1>Temporary Workspace password URL</h1>"
+                                f"<p>Token: <strong>{esc(record.name)}</strong></p>"
+                                "<p>Share this one-use link with the intended Workspace user. "
+                                "It expires in 15 minutes; generating another link invalidates this one. "
+                                "The recipient can set a new password without logging in as administrator or supplying the old password.</p>"
+                                f'<div class="token" style="word-break:break-all">{esc(url)}</div>'
+                                f'<p><a href="{esc(self._admin_path(), quote=True)}#token-{esc(workspace)}-workspace-password">Back to Token settings</a></p>')
+                        LOGGER.info("admin created delegated Workspace password link for Token app_id=%s", workspace)
+                        self._send_html(200, page(body), headers={
+                            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                        }, script_src="'none'")
+                        return
                     elif action == "revoke":
                         grants.revoke(workspace, int(self._form_one(form, "conversation_id")),
                                       self._form_one(form, "target"), self._form_one(form, "capability"),

@@ -52,6 +52,36 @@ class CapabilityGrantTests(unittest.TestCase):
                     self.store.set_password(self.workspace, invalid)
         self.assertTrue(self.store.verify_workspace_password(self.workspace, "abc123"))
 
+    def test_password_setup_link_expiry_rotation_consumption_and_token_isolation(self):
+        workspace = self.workspace
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
+            first = self.store.create_password_setup_link(workspace)
+            other = self.store.create_password_setup_link("token-b")
+            replacement = self.store.create_password_setup_link(workspace)
+            self.assertIsNone(self.store.password_setup_workspace(first))
+            self.assertEqual(workspace, self.store.password_setup_workspace(replacement))
+            self.assertEqual("token-b", self.store.password_setup_workspace(other))
+            with self.assertRaisesRegex(ValueError, "match"):
+                self.store.consume_password_setup_link(replacement, "newpass", "different")
+            self.assertEqual(workspace, self.store.password_setup_workspace(replacement))
+            with self.assertRaisesRegex(ValueError, "6-1024"):
+                self.store.consume_password_setup_link(replacement, "short", "short")
+            self.assertEqual(workspace, self.store.password_setup_workspace(replacement))
+            self.assertEqual(workspace, self.store.consume_password_setup_link(replacement, "abcdef", "abcdef"))
+            self.assertIsNone(self.store.password_setup_workspace(replacement))
+            self.assertEqual("token-b", self.store.password_setup_workspace(other))
+        self.assertTrue(self.store.verify_workspace_password(workspace, "abcdef"))
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
+            expiring = self.store.create_password_setup_link(workspace)
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100 + 900):
+            self.assertIsNone(self.store.password_setup_workspace(expiring))
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
+            unused = self.store.create_password_setup_link(workspace)
+        self.store.set_password(workspace, "new-password-xyz")
+        self.assertIsNone(self.store.password_setup_workspace(unused))
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
+            self.assertIsNotNone(self.store.password_setup_workspace(other))
+
     def test_path_scoped_approval_rejects_dotdot_at_store_boundary(self):
         with self.assertRaisesRegex(ValueError, "invalid approval path"):
             self.store.request(
