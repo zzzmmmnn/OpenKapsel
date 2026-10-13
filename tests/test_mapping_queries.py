@@ -90,13 +90,28 @@ class MappingQueryTests(unittest.TestCase):
         ):
             path.write_text("x")
             os.utime(path, (timestamp, timestamp))
-        status, result = self.api(
-            "/fs/query/find?path=.&sort_by=modified&sort_order=desc"
-            "&file_type=file&max_results=2"
-        )
-        self.assertEqual(200, status, result)
-        self.assertEqual(["local-new.txt", "local-old.txt"],
-                         [Path(item["path"]).name for item in result["results"]])
+        # On Linux the native SQLite index receives inotify/watchfiles
+        # changes asynchronously. A ready index may not have consumed these
+        # file creations and utime updates immediately. Wait for the REAL
+        # HTTP search to reflect them; do not rebuild or mock the index.
+        expected = ["local-new.txt", "local-old.txt"]
+        deadline = time.monotonic() + 20
+        while True:
+            status, result = self.api(
+                "/fs/query/find?path=.&sort_by=modified&sort_order=desc"
+                "&file_type=file&max_results=2"
+            )
+            self.assertEqual(200, status, result)
+            names = [Path(item["path"]).name for item in result["results"]]
+            # Require the actual Linux indexed backend, not a recursive
+            # fallback that could conceal a stopped watcher.
+            indexed = not sys.platform.startswith("linux") or result["backend"] == "sqlite_watch"
+            if indexed and names == expected:
+                break
+            if time.monotonic() >= deadline:
+                self.fail(f"native newest-file index failed to converge: {result}")
+            time.sleep(0.05)
+        self.assertEqual(expected, names)
         self.assertEqual([], self.calls)
         self.assertFalse(result["truncated"])
         self.assertTrue(all(item["type"] == "file" for item in result["results"]))
