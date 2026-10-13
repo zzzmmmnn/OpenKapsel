@@ -48,6 +48,72 @@ class CapabilityGrantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already used"):
             self.store.approve(ticket, "passphrase-for-test-123")
 
+    def test_pending_quota_is_32_per_token_not_global(self):
+        from openkapsel.auth.capability_grants import MAX_PENDING_PER_TOKEN
+
+        self.assertEqual(32, MAX_PENDING_PER_TOKEN)
+        token_a = self.workspace
+        token_b = "another-token-same-directory"
+        tickets_a = [
+            self.store.request(token_a, 1, "server", "shell.elevated")
+            for _ in range(MAX_PENDING_PER_TOKEN)
+        ]
+        self.assertEqual(MAX_PENDING_PER_TOKEN, len(set(tickets_a)))
+        with self.assertRaisesRegex(RuntimeError, "too many pending"):
+            self.store.request(token_a, 2, "server", "shell.elevated")
+        tickets_b = [
+            self.store.request(token_b, 1, "server", "shell.elevated")
+            for _ in range(MAX_PENDING_PER_TOKEN)
+        ]
+        self.assertEqual(MAX_PENDING_PER_TOKEN, len(set(tickets_b)))
+        with self.assertRaisesRegex(RuntimeError, "too many pending"):
+            self.store.request(token_b, 2, "server", "shell.elevated")
+        self.assertEqual(64, len(self.store.pending_requests))
+
+        # Approving one Token A request releases only Token A capacity.
+        self.store.approve(tickets_a[0], "passphrase-for-test-123")
+        replacement = self.store.request(token_a, 3, "server", "shell.elevated")
+        self.assertIsNotNone(self.store.pending(replacement))
+        with self.assertRaisesRegex(RuntimeError, "too many pending"):
+            self.store.request(token_b, 3, "server", "shell.elevated")
+
+        # Revocation frees only the associated Token's pending tickets.
+        self.store.revoke_workspace(token_b)
+        self.assertEqual(MAX_PENDING_PER_TOKEN, len(self.store.pending_requests))
+        self.assertIsNotNone(
+            self.store.request(token_b, 4, "server", "shell.elevated")
+        )
+        with self.assertRaisesRegex(RuntimeError, "too many pending"):
+            self.store.request(token_a, 4, "server", "shell.elevated")
+
+    def test_pending_quota_recovers_from_expiration(self):
+        from openkapsel.auth.capability_grants import MAX_PENDING_PER_TOKEN
+
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
+            tickets = [
+                self.store.request(self.workspace, 1, "server", "shell.elevated")
+                for _ in range(MAX_PENDING_PER_TOKEN)
+            ]
+            with self.assertRaisesRegex(RuntimeError, "too many pending"):
+                self.store.request(self.workspace, 1, "server", "shell.elevated")
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=401):
+            new_ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+            self.assertIsNone(self.store.pending(tickets[0]))
+            self.assertEqual(1, len(self.store.pending_requests))
+            self.assertIsNotNone(self.store.pending(new_ticket))
+
+    def test_no_global_pending_quota_across_many_tokens(self):
+        from openkapsel.auth.capability_grants import MAX_PENDING_PER_TOKEN
+
+        for index in range(17):
+            token = f"token-{index}"
+            for _ in range(MAX_PENDING_PER_TOKEN):
+                self.store.request(token, 0, "server", "shell.elevated")
+        self.assertEqual(544, len(self.store.pending_requests))
+        self.assertIsNotNone(
+            self.store.request("token-18", 0, "server", "shell.elevated")
+        )
+
     def test_pending_five_minutes_and_grant_expiry(self):
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
             ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")

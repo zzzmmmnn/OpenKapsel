@@ -126,6 +126,13 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="share",
     ),
     _exact(
+        "files_elevation_request", ("POST",), "/files/elevation/request",
+        "_handle_files_elevation_request",
+        control_required=True, request_body=True, context_mode="deferred",
+        context_operations=(("POST", "files.elevation.request"),),
+        discovery_key="fs_write",
+    ),
+    _exact(
         "fs_list", ("GET",), "/fs/query/list", "_handle_fs_list",
         invocation="query", context_mode="optional_query",
         context_operations=(("GET", "fs.list"),), discovery_key="fs_query",

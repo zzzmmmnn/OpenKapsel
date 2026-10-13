@@ -160,6 +160,200 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.record.app_id, self.ownership()[0], "server", "shell.elevated"
         ))
 
+    def request_file_elevation(self, access, target="server"):
+        return self.api("/files/elevation/request", {
+            "access": access, "target": target,
+            "writer_nonce": self.ownership()[1],
+        })
+
+    def test_file_read_write_temporary_elevation_needs_individual_grants(self):
+        self.configure()
+        root = self.server.tokens.scope_root(self.record)
+        (root / "elevated-file.txt").write_text("protected-content")
+        self.server.tokens.update(self.record.token, can_read=False, can_write=False)
+        self.assertEqual(403, self.api("/fs/read/files", {
+            "paths": ["elevated-file.txt"],
+        })[0])
+        status, read = self.request_file_elevation("read")
+        self.assertEqual(200, status, read)
+        self.assertEqual("approval_required", read["status"])
+        self.assertEqual("files.read", read["capability"])
+        self.approve({"error": {"details": read}})
+        self.assertEqual("granted", self.request_file_elevation("read")[1]["status"])
+        # Approval is opt-in on EACH file request, not a blanket token policy.
+        self.assertEqual(403, self.api("/fs/read/files", {
+            "paths": ["elevated-file.txt"],
+        })[0])
+        status, response = self.api("/fs/read/files", {
+            "paths": ["elevated-file.txt"], "elevated": True,
+            "target": "server", "writer_nonce": self.ownership()[1],
+        })
+        self.assertEqual(200, status, response)
+        self.assertEqual("protected-content", response["items"][0]["content"])
+        self.assertEqual(403, self.api("/fs/write/mkdir", {
+            "path": "elevated-dir", "elevated": True, "target": "server",
+            "writer_nonce": self.ownership()[1],
+        })[0])
+        status, write = self.request_file_elevation("write")
+        self.assertEqual(200, status, write)
+        self.assertEqual("files.write", write["capability"])
+        self.approve({"error": {"details": write}})
+        self.assertEqual(403, self.api("/fs/write/mkdir", {
+            "path": "elevated-dir",
+        })[0])
+        status, created = self.api("/fs/write/mkdir", {
+            "path": "elevated-dir", "elevated": True, "target": "server",
+            "writer_nonce": self.ownership()[1],
+        })
+        self.assertIn(status, (200, 201), created)
+        self.assertTrue((root / "elevated-dir").is_dir())
+        status, mutation = self.api("/fs/write/mutate", {
+            "items": [{"op": "file.create", "path": "elevated-dir/written.txt",
+                       "content": "authorized"}],
+            "elevated": True, "target": "server",
+            "writer_nonce": self.ownership()[1],
+        })
+        self.assertEqual(200, status, mutation)
+        self.assertEqual("authorized", (root / "elevated-dir/written.txt").read_text())
+        self.assertEqual(404, self.api("/fs/read/files", {
+            "paths": ["elevated-file.txt"], "elevated": True,
+            "target": "other-mapping", "writer_nonce": self.ownership()[1],
+        })[0])
+
+    def test_file_elevation_get_and_mapping_target_binding(self):
+        from urllib.parse import urlencode
+        self.configure()
+        self.server.tokens.update(self.record.token, can_read=False)
+        status, pending = self.request_file_elevation("read", "server")
+        self.assertEqual(200, status)
+        self.approve({"error": {"details": pending}})
+        query = urlencode({
+            "path": ".", "elevated": "true", "target": "server",
+            "writer_nonce": self.ownership()[1], "plan_id": self.plan,
+        })
+        status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
+                                      headers=self.headers)
+        self.assertEqual(200, status, raw)
+        query = urlencode({
+            "path": "laptop", "elevated": "true", "target": "server",
+            "writer_nonce": self.ownership()[1], "plan_id": self.plan,
+        })
+        status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
+                                      headers=self.headers)
+        self.assertEqual(403, status, raw)
+        self.assertIn(b"file_elevation_target_mismatch", raw)
+        status, pending = self.request_file_elevation("read", self.row["id"])
+        self.assertEqual(200, status, pending)
+        self.approve({"error": {"details": pending}})
+        # The Shell test fixture routes tasks to SharedClientTasks, which
+        # does not implement the independent File API RPC protocol. Delegate
+        # only file RPC operations to the separate ClientFiles fixture.
+        self.session.call = lambda operation, args: (
+            self.files.dispatch(operation, args) if operation.startswith("api_")
+            else self.tasks.dispatch(operation, args)
+        )
+        query = urlencode({
+            "path": "laptop", "elevated": "true", "target": self.row["id"],
+            "writer_nonce": self.ownership()[1], "plan_id": self.plan,
+        })
+        status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
+                                      headers=self.headers)
+        self.assertEqual(200, status, raw)
+
+    def test_file_elevation_proactive_mcp_and_permission_flags(self):
+        self.configure()
+        self.server.tokens.update(self.record.token, can_read=False, can_write=False)
+        access, _, _ = self.authorize()
+        arguments = {
+            "family": "files", "operation": "request_elevation",
+            "args": {"access": "read", "target": "server",
+                     "writer_nonce": self.ownership()[1]},
+            "plan_id": self.plan, "taskname": "file elevation",
+            "message": "Request read permission",
+        }
+        status, result = self.rpc(access["access_token"], "tools/call", {
+            "name": "capability_call", "arguments": arguments,
+        })
+        self.assertEqual(200, status)
+        self.assertFalse(result["result"]["isError"], result)
+        pending = result["result"]["structuredContent"]
+        self.assertEqual("files.read", pending["capability"])
+        self.approve({"error": {"details": pending}})
+        tool_args = {
+            "name": "fs_read_files", "arguments": {
+                "paths": ["file.txt"], "elevated": True,
+                "writer_nonce": self.ownership()[1], "target": "server",
+                "plan_id": self.plan, "taskname": "file elevation",
+                "message": "Read with approval",
+            },
+        }
+        self.server.tokens.scope_root(self.record).joinpath("file.txt").write_text("readable")
+        status, reply = self.rpc(access["access_token"], "tools/call", tool_args)
+        self.assertEqual(200, status)
+        self.assertFalse(reply["result"]["isError"], reply)
+        self.assertEqual("readable", reply["result"]["structuredContent"]["items"][0]["content"])
+
+        # A read grant must not authorize a write MCP tool.
+        write_args = {
+            "name": "fs_write",
+            "arguments": {
+                "path": "elevated-mcp.txt", "content": "new",
+                "elevated": True, "writer_nonce": self.ownership()[1],
+                "target": "server", "plan_id": self.plan,
+                "taskname": "file elevation", "message": "Write with approval",
+            },
+        }
+        status, denied = self.rpc(access["access_token"], "tools/call", write_args)
+        self.assertEqual(200, status)
+        self.assertTrue(denied["result"]["isError"], denied)
+        self.assertIn("capability_approval_required",
+                      str(denied["result"]["structuredContent"]))
+        arguments["args"]["access"] = "write"
+        status, asked = self.rpc(access["access_token"], "tools/call", {
+            "name": "capability_call", "arguments": arguments,
+        })
+        self.assertEqual(200, status)
+        self.approve({"error": {"details": asked["result"]["structuredContent"]}})
+        status, written = self.rpc(access["access_token"], "tools/call", write_args)
+        self.assertEqual(200, status)
+        self.assertFalse(written["result"]["isError"], written)
+        self.assertEqual(
+            "new", self.server.tokens.scope_root(self.record)
+            .joinpath("elevated-mcp.txt").read_text(),
+        )
+
+    def test_file_elevation_respects_denied_and_readonly_paths(self):
+        from openkapsel.auth.tokens import PathGrant
+        self.configure()
+        root = self.server.tokens.scope_root(self.record)
+        (root / "secret.txt").write_text("not available")
+        (root / "readonly").mkdir()
+        self.server.tokens.update(
+            self.record.token, can_read=False, can_write=False, shell_mode="restricted",
+            allowed_paths=(
+                PathGrant(str(root / "secret.txt"), access="deny"),
+                PathGrant(str(root / "readonly"), access="ro"),
+            ),
+        )
+        for access in ("read", "write"):
+            status, pending = self.request_file_elevation(access)
+            self.assertEqual(200, status, pending)
+            self.approve({"error": {"details": pending}})
+        nonce = self.ownership()[1]
+        self.assertEqual(403, self.api("/fs/read/files", {
+            "paths": ["secret.txt"], "elevated": True,
+            "target": "server", "writer_nonce": nonce,
+        })[0])
+        self.assertEqual(403, self.api("/fs/write/mkdir", {
+            "path": "readonly/newdir", "elevated": True,
+            "target": "server", "writer_nonce": nonce,
+        })[0])
+        self.assertFalse((root / "readonly/newdir").exists())
+        # The same read/write approvals do not authorize Shell tasks.
+        status, body = self.elevated()
+        self.assertEqual(403, status)
+        self.assertEqual("capability_approval_required", body["error"]["code"])
+
     def test_proactive_elevation_request_is_command_free_and_reuses_grant(self):
         self.configure()
         self.server.tokens.update(self.record.token, shell_mode="restricted")

@@ -69,6 +69,20 @@ def _tool(
     open_world: bool = False,
     context_message: bool = True,
 ) -> dict[str, Any]:
+    if name in {
+        "fs_list", "fs_stat", "fs_manifest", "fs_find", "fs_grep", "fs_tree",
+        "fs_read_files", "fs_read_binary", "fs_read_large",
+        "fs_write", "fs_edit_text", "fs_delete", "fs_mutate",
+        "fs_replace_large", "fs_mkdir", "fs_move",
+    }:
+        schema["properties"].update({
+            "elevated": {"type": "boolean", "default": False,
+                         "description": "Explicitly use approved files.read or files.write for this Token and target."},
+            "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
+                             "description": "Owning Conversation writer nonce, required when elevated=true."},
+            "target": {"type": "string", "minLength": 1,
+                       "description": "Required when elevated=true: server or exact Mapping ID."},
+        })
     if context_message:
         schema["properties"]["plan_id"] = plan_id_schema(
             description=(
@@ -989,6 +1003,18 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         open_world=True,
     ),
     _tool(
+        "files_request_elevation",
+        "Request File API elevation",
+        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. This performs no File operation. Returns approval_required with approval_url or granted. After approval, send elevated=true, writer_nonce and target on each File API call.",
+        _object_schema({
+            "access": {"type": "string", "enum": ["read", "write"]},
+            "target": {"type": "string", "minLength": 1,
+                       "description": "server or exact Mapping ID"},
+            "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$"},
+        }, ("access", "target", "writer_nonce")),
+        read_only=False,
+    ),
+    _tool(
         "shell_request_elevation",
         "Request temporary Shell elevation",
         "Request conversation-scoped Shell elevation for an explicit target without executing any command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. The user must approve in the browser; later Shell execution still requires elevated=true.",
@@ -1184,6 +1210,9 @@ _AUXILIARY_OPERATION_MAP: dict[
         "commit": ("upload_commit", None, None, ("upload_id",), "sync"),
         "cancel": ("upload_cancel", None, None, ("upload_id",), "sync"),
     },
+    "files": {
+        "request_elevation": ("files_request_elevation", None, None, ("access", "target", "writer_nonce"), "sync"),
+    },
     "shell": {
         "exec": ("shell_exec", None, None, ("command",), "task"),
         "request_elevation": ("shell_request_elevation", None, None, ("target", "writer_nonce"), "sync"),
@@ -1224,7 +1253,17 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
         "memory_add",
         "memory_update",
         "memory_archive",
+        "files_request_elevation",
+        # File tools must be discoverable before temporary grants exist.
+        # Their handlers still enforce normal flags unless elevated=true
+        # and the exact Token/Conversation/target grant is approved.
+        "fs_list", "fs_stat", "fs_find", "fs_grep", "fs_tree",
+        "fs_read_files", "fs_manifest", "fs_read_binary", "fs_read_large",
+        "fs_write", "fs_edit_text", "fs_mutate",
+        "fs_replace_large", "fs_mkdir", "fs_move",
     }
+    if recycle_enabled:
+        names.add("fs_delete")
     if record.can_read or record.can_write:
         names.add("rpc_call")
     if record.can_read:

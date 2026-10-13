@@ -14,11 +14,11 @@ from pathlib import Path
 
 from openkapsel.auth.security import hash_password, verify_password
 
-CAPABILITIES = frozenset({"shell.elevated", "files.write"})
+CAPABILITIES = frozenset({"shell.elevated", "files.read", "files.write"})
 PENDING_SECONDS = 300
 DEFAULT_SECONDS = 600
 MAX_SECONDS = 24 * 3600
-MAX_PENDING = 512
+MAX_PENDING_PER_TOKEN = 32
 MAX_ATTEMPTS = 5
 
 
@@ -94,8 +94,10 @@ class CapabilityGrants:
             raise ValueError("invalid conversation id")
         with self.lock:
             now = self._expire()
-            if len(self.pending_requests) >= MAX_PENDING:
-                raise RuntimeError("too many pending capability approvals")
+            # Pending approvals are scoped to the requesting Token (app_id).
+            # One Token must not exhaust the request quota of another.
+            if sum(item.workspace == workspace for item in self.pending_requests.values()) >= MAX_PENDING_PER_TOKEN:
+                raise RuntimeError("too many pending capability approvals for token")
             ticket = secrets.token_urlsafe(24)
             self.pending_requests[ticket] = Pending(
                 workspace, conversation_id, target, capability, now + PENDING_SECONDS)

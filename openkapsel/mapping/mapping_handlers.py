@@ -153,7 +153,7 @@ class MappingHandlersMixin:
         limits.update(limits_override or {})
         if any(value > FILE_API_LIMITS[name] for name, value in limits.items()):
             raise ApiError(409, "mapping_limits_incompatible", "server file limits exceed client RPC capabilities")
-        for key in ("plan_id", "taskname", "message"):
+        for key in ("plan_id", "taskname", "message", "elevated", "writer_nonce", "target"):
             body.pop(key, None)
             query.pop(key, None)
         arguments = {"query": query, "body": body, "limits": limits,

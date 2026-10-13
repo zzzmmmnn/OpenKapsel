@@ -150,6 +150,8 @@ class HttpSupportMixin:
         return stream
 
     def _read_json(self) -> dict[str, Any]:
+        if hasattr(self, "_file_elevation_cached_body"):
+            return self._file_elevation_cached_body
         if hasattr(self, "_mcp_tool_arguments"):
             body = self._mcp_tool_arguments
             self._begin_deferred_context_operation(body)

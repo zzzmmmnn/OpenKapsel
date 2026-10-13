@@ -41,6 +41,56 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 
 Discovery contains the complete request schemas, permissions, configured size limits, and stable error codes.
 
+## Temporary File API elevation
+
+Use this when a Token needs time-limited read or write access through the
+existing File API, without changing its permanent read/write permission flags.
+Passwords and grants belong to the **individual Token** (stable app_id), not
+to all Tokens using the same server directory.
+
+First make a command-free approval request:
+
+```json
+{"access":"write","target":"server","writer_nonce":"@Ab12@",
+ "plan_id":123,"taskname":"files","message":"Request File API write access"}
+```
+
+Send it to `POST /files/elevation/request` with the Token's Bearer control
+credential. `access` is `read` or `write`. `target` is `server` or an exact
+authorized Mapping ID (not `auto`). The API returns HTTP 200 with
+`status=approval_required` and `approval_url` (or `status=granted`).
+The user approves in the browser using that Token's Workspace password.
+MCP uses `capability_call` family `files`, operation `request_elevation`,
+with `access`, `target` and `writer_nonce` inside `args`; Plan Context stays
+outside `args`.
+
+After approval, explicitly include `elevated=true`, `target`, the
+Conversation `writer_nonce` and its in-progress `plan_id` **on every**
+File API operation. For example:
+
+```json
+{"paths":["notes.txt"],"elevated":true,"target":"server",
+ "writer_nonce":"@Ab12@","plan_id":123}
+```
+
+Send this to `POST /fs/read/files`. For GET file query/content endpoints
+supply `elevated=true&target=server&writer_nonce=...&plan_id=...` as query
+parameters; raw PUT may instead supply the Plan ID in
+`OpenKapsel-Plan-Id` and the elevation options in its query string.
+Supported operations include file list/stat/find/grep/tree/manifest,
+text/binary/large reads, guarded mutation, mkdir, move, direct content PUT
+and guarded large replacement. The corresponding MCP File tools accept the
+same opt-in arguments. Approval for `files.read` never grants `files.write`
+and vice versa. Without `elevated=true` the original permission flags apply.
+
+**Security boundaries remain unchanged:** elevation does not cross the
+Token's allowed filesystem roots, bypass explicit denied/readonly paths,
+override Mapping write-protection, elevate the Server/Client OS user, or
+authorize Git/Archive RPC, recycle management, resumable uploads, or sharing.
+File requests spanning multiple targets cannot borrow another target's grant.
+Approval URLs last five minutes; grants default to ten minutes and are
+scoped to the Token, Conversation, target and capability.
+
 ## Mutation context
 
 Create a root Plan before changing project state:

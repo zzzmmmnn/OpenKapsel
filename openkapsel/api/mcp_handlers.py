@@ -305,6 +305,12 @@ class McpHandlersMixin:
                     ),
                 )
             self._mcp_context_status = HTTPStatus.OK
+            from openkapsel.files.file_handlers import FILE_ELEVATION_READ, FILE_ELEVATION_WRITE
+            if effective_name in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
+                self._authorize_file_elevation(
+                    effective_name, effective_arguments,
+                    query=effective_name in {"fs_list", "fs_stat", "fs_find", "fs_grep", "fs_tree"},
+                )
             payload = self._execute_mcp_tool(effective_name, effective_arguments)
         except ApiError as exc:
             error: dict[str, Any] = {"code": exc.code, "message": exc.message, "timestamp": int(time.time())}
@@ -798,6 +804,7 @@ class McpHandlersMixin:
             "recycle_restore": self._handle_recycle_restore,
             "shell_exec": self._handle_shell_exec,
             "shell_request_elevation": self._handle_shell_elevation_request,
+            "files_request_elevation": self._handle_files_elevation_request,
             "upload_create": self._handle_upload_create,
             "share_create": self._handle_share_create,
         }

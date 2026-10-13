@@ -679,6 +679,19 @@ class RequestDispatchMixin:
         query: dict[str, list[str]],
         method: str,
     ) -> None:
+        # File elevation is authorized before the existing File handler runs.
+        # The handler and Mapping client still enforce all path boundaries.
+        from openkapsel.files.file_handlers import FILE_ELEVATION_READ, FILE_ELEVATION_WRITE
+        if endpoint.name in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
+            if endpoint.invocation in {"query", "query_head"}:
+                self._authorize_file_elevation(endpoint.name, query, query=True)
+            elif endpoint.name in {
+                "fs_manifest", "fs_read_files", "fs_read_large", "fs_mutate",
+                "fs_replace_large", "fs_mkdir", "fs_move",
+            }:
+                body = self._read_json()
+                self._file_elevation_cached_body = body
+                self._authorize_file_elevation(endpoint.name, body)
         handler = getattr(self, endpoint.handler)
         args: tuple[Any, ...] = ()
         kwargs: dict[str, Any] = {}

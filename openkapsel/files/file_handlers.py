@@ -34,8 +34,116 @@ from openkapsel.files.safe_paths import SafePathError
 from openkapsel.files.uploads import UploadError, UploadRecord
 
 
+from dataclasses import replace
+
+# Core File APIs supported by temporary Token-scoped read/write elevation.
+FILE_ELEVATION_READ = frozenset({
+    "fs_list", "fs_stat", "fs_manifest", "fs_find", "fs_grep", "fs_tree",
+    "fs_content", "fs_read_files", "fs_read_large", "fs_read_binary",
+})
+FILE_ELEVATION_WRITE = frozenset({
+    "fs_content_put", "fs_mutate", "fs_replace_large", "fs_mkdir", "fs_move",
+    "fs_write", "fs_edit_text", "fs_delete",
+})
+
+
 class FileHandlersMixin(FileOperationSupportMixin):
     """File-domain methods mixed into the main request handler."""
+    def _handle_files_elevation_request(self) -> None:
+        """Ask for a read/write grant without performing any file operation."""
+        body = self._read_json()
+        if set(body) - {"access", "target", "writer_nonce", "plan_id", "taskname", "message"}:
+            raise ApiError(400, "invalid_request", "unexpected file elevation request field")
+        access = body.get("access")
+        if access not in ("read", "write"):
+            raise ApiError(400, "invalid_request", "access must be read or write")
+        target = body.get("target")
+        if not isinstance(target, str) or not target or target == "auto":
+            raise ApiError(400, "invalid_target", "target must be server or an explicit Mapping ID")
+        if target != "server":
+            row = self._mapping_for_caller(target)
+            if not row["enabled"] or (access == "write" and not row["writable"]):
+                raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
+            target = row["id"]
+        capability = "files." + access
+        try:
+            self._require_capability(body, target, capability)
+        except ApiError as exc:
+            if exc.code != "capability_approval_required":
+                raise
+            self._send_json(200, {"status": "approval_required", **exc.details})
+            return
+        self._send_json(200, {"status": "granted", "target": target, "capability": capability})
+
+    def _authorize_file_elevation(self, operation: str, arguments: dict, *, query=False) -> None:
+        """Authorize an explicitly elevated File API operation for its actual target.
+
+        Never relax workspace boundaries, denied paths, or Mapping read-only
+        mode. The temporary permission override is local to this HTTP request.
+        """
+        if operation not in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
+            return
+        if query:
+            values = {
+                key: value[0] if isinstance(value, list) and len(value) == 1 else value
+                for key, value in arguments.items()
+            }
+            raw_flag = values.get("elevated", "false")
+            if isinstance(raw_flag, str):
+                if raw_flag.lower() not in {"true", "false"}:
+                    raise ApiError(400, "invalid_request", "elevated must be true or false")
+                elevated = raw_flag.lower() == "true"
+            else:
+                elevated = raw_flag is True
+        else:
+            values = arguments
+            elevated = self._optional_bool(values, "elevated", False)
+        if not elevated:
+            return
+        self._require_control_token()
+        target = values.get("target")
+        if not isinstance(target, str) or not target or target == "auto":
+            raise ApiError(400, "invalid_target", "elevated File API requires server or Mapping ID target")
+        if target != "server":
+            row = self._mapping_for_caller(target)
+            if not row["enabled"] or (operation in FILE_ELEVATION_WRITE and not row["writable"]):
+                raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
+            target = row["id"]
+        paths = []
+        if operation == "fs_read_files":
+            paths = values.get("paths", [])
+        elif operation in {"fs_manifest", "fs_mutate"} and isinstance(values.get("items"), list):
+            paths = [item.get("path") for item in values["items"] if isinstance(item, dict)]
+        elif operation == "fs_move":
+            paths = [values.get("source"), values.get("destination")]
+        else:
+            paths = [values.get("path", ".")]
+        # Reject cross-target and mixed-domain elevation before granting it.
+        # The native path resolver still performs the definitive path checks.
+        for value in paths:
+            if not isinstance(value, str) or "\x00" in value:
+                raise ApiError(400, "invalid_path", "file elevation requires valid paths")
+            candidate = Path(value).expanduser() if value else self.token_scope_root
+            if not candidate.is_absolute():
+                candidate = self.token_scope_root / candidate
+            candidate = Path(os.path.abspath(candidate))
+            resolved = candidate.resolve(strict=False)
+            self._assert_inside_root(candidate)
+            self._assert_inside_root(resolved)
+            mapping = self.server.mappings.at_path(candidate)
+            mapped_resolved = self.server.mappings.at_path(resolved)
+            if mapping is not None and mapped_resolved is not None and mapping["id"] != mapped_resolved["id"]:
+                raise ApiError(403, "file_elevation_target_mismatch", "file path spans two Mapping targets")
+            actual = (mapping or mapped_resolved or {}).get("id", "server")
+            if actual != target:
+                raise ApiError(403, "file_elevation_target_mismatch", "file path does not match approved target")
+        capability = "files.write" if operation in FILE_ELEVATION_WRITE else "files.read"
+        self._require_capability(values, target, capability)
+        self.token_record = replace(
+            self.token_record,
+            **({"can_write": True} if capability == "files.write" else {"can_read": True}),
+        )
+
     def _transaction_recycle(self, source: Path, original: Path) -> dict[str, Any]:
         try:
             storage = self._storage_recycle_bin(original)
