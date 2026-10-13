@@ -617,6 +617,35 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.record.app_id, self.ownership()[0], "server", "shell.elevated"
         ))
 
+    def test_admin_token_tabs_option_a_underline_and_mobile_scrolling(self):
+        session = self.server.admin_sessions.create()
+        status, _, dashboard = self.request(
+            "GET", "/kapsel/admin",
+            headers={"Cookie": "ws_admin=" + session.id},
+        )
+        self.assertEqual(200, status)
+        page = dashboard.decode()
+        css = page.split("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertIn(".token-tablist{display:flex", css)
+        self.assertIn("border-bottom:1px solid var(--line)", css)
+        self.assertIn("overflow-x:auto", css)
+        self.assertIn('border-bottom-color:var(--brand)', css)
+        self.assertIn('.token-tab[aria-selected="true"]', css)
+        self.assertIn("@media(max-width:520px){.token-tablist", css)
+        # The first pane starts selected; other panes remain proper tabs,
+        # not independent action buttons or permanently visible forms.
+        card = page.split(f'data-token-app="{self.record.app_id}"', 1)[1].split(
+            "</details>", 1
+        )[0]
+        self.assertIn('role="tablist"', card)
+        buttons = re.findall(r'<button type="button" role="tab"[^>]*>', card)
+        self.assertEqual(3, len(buttons))
+        self.assertEqual(
+            ["true", "false", "false"],
+            [re.search(r'aria-selected="([^"]+)"', button).group(1)
+             for button in buttons],
+        )
+
     def test_admin_token_tabs_include_workspace_password_settings(self):
         import re
         session = self.server.admin_sessions.create()
