@@ -3321,9 +3321,11 @@ class WorkspaceServerTests(unittest.TestCase):
             elevation["input_schema"]["required"],
         )
         self.assertEqual(
-            {"access", "target", "writer_nonce", "path"},
+            {"access", "target", "writer_nonce", "path", "scope_is_directory"},
             set(elevation["input_schema"]["properties"]),
         )
+        self.assertEqual("boolean", elevation["input_schema"]["properties"]["scope_is_directory"]["type"])
+        self.assertIs(True, elevation["input_schema"]["properties"]["scope_is_directory"]["default"])
         self.assertFalse(elevation["input_schema"]["additionalProperties"])
         self.assertTrue(elevation["write"])
         self.assertTrue(elevation["mutation_context"])
