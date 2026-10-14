@@ -1702,6 +1702,11 @@ class WorkspacePasswordOAuthTests(unittest.TestCase):
         self.server.capability_grants.set_password(self.record.app_id, "workspace-test-password-123")
         pending = self.pending()
         self.assertIn(b'name="workspace_password"', pending["page"])
+        self.assertIn(
+            b'name="control_token" autocomplete="off" autocapitalize="off" '
+            b'spellcheck="false" maxlength="1024">',
+            pending["page"],
+        )  # Password available: browser must not require Control Token.
         status, _, raw = self.submit(pending, values={"control_token": "", "workspace_password": "incorrect-password"})
         self.assertEqual(403, status, raw)
         status, headers, raw = self.submit(pending, values={"control_token": "", "workspace_password": "workspace-test-password-123"})

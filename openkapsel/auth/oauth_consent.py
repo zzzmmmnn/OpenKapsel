@@ -138,6 +138,8 @@ def consent_page(request=None, record=None, *, action="", csrf="", error=None, p
         extras = f"{len(record.allowed_paths)} administrator-configured extra path(s)" if record.allowed_paths else "None"
         shell_notice = ('<p class="notice"><strong>Full Shell:</strong> commands run with the service OS account privileges, '
                         'without workspace-path or network-policy confinement.</p>' if record.shell_mode == "full" else "")
+        # The server validates the credential choice. Browser-side 'required'
+        # on Control Token would block an otherwise valid password-only form.
         body += f'''<p>Authorize this client using the current <strong>control token</strong> for the configuration below. Administrator sign-in is not required.</p>
 <dl><dt>Connection</dt><dd>{esc(conn['comment'])}</dd><dt>Workspace</dt><dd>{esc(conn['workspace'])}</dd><dt>Configuration</dt><dd>{esc(record.name)}</dd><dt>Client</dt><dd>{esc(client['client_name'])} <small>(self-reported, not verified)</small></dd><dt>Client ID</dt><dd>{esc(request['client_id'])}</dd><dt>Return address</dt><dd>{esc(request['params']['redirect_uri'])}</dd></dl>
 <h2>Permissions granted to this client</h2>
@@ -146,11 +148,10 @@ def consent_page(request=None, record=None, *, action="", csrf="", error=None, p
 <form method="post" action="{esc(action, quote=True)}" autocomplete="off">
 <input type="hidden" name="request" value="{esc(request['id'], quote=True)}">
 <input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">
-<label for="control-token">Control token</label><input id="control-token" type="password" name="control_token" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1024" required>
+<label for="control-token">Control token</label><input id="control-token" type="password" name="control_token" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1024">
 <p><small>Paste either the control token itself or the full copied header, for example <code>Authorization: Bearer ks-...</code>. The token is verified only by OpenKapsel. It is not sent to the client, saved in this form, or used to sign in to administration.</small></p>
 <div class="actions"><button name="decision" value="approve">Verify and authorize</button><button name="decision" value="deny" class="secondary" formnovalidate>Cancel</button></div></form>'''
     if request is not None and password_enabled:
-        body = body.replace('maxlength="1024" required>', 'maxlength="1024">')
         body = body.replace('<div class="actions">', '<label for="workspace-password">Or workspace password</label><input id="workspace-password" type="password" name="workspace_password" autocomplete="off" maxlength="1024"><p><small>Use the workspace password or the current control token. OAuth authorization does not grant temporary Shell elevation.</small></p><div class="actions">', 1)
         body = body.replace('using the current <strong>control token</strong>', 'using the <strong>workspace password</strong> or current <strong>control token</strong>')
     return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize MCP connection - OpenKapsel</title><style>{STYLE}</style></head><body><main><section class="card"><h1>Authorize MCP connection</h1>{body}</section></main></body></html>'

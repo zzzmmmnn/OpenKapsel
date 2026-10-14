@@ -65,6 +65,10 @@ class ControlConsentHTTPTests(unittest.TestCase):
         self.assertNotIn(b"localStorage", page)
         self.assertNotIn(b"/admin/login", page)
         self.assertIn(b'type="password" name="control_token"', page)
+        # The backend still requires a valid credential; the browser must not
+        # unconditionally require Control Token when Password may be used.
+        self.assertNotIn(b'name="control_token" autocomplete="off" autocapitalize="off" '
+                         b'spellcheck="false" maxlength="1024" required>', page)
         self.assertIn(b'Authorization: Bearer ks-', page)
         self.assertTrue(self.record.control_token.startswith("ks-"))
         self.assertEqual(43, len(self.record.control_token))
