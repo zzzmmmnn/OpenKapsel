@@ -71,7 +71,7 @@ class SharedClientTasks:
         # RPC (both sync and async) uses the original Client code path.
         if op == "task_start" and isinstance(args.get("rpc"), dict):
             if args.get("unsandboxed", False) is not False:
-                raise OSError(errno.EACCES, "Shell elevation cannot authorize RPC")
+                raise OSError(errno.EACCES, "Shell approval cannot authorize RPC")
             return self.legacy.dispatch(op, args)
         if op == "task_list":
             remote = request(self.home, self.id, op)

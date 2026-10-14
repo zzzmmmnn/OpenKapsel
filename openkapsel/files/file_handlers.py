@@ -37,12 +37,12 @@ from openkapsel.files.uploads import UploadError, UploadRecord
 from dataclasses import replace
 from openkapsel.auth.path_access import effective_path_access
 
-# Core File APIs supported by temporary Token-scoped read/write elevation.
-FILE_ELEVATION_READ = frozenset({
+# Core File APIs supported by temporary Token-scoped read/write approval.
+FILE_APPROVAL_READ = frozenset({
     "fs_list", "fs_stat", "fs_manifest", "fs_find", "fs_grep", "fs_tree",
     "fs_content", "fs_read_files", "fs_read_large", "fs_read_binary",
 })
-FILE_ELEVATION_WRITE = frozenset({
+FILE_APPROVAL_WRITE = frozenset({
     "fs_content_put", "fs_mutate", "fs_replace_large", "fs_mkdir", "fs_move",
     "fs_write", "fs_edit_text", "fs_delete",
 })
@@ -89,11 +89,11 @@ class FileHandlersMixin(FileOperationSupportMixin):
             raise ApiError(502, "mapping_realpath_failed", "Client returned an invalid resolved path")
         return self._external_directory(real)
 
-    def _handle_files_elevation_request(self) -> None:
+    def _handle_files_approval_request(self) -> None:
         """Ask for a read/write grant without performing any file operation."""
         body = self._read_json()
         if set(body) - {"access", "target", "path", "scope_is_directory", "writer_nonce", "plan_id", "taskname", "message"}:
-            raise ApiError(400, "invalid_request", "unexpected file elevation request field")
+            raise ApiError(400, "invalid_request", "unexpected file approval request field")
         access = body.get("access")
         if access not in ("read", "write"):
             raise ApiError(400, "invalid_request", "access must be read or write")
@@ -120,7 +120,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 real = (str(Path(scope).resolve(strict=True)) if target == "server"
                         else self._resolve_mapping_external_path(target, scope, directory=True))
                 approved = self.server.capability_grants.granted_path(
-                    self.token_record.app_id, self._file_elevation_conversation(body),
+                    self.token_record.app_id, self._file_approval_conversation(body),
                     target, capability, real)
             except (OSError, ValueError, RuntimeError, ApiError):
                 # Do not disclose whether an unapproved path resolves. An
@@ -143,37 +143,37 @@ class FileHandlersMixin(FileOperationSupportMixin):
                               "capability": capability,
                               **({"path": scope} if scope else {})})
 
-    def _authorize_file_elevation(self, operation: str, arguments: dict, *, query=False) -> None:
+    def _authorize_file_approval(self, operation: str, arguments: dict, *, query=False) -> None:
         """A file approval may optionally authorize one explicit external subtree.
 
         Outside paths require an independently approved directory-scoped grant;
         the ordinary unscoped files.read/write grant never authorizes them.
         """
-        if operation not in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
+        if operation not in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
             return
-        self._file_elevation_operation = operation  # actionable hint on ordinary path failures
+        self._file_approval_operation = operation  # actionable hint on ordinary path failures
         if query:
             values = {key: value[0] if isinstance(value, list) and len(value) == 1 else value
                       for key, value in arguments.items()}
-            raw_flag = values.get("elevated", "false")
+            raw_flag = values.get("approved", "false")
             if isinstance(raw_flag, str):
                 if raw_flag.lower() not in {"true", "false"}:
-                    raise ApiError(400, "invalid_request", "elevated must be true or false")
-                elevated = raw_flag.lower() == "true"
+                    raise ApiError(400, "invalid_request", "approved must be true or false")
+                approved = raw_flag.lower() == "true"
             else:
-                elevated = raw_flag is True
+                approved = raw_flag is True
         else:
             values = arguments
-            elevated = self._optional_bool(values, "elevated", False)
-        if not elevated:
+            approved = self._optional_bool(values, "approved", False)
+        if not approved:
             return
         self._require_control_token()
         target = values.get("target")
         if not isinstance(target, str) or not target or target == "auto":
-            raise ApiError(400, "invalid_target", "elevated File API requires server or Mapping ID target")
+            raise ApiError(400, "invalid_target", "approved File API requires server or Mapping ID target")
         if target != "server":
             row = self._mapping_for_caller(target)
-            if not row["enabled"] or (operation in FILE_ELEVATION_WRITE and not row["writable"]):
+            if not row["enabled"] or (operation in FILE_APPROVAL_WRITE and not row["writable"]):
                 raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
             target = row["id"]
         if operation == "fs_read_files":
@@ -188,11 +188,11 @@ class FileHandlersMixin(FileOperationSupportMixin):
             paths = [values.get("path", ".")]
         # Authenticate File capability before looking at symlink destinations;
         # an existing scoped grant already proves password authorization.
-        capability = "files.write" if operation in FILE_ELEVATION_WRITE else "files.read"
+        capability = "files.write" if operation in FILE_APPROVAL_WRITE else "files.read"
         scoped_grant = self._has_scoped_file_grant(values, target, capability)
         if not scoped_grant:
             self._require_capability(values, target, capability)
-        self._file_elevation_active = True
+        self._file_approval_active = True
         requested = []
         external = []
         original_external = []
@@ -200,7 +200,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             if (not isinstance(value, str) or "\x00" in value
                 or ".." in value.split("/") or "\\" in value):
                 raise ApiError(400, "invalid_path",
-                               "file elevation rejects traversal and ambiguous paths")
+                               "file approval rejects traversal and ambiguous paths")
             candidate = Path(value).expanduser() if value else self.token_scope_root
             if not candidate.is_absolute():
                 candidate = self.token_scope_root / candidate
@@ -238,18 +238,18 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 mapping = self.server.mappings.at_path(candidate)
                 mapped_resolved = self.server.mappings.at_path(resolved)
                 if mapping and mapped_resolved and mapping["id"] != mapped_resolved["id"]:
-                    raise ApiError(403, "file_elevation_target_mismatch", "file path spans two Mapping targets")
+                    raise ApiError(403, "file_approval_target_mismatch", "file path spans two Mapping targets")
                 actual = (mapping or mapped_resolved or {}).get("id", "server")
                 if actual != target:
-                    raise ApiError(403, "file_elevation_target_mismatch", "file path does not match approved target")
+                    raise ApiError(403, "file_approval_target_mismatch", "file path does not match approved target")
             requested.append(candidate)
         if external:
             if len(external) != len(requested) or not scoped_grant:
                 # Ordinary operations do not distinguish unknown paths from
                 # unauthorized realpaths. Scope approval uses the explicit
-                # /files/elevation/request endpoint instead.
+                # /files/approval/request endpoint instead.
                 if target == "server" and operation == "fs_read_files":
-                    self._file_elevation_denied_paths = frozenset(external)
+                    self._file_approval_denied_paths = frozenset(external)
                     self.token_record = replace(self.token_record, can_read=True)
                     return  # batch handler normalizes inaccessible item errors
                 raise ApiError(404, "path_unavailable",
@@ -266,13 +266,13 @@ class FileHandlersMixin(FileOperationSupportMixin):
                             else self._resolve_mapping_external_path(target, original))
                     real_paths.append(self._external_directory(real))
                 found = self.server.capability_grants.granted_path(
-                    self.token_record.app_id, self._file_elevation_conversation(values),
+                    self.token_record.app_id, self._file_approval_conversation(values),
                     target, capability, real_paths[0])
             except (OSError, ValueError, RuntimeError, ApiError):
                 found = None
             if found is None:
                 if target == "server" and operation == "fs_read_files":
-                    self._file_elevation_denied_paths = frozenset(external)
+                    self._file_approval_denied_paths = frozenset(external)
                     self.token_record = replace(self.token_record, can_read=True)
                     return
                 raise ApiError(404, "path_unavailable",
@@ -280,10 +280,10 @@ class FileHandlersMixin(FileOperationSupportMixin):
             scope = found
             root = Path(scope)
             if any(Path(item) != root and root not in Path(item).parents for item in real_paths):
-                raise ApiError(403, "file_elevation_path_mismatch", "paths exceed the approved directory")
+                raise ApiError(403, "file_approval_path_mismatch", "paths exceed the approved directory")
             external = real_paths
             if target == "server":
-                self._file_elevation_approved_directory = root
+                self._file_approval_approved_directory = root
             # Temporarily extend only this HTTP request's path policy. Explicit
             # deny and read-only rules still win over the temporary grant.
             # PathGrant lives in Server token storage, which imports the Unix
@@ -294,7 +294,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 self.token_record,
                 allowed_paths=(*self.token_record.allowed_paths, PathGrant(scope, access=access)),
                 # A symlink can resolve *inside* the Workspace. When this
-                # request holds approved files.write elevation, the default
+                # request holds approved files.write approval, the default
                 # Workspace read-only flag must no longer override the
                 # temporary grant. Explicit readonly/deny rules still win.
                 **({"can_write": True} if capability == "files.write" else {}),
@@ -305,7 +305,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                         self._assert_inside_root(candidate)
                     resolved = candidate.resolve(strict=False)
                     if ".openkapsel" in resolved.parts:
-                        raise ApiError(403, "reserved_path", "internal directories cannot be elevated")
+                        raise ApiError(403, "reserved_path", "internal directories cannot be approved")
                     if operation != "fs_read_files":
                         self._assert_inside_root(resolved)
                     if capability == "files.write":
@@ -333,8 +333,8 @@ class FileHandlersMixin(FileOperationSupportMixin):
                                 raise ApiError(403, "path_access_denied",
                                                "directory contains protected paths")
             if target != "server":
-                self._file_elevation_external_scope = scope
-                self._file_elevation_external_target = target
+                self._file_approval_external_scope = scope
+                self._file_approval_external_target = target
         else:
             self._require_capability(values, target, capability)
         self.token_record = replace(
@@ -1213,16 +1213,16 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 error = decode_error(encoding)
                 item.update(status=415, error={"code": error.code, "message": error.message})
             except ApiError as exc:
-                if (getattr(self, "_file_elevation_active", False)
+                if (getattr(self, "_file_approval_active", False)
                         and exc.code in {"path_not_found", "path_outside_root",
                                          "path_access_denied", "read_only_path",
-                                         "not_a_directory", "file_elevation_path_mismatch"}):
+                                         "not_a_directory", "file_approval_path_mismatch"}):
                     item.update(status=404, error={"code": "path_unavailable",
                                                    "message": "path does not exist or access is denied"})
                 else:
                     item.update(status=int(exc.status), error={"code": exc.code, "message": exc.message})
             except OSError as exc:
-                if (getattr(self, "_file_elevation_active", False)
+                if (getattr(self, "_file_approval_active", False)
                         and exc.errno in {errno.ENOENT, errno.ENOTDIR, errno.EPERM, errno.EACCES}):
                     item.update(status=404, error={"code": "path_unavailable",
                                                    "message": "path does not exist or access is denied"})

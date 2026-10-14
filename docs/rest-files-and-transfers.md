@@ -41,7 +41,7 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 
 Discovery contains the complete request schemas, permissions, configured size limits, and stable error codes.
 
-## Temporary File API elevation
+## Temporary File API approval
 
 Use this when a Token needs time-limited read or write access through the
 existing File API, without changing its permanent read/write permission flags.
@@ -55,36 +55,36 @@ First make a command-free approval request:
  "plan_id":123,"taskname":"files","message":"Request File API write access"}
 ```
 
-Send it to `POST /files/elevation/request` with the Token's Bearer control
+Send it to `POST /files/approval/request` with the Token's Bearer control
 credential. `access` is `read` or `write`. `target` is `server` or an exact
 authorized Mapping ID (not `auto`). The API returns HTTP 200 with
 `status=approval_required` and `approval_url` (or `status=granted`).
 The user approves in the browser using that Token's Workspace password.
-MCP uses `capability_call` family `files`, operation `request_elevation`,
+MCP uses `capability_call` family `files`, operation `request_approval`,
 with `access`, `target` and `writer_nonce` inside `args`; Plan Context stays
 outside `args`.
 
-After approval, explicitly include `elevated=true`, `target`, the
+After approval, explicitly include `approved=true`, `target`, the
 Conversation `writer_nonce` and its in-progress `plan_id` **on every**
 File API operation. For example:
 
 ```json
-{"paths":["notes.txt"],"elevated":true,"target":"server",
+{"paths":["notes.txt"],"approved":true,"target":"server",
  "writer_nonce":"@Ab12@","plan_id":123}
 ```
 
 Send this to `POST /fs/read/files`. For GET file query/content endpoints
-supply `elevated=true&target=server&writer_nonce=...&plan_id=...` as query
+supply `approved=true&target=server&writer_nonce=...&plan_id=...` as query
 parameters; raw PUT may instead supply the Plan ID in
-`OpenKapsel-Plan-Id` and the elevation options in its query string.
+`OpenKapsel-Plan-Id` and the approval options in its query string.
 Supported operations include file list/stat/find/grep/tree/manifest,
 text/binary/large reads, guarded mutation, mkdir, move, direct content PUT
 and guarded large replacement. The corresponding MCP File tools accept the
 same opt-in arguments. Approval for `files.read` never grants `files.write`
-and vice versa. Without `elevated=true` the original permission flags apply.
+and vice versa. Without `approved=true` the original permission flags apply.
 
 **External directory approval:** To access an absolute directory outside the
-Token Workspace, add `"path":"/Users"` to the File elevation request and
+Token Workspace, add `"path":"/Users"` to the File approval request and
 set `target` to the **specific Mapping ID** hosting that directory (or
 `server` for a directory on the Server). The initial API response and
 approval URL **do not check directory existence or reveal canonical paths**.
@@ -100,17 +100,17 @@ before granting access. The grant binds to the canonical directory; File RPC
 checks aliases again and operates through descriptor-anchored paths to prevent
 symlink substitution. Unauthenticated requests cannot distinguish whether
 an unapproved directory exists or discover where an alias points.
-Elevated File operation paths containing `..` are rejected before normalization. Approval covers only that directory and descendants for
+Approved File operation paths containing `..` are rejected before normalization. Approval covers only that directory and descendants for
 this Token, Conversation, target and read/write mode. An unscoped read/write
 grant never permits access outside the configured roots. For example, after
 approving `access=read,target=<Mapping ID>,path=/Users`, call
-`fs_list(path="/Users", elevated=true, target="<Mapping ID>", writer_nonce=...,
-plan_id=...)`. After the broad File elevation grant is approved, direct File operations
-with `elevated=true` return the same generic `path_unavailable` result for
+`fs_list(path="/Users", approved=true, target="<Mapping ID>", writer_nonce=...,
+plan_id=...)`. After the broad File approval grant is approved, direct File operations
+with `approved=true` return the same generic `path_unavailable` result for
 missing, inaccessible and unapproved external paths, without revealing a
 symlink destination. Before broad approval, all those operations request the
 same unscoped files.read/write approval, regardless of the path. Use the separate
-`files/elevation/request` action with `path` to initiate approval; the user
+`files/approval/request` action with `path` to initiate approval; the user
 enters the Workspace password before seeing the real directory. For a file or
 file symlink rather than a directory, pass `scope_is_directory=false` with
 its absolute path; approval covers the resolved **parent directory**, not the

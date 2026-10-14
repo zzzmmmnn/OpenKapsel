@@ -3315,21 +3315,21 @@ class WorkspaceServerTests(unittest.TestCase):
         specs = file_families["file_transfer"]["operation_specs"]
         self.assertEqual({"download", "read_binary", "read_large", "replace_large"}, set(specs))
         self.assertEqual(256 * 1024, specs["read_large"]["input_schema"]["properties"]["length"]["maximum"])
-        elevation = file_families["files"]["operation_specs"]["request_elevation"]
+        approval = file_families["files"]["operation_specs"]["request_approval"]
         self.assertEqual(
             ["access", "target", "writer_nonce"],
-            elevation["input_schema"]["required"],
+            approval["input_schema"]["required"],
         )
         self.assertEqual(
             {"access", "target", "writer_nonce", "path", "scope_is_directory"},
-            set(elevation["input_schema"]["properties"]),
+            set(approval["input_schema"]["properties"]),
         )
-        self.assertEqual("boolean", elevation["input_schema"]["properties"]["scope_is_directory"]["type"])
-        self.assertIs(True, elevation["input_schema"]["properties"]["scope_is_directory"]["default"])
-        self.assertFalse(elevation["input_schema"]["additionalProperties"])
-        self.assertTrue(elevation["write"])
-        self.assertTrue(elevation["mutation_context"])
-        self.assertFalse(elevation["optional_read_context"])
+        self.assertEqual("boolean", approval["input_schema"]["properties"]["scope_is_directory"]["type"])
+        self.assertIs(True, approval["input_schema"]["properties"]["scope_is_directory"]["default"])
+        self.assertFalse(approval["input_schema"]["additionalProperties"])
+        self.assertTrue(approval["write"])
+        self.assertTrue(approval["mutation_context"])
+        self.assertFalse(approval["optional_read_context"])
 
         _, main_result, _ = self.mcp_request(token, 298, "tools/call", {
             "name": "discovery", "arguments": {"section": "main"},

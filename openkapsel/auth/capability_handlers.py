@@ -36,7 +36,7 @@ class CapabilityHandlersMixin:
         if not local:
             raise ApiError(403, "https_required", "Workspace passwords require HTTPS (or local loopback development)")
 
-    def _file_elevation_conversation(self, body):
+    def _file_approval_conversation(self, body):
         plan = self._parse_operation_plan_id(
             body.get("plan_id", self._context_header_plan_id()), required=True)
         try:
@@ -50,7 +50,7 @@ class CapabilityHandlersMixin:
 
     def _has_scoped_file_grant(self, body, target, capability):
         return self.server.capability_grants.has_scoped_grant(
-            self.token_record.app_id, self._file_elevation_conversation(body),
+            self.token_record.app_id, self._file_approval_conversation(body),
             target, capability)
 
     def _require_capability(self, body, target, capability, *, path="", match_path=False,
@@ -229,8 +229,8 @@ class CapabilityHandlersMixin:
             self._send_html(200, page(body), headers={"Set-Cookie": header}, script_src="'none'")
             return
         body = f'<h1>Approve temporary capability</h1><p class="error">{esc(error)}</p>' if error else '<h1>Approve temporary capability</h1>'
-        warning = ("Shell elevation runs as the target's current OS user without sandbox restrictions. "
-                   if item.capability == "shell.elevated" else
+        warning = ("An approved Shell command runs as the target's current OS user without sandbox restrictions. "
+                   if item.capability == "shell.unsandboxed" else
                    "This approval permits File API access to the specified directory and descendants, "
                    "only for this Token, Conversation, target and access mode. "
                    if item.path else "")
@@ -326,7 +326,7 @@ class CapabilityHandlersMixin:
         action_url = esc(self._admin_path() + "/capabilities", quote=True)
         body = (f'<h1>Workspace passwords and grants</h1>'
                 '<p>Set a separate password for each Workspace. This is used for temporary '
-                'Shell elevation approvals and is not the administrator login password.</p>'
+                'unsandboxed Shell execution approvals and is not the administrator login password.</p>'
                 f'<p>{esc(message)}</p><p><a href="{esc(self._admin_path(), quote=True)}">'
                 'Back to administration</a></p>')
         for record in workspaces:

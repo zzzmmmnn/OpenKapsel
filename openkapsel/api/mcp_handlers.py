@@ -305,9 +305,9 @@ class McpHandlersMixin:
                     ),
                 )
             self._mcp_context_status = HTTPStatus.OK
-            from openkapsel.files.file_handlers import FILE_ELEVATION_READ, FILE_ELEVATION_WRITE
-            if effective_name in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
-                self._authorize_file_elevation(
+            from openkapsel.files.file_handlers import FILE_APPROVAL_READ, FILE_APPROVAL_WRITE
+            if effective_name in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
+                self._authorize_file_approval(
                     effective_name, effective_arguments,
                     query=effective_name in {"fs_list", "fs_stat", "fs_find", "fs_grep", "fs_tree"},
                 )
@@ -803,8 +803,8 @@ class McpHandlersMixin:
             "fs_move": self._handle_fs_move,
             "recycle_restore": self._handle_recycle_restore,
             "shell_exec": self._handle_shell_exec,
-            "shell_request_elevation": self._handle_shell_elevation_request,
-            "files_request_elevation": self._handle_files_elevation_request,
+            "shell_request_approval": self._handle_shell_approval_request,
+            "files_request_approval": self._handle_files_approval_request,
             "upload_create": self._handle_upload_create,
             "share_create": self._handle_share_create,
         }

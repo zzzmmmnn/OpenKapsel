@@ -107,7 +107,7 @@ backups, host disk reservation, and dependency patching remain deployment
 responsibilities.
 
 
-Temporary `shell.elevated` grants deliberately permit execution without a sandbox
+Temporary `shell.unsandboxed` grants deliberately permit execution without a sandbox
 as the selected target's OS user. The approval page requires the workspace's
 password plus browser/request CSRF proof, has bounded attempts, and exposes the
 exact Conversation and target being approved. Grants cannot be transferred

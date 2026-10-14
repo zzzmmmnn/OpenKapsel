@@ -37,9 +37,9 @@ class HttpSupportMixin:
             candidate = root / candidate
         candidate = Path(os.path.abspath(candidate))
         # A permanently allowed extra path never substitutes for the separate
-        # Conversation-scoped external File elevation grant. In batch reads,
+        # Conversation-scoped external File approval grant. In batch reads,
         # denied items are still reported individually instead of globally.
-        if str(candidate) in getattr(self, "_file_elevation_denied_paths", ()):
+        if str(candidate) in getattr(self, "_file_approval_denied_paths", ()):
             raise ApiError(404, "path_unavailable",
                            "path does not exist or access is denied")
         try:
@@ -55,9 +55,9 @@ class HttpSupportMixin:
                 "Storage Provider mapping is protected, read-only, or offline",
             ) from None
         resolved = candidate if self.server.mappings.at_path(candidate) else candidate.resolve(strict=False)
-        approved = getattr(self, "_file_elevation_approved_directory", None)
+        approved = getattr(self, "_file_approval_approved_directory", None)
         if approved is not None and resolved != approved and approved not in resolved.parents:
-            raise ApiError(403, "file_elevation_path_mismatch",
+            raise ApiError(403, "file_approval_path_mismatch",
                            "resolved file path no longer belongs to the approved directory")
         for checked in (candidate.absolute(), resolved):
             try:
@@ -124,16 +124,16 @@ class HttpSupportMixin:
         if policy == "deny":
             raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")
         if policy is None:
-            operation = getattr(self, "_file_elevation_operation", None)
+            operation = getattr(self, "_file_approval_operation", None)
             details = None
             if operation:
-                from openkapsel.files.file_handlers import FILE_ELEVATION_WRITE
+                from openkapsel.files.file_handlers import FILE_APPROVAL_WRITE
                 details = {
-                    "elevation": "Use File API request_elevation with an explicit target "
+                    "approval": "Use File API request_approval with an explicit target "
                                  "(server or Mapping ID), the absolute directory path, "
                                  "writer_nonce and in-progress plan_id; approve the returned URL. "
-                                 "Retry with elevated=true, matching target and writer_nonce.",
-                    "access": "write" if operation in FILE_ELEVATION_WRITE else "read",
+                                 "Retry with approved=true, matching target and writer_nonce.",
+                    "access": "write" if operation in FILE_APPROVAL_WRITE else "read",
                     "path": str(path),
                 }
             raise ApiError(
@@ -173,8 +173,8 @@ class HttpSupportMixin:
         return stream
 
     def _read_json(self) -> dict[str, Any]:
-        if hasattr(self, "_file_elevation_cached_body"):
-            return self._file_elevation_cached_body
+        if hasattr(self, "_file_approval_cached_body"):
+            return self._file_approval_cached_body
         if hasattr(self, "_mcp_tool_arguments"):
             body = self._mcp_tool_arguments
             self._begin_deferred_context_operation(body)

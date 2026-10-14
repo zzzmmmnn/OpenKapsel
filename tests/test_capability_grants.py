@@ -101,14 +101,14 @@ class CapabilityGrantTests(unittest.TestCase):
         ))
 
     def test_default_approval_scoped_by_workspace_conversation_target_capability(self):
-        ticket = self.store.request(self.workspace, 12, "server", "shell.elevated")
-        self.assertFalse(self.store.granted(self.workspace, 12, "server", "shell.elevated"))
+        ticket = self.store.request(self.workspace, 12, "server", "shell.unsandboxed")
+        self.assertFalse(self.store.granted(self.workspace, 12, "server", "shell.unsandboxed"))
         self.store.approve(ticket, "passphrase-for-test-123")
-        self.assertTrue(self.store.granted(self.workspace, 12, "server", "shell.elevated"))
+        self.assertTrue(self.store.granted(self.workspace, 12, "server", "shell.unsandboxed"))
         for scope, conversation, target, capability in (
-            (self.workspace, 13, "server", "shell.elevated"),
-            (self.workspace, 12, "mapping-a", "shell.elevated"),
-            ("project-b", 12, "server", "shell.elevated"),
+            (self.workspace, 13, "server", "shell.unsandboxed"),
+            (self.workspace, 12, "mapping-a", "shell.unsandboxed"),
+            ("project-b", 12, "server", "shell.unsandboxed"),
             (self.workspace, 12, "server", "files.write"),
         ):
             self.assertFalse(self.store.granted(scope, conversation, target, capability))
@@ -122,49 +122,49 @@ class CapabilityGrantTests(unittest.TestCase):
         token_a = self.workspace
         token_b = "another-token-same-directory"
         tickets_a = [
-            self.store.request(token_a, 1, "server", "shell.elevated")
+            self.store.request(token_a, 1, "server", "shell.unsandboxed")
             for _ in range(MAX_PENDING_PER_TOKEN)
         ]
         self.assertEqual(MAX_PENDING_PER_TOKEN, len(set(tickets_a)))
         with self.assertRaisesRegex(RuntimeError, "too many pending"):
-            self.store.request(token_a, 2, "server", "shell.elevated")
+            self.store.request(token_a, 2, "server", "shell.unsandboxed")
         tickets_b = [
-            self.store.request(token_b, 1, "server", "shell.elevated")
+            self.store.request(token_b, 1, "server", "shell.unsandboxed")
             for _ in range(MAX_PENDING_PER_TOKEN)
         ]
         self.assertEqual(MAX_PENDING_PER_TOKEN, len(set(tickets_b)))
         with self.assertRaisesRegex(RuntimeError, "too many pending"):
-            self.store.request(token_b, 2, "server", "shell.elevated")
+            self.store.request(token_b, 2, "server", "shell.unsandboxed")
         self.assertEqual(64, len(self.store.pending_requests))
 
         # Approving one Token A request releases only Token A capacity.
         self.store.approve(tickets_a[0], "passphrase-for-test-123")
-        replacement = self.store.request(token_a, 3, "server", "shell.elevated")
+        replacement = self.store.request(token_a, 3, "server", "shell.unsandboxed")
         self.assertIsNotNone(self.store.pending(replacement))
         with self.assertRaisesRegex(RuntimeError, "too many pending"):
-            self.store.request(token_b, 3, "server", "shell.elevated")
+            self.store.request(token_b, 3, "server", "shell.unsandboxed")
 
         # Revocation frees only the associated Token's pending tickets.
         self.store.revoke_workspace(token_b)
         self.assertEqual(MAX_PENDING_PER_TOKEN, len(self.store.pending_requests))
         self.assertIsNotNone(
-            self.store.request(token_b, 4, "server", "shell.elevated")
+            self.store.request(token_b, 4, "server", "shell.unsandboxed")
         )
         with self.assertRaisesRegex(RuntimeError, "too many pending"):
-            self.store.request(token_a, 4, "server", "shell.elevated")
+            self.store.request(token_a, 4, "server", "shell.unsandboxed")
 
     def test_pending_quota_recovers_from_expiration(self):
         from openkapsel.auth.capability_grants import MAX_PENDING_PER_TOKEN
 
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
             tickets = [
-                self.store.request(self.workspace, 1, "server", "shell.elevated")
+                self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
                 for _ in range(MAX_PENDING_PER_TOKEN)
             ]
             with self.assertRaisesRegex(RuntimeError, "too many pending"):
-                self.store.request(self.workspace, 1, "server", "shell.elevated")
+                self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=401):
-            new_ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+            new_ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
             self.assertIsNone(self.store.pending(tickets[0]))
             self.assertEqual(1, len(self.store.pending_requests))
             self.assertIsNotNone(self.store.pending(new_ticket))
@@ -175,28 +175,28 @@ class CapabilityGrantTests(unittest.TestCase):
         for index in range(17):
             token = f"token-{index}"
             for _ in range(MAX_PENDING_PER_TOKEN):
-                self.store.request(token, 0, "server", "shell.elevated")
+                self.store.request(token, 0, "server", "shell.unsandboxed")
         self.assertEqual(544, len(self.store.pending_requests))
         self.assertIsNotNone(
-            self.store.request("token-18", 0, "server", "shell.elevated")
+            self.store.request("token-18", 0, "server", "shell.unsandboxed")
         )
 
     def test_pending_five_minutes_and_grant_expiry(self):
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
-            ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+            ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=401):
             self.assertIsNone(self.store.pending(ticket))
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=500):
-            ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+            ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
             self.store.approve(ticket, "passphrase-for-test-123", 60)
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=559):
-            self.assertTrue(self.store.granted(self.workspace, 1, "server", "shell.elevated"))
+            self.assertTrue(self.store.granted(self.workspace, 1, "server", "shell.unsandboxed"))
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=560):
-            self.assertFalse(self.store.granted(self.workspace, 1, "server", "shell.elevated"))
+            self.assertFalse(self.store.granted(self.workspace, 1, "server", "shell.unsandboxed"))
 
     def test_repeated_requests_independent(self):
-        one = self.store.request(self.workspace, 1, "server", "shell.elevated")
-        two = self.store.request(self.workspace, 1, "server", "shell.elevated")
+        one = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
+        two = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         self.assertNotEqual(one, two)
         self.assertIsNotNone(self.store.pending(one))
         self.assertIsNotNone(self.store.pending(two))
@@ -204,36 +204,36 @@ class CapabilityGrantTests(unittest.TestCase):
         self.assertIsNotNone(self.store.pending(two))
 
     def test_failed_password_attempt_limited(self):
-        ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+        ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         for _ in range(5):
             with self.assertRaises(PermissionError):
                 self.store.approve(ticket, "bad-password")
         self.assertIsNone(self.store.pending(ticket))
-        self.assertFalse(self.store.granted(self.workspace, 1, "server", "shell.elevated"))
+        self.assertFalse(self.store.granted(self.workspace, 1, "server", "shell.unsandboxed"))
 
     def test_password_change_revokes_all_pending_and_active(self):
-        one = self.store.request(self.workspace, 1, "server", "shell.elevated")
+        one = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         self.store.approve(one, "passphrase-for-test-123")
         two = self.store.request(self.workspace, 2, "mapping-a", "files.write")
         self.store.set_password(self.workspace, "new-password-for-test-456")
-        self.assertFalse(self.store.granted(self.workspace, 1, "server", "shell.elevated"))
+        self.assertFalse(self.store.granted(self.workspace, 1, "server", "shell.unsandboxed"))
         self.assertIsNone(self.store.pending(two))
         self.assertTrue(self.store.verify_workspace_password(self.workspace, "new-password-for-test-456"))
         self.assertFalse(self.store.verify_workspace_password(self.workspace, "passphrase-for-test-123"))
 
     def test_only_password_persists_restart(self):
-        ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+        ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         self.store.approve(ticket, "passphrase-for-test-123")
         fresh = CapabilityGrants(self.path)
         self.assertTrue(fresh.configured(self.workspace))
-        self.assertFalse(fresh.granted(self.workspace, 1, "server", "shell.elevated"))
-        pending = self.store.request(self.workspace, 2, "server", "shell.elevated")
+        self.assertFalse(fresh.granted(self.workspace, 1, "server", "shell.unsandboxed"))
+        pending = self.store.request(self.workspace, 2, "server", "shell.unsandboxed")
         self.assertIsNone(fresh.pending(pending))
         cookie = "b" * 43
         self.assertFalse(fresh.verify_browser(pending, cookie, self.store.browser_proof(pending, cookie)))
 
     def test_invalid_expiry_and_unknown_capabilities(self):
-        ticket = self.store.request(self.workspace, 1, "server", "shell.elevated")
+        ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
         for seconds in (0, 10, 86401, True, 2.5):
             with self.assertRaises(ValueError):
                 self.store.approve(ticket, "passphrase-for-test-123", seconds)

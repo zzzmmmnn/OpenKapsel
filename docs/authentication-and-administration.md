@@ -124,13 +124,13 @@ Passwords use salted PBKDF2 hashes, and resetting a Token's password revokes
 only that Token's pending approvals and grants.
 Password forms require HTTPS; local loopback HTTP is supported for development.
 
-AI may proactively request `shell.elevated` using REST `POST
-/shell/elevation/request` or MCP `shell.request_elevation` without starting a
+AI may proactively request `shell.unsandboxed` using REST `POST
+/shell/approval/request` or MCP `shell.request_approval` without starting a
 command. Supply the explicit target (`server` or Mapping ID), the owning
 Conversation's `writer_nonce`, and the in-progress `plan_id` with mutation
 Context. The response is `status=approval_required` with `approval_url`, or
 `status=granted` if already approved. Later Shell commands must still request
-`elevated=true`. Alternatively, an ordinary elevated Shell invocation can
+`approved=true`. Alternatively, an ordinary approved Shell invocation can
 request a grant and return `capability_approval_required` when not approved.
 The user opens that URL,
 checks workspace/conversation/target/capability, enters the Workspace Password,
@@ -145,5 +145,5 @@ or approval IDs. Context history also excludes writer nonces and approval URLs.
 
 Grants are independent per workspace, Conversation, target (server or Mapping ID)
 and capability. Only password hashes persist; Server restart clears approvals and
-grants. Expiry/revocation blocks new elevated jobs while running jobs remain
+grants. Expiry/revocation blocks new approved jobs while running jobs remain
 queryable/controllable. `files.write` is reserved and has no execution integration.

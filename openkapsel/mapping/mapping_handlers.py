@@ -73,8 +73,8 @@ class MappingHandlersMixin:
             keys = ("source", "destination") if operation == "fs_move" else ("path",)
             targets.extend((body, key, body.get(key), False) for key in keys)
 
-        external_scope = getattr(self, "_file_elevation_external_scope", None)
-        selected = (self._mapping_for_caller(self._file_elevation_external_target)
+        external_scope = getattr(self, "_file_approval_external_scope", None)
+        selected = (self._mapping_for_caller(self._file_approval_external_target)
                     if external_scope else None)
         external_checks = []
         for container, key, value, is_query in targets:
@@ -82,13 +82,13 @@ class MappingHandlersMixin:
                 return False
             if external_scope is not None:
                 if not value.startswith("/") or "\\" in value or ".." in value.split("/"):
-                    raise ApiError(403, "file_elevation_path_mismatch", "external path must be absolute")
+                    raise ApiError(403, "file_approval_path_mismatch", "external path must be absolute")
                 original_path = self._external_directory(value)
                 real = self._resolve_mapping_external_path(selected["id"], original_path)
                 candidate = Path(real)
                 root = Path(external_scope)
                 if candidate != root and root not in candidate.parents:
-                    raise ApiError(403, "file_elevation_path_mismatch", "real path exceeds approved directory")
+                    raise ApiError(403, "file_approval_path_mismatch", "real path exceeds approved directory")
                 relative = candidate.relative_to(root).as_posix()
                 container[key] = [relative] if is_query else relative
                 external_checks.append({"original": original_path, "resolved": real})
@@ -171,7 +171,7 @@ class MappingHandlersMixin:
         limits.update(limits_override or {})
         if any(value > FILE_API_LIMITS[name] for name, value in limits.items()):
             raise ApiError(409, "mapping_limits_incompatible", "server file limits exceed client RPC capabilities")
-        for key in ("plan_id", "taskname", "message", "elevated", "writer_nonce", "target"):
+        for key in ("plan_id", "taskname", "message", "approved", "writer_nonce", "target"):
             body.pop(key, None)
             query.pop(key, None)
         arguments = {"query": query, "body": body, "limits": limits,

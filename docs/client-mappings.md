@@ -389,7 +389,7 @@ npm install -g @anthropic-ai/sandbox-runtime
 srt windows-install
 ```
 
-The second command requests elevation (UAC). SRT provisions the
+The second command requests approval (UAC). SRT provisions the
 `srt-sandbox` local account, NTFS ACL support and SID-scoped WFP network
 fence. The Client setup script only checks npm package presence; it does not
 perform this privileged machine-wide initialization. Missing npm/Node, a
@@ -456,7 +456,7 @@ sandboxes; it never falls back silently.
 
 Podman on macOS/Windows runs Linux workloads, not native platform tests.
 The native implementation covers Linux Bubblewrap, macOS Seatbelt and
-Windows Anthropic SRT (alpha; requires one-time elevated Windows installation).
+Windows Anthropic SRT (alpha; requires one-time approved Windows installation).
 
 Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 

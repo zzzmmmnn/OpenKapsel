@@ -34,8 +34,8 @@ class CapabilityHTTPTests(unittest.TestCase):
             row = db.execute("SELECT c.id,c.writer_nonce FROM conversations c JOIN context_entries p ON p.conversation_id=c.id WHERE p.id=?", (self.plan,)).fetchone()
         return row["id"], row["writer_nonce"]
 
-    def elevated(self, **values):
-        body = {"command": "printf elevated", "elevated": True, "writer_nonce": self.ownership()[1]}
+    def approved(self, **values):
+        body = {"command": "printf approved", "approved": True, "writer_nonce": self.ownership()[1]}
         body.update(values)
         return self.api("/shell/exec", body)
 
@@ -67,10 +67,10 @@ class CapabilityHTTPTests(unittest.TestCase):
     def configure(self):
         self.server.capability_grants.set_password(self.record.app_id, self.PASSWORD)
 
-    def request_elevation(self, target="server", **values):
+    def request_approval(self, target="server", **values):
         body = {"target": target, "writer_nonce": self.ownership()[1]}
         body.update(values)
-        return self.api("/shell/elevation/request", body)
+        return self.api("/shell/approval/request", body)
 
     def test_shared_directory_tokens_have_independent_passwords_and_grants(self):
         self.configure()
@@ -93,36 +93,36 @@ class CapabilityHTTPTests(unittest.TestCase):
         second_password = "second-token-password-456"
         grants.set_password(second.app_id, second_password)
         first_ticket = grants.request(original.app_id, self.ownership()[0],
-                                      "server", "shell.elevated")
+                                      "server", "shell.unsandboxed")
         second_ticket = grants.request(second.app_id, self.ownership()[0],
-                                       "server", "shell.elevated")
+                                       "server", "shell.unsandboxed")
         with self.assertRaises(PermissionError):
             grants.approve(second_ticket, self.PASSWORD)
         grants.approve(first_ticket, self.PASSWORD)
         grants.approve(second_ticket, second_password)
         self.assertTrue(grants.granted(original.app_id, self.ownership()[0],
-                                       "server", "shell.elevated"))
+                                       "server", "shell.unsandboxed"))
         self.assertTrue(grants.granted(second.app_id, self.ownership()[0],
-                                       "server", "shell.elevated"))
+                                       "server", "shell.unsandboxed"))
         grants.set_password(second.app_id, "rotated-second-token-password-789")
         self.assertFalse(grants.granted(second.app_id, self.ownership()[0],
-                                        "server", "shell.elevated"))
+                                        "server", "shell.unsandboxed"))
         self.assertTrue(grants.granted(original.app_id, self.ownership()[0],
-                                       "server", "shell.elevated"))
+                                       "server", "shell.unsandboxed"))
         # Rotating the first Token's credentials preserves its password/grants.
         rotated = self.server.tokens.rotate_control_token(original.token)
         self.assertEqual(original.app_id, rotated.app_id)
         self.assertTrue(grants.verify_workspace_password(rotated.app_id, self.PASSWORD))
         self.assertTrue(grants.granted(rotated.app_id, self.ownership()[0],
-                                       "server", "shell.elevated"))
+                                       "server", "shell.unsandboxed"))
         delete = {"action": "delete", "token": second.token, "csrf": session.csrf}
         self.assertEqual(303, self.form("/kapsel/admin/tokens", delete, headers)[0])
         self.assertFalse(grants.configured(second.app_id))
         self.assertTrue(grants.configured(original.app_id))
         self.assertTrue(grants.granted(original.app_id, self.ownership()[0],
-                                       "server", "shell.elevated"))
+                                       "server", "shell.unsandboxed"))
 
-    def test_same_directory_http_elevation_requires_own_token_password(self):
+    def test_same_directory_http_approval_requires_own_token_password(self):
         self.configure()
         second = self.server.tokens.create(
             name="Separate Workspace Token", path_prefix=self.record.path_prefix,
@@ -130,16 +130,16 @@ class CapabilityHTTPTests(unittest.TestCase):
         )
         second_password = "second-workspace-pass-123"
         self.server.capability_grants.set_password(second.app_id, second_password)
-        first_status, first = self.request_elevation()
+        first_status, first = self.request_approval()
         self.assertEqual(200, first_status, first)
         self.approve({"error": {"details": first}})
-        self.assertEqual("granted", self.request_elevation()[1]["status"])
+        self.assertEqual("granted", self.request_approval()[1]["status"])
         body = {
             "target": "server", "writer_nonce": self.ownership()[1],
             "plan_id": self.plan, "taskname": "token-isolation",
             "message": "Verify exact Token password scope",
         }
-        url = f"/kapsel/w/{second.token}/shell/elevation/request"
+        url = f"/kapsel/w/{second.token}/shell/approval/request"
         auth = {
             "Authorization": "Bearer " + second.control_token,
             "Content-Type": "application/json",
@@ -160,22 +160,22 @@ class CapabilityHTTPTests(unittest.TestCase):
         status, _, raw = self.request("POST", url, json.dumps(body), auth)
         self.assertEqual(200, status, raw)
         self.assertEqual("granted", json.loads(raw)["status"])
-        self.assertEqual("granted", self.request_elevation()[1]["status"])
+        self.assertEqual("granted", self.request_approval()[1]["status"])
 
     def test_old_directory_password_does_not_apply_to_token(self):
         self.server.capability_grants.set_password(self.record.path_prefix, self.PASSWORD)
         self.assertFalse(self.server.capability_grants.configured(self.record.app_id))
-        status, body = self.elevated()
+        status, body = self.approved()
         self.assertEqual(403, status)
         self.assertEqual("capability_approval_required", body["error"]["code"])
         location, headers, form, _ = self.approval(body)
         self.assertEqual(403, self.form(location, form, headers)[0])
         self.assertFalse(self.server.capability_grants.granted(
-            self.record.app_id, self.ownership()[0], "server", "shell.elevated"
+            self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed"
         ))
 
-    def request_file_elevation(self, access, target="server", **values):
-        return self.api("/files/elevation/request", {
+    def request_file_approval(self, access, target="server", **values):
+        return self.api("/files/approval/request", {
             "access": access, "target": target,
             "writer_nonce": self.ownership()[1], **values,
         })
@@ -190,7 +190,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             alias.symlink_to(real, target_is_directory=True)
             missing = base / "missing"
             for requested in (alias, missing):
-                status, pending = self.request_file_elevation("read", path=str(requested))
+                status, pending = self.request_file_approval("read", path=str(requested))
                 self.assertEqual(200, status, pending)
                 self.assertEqual("approval_required", pending["status"])
                 self.assertEqual(str(requested), pending["path"])
@@ -249,7 +249,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             alias.symlink_to(real, target_is_directory=True)
             missing = base / "missing"
             for requested in (alias, missing):
-                status, pending = self.request_file_elevation(
+                status, pending = self.request_file_approval(
                     "read", mapping, path=str(requested))
                 self.assertEqual(200, status, pending)
                 self.assertEqual("approval_required", pending["status"])
@@ -261,10 +261,10 @@ class CapabilityHTTPTests(unittest.TestCase):
                 self.assertEqual(403, self.form(
                     location, dict(form, password="incorrect"), headers)[0])
                 self.assertEqual([], observed)
-            # The implicit elevated File API is also a prompt, not an oracle.
+            # The implicit approved File API is also a prompt, not an oracle.
             for requested in (alias / "unused.txt", missing / "unused.txt"):
                 status, error = self.api("/fs/read/files", {
-                    "paths": [str(requested)], "elevated": True,
+                    "paths": [str(requested)], "approved": True,
                     "target": mapping, "writer_nonce": self.ownership()[1]})
                 self.assertEqual(403, status, error)
                 self.assertEqual("capability_approval_required", error["error"]["code"])
@@ -276,14 +276,14 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(400, status)  # Last requested directory is absent.
             self.assertIn(str(missing), observed)
 
-    def test_workspace_symlink_to_internal_directory_supports_elevated_write(self):
+    def test_workspace_symlink_to_internal_directory_supports_approved_write(self):
         self.configure()
         root = self.server.tokens.scope_root(self.record)
         original = root / "original"
         original.mkdir()
         (root / "shortcut").symlink_to(original, target_is_directory=True)
         self.server.tokens.update(self.record.token, can_write=False)
-        args = {"path": "shortcut/new-folder", "elevated": True,
+        args = {"path": "shortcut/new-folder", "approved": True,
                 "target": "server", "writer_nonce": self.ownership()[1]}
         status, prompt = self.api("/fs/write/mkdir", args)
         self.assertEqual(403, status, prompt)
@@ -302,7 +302,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertFalse(self.server.capability_grants.has_scoped_grant(
             self.record.app_id, self.ownership()[0], "server", "files.write"))
 
-    def test_elevated_internal_symlink_and_unavailable_paths_share_safe_errors(self):
+    def test_approved_internal_symlink_and_unavailable_paths_share_safe_errors(self):
         from urllib.parse import urlencode
         from openkapsel.auth.tokens import PathGrant
         self.configure()
@@ -325,10 +325,10 @@ class CapabilityHTTPTests(unittest.TestCase):
                     PathGrant(str(secret), access="deny"),
                 ),
             )
-            status, pending = self.request_file_elevation("read")
+            status, pending = self.request_file_approval("read")
             self.assertEqual(200, status)
             self.approve({"error": {"details": pending}})
-            base = {"elevated": True, "target": "server",
+            base = {"approved": True, "target": "server",
                     "writer_nonce": self.ownership()[1]}
             status, visible = self.api("/fs/read/files", dict(base, paths=["inside-alias/visible.txt"]))
             self.assertEqual(200, status, visible)
@@ -349,7 +349,7 @@ class CapabilityHTTPTests(unittest.TestCase):
                 self.assertNotIn("MUST STAY PRIVATE", str(result))
             self.assertTrue(all(outcome == outcomes[0] for outcome in outcomes))
             self.assertEqual("path_unavailable", outcomes[0]["code"])
-            query_base = {"elevated": "true", "target": "server",
+            query_base = {"approved": "true", "target": "server",
                           "writer_nonce": self.ownership()[1], "plan_id": self.plan}
             errors = []
             for path in ("not-here", "external-alias", str(outside)):
@@ -380,7 +380,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             (hidden / "secret.txt").write_text("PRIVATE CONTENT")
             alias = self.server.tokens.scope_root(self.record) / "linked"
             alias.symlink_to(allowed, target_is_directory=True)
-            args = {"paths": ["linked/safe.txt"], "elevated": True,
+            args = {"paths": ["linked/safe.txt"], "approved": True,
                     "target": "server", "writer_nonce": nonce}
             status, prompt = self.api("/fs/read/files", args)
             self.assertEqual(403, status, prompt)
@@ -396,7 +396,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(status_missing, status)
             self.assertEqual(missing["items"][0]["error"], unavailable["items"][0]["error"])
             self.assertEqual("path_unavailable", unavailable["items"][0]["error"]["code"])
-            status, pending = self.request_file_elevation("read", path=str(alias))
+            status, pending = self.request_file_approval("read", path=str(alias))
             self.assertEqual(200, status, pending)
             self.assertEqual(str(alias), pending["path"])
             approval = {"error": {"details": pending}}
@@ -424,7 +424,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             real.mkdir()
             alias = real.parent / "alias"
             alias.symlink_to(real, target_is_directory=True)
-            status, pending = self.request_file_elevation("read", path=str(alias))
+            status, pending = self.request_file_approval("read", path=str(alias))
             self.assertEqual(200, status, pending)
             approval = {"error": {"details": pending}}
             location, headers, form, initial = self.approval(approval)
@@ -462,7 +462,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             alias = base / "alias"
             alias.symlink_to(allowed, target_is_directory=True)
 
-            status, pending = self.request_file_elevation(
+            status, pending = self.request_file_approval(
                 "read", path=str(alias)
             )
             self.assertEqual(200, status, pending)
@@ -484,7 +484,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertIn(b"Capability approved", done_page)
             args = {
                 "paths": [str(alias / "public.txt")],
-                "elevated": True, "target": "server", "writer_nonce": nonce,
+                "approved": True, "target": "server", "writer_nonce": nonce,
             }
             status, readable = self.api("/fs/read/files", args)
             self.assertEqual(200, status, readable)
@@ -511,15 +511,15 @@ class CapabilityHTTPTests(unittest.TestCase):
             allowed = base / "approved"
             allowed.mkdir()
             (base / "private.txt").write_text("SECRET", encoding="utf-8")
-            self.assertEqual(400, self.request_file_elevation(
+            self.assertEqual(400, self.request_file_approval(
                 "read", path=str(allowed) + "/../"
             )[0])
-            status, pending = self.request_file_elevation("read", path=str(allowed))
+            status, pending = self.request_file_approval("read", path=str(allowed))
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
             status, denied = self.api("/fs/read/files", {
                 "paths": [str(allowed) + "/../private.txt"],
-                "elevated": True, "target": "server", "writer_nonce": nonce,
+                "approved": True, "target": "server", "writer_nonce": nonce,
             })
             self.assertEqual(400, status, denied)
             self.assertEqual("invalid_path", denied["error"]["code"])
@@ -550,7 +550,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             alias = base / "alias"
             alias.symlink_to(first, target_is_directory=True)
             scope = str(alias / "sub")
-            status, approval = self.request_file_elevation("read", mapping, path=scope)
+            status, approval = self.request_file_approval("read", mapping, path=scope)
             self.assertEqual(200, status, approval)
             self.assertEqual(scope, approval["path"])
             self.assertNotIn("original_path", approval)
@@ -572,10 +572,10 @@ class CapabilityHTTPTests(unittest.TestCase):
             }, headers)[0])
             alias.unlink()
             alias.symlink_to(first, target_is_directory=True)
-            self.approve({"error": {"details": self.request_file_elevation(
+            self.approve({"error": {"details": self.request_file_approval(
                 "read", mapping, path=scope)[1]}})
             args = {
-                "paths": [scope + "/visible.txt"], "elevated": True,
+                "paths": [scope + "/visible.txt"], "approved": True,
                 "target": mapping, "writer_nonce": nonce,
             }
             status, allowed = self.api("/fs/read/files", args)
@@ -608,7 +608,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             (other / "secret.txt").write_text("PRIVATE")
             alias = base / "alias.txt"
             alias.symlink_to(allowed / "ok.txt")
-            args = {"paths": [str(alias)], "elevated": True,
+            args = {"paths": [str(alias)], "approved": True,
                     "target": mapping, "writer_nonce": self.ownership()[1]}
             status, prompted = self.api("/fs/read/files", args)
             self.assertEqual(403, status, prompted)
@@ -619,7 +619,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual("path_unavailable", unavailable["error"]["code"])
             # A leaf symlink cannot be approved as a directory. Request a
             # file-scoped confirmation to approve the REAL parent directory.
-            status, pending = self.request_file_elevation(
+            status, pending = self.request_file_approval(
                 "read", mapping, path=str(alias), scope_is_directory=False)
             self.assertEqual(200, status, pending)
             self.assertEqual(str(alias), pending["path"])
@@ -648,21 +648,21 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertNotEqual(200, status, blocked)
             self.assertNotIn("external content", str(blocked))
             # An already granted unscoped files.read grant cannot read outside.
-            self.approve({"error": {"details": self.request_file_elevation("read")[1]}})
+            self.approve({"error": {"details": self.request_file_approval("read")[1]}})
             status, denied = self.api("/fs/read/files", {
-                "paths": [str(outer / "public.txt")], "elevated": True,
+                "paths": [str(outer / "public.txt")], "approved": True,
                 "target": "server", "writer_nonce": nonce,
             })
             self.assertEqual(207, status)
             self.assertEqual("path_unavailable", denied["items"][0]["error"]["code"])
             self.assertNotIn(str(outer), str(denied["items"][0]["error"]))
 
-            status, approval = self.request_file_elevation("read", path=str(outer))
+            status, approval = self.request_file_approval("read", path=str(outer))
             self.assertEqual(200, status, approval)
             location, _, _, page = self.approval({"error": {"details": approval}})
             self.assertIn(str(outer).encode(), page)
             self.approve({"error": {"details": approval}})
-            query = urlencode({"path": str(outer), "elevated": "true",
+            query = urlencode({"path": str(outer), "approved": "true",
                                "target": "server", "writer_nonce": nonce,
                                "plan_id": self.plan})
             status, _, raw_reply = self.request(
@@ -671,7 +671,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertIn(b"public.txt", raw_reply)
 
             status, response = self.api("/fs/read/files", {
-                "paths": [str(outer / "public.txt")], "elevated": True,
+                "paths": [str(outer / "public.txt")], "approved": True,
                 "target": "server", "writer_nonce": nonce,
             })
             self.assertEqual(200, status, response)
@@ -679,7 +679,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             # The grant is a path-component subtree, not a string prefix.
             sibling = str(outer) + "-sibling"
             status, blocked = self.api("/fs/read/files", {
-                "paths": [sibling], "elevated": True,
+                "paths": [sibling], "approved": True,
                 "target": "server", "writer_nonce": nonce,
             })
             self.assertEqual(207, status)
@@ -689,15 +689,15 @@ class CapabilityHTTPTests(unittest.TestCase):
                 PathGrant(str(outer / "denied.txt"), access="deny"),
             ))
             status, denied_path = self.api("/fs/read/files", {
-                "paths": [str(outer / "denied.txt")], "elevated": True,
+                "paths": [str(outer / "denied.txt")], "approved": True,
                 "target": "server", "writer_nonce": nonce,
             })
             self.assertEqual(207, status)
             self.assertEqual("path_unavailable", denied_path["items"][0]["error"]["code"])
-            self.assertEqual(400, self.request_file_elevation(
+            self.assertEqual(400, self.request_file_approval(
                 "read", scope_is_directory=False)[0])
-            self.assertEqual(400, self.request_file_elevation("read", path="/")[0])
-            self.assertEqual(400, self.request_file_elevation(
+            self.assertEqual(400, self.request_file_approval("read", path="/")[0])
+            self.assertEqual(400, self.request_file_approval(
                 "read", path="/Users/../etc")[0])
 
     def test_file_json_body_cache_does_not_leak_across_keepalive(self):
@@ -731,7 +731,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             })
             conn.request(
                 "POST",
-                self.base + "/files/elevation/request",
+                self.base + "/files/approval/request",
                 second_body,
                 self.headers,
             )
@@ -756,7 +756,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_mapping_external_elevation_state_does_not_leak_across_keepalive(self):
+    def test_mapping_external_approval_state_does_not_leak_across_keepalive(self):
         from urllib.parse import urlencode
 
         self.configure()
@@ -773,13 +773,13 @@ class CapabilityHTTPTests(unittest.TestCase):
             raw = str(Path(raw).resolve())
             outside = Path(raw)
             (outside / "visible.txt").write_text("keepalive external content")
-            status, pending = self.request_file_elevation("read", mapping, path=raw)
+            status, pending = self.request_file_approval("read", mapping, path=raw)
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
 
-            elevated = urlencode({
+            approved = urlencode({
                 "path": raw,
-                "elevated": "true",
+                "approved": "true",
                 "target": mapping,
                 "writer_nonce": nonce,
                 "plan_id": self.plan,
@@ -800,14 +800,14 @@ class CapabilityHTTPTests(unittest.TestCase):
                     response = conn.getresponse()
                     return response.status, json.loads(response.read())
 
-                status, first = get(elevated)
+                status, first = get(approved)
                 self.assertEqual(200, status, first)
                 self.assertIn(
                     "visible.txt", [entry["name"] for entry in first["entries"]]
                 )
 
                 # Same TCP connection and therefore the same HTTP handler:
-                # request-local elevation must not survive without elevated=true.
+                # request-local approval must not survive without approved=true.
                 status, second = get(plain)
                 self.assertEqual(403, status, second)
                 self.assertEqual("path_outside_root", second["error"]["code"])
@@ -816,11 +816,11 @@ class CapabilityHTTPTests(unittest.TestCase):
                 self.assertEqual(403, status, third)
                 self.assertEqual("path_outside_root", third["error"]["code"])
                 self.assertNotEqual(
-                    "file_elevation_path_mismatch", third["error"]["code"]
+                    "file_approval_path_mismatch", third["error"]["code"]
                 )
 
                 # The approved grant still works when explicitly opted into again.
-                status, fourth = get(elevated)
+                status, fourth = get(approved)
                 self.assertEqual(200, status, fourth)
                 self.assertIn(
                     "visible.txt", [entry["name"] for entry in fourth["entries"]]
@@ -854,13 +854,13 @@ class CapabilityHTTPTests(unittest.TestCase):
             plain_error = json.loads(plain)["error"]
             self.assertEqual("path_outside_root", plain_error["code"])
             self.assertEqual("read", plain_error["details"]["access"])
-            self.assertIn("request_elevation", plain_error["details"]["elevation"])
-            elevated_query = urlencode({
-                "path": raw, "elevated": "true", "target": mapping,
+            self.assertIn("request_approval", plain_error["details"]["approval"])
+            approved_query = urlencode({
+                "path": raw, "approved": "true", "target": mapping,
                 "writer_nonce": nonce, "plan_id": self.plan,
             })
             status, _, first_prompt = self.request(
-                "GET", self.base + "/fs/query/list?" + elevated_query,
+                "GET", self.base + "/fs/query/list?" + approved_query,
                 headers=self.headers)
             self.assertEqual(403, status, first_prompt)
             first_error = json.loads(first_prompt)["error"]
@@ -869,11 +869,11 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertIn("approval_url", first_error["details"])
             self.approve({"error": {"details": first_error["details"]}})
             status, _, unavailable = self.request(
-                "GET", self.base + "/fs/query/list?" + elevated_query,
+                "GET", self.base + "/fs/query/list?" + approved_query,
                 headers=self.headers)
             self.assertEqual(404, status, unavailable)
             self.assertEqual("path_unavailable", json.loads(unavailable)["error"]["code"])
-            status, pending = self.request_file_elevation("read", mapping, path=raw)
+            status, pending = self.request_file_approval("read", mapping, path=raw)
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
             # The MCP dynamic tool must expose/forward the optional directory.
@@ -881,10 +881,10 @@ class CapabilityHTTPTests(unittest.TestCase):
             status, mcp_reply = self.rpc(access["access_token"], "tools/call", {
                 "name": "capability_call",
                 "arguments": {
-                    "family": "files", "operation": "request_elevation",
+                    "family": "files", "operation": "request_approval",
                     "args": {"access": "read", "target": mapping,
                              "writer_nonce": nonce, "path": raw},
-                    "plan_id": self.plan, "taskname": "file-elevation",
+                    "plan_id": self.plan, "taskname": "file-approval",
                     "message": "Verify MCP scoped directory approval",
                 },
             })
@@ -892,7 +892,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertFalse(mcp_reply["result"]["isError"], mcp_reply)
             self.assertEqual("granted", mcp_reply["result"]["structuredContent"]["status"])
             query = urlencode({
-                "path": raw, "elevated": "true", "target": mapping,
+                "path": raw, "approved": "true", "target": mapping,
                 "writer_nonce": nonce, "plan_id": self.plan,
             })
             status, _, raw_reply = self.request(
@@ -907,116 +907,116 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertIn(b"mapping_client_upgrade_required", old_client)
             self.session.capabilities["file_stream"]["external_root_file_api"] = True
             self.session.capabilities["file_stream"].pop("external_realpath")
-            status, unsupported = self.request_file_elevation("read", mapping, path=raw)
+            status, unsupported = self.request_file_approval("read", mapping, path=raw)
             self.assertEqual(409, status, unsupported)
             self.assertEqual("mapping_client_upgrade_required", unsupported["error"]["code"])
             self.session.capabilities["file_stream"]["external_realpath"] = True
             self.assertNotIn("protected.txt", [x["name"] for x in listing["entries"]])
             status, result = self.api("/fs/read/files", {
-                "paths": [str(outside / "visible.txt")], "elevated": True,
+                "paths": [str(outside / "visible.txt")], "approved": True,
                 "target": mapping, "writer_nonce": nonce,
             })
             self.assertEqual(200, status, result)
             self.assertEqual("client external content", result["items"][0]["content"])
             status, protected = self.api("/fs/read/files", {
-                "paths": [str(outside / "protected.txt")], "elevated": True,
+                "paths": [str(outside / "protected.txt")], "approved": True,
                 "target": mapping, "writer_nonce": nonce,
             })
             self.assertNotIn("client secret", str(protected))
             self.assertNotEqual(200, status)
-            status, pending = self.request_file_elevation("write", mapping, path=raw)
+            status, pending = self.request_file_approval("write", mapping, path=raw)
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
             status, created = self.api("/fs/write/mkdir", {
-                "path": str(outside / "created"), "elevated": True,
+                "path": str(outside / "created"), "approved": True,
                 "target": mapping, "writer_nonce": nonce,
             })
             self.assertIn(status, (200, 201), created)
             self.assertTrue((outside / "created").is_dir())
             status, blocked = self.api("/fs/write/mkdir", {
-                "path": str(outside.parent / "escape"), "elevated": True,
+                "path": str(outside.parent / "escape"), "approved": True,
                 "target": mapping, "writer_nonce": nonce,
             })
             self.assertEqual(404, status)
             self.assertEqual("path_unavailable", blocked["error"]["code"])
 
-    def test_file_read_write_temporary_elevation_needs_individual_grants(self):
+    def test_file_read_write_temporary_approval_needs_individual_grants(self):
         self.configure()
         root = self.server.tokens.scope_root(self.record)
-        (root / "elevated-file.txt").write_text("protected-content")
+        (root / "approved-file.txt").write_text("protected-content")
         self.server.tokens.update(self.record.token, can_read=False, can_write=False)
         self.assertEqual(403, self.api("/fs/read/files", {
-            "paths": ["elevated-file.txt"],
+            "paths": ["approved-file.txt"],
         })[0])
-        status, read = self.request_file_elevation("read")
+        status, read = self.request_file_approval("read")
         self.assertEqual(200, status, read)
         self.assertEqual("approval_required", read["status"])
         self.assertEqual("files.read", read["capability"])
         self.approve({"error": {"details": read}})
-        self.assertEqual("granted", self.request_file_elevation("read")[1]["status"])
+        self.assertEqual("granted", self.request_file_approval("read")[1]["status"])
         # Approval is opt-in on EACH file request, not a blanket token policy.
         self.assertEqual(403, self.api("/fs/read/files", {
-            "paths": ["elevated-file.txt"],
+            "paths": ["approved-file.txt"],
         })[0])
         status, response = self.api("/fs/read/files", {
-            "paths": ["elevated-file.txt"], "elevated": True,
+            "paths": ["approved-file.txt"], "approved": True,
             "target": "server", "writer_nonce": self.ownership()[1],
         })
         self.assertEqual(200, status, response)
         self.assertEqual("protected-content", response["items"][0]["content"])
         self.assertEqual(403, self.api("/fs/write/mkdir", {
-            "path": "elevated-dir", "elevated": True, "target": "server",
+            "path": "approved-dir", "approved": True, "target": "server",
             "writer_nonce": self.ownership()[1],
         })[0])
-        status, write = self.request_file_elevation("write")
+        status, write = self.request_file_approval("write")
         self.assertEqual(200, status, write)
         self.assertEqual("files.write", write["capability"])
         self.approve({"error": {"details": write}})
         self.assertEqual(403, self.api("/fs/write/mkdir", {
-            "path": "elevated-dir",
+            "path": "approved-dir",
         })[0])
         status, created = self.api("/fs/write/mkdir", {
-            "path": "elevated-dir", "elevated": True, "target": "server",
+            "path": "approved-dir", "approved": True, "target": "server",
             "writer_nonce": self.ownership()[1],
         })
         self.assertIn(status, (200, 201), created)
-        self.assertTrue((root / "elevated-dir").is_dir())
+        self.assertTrue((root / "approved-dir").is_dir())
         status, mutation = self.api("/fs/write/mutate", {
-            "items": [{"op": "file.create", "path": "elevated-dir/written.txt",
+            "items": [{"op": "file.create", "path": "approved-dir/written.txt",
                        "content": "authorized"}],
-            "elevated": True, "target": "server",
+            "approved": True, "target": "server",
             "writer_nonce": self.ownership()[1],
         })
         self.assertEqual(200, status, mutation)
-        self.assertEqual("authorized", (root / "elevated-dir/written.txt").read_text())
+        self.assertEqual("authorized", (root / "approved-dir/written.txt").read_text())
         self.assertEqual(404, self.api("/fs/read/files", {
-            "paths": ["elevated-file.txt"], "elevated": True,
+            "paths": ["approved-file.txt"], "approved": True,
             "target": "other-mapping", "writer_nonce": self.ownership()[1],
         })[0])
 
-    def test_file_elevation_get_and_mapping_target_binding(self):
+    def test_file_approval_get_and_mapping_target_binding(self):
         from urllib.parse import urlencode
         self.configure()
         self.server.tokens.update(self.record.token, can_read=False)
-        status, pending = self.request_file_elevation("read", "server")
+        status, pending = self.request_file_approval("read", "server")
         self.assertEqual(200, status)
         self.approve({"error": {"details": pending}})
         query = urlencode({
-            "path": ".", "elevated": "true", "target": "server",
+            "path": ".", "approved": "true", "target": "server",
             "writer_nonce": self.ownership()[1], "plan_id": self.plan,
         })
         status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
                                       headers=self.headers)
         self.assertEqual(200, status, raw)
         query = urlencode({
-            "path": "laptop", "elevated": "true", "target": "server",
+            "path": "laptop", "approved": "true", "target": "server",
             "writer_nonce": self.ownership()[1], "plan_id": self.plan,
         })
         status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
                                       headers=self.headers)
         self.assertEqual(404, status, raw)
         self.assertIn(b"path_unavailable", raw)
-        status, pending = self.request_file_elevation("read", self.row["id"])
+        status, pending = self.request_file_approval("read", self.row["id"])
         self.assertEqual(200, status, pending)
         self.approve({"error": {"details": pending}})
         # The Shell test fixture routes tasks to SharedClientTasks, which
@@ -1027,22 +1027,22 @@ class CapabilityHTTPTests(unittest.TestCase):
             else self.tasks.dispatch(operation, args)
         )
         query = urlencode({
-            "path": "laptop", "elevated": "true", "target": self.row["id"],
+            "path": "laptop", "approved": "true", "target": self.row["id"],
             "writer_nonce": self.ownership()[1], "plan_id": self.plan,
         })
         status, _, raw = self.request("GET", self.base + "/fs/query/list?" + query,
                                       headers=self.headers)
         self.assertEqual(200, status, raw)
 
-    def test_file_elevation_proactive_mcp_and_permission_flags(self):
+    def test_file_approval_proactive_mcp_and_permission_flags(self):
         self.configure()
         self.server.tokens.update(self.record.token, can_read=False, can_write=False)
         access, _, _ = self.authorize()
         arguments = {
-            "family": "files", "operation": "request_elevation",
+            "family": "files", "operation": "request_approval",
             "args": {"access": "read", "target": "server",
                      "writer_nonce": self.ownership()[1]},
-            "plan_id": self.plan, "taskname": "file elevation",
+            "plan_id": self.plan, "taskname": "file approval",
             "message": "Request read permission",
         }
         status, result = self.rpc(access["access_token"], "tools/call", {
@@ -1055,9 +1055,9 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.approve({"error": {"details": pending}})
         tool_args = {
             "name": "fs_read_files", "arguments": {
-                "paths": ["file.txt"], "elevated": True,
+                "paths": ["file.txt"], "approved": True,
                 "writer_nonce": self.ownership()[1], "target": "server",
-                "plan_id": self.plan, "taskname": "file elevation",
+                "plan_id": self.plan, "taskname": "file approval",
                 "message": "Read with approval",
             },
         }
@@ -1071,10 +1071,10 @@ class CapabilityHTTPTests(unittest.TestCase):
         write_args = {
             "name": "fs_write",
             "arguments": {
-                "path": "elevated-mcp.txt", "content": "new",
-                "elevated": True, "writer_nonce": self.ownership()[1],
+                "path": "approved-mcp.txt", "content": "new",
+                "approved": True, "writer_nonce": self.ownership()[1],
                 "target": "server", "plan_id": self.plan,
-                "taskname": "file elevation", "message": "Write with approval",
+                "taskname": "file approval", "message": "Write with approval",
             },
         }
         status, denied = self.rpc(access["access_token"], "tools/call", write_args)
@@ -1093,10 +1093,10 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertFalse(written["result"]["isError"], written)
         self.assertEqual(
             "new", self.server.tokens.scope_root(self.record)
-            .joinpath("elevated-mcp.txt").read_text(),
+            .joinpath("approved-mcp.txt").read_text(),
         )
 
-    def test_file_elevation_respects_denied_and_readonly_paths(self):
+    def test_file_approval_respects_denied_and_readonly_paths(self):
         from openkapsel.auth.tokens import PathGrant
         self.configure()
         root = self.server.tokens.scope_root(self.record)
@@ -1110,50 +1110,50 @@ class CapabilityHTTPTests(unittest.TestCase):
             ),
         )
         for access in ("read", "write"):
-            status, pending = self.request_file_elevation(access)
+            status, pending = self.request_file_approval(access)
             self.assertEqual(200, status, pending)
             self.approve({"error": {"details": pending}})
         nonce = self.ownership()[1]
         status, denied = self.api("/fs/read/files", {
-            "paths": ["secret.txt"], "elevated": True,
+            "paths": ["secret.txt"], "approved": True,
             "target": "server", "writer_nonce": nonce,
         })
         self.assertEqual(207, status)
         self.assertEqual("path_unavailable", denied["items"][0]["error"]["code"])
         status, denied = self.api("/fs/write/mkdir", {
-            "path": "readonly/newdir", "elevated": True,
+            "path": "readonly/newdir", "approved": True,
             "target": "server", "writer_nonce": nonce,
         })
         self.assertEqual(404, status)
         self.assertEqual("path_unavailable", denied["error"]["code"])
         self.assertFalse((root / "readonly/newdir").exists())
         # The same read/write approvals do not authorize Shell tasks.
-        status, body = self.elevated()
+        status, body = self.approved()
         self.assertEqual(403, status)
         self.assertEqual("capability_approval_required", body["error"]["code"])
 
-    def test_proactive_elevation_request_is_command_free_and_reuses_grant(self):
+    def test_proactive_approval_request_is_command_free_and_reuses_grant(self):
         self.configure()
         self.server.tokens.update(self.record.token, shell_mode="restricted")
         marker = self.server.tokens.scope_root(self.record) / "proactive-marker"
         with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as launch:
-            status, pending = self.request_elevation()
+            status, pending = self.request_approval()
             self.assertEqual(200, status, pending)
             self.assertEqual("approval_required", pending["status"])
             self.assertEqual("server", pending["target"])
-            self.assertEqual("shell.elevated", pending["capability"])
+            self.assertEqual("shell.unsandboxed", pending["capability"])
             self.assertEqual(300, pending["approval_expires_in"])
             launch.assert_not_called()
             self.assertFalse(marker.exists())
             self.approve({"error": {"details": pending}})
             launch.assert_not_called()
-            status, granted = self.request_elevation()
+            status, granted = self.request_approval()
             self.assertEqual(200, status, granted)
             self.assertEqual("granted", granted["status"])
             self.assertEqual("server", granted["target"])
-            self.assertEqual("shell.elevated", granted["capability"])
+            self.assertEqual("shell.unsandboxed", granted["capability"])
             launch.assert_not_called()
-            status, task = self.elevated(command="printf approved > proactive-marker")
+            status, task = self.approved(command="printf approved > proactive-marker")
             self.assertEqual(202, status, task)
         self.finished(task["task_id"])
         self.assertEqual("approved", marker.read_text())
@@ -1162,50 +1162,58 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.configure()
         mapping = self.row["id"]
         # Approval may be requested while normal Client Shell is disabled;
-        # only an approved elevated invocation may override those flags.
+        # only an approved approved invocation may override those flags.
         self.server.mappings.store.update(mapping, allow_exec=False)
         self.legacy_tasks.enabled = False
         self.session.capabilities["execution"] = self.tasks.capabilities()
-        self.assertEqual(400, self.request_elevation("auto")[0])
-        self.assertEqual(404, self.request_elevation("invalid-mapping")[0])
-        status, pending = self.request_elevation(mapping)
+        self.assertEqual(400, self.request_approval("auto")[0])
+        self.assertEqual(404, self.request_approval("invalid-mapping")[0])
+        status, pending = self.request_approval(mapping)
         self.assertEqual(200, status, pending)
         self.assertEqual(mapping, pending["target"])
         self.approve({"error": {"details": pending}})
-        self.assertEqual("granted", self.request_elevation(mapping)[1]["status"])
-        self.assertEqual("approval_required", self.request_elevation("server")[1]["status"])
+        self.assertEqual("granted", self.request_approval(mapping)[1]["status"])
+        self.assertEqual("approval_required", self.request_approval("server")[1]["status"])
         self.server.mappings.store.update(mapping, writable=False)
-        self.assertEqual(403, self.request_elevation(mapping)[0])
+        self.assertEqual(403, self.request_approval(mapping)[0])
         self.server.mappings.store.update(mapping, writable=True)
         self.session.closed = True
-        self.assertEqual(503, self.request_elevation(mapping)[0])
+        self.assertEqual(503, self.request_approval(mapping)[0])
         self.session.closed = False
         self.session.capabilities["execution"].pop("unsandboxed", None)
-        self.assertEqual(409, self.request_elevation(mapping)[0])
+        self.assertEqual(409, self.request_approval(mapping)[0])
 
     def test_proactive_request_writer_nonce_and_payload_validation(self):
         self.configure()
         for override in ({"writer_nonce": None}, {"writer_nonce": "@xxxx@"},
                          {"writer_nonce": 17}, {"command": "echo do not run"}):
             with self.subTest(override=override):
-                status, result = self.request_elevation(**override)
+                status, result = self.request_approval(**override)
                 self.assertIn(status, (400, 403), result)
                 self.assertNotIn("approval_url", str(result))
-        status, _ = self.request_elevation()
+        status, _ = self.request_approval()
         self.assertEqual(200, status)
         store = self.server.context_for(self.server.tokens.scope_root(self.record))
         with closing(store._connect()) as db, db:
             db.execute("UPDATE context_entries SET plan_status='cancelled' WHERE id=?", (self.plan,))
-        self.assertEqual(400, self.request_elevation()[0])
+        self.assertEqual(400, self.request_approval()[0])
 
-    def test_mcp_proactive_elevation_returns_link_without_error_or_execution(self):
+    def test_mcp_proactive_approval_returns_link_without_error_or_execution(self):
         self.configure()
         token, _, _ = self.authorize()
+        status, discovered = self.rpc(token["access_token"], "tools/call", {
+            "name": "discovery", "arguments": {"section": "shell"},
+        })
+        self.assertEqual(200, status, discovered)
+        operations = discovered["result"]["structuredContent"]["capabilities"][
+            "mcp"]["operation_families"]["shell"]["operation_specs"]
+        self.assertIn("request_approval", operations)
+        self.assertEqual({"exec", "request_approval"}, set(operations))
         arguments = {
-            "family": "shell", "operation": "request_elevation",
+            "family": "shell", "operation": "request_approval",
             "args": {"target": "server", "writer_nonce": self.ownership()[1]},
             "plan_id": self.plan, "taskname": "approve shell",
-            "message": "Request proactive Shell elevation",
+            "message": "Request proactive Shell approval",
         }
         with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as launch:
             status, result = self.rpc(token["access_token"], "tools/call",
@@ -1227,9 +1235,9 @@ class CapabilityHTTPTests(unittest.TestCase):
     def test_server_approval_is_single_use_no_execution_then_restricted_retry(self):
         self.configure()
         self.server.tokens.update(self.record.token, shell_mode="restricted")
-        marker = self.server.tokens.scope_root(self.record) / "elevated-marker"
+        marker = self.server.tokens.scope_root(self.record) / "approved-marker"
         with patch.object(self.server.tasks, "start", wraps=self.server.tasks.start) as launch:
-            status, result = self.elevated(command="printf approved > elevated-marker")
+            status, result = self.approved(command="printf approved > approved-marker")
             self.assertEqual(403, status, result)
             self.assertEqual("capability_approval_required", result["error"]["code"])
             self.assertEqual("server", result["error"]["details"]["target"])
@@ -1238,7 +1246,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             launch.assert_not_called()
             self.assertFalse(marker.exists())
             self.assertEqual(400, self.request("GET", location)[0])
-            status, task = self.elevated(command="printf approved > elevated-marker")
+            status, task = self.approved(command="printf approved > approved-marker")
             self.assertEqual(202, status, task)
             self.assertFalse(launch.call_args.kwargs["sandboxed"])
         self.finished(task["task_id"])
@@ -1253,21 +1261,21 @@ class CapabilityHTTPTests(unittest.TestCase):
     def test_writer_plan_scope_and_reserved_capability(self):
         self.configure()
         for value in (None, "@xxxx@", 123):
-            status, result = self.elevated(writer_nonce=value)
+            status, result = self.approved(writer_nonce=value)
             self.assertIn(status, (400, 403), result)
             self.assertNotEqual("capability_approval_required", result["error"]["code"])
-        status, result = self.elevated()
+        status, result = self.approved()
         self.assertEqual(403, status)
         self.approve(result)
         store = self.server.context_for(self.server.tokens.scope_root(self.record))
         with closing(store._connect()) as db, db:
             db.execute("UPDATE context_entries SET plan_status='cancelled' WHERE id=?", (self.plan,))
-        self.assertEqual(400, self.elevated()[0])
+        self.assertEqual(400, self.approved()[0])
         with closing(store._connect()) as db, db:
             db.execute("UPDATE context_entries SET plan_status='in_progress' WHERE id=?", (self.plan,))
         other = store.create_conversation(store.conversation_query()[2], [{"role": "user", "content": "another conversation"}, {"role": "ai", "content": "new owner"}])
         # Plan identity determines the scope even when a valid foreign nonce/ID is sent.
-        self.assertEqual(403, self.elevated(writer_nonce=other["writer_nonce"], conversation_id=other["conversation_id"])[0])
+        self.assertEqual(403, self.approved(writer_nonce=other["writer_nonce"], conversation_id=other["conversation_id"])[0])
         status, _, raw = self.request("POST", self.base + "/context", json.dumps({
             "type": "plan", "subplans": [], "taskname": "new owner", "content": "New conversation plan",
             "conversation_id": other["conversation_id"], "writer_nonce": other["writer_nonce"],
@@ -1277,13 +1285,13 @@ class CapabilityHTTPTests(unittest.TestCase):
         original = self.plan
         try:
             self.plan = json.loads(raw)["id"]
-            self.assertEqual("capability_approval_required", self.elevated()[1]["error"]["code"])
+            self.assertEqual("capability_approval_required", self.approved()[1]["error"]["code"])
         finally:
             self.plan = original
         self.server.capability_grants.revoke_workspace(self.record.app_id)
         ticket = self.server.capability_grants.request(self.record.app_id, self.ownership()[0], "server", "files.write")
         self.server.capability_grants.approve(ticket, self.PASSWORD)
-        self.assertEqual("capability_approval_required", self.elevated()[1]["error"]["code"])
+        self.assertEqual("capability_approval_required", self.approved()[1]["error"]["code"])
 
     def test_mapping_disabled_short_long_and_target_isolation(self):
         self.configure()
@@ -1291,9 +1299,9 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.legacy_tasks.enabled = False
         self.session.capabilities["execution"] = self.tasks.capabilities()
         self.assertEqual(403, self.api("/shell/exec", {"command": "printf denied", "cwd": "laptop"})[0])
-        _, server_request = self.elevated()
+        _, server_request = self.approved()
         self.approve(server_request)
-        status, result = self.elevated(cwd="laptop")
+        status, result = self.approved(cwd="laptop")
         self.assertEqual(403, status, result)
         self.assertEqual(self.row["id"], result["error"]["details"]["target"])
         self.approve(result)
@@ -1302,10 +1310,10 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.tasks.job_sandbox = {"type": "current_user"}
         for timeout in (120, 121):
             with self.subTest(timeout=timeout):
-                status, task = self.elevated(cwd="laptop", timeout_seconds=timeout)
+                status, task = self.approved(cwd="laptop", timeout_seconds=timeout)
                 self.assertEqual(202, status, task)
                 self.assertEqual("client", task["location"])
-                self.assertEqual("elevated", self.finished(task["task_id"])["stdout"])
+                self.assertEqual("approved", self.finished(task["task_id"])["stdout"])
         self.assertTrue(self.legacy_tasks.sandbox)
         with patch("openkapsel.client_runtime.shared_job_tasks.request") as manager:
             prepared = self.tasks._prepare({"command": "echo trusted", "cwd": ".", "task_id": "&Ab12&", "unsandboxed": True})
@@ -1318,7 +1326,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             mount = self.server.mappings.mount_path(other)
             mount.mkdir()
             self.server.mappings.sessions[other["id"]] = self.session
-            status, result = self.elevated(cwd="second")
+            status, result = self.approved(cwd="second")
             self.assertEqual(403, status, result)
             self.assertEqual(other["id"], result["error"]["details"]["target"])
         finally:
@@ -1327,11 +1335,11 @@ class CapabilityHTTPTests(unittest.TestCase):
 
     def test_csrf_password_attempts_headers_and_no_secret_echo(self):
         self.configure()
-        _, result = self.elevated()
+        _, result = self.approved()
         location, headers, form, raw = self.approval(result)
         self.assertNotIn(self.PASSWORD.encode(), raw)
         self.assertIn(self.record.path_prefix.encode(), raw)
-        self.assertIn(b"shell.elevated", raw)
+        self.assertIn(b"shell.unsandboxed", raw)
         status, response_headers, _ = self.request("GET", location)
         self.assertEqual("no-store", response_headers["Cache-Control"])
         self.assertEqual("no-referrer", response_headers["Referrer-Policy"])
@@ -1345,9 +1353,9 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(403, status, raw)
             self.assertNotIn(b"incorrect-secret", raw)
         self.assertEqual(400, self.form(location, form, headers)[0])
-        self.assertFalse(self.server.capability_grants.granted(self.record.app_id, self.ownership()[0], "server", "shell.elevated"))
+        self.assertFalse(self.server.capability_grants.granted(self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed"))
         # New URL cannot reset the shared workspace password budget.
-        _, new = self.elevated()
+        _, new = self.approved()
         location, headers, form, _ = self.approval(new)
         self.assertEqual(429, self.form(location, form, headers)[0])
 
@@ -1429,7 +1437,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         )[0])
         self.assertTrue(grants.verify_workspace_password(self.record.app_id, "abc123"))
 
-        status, pending = self.request_elevation()
+        status, pending = self.request_approval()
         self.assertEqual(200, status, pending)
         location, approval_headers, form, _ = self.approval({
             "error": {"details": pending},
@@ -1438,7 +1446,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         status, _, response = self.form(location, form, approval_headers)
         self.assertEqual(200, status, response)
         self.assertTrue(grants.granted(
-            self.record.app_id, self.ownership()[0], "server", "shell.elevated"
+            self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed"
         ))
 
     def test_admin_token_tabs_option_a_underline_and_mobile_scrolling(self):
@@ -1569,12 +1577,12 @@ class CapabilityHTTPTests(unittest.TestCase):
         form = {"workspace": self.record.app_id, "action": "password", "password": self.PASSWORD, "csrf": session.csrf}
         self.assertEqual(403, self.form(path, dict(form, csrf="invalid"), headers)[0])
         self.assertEqual(200, self.form(path, form, headers)[0])
-        _, result = self.elevated()
+        _, result = self.approved()
         self.approve(result)
-        self.assertIn(b"shell.elevated", self.request("GET", path, headers=headers)[2])
-        grant = {"workspace": self.record.app_id, "action": "revoke", "conversation_id": str(self.ownership()[0]), "target": "server", "capability": "shell.elevated", "csrf": session.csrf}
+        self.assertIn(b"shell.unsandboxed", self.request("GET", path, headers=headers)[2])
+        grant = {"workspace": self.record.app_id, "action": "revoke", "conversation_id": str(self.ownership()[0]), "target": "server", "capability": "shell.unsandboxed", "csrf": session.csrf}
         self.assertEqual(200, self.form(path, grant, headers)[0])
-        self.assertEqual(403, self.elevated()[0])
+        self.assertEqual(403, self.approved()[0])
         self.assertEqual(200, self.form(path, dict(form, password="new-workspace-password-123"), headers)[0])
         self.assertEqual({}, self.server.capability_grants.pending_requests)
         delete = {"action": "delete", "token": self.record.token, "csrf": session.csrf}
@@ -1583,24 +1591,24 @@ class CapabilityHTTPTests(unittest.TestCase):
 
     def test_expiry_blocks_new_jobs_and_preserves_running_job(self):
         self.configure()
-        _, first = self.elevated()
-        _, second = self.elevated()
+        _, first = self.approved()
+        _, second = self.approved()
         self.assertNotEqual(first["error"]["details"]["approval_url"], second["error"]["details"]["approval_url"])
         location = urlsplit(second["error"]["details"]["approval_url"]).path
         self.server.capability_grants.pending_requests[location.rsplit("/", 1)[1]].deadline = 0
         self.assertEqual(400, self.request("GET", location)[0])
         self.approve(first)
-        status, task = self.elevated(command="cat", interactive=True)
+        status, task = self.approved(command="cat", interactive=True)
         self.assertEqual(202, status, task)
-        self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.elevated", "")] = 0
-        self.assertEqual(403, self.elevated()[0])
+        self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed", "")] = 0
+        self.assertEqual(403, self.approved()[0])
         self.assertEqual(200, self.api("/task/stdin/" + task["task_id"], {"data": "still-running\n", "close": True})[0])
         self.assertEqual("still-running\n", self.finished(task["task_id"])["stdout"])
 
     def test_mcp_approval_error_and_retry_share_rest_grant(self):
         self.configure()
         token, _, _ = self.authorize()
-        arguments = {"family": "shell", "operation": "exec", "args": {"command": "printf mcp", "elevated": True, "writer_nonce": self.ownership()[1]}, "plan_id": self.plan, "taskname": "elevation", "message": "Test MCP elevation"}
+        arguments = {"family": "shell", "operation": "exec", "args": {"command": "printf mcp", "approved": True, "writer_nonce": self.ownership()[1]}, "plan_id": self.plan, "taskname": "approval", "message": "Test MCP approval"}
         status, result = self.rpc(token["access_token"], "tools/call", {"name": "capability_call", "arguments": arguments})
         self.assertEqual(200, status, result)
         self.assertTrue(result["result"]["isError"])
@@ -1614,9 +1622,9 @@ class CapabilityHTTPTests(unittest.TestCase):
 
     def test_remote_http_passwords_are_rejected(self):
         self.server.config = replace(self.server.config, public_base_url="http://example.test")
-        self.assertEqual(403, self.elevated()[0])
+        self.assertEqual(403, self.approved()[0])
 
-    def test_real_mapping_websocket_elevated_shell(self):
+    def test_real_mapping_websocket_approved_shell(self):
         try:
             import websocket
             import wsproto
@@ -1636,13 +1644,13 @@ class CapabilityHTTPTests(unittest.TestCase):
         client.start()
         try:
             self.assertTrue(ready.wait(5), "Mapping client did not connect")
-            status, result = self.elevated(cwd="real")
+            status, result = self.approved(cwd="real")
             self.assertEqual(403, status, result)
             self.approve(result)
             for timeout in (120, 121):
-                status, task = self.elevated(cwd="real", timeout_seconds=timeout)
+                status, task = self.approved(cwd="real", timeout_seconds=timeout)
                 self.assertEqual(202, status, task)
-                self.assertEqual("elevated", self.finished(task["task_id"])["stdout"])
+                self.assertEqual("approved", self.finished(task["task_id"])["stdout"])
             self.assertFalse(runtime.tasks.enabled)
             self.assertTrue(runtime.tasks.sandbox)
         finally:
@@ -1657,9 +1665,9 @@ class CapabilityHTTPTests(unittest.TestCase):
 
     def test_expiry_during_launch_preparation_does_not_start_shell(self):
         self.configure()
-        _, result = self.elevated()
+        _, result = self.approved()
         self.approve(result)
-        key = (self.record.app_id, self.ownership()[0], "server", "shell.elevated", "")
+        key = (self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed", "")
         # Environment configuration is loaded before the final authorization.
         from openkapsel.execution.environment_store import EnvironmentStore
         original = EnvironmentStore.shell_file
@@ -1667,7 +1675,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.server.capability_grants.active[key] = 0
             return original(store, *args)
         with patch.object(EnvironmentStore, "shell_file", expired_file), patch.object(self.server.tasks, "start") as launch:
-            self.assertEqual(403, self.elevated()[0])
+            self.assertEqual(403, self.approved()[0])
             launch.assert_not_called()
 
 

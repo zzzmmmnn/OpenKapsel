@@ -17,11 +17,11 @@ from openkapsel.execution.shell_execution import start_shell_task
 from openkapsel.execution.shell_routing import RemoteTask
 
 class TaskHttpMixin:
-    def _handle_shell_elevation_request(self) -> None:
+    def _handle_shell_approval_request(self) -> None:
         """Request approval for a specific Shell target without starting a job."""
         body = self._read_json()
         if set(body) - {"target", "writer_nonce", "plan_id", "taskname", "message"}:
-            raise ApiError(400, "invalid_request", "unexpected elevation request field")
+            raise ApiError(400, "invalid_request", "unexpected approval request field")
         self._require_permission(
             self.token_record.shell_mode != "none", "Shell permission is required"
         )
@@ -40,10 +40,10 @@ class TaskHttpMixin:
                 raise ApiError(503, "mapping_unavailable", "mapping client is offline")
             if not execution.get("shell_command") or not execution.get("unsandboxed"):
                 raise ApiError(409, "client_upgrade_required",
-                               "update and reconnect client for elevated Shell execution")
+                               "update and reconnect client for approved Shell execution")
             target = row["id"]
         try:
-            self._require_capability(body, target, "shell.elevated")
+            self._require_capability(body, target, "shell.unsandboxed")
         except ApiError as exc:
             if exc.code != "capability_approval_required":
                 raise
@@ -54,14 +54,14 @@ class TaskHttpMixin:
             return
         self._send_json(200, {
             "status": "granted",
-            "capability": "shell.elevated",
+            "capability": "shell.unsandboxed",
             "target": target,
         })
 
     def _handle_shell_exec(self) -> None:
         body = self._read_json()
         command = self._required_string(body, "command")
-        elevated = self._optional_bool(body, "elevated", False)
+        approved = self._optional_bool(body, "approved", False)
         if self._start_client_shell(body):
             return
         cwd_value = body.get("cwd", "")
@@ -69,8 +69,8 @@ class TaskHttpMixin:
         if timeout is None:
             timeout = self.server.config.default_command_timeout
         interactive = self._optional_bool(body, "interactive", False)
-        if elevated:
-            self._require_capability(body, "server", "shell.elevated")
+        if approved:
+            self._require_capability(body, "server", "shell.unsandboxed")
         task = start_shell_task(
             self.server,
             self.token_record,
@@ -80,8 +80,8 @@ class TaskHttpMixin:
             timeout_seconds=timeout,
             interactive=interactive,
             mount_mappings=body.get("mount_mappings", []),
-            unsandboxed=elevated,
-            authorize_launch=(lambda: self._require_capability(body, "server", "shell.elevated")) if elevated else None,
+            unsandboxed=approved,
+            authorize_launch=(lambda: self._require_capability(body, "server", "shell.unsandboxed")) if approved else None,
         )
         self._send_json(
             HTTPStatus.ACCEPTED,

@@ -126,10 +126,10 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="share",
     ),
     _exact(
-        "files_elevation_request", ("POST",), "/files/elevation/request",
-        "_handle_files_elevation_request",
+        "files_approval_request", ("POST",), "/files/approval/request",
+        "_handle_files_approval_request",
         control_required=True, request_body=True, context_mode="deferred",
-        context_operations=(("POST", "files.elevation.request"),),
+        context_operations=(("POST", "files.approval.request"),),
         discovery_key="fs_write",
     ),
     _exact(
@@ -255,10 +255,10 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         "_handle_mcp_method_not_allowed", control_required=True, discovery_key="mcp",
     ),
     _exact(
-        "shell_elevation_request", ("POST",), "/shell/elevation/request",
-        "_handle_shell_elevation_request", control_required=True,
+        "shell_approval_request", ("POST",), "/shell/approval/request",
+        "_handle_shell_approval_request", control_required=True,
         request_body=True, context_mode="deferred",
-        context_operations=(("POST", "shell.elevation.request"),),
+        context_operations=(("POST", "shell.approval.request"),),
         discovery_key="shell",
     ),
     _exact(

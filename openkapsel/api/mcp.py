@@ -76,12 +76,12 @@ def _tool(
         "fs_replace_large", "fs_mkdir", "fs_move",
     }:
         schema["properties"].update({
-            "elevated": {"type": "boolean", "default": False,
+            "approved": {"type": "boolean", "default": False,
                          "description": "Explicitly use approved files.read or files.write for this Token and target."},
             "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
-                             "description": "Owning Conversation writer nonce, required when elevated=true."},
+                             "description": "Owning Conversation writer nonce, required when approved=true."},
             "target": {"type": "string", "minLength": 1,
-                       "description": "Required when elevated=true: server or exact Mapping ID."},
+                       "description": "Required when approved=true: server or exact Mapping ID."},
         })
     if context_message:
         schema["properties"]["plan_id"] = plan_id_schema(
@@ -1003,9 +1003,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         open_world=True,
     ),
     _tool(
-        "files_request_elevation",
-        "Request File API elevation",
-        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. An optional absolute path scopes an external directory and descendants; ordinary grants never unlock external paths. This performs no File operation. Returns approval_required with approval_url or granted. After approval, send elevated=true, writer_nonce and target on each File API call.",
+        "files_request_approval",
+        "Request File API approval",
+        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. An optional absolute path scopes an external directory and descendants; ordinary grants never unlock external paths. This performs no File operation. Returns approval_required with approval_url or granted. After approval, send approved=true, writer_nonce and target on each File API call.",
         _object_schema({
             "access": {"type": "string", "enum": ["read", "write"]},
             "target": {"type": "string", "minLength": 1,
@@ -1019,9 +1019,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         read_only=False,
     ),
     _tool(
-        "shell_request_elevation",
-        "Request temporary Shell elevation",
-        "Request conversation-scoped Shell elevation for an explicit target without executing any command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. The user must approve in the browser; later Shell execution still requires elevated=true.",
+        "shell_request_approval",
+        "Request temporary Shell approval",
+        "Request temporary approval for unsandboxed Shell execution on an explicit target without running a command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. The user must approve in the browser; later Shell execution still requires approved=true.",
         _object_schema(
             {
                 "target": {
@@ -1044,8 +1044,8 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Start an asynchronous Shell job with &a1B2& reference ID. Omitted/null timeout defaults to 120s; client Shell with timeout <=120s runs in Client, >120s in shared Job Manager. Explicit finite positive timeouts have no maximum. target=auto routes mapped cwd to client, otherwise server; errors never fall back. Only Mapping Shell with timeout >120s survives Client restart via disk-backed Job Manager (16 global, 4 per Mapping key). Use family=task operations to inspect and control output.",
         _object_schema(
             {
-                "elevated": {"type": "boolean", "default": False, "description": "Request temporary shell.elevated for this conversation and execution target. On capability_approval_required, show the approval_url, pause for user approval, then retry. Approval never reruns a command."},
-                "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$", "description": "Owning Conversation writer nonce; required when elevated=true. Conversation is derived from outer plan_id."},
+                "approved": {"type": "boolean", "default": False, "description": "Request approved unsandboxed Shell execution for this conversation and target. On capability_approval_required, show the approval_url, pause for user approval, then retry. Approval never reruns a command."},
+                "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$", "description": "Owning Conversation writer nonce; required when approved=true. Conversation is derived from outer plan_id."},
                 "command": {"type": "string", "minLength": 1},
                 "mount_mappings": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Server-only native mapping dependencies by name or ID. Mapped cwd is automatic; command text is not inspected."},
                 "target": {"type": "string", "enum": ["auto", "server", "client"], "default": "auto"},
@@ -1215,11 +1215,11 @@ _AUXILIARY_OPERATION_MAP: dict[
         "cancel": ("upload_cancel", None, None, ("upload_id",), "sync"),
     },
     "files": {
-        "request_elevation": ("files_request_elevation", None, None, ("access", "target", "writer_nonce"), "sync"),
+        "request_approval": ("files_request_approval", None, None, ("access", "target", "writer_nonce"), "sync"),
     },
     "shell": {
         "exec": ("shell_exec", None, None, ("command",), "task"),
-        "request_elevation": ("shell_request_elevation", None, None, ("target", "writer_nonce"), "sync"),
+        "request_approval": ("shell_request_approval", None, None, ("target", "writer_nonce"), "sync"),
         "processes": ("sandbox_processes", None, None, (), "sync"),
     },
     "task": {
@@ -1257,9 +1257,9 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
         "memory_add",
         "memory_update",
         "memory_archive",
-        "files_request_elevation",
+        "files_request_approval",
         # File tools must be discoverable before temporary grants exist.
-        # Their handlers still enforce normal flags unless elevated=true
+        # Their handlers still enforce normal flags unless approved=true
         # and the exact Token/Conversation/target grant is approved.
         "fs_list", "fs_stat", "fs_find", "fs_grep", "fs_tree",
         "fs_read_files", "fs_manifest", "fs_read_binary", "fs_read_large",
@@ -1293,7 +1293,7 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
     if record.can_read or record.can_write:
         names.update({"task_get", "task_list", "task_output", "task_interrupt", "task_kill"})
     if record.shell_mode != "none":
-        names.update({"shell_exec", "shell_request_elevation", "task_stdin"})
+        names.update({"shell_exec", "shell_request_approval", "task_stdin"})
         if record.can_schedule:
             names.update({"schedule_read", "schedule_write", "schedule_control"})
     if record.shell_mode == "restricted":

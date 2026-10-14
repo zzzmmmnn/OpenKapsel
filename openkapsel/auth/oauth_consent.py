@@ -26,7 +26,7 @@ MAX_CONSENT_BUCKETS = 4096
 def consent_metadata():
     """Public flow description, shared by OAuth metadata and MCP Discovery."""
     return {"authentication": "matching_control_token_or_workspace_password", "administrator_login_required": False,
-            "workspace_password_grants_shell_elevation": False,
+            "workspace_password_grants_shell_approval": False,
             "exact_configuration_required": True, "browser_csrf_required": True,
             "browser_proof_seconds": REQUEST_SECONDS,
             "attempt_window_seconds": CONSENT_WINDOW_SECONDS,
@@ -152,6 +152,6 @@ def consent_page(request=None, record=None, *, action="", csrf="", error=None, p
 <p><small>Paste either the control token itself or the full copied header, for example <code>Authorization: Bearer ks-...</code>. The token is verified only by OpenKapsel. It is not sent to the client, saved in this form, or used to sign in to administration.</small></p>
 <div class="actions"><button name="decision" value="approve">Verify and authorize</button><button name="decision" value="deny" class="secondary" formnovalidate>Cancel</button></div></form>'''
     if request is not None and password_enabled:
-        body = body.replace('<div class="actions">', '<label for="workspace-password">Or workspace password</label><input id="workspace-password" type="password" name="workspace_password" autocomplete="off" maxlength="1024"><p><small>Use the workspace password or the current control token. OAuth authorization does not grant temporary Shell elevation.</small></p><div class="actions">', 1)
+        body = body.replace('<div class="actions">', '<label for="workspace-password">Or workspace password</label><input id="workspace-password" type="password" name="workspace_password" autocomplete="off" maxlength="1024"><p><small>Use the workspace password or the current control token. OAuth authorization does not grant temporary Shell approval.</small></p><div class="actions">', 1)
         body = body.replace('using the current <strong>control token</strong>', 'using the <strong>workspace password</strong> or current <strong>control token</strong>')
     return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize MCP connection - OpenKapsel</title><style>{STYLE}</style></head><body><main><section class="card"><h1>Authorize MCP connection</h1>{body}</section></main></body></html>'

@@ -173,7 +173,7 @@ class ClientTasks:
                     raise OSError(errno.EINVAL, "unsandboxed must be a boolean")
                 if isinstance(args.get("rpc"), dict):
                     if unsandboxed:
-                        raise OSError(errno.EACCES, "Shell elevation cannot authorize RPC")
+                        raise OSError(errno.EACCES, "Shell approval cannot authorize RPC")
                     return self._start_rpc(tid, args)
                 if not self.enabled and not unsandboxed:
                     raise OSError(errno.EACCES, "client execution is disabled")

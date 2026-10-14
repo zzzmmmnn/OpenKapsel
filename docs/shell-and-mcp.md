@@ -14,8 +14,8 @@ keeps execution on the server, using FUSE to access mapped files. Commands are
 never inspected for `cd` or rewritten to translate embedded absolute paths.
 
 Ordinary Client execution requires caller Shell/write permissions, a writable
-mapping with `allow_exec`, and client execution opt-in. Temporary elevation can
-override disabled execution after user approval; see the elevation workflow below. Client 1.60.0+ advertises
+mapping with `allow_exec`, and client execution opt-in. Temporary approval can
+override disabled execution after user approval; see the approval workflow below. Client 1.60.0+ advertises
 `execution.shell_command`; older/offline/denied clients fail without fallback.
 Client-local sandbox and resource policy apply; server `/env` and
 server sandbox/network settings are not copied to the client. Both Server and
@@ -193,10 +193,10 @@ client advertising `execution.shell_command`.
 
 **Request approval proactively without executing a Shell command:**
 
-REST `POST /shell/elevation/request` accepts an explicit `target` (`"server"`
+REST `POST /shell/approval/request` accepts an explicit `target` (`"server"`
 or an authorized Mapping ID), `writer_nonce`, and mutation Context
 (`plan_id`, `taskname`, `message`). MCP `capability_call` uses
-`family="shell"`, `operation="request_elevation"`, and
+`family="shell"`, `operation="request_approval"`, and
 `args={"target":"server","writer_nonce":"@Ab12@"}` with normal outer Plan
 Context. Targets are explicit because no command or `cwd` is provided for
 automatic placement.
@@ -204,13 +204,13 @@ automatic placement.
 The response is HTTP 200 with `status="approval_required"`, a full
 `approval_url`, `approval_expires_in`, `capability`, and exact `target` (or
 `status="granted"` when already approved). Open the URL for Workspace password
-approval. This call never runs a command or implicitly elevates subsequent
-Shell calls. Execute with `elevated=true` after approval. Mapping requests
-require an authorized, connected, writable Mapping supporting elevation;
+approval. This call never runs a command or implicitly approves subsequent
+Shell calls. Execute with `approved=true` after approval. Mapping requests
+require an authorized, connected, writable Mapping supporting approval;
 Shell/write permissions are not bypassed.
 
 Both REST `POST /shell/exec` and MCP `capability_call` family `shell`, operation
-`exec` accept optional `elevated` (boolean, default false) and `writer_nonce`.
+`exec` accept optional `approved` (boolean, default false) and `writer_nonce`.
 For MCP these fields go inside `args`; mutation Context stays in outer
 `plan_id`/`taskname`/`message`. For REST use existing body/header Context fields.
 
@@ -218,7 +218,7 @@ For MCP these fields go inside `args`; mutation Context stays in outer
 {
   "family": "shell",
   "operation": "exec",
-  "args": {"command": "whoami", "elevated": true, "writer_nonce": "@Ab12@"},
+  "args": {"command": "whoami", "approved": true, "writer_nonce": "@Ab12@"},
   "plan_id": 123,
   "taskname": "inspect host",
   "message": "Inspect the approved execution target"
@@ -239,12 +239,12 @@ Approved execution bypasses Server and Client sandboxes as the current OS user.
 Mapping `allow_exec=false` and Client execution-disabled flags can be overridden
 by this approved invocation; writable Mapping, caller write and Shell permissions
 remain required. Older Clients lacking the `unsandboxed` capability must upgrade
-and reconnect. Short jobs and long shared Job Manager jobs both support elevation.
+and reconnect. Short jobs and long shared Job Manager jobs both support approval.
 The Client receives only `unsandboxed=true`, never the password, URL or grant.
 
-`elevated=false` preserves ordinary Shell policy, including permanent
-administrator-configured `shell_mode=full`. Explicit `elevated=true` always checks
+`approved=false` preserves ordinary Shell policy, including permanent
+administrator-configured `shell_mode=full`. Explicit `approved=true` always checks
 for approval, including for full Shell tokens. Expiry, password reset, revocation
-or restart prevents new elevated jobs without killing jobs already started.
+or restart prevents new approved jobs without killing jobs already started.
 Scheduled jobs do not inherit these conversation grants. Other API capabilities
-cannot borrow Shell elevation.
+cannot borrow Shell approval.

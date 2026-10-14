@@ -86,15 +86,15 @@ class RequestDispatchMixin:
 
     def _dispatch(self, method: str) -> None:
         # BaseHTTPRequestHandler reuses this instance for HTTP/1.1 keep-alive.
-        # File elevation is explicitly opt-in per request, so never retain its
+        # File approval is explicitly opt-in per request, so never retain its
         # temporary path/routing hints across requests on the same connection.
-        self._file_elevation_operation = None
-        self._file_elevation_active = False
-        self._file_elevation_denied_paths = frozenset()
-        self._file_elevation_external_scope = None
-        self._file_elevation_external_target = None
-        self._file_elevation_approved_directory = None
-        self.__dict__.pop("_file_elevation_cached_body", None)
+        self._file_approval_operation = None
+        self._file_approval_active = False
+        self._file_approval_denied_paths = frozenset()
+        self._file_approval_external_scope = None
+        self._file_approval_external_target = None
+        self._file_approval_approved_directory = None
+        self.__dict__.pop("_file_approval_cached_body", None)
         self.oauth_connection_id = None
         self.static_mcp_connection_id = None
         self.control_authorized = False
@@ -250,11 +250,11 @@ class RequestDispatchMixin:
                     self._discard_request_body()
                 self._dispatch_endpoint(endpoint, route_match, query, effective_method)
         except ApiError as exc:
-            if (getattr(self, "_file_elevation_active", False)
+            if (getattr(self, "_file_approval_active", False)
                     and exc.code in {"path_not_found", "path_outside_root",
                                      "path_access_denied", "read_only_path",
-                                     "not_a_directory", "file_elevation_path_mismatch",
-                                     "file_elevation_target_mismatch"}):
+                                     "not_a_directory", "file_approval_path_mismatch",
+                                     "file_approval_target_mismatch"}):
                 exc = ApiError(404, "path_unavailable",
                                "path does not exist or access is denied")
             error_payload: dict[str, Any] = {
@@ -696,19 +696,19 @@ class RequestDispatchMixin:
         query: dict[str, list[str]],
         method: str,
     ) -> None:
-        # File elevation is authorized before the existing File handler runs.
+        # File approval is authorized before the existing File handler runs.
         # The handler and Mapping client still enforce all path boundaries.
-        from openkapsel.files.file_handlers import FILE_ELEVATION_READ, FILE_ELEVATION_WRITE
-        if endpoint.name in FILE_ELEVATION_READ | FILE_ELEVATION_WRITE:
+        from openkapsel.files.file_handlers import FILE_APPROVAL_READ, FILE_APPROVAL_WRITE
+        if endpoint.name in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
             if endpoint.invocation in {"query", "query_head"}:
-                self._authorize_file_elevation(endpoint.name, query, query=True)
+                self._authorize_file_approval(endpoint.name, query, query=True)
             elif endpoint.name in {
                 "fs_manifest", "fs_read_files", "fs_read_large", "fs_mutate",
                 "fs_replace_large", "fs_mkdir", "fs_move",
             }:
                 body = self._read_json()
-                self._file_elevation_cached_body = body
-                self._authorize_file_elevation(endpoint.name, body)
+                self._file_approval_cached_body = body
+                self._authorize_file_approval(endpoint.name, body)
         handler = getattr(self, endpoint.handler)
         args: tuple[Any, ...] = ()
         kwargs: dict[str, Any] = {}

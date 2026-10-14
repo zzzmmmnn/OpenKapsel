@@ -685,7 +685,7 @@ def _collapsible_token_card(
         f'{status_label}. This password belongs only to this Token Workspace, '
         'even when another Token uses the same directory. '
         'It is separate from the administrator login password and is used for '
-        'temporary Shell elevation approvals.</p>'
+        'temporary unsandboxed Shell execution approvals.</p>'
         f'<form method="post" action="{admin_path}/capabilities">'
         f'<input type="hidden" name="csrf" value="{csrf}">'
         f'<input type="hidden" name="workspace" value="{app_id}">'
