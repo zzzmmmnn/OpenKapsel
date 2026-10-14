@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline, remaining_seconds
 from openkapsel.errors import ApiError
 from openkapsel.network.proxy import ProxyConfig, ProxyTunnelError, connect_proxy_tunnel
 from .._data import Snapshot, export_path, fail, object_schema, response, validate
@@ -531,7 +532,8 @@ class _ConnectionPool:
                 client.load_host_keys(str(known_hosts))
             client.set_missing_host_key_policy(self._policy(paramiko, profile))
             try:
-                proxy_sock = _open_proxy_socket(profile, self.connect_timeout)
+                connect_limit = min(self.connect_timeout, max(.1, remaining_seconds(self.connect_timeout)))
+                proxy_sock = _open_proxy_socket(profile, connect_limit)
             except Exception:
                 self._close_client(client)
                 raise
@@ -544,9 +546,9 @@ class _ConnectionPool:
                 "passphrase": profile.passphrase,
                 "allow_agent": profile.allow_agent,
                 "look_for_keys": profile.look_for_keys,
-                "timeout": self.connect_timeout,
-                "auth_timeout": self.connect_timeout,
-                "banner_timeout": self.connect_timeout,
+                "timeout": connect_limit,
+                "auth_timeout": connect_limit,
+                "banner_timeout": connect_limit,
             }
             if proxy_sock is not None:
                 kwargs["sock"] = proxy_sock
@@ -840,6 +842,29 @@ class SshRpcPlugin:
     def _connection_meta(conn: _Connection) -> dict[str, Any]:
         return {"connection_id": conn.id, "profile": conn.profile.name}
 
+    def _open_sync_sftp(self, conn):
+        """Open a bounded SFTP channel, including session setup and handshake.
+
+        Paramiko SSHClient.open_sftp() opens a channel without an explicit
+        timeout. A hung peer could retain an RPC worker past server timeout.
+        """
+        check_deadline()
+        transport = conn.client.get_transport()
+        paramiko = self._pool._module()
+        # Lightweight injected test doubles implement SSHClient.open_sftp.
+        if not hasattr(paramiko, "SFTPClient") or not hasattr(transport, "open_session"):
+            return conn.client.open_sftp()
+        channel = transport.open_session(timeout=min(15.0, max(.1, remaining_seconds())))
+        try:
+            channel.settimeout(min(15.0, max(.1, remaining_seconds())))
+            channel.invoke_subsystem("sftp")
+            sftp = paramiko.SFTPClient(channel)
+            check_deadline()
+            return sftp
+        except BaseException:
+            channel.close()
+            raise
+
     def dispatch(self, files, operation, args):
         def run():
             self._require_writable(files)
@@ -889,11 +914,13 @@ class SshRpcPlugin:
                 return self._pool.close_connection(connection_id)
 
             with self._lease(args) as conn:
+                check_deadline()
                 try:
-                    sftp = conn.client.open_sftp()
+                    sftp = self._open_sync_sftp(conn)
                 except Exception as exc:
                     self._sftp_error(conn, exc)
                 try:
+                    check_deadline()
                     if operation == "stat":
                         path = _remote_path(args["path"])
                         attr = sftp.stat(path) if args.get("follow_symlinks", False) else sftp.lstat(path)
@@ -902,7 +929,14 @@ class SshRpcPlugin:
                         path = _remote_path(args["path"])
                         offset = args.get("offset", 0)
                         limit = args.get("limit", 100)
-                        attrs = sftp.listdir_attr(path)
+                        attrs = []
+                        source = sftp.listdir_iter(path) if hasattr(sftp, "listdir_iter") else sftp.listdir_attr(path)
+                        for item in source:
+                            check_deadline()
+                            attrs.append(item)
+                            if len(attrs) > MAX_LIST_ENTRIES:
+                                fail("ssh_directory_limit", "remote directory contains too many entries", 413,
+                                     {"max_entries": MAX_LIST_ENTRIES})
                         if len(attrs) > MAX_LIST_ENTRIES:
                             fail("ssh_directory_limit", "remote directory contains too many entries", 413,
                                  {"max_entries": MAX_LIST_ENTRIES})
@@ -920,7 +954,9 @@ class SshRpcPlugin:
                     with sftp.open(path, "rb") as stream:
                         if offset:
                             stream.seek(offset)
+                        check_deadline()
                         data = stream.read(limit)
+                        check_deadline()
                     body = {
                         **self._connection_meta(conn), "path": path, "offset": offset,
                         "bytes_read": len(data),

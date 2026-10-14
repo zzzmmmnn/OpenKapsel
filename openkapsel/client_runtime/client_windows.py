@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from openkapsel.client_runtime.client_files import ClientFiles
+from openkapsel.client_runtime.rpc_deadline import check_deadline
 
 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
@@ -156,6 +157,7 @@ class WindowsClientFiles(ClientFiles):
                 names = []
                 with os.scandir(path) as items:
                     for item in items:
+                        check_deadline()
                         details = item.stat(follow_symlinks=False)
                         if (
                             item.name != ".openkapsel"
@@ -165,6 +167,7 @@ class WindowsClientFiles(ClientFiles):
                             names.append(item.name)
                         if len(names) > 100000:
                             raise OSError(errno.E2BIG, "directory exceeds listing limit")
+                check_deadline()
                 names.sort()
                 offset = self._number(args.get("offset", 0))
                 selected = names[offset:offset + 500]

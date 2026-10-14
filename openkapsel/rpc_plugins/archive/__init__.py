@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline
 from openkapsel.errors import ApiError
 
 
@@ -98,6 +99,7 @@ def _direct_listing(entries: list[dict[str, Any]], prefix: str, offset: int, lim
     base = prefix + "/" if prefix else ""
     children: dict[str, dict[str, Any]] = {}
     for entry in entries:
+        check_deadline()
         name = entry["path"]
         if prefix:
             if name == prefix:
@@ -141,6 +143,7 @@ def _direct_listing(entries: list[dict[str, Any]], prefix: str, offset: int, lim
 def _zip_entries(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
     result = []
     for index, info in enumerate(archive.infolist()):
+        check_deadline()
         if index >= MAX_ARCHIVE_ENTRIES:
             raise ApiError(413, "archive_entry_limit", "archive contains too many entries")
         name = _member_name(info.filename)
@@ -163,6 +166,7 @@ def _zip_entries(archive: zipfile.ZipFile) -> list[dict[str, Any]]:
 def _tar_entries(archive: tarfile.TarFile) -> list[dict[str, Any]]:
     result = []
     for index, member in enumerate(archive):
+        check_deadline()
         if index >= MAX_ARCHIVE_ENTRIES:
             raise ApiError(413, "archive_entry_limit", "archive contains too many entries")
         name = _member_name(member.name)
@@ -189,6 +193,7 @@ def _open_guarded(access, path: Path):
 
 
 def _list_entries(access, path: Path, *, inner_path: str = "", offset: int = 0, limit: int = 200) -> dict[str, Any]:
+    check_deadline()
     kind = _archive_kind(path)
     handle = _open_guarded(access, path)
     try:
@@ -212,15 +217,18 @@ def _list_entries(access, path: Path, *, inner_path: str = "", offset: int = 0, 
 def _read_exact_prefix(stream, offset: int, limit: int) -> bytes:
     remaining = offset
     while remaining:
+        check_deadline()
         chunk = stream.read(min(64 * 1024, remaining))
         if not chunk:
             return b""
         remaining -= len(chunk)
+    check_deadline()
     return stream.read(limit)
 
 
 def _read_member_preview(access, path: Path, *, member: str, offset: int = 0, limit: int = 65536,
                  encoding: str = "utf-8") -> dict[str, Any]:
+    check_deadline()
     normalized = _member_name(member)
     if normalized != member:
         raise ApiError(400, "invalid_archive_member", "member path is invalid")
@@ -236,7 +244,14 @@ def _read_member_preview(access, path: Path, *, member: str, offset: int = 0, li
         try:
             if kind == "zip":
                 with zipfile.ZipFile(handle) as archive:
-                    info = next((item for item in archive.infolist() if _member_name(item.filename) == member), None)
+                    info = None
+                    for index, item in enumerate(archive.infolist()):
+                        check_deadline()
+                        if index >= MAX_ARCHIVE_ENTRIES:
+                            raise ApiError(413, "archive_entry_limit", "archive contains too many entries")
+                        if _member_name(item.filename) == member:
+                            info = item
+                            break
                     if info is None:
                         raise KeyError(member)
                     mode = (info.external_attr >> 16) & 0xFFFF
@@ -247,7 +262,14 @@ def _read_member_preview(access, path: Path, *, member: str, offset: int = 0, li
                         raw = _read_exact_prefix(stream, offset, limit)
             else:
                 with tarfile.open(fileobj=handle, mode="r:*") as archive:
-                    info = next((item for item in archive if _member_name(item.name) == member), None)
+                    info = None
+                    for index, item in enumerate(archive):
+                        check_deadline()
+                        if index >= MAX_ARCHIVE_ENTRIES:
+                            raise ApiError(413, "archive_entry_limit", "archive contains too many entries")
+                        if _member_name(item.name) == member:
+                            info = item
+                            break
                     if info is None:
                         raise KeyError(member)
                     if not info.isfile():

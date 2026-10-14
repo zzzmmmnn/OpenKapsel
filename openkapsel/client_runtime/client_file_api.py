@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline, deadline_scope
 from openkapsel.errors import ApiError
 from openkapsel.files.file_handlers import FileHandlersMixin
 from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS, FILE_API_WRITE_OPERATIONS, encode
@@ -70,6 +71,18 @@ class ClientFileAPI(FileHandlersMixin):
             raise OSError(errno.EINVAL, "invalid search prefix")
         self.response = None
 
+    GREP_TIMEOUT_SECONDS = 30.0
+    # Generous, but shorter than the server's default 90-second RPC wait.
+    RPC_TIMEOUT_SECONDS = {
+        "fs_list": 60.0,
+        "fs_tree": 75.0,
+        "fs_manifest": 75.0,
+        "fs_read_files": 75.0,
+        "fs_read_large": 75.0,
+        "fs_mutate": 75.0,
+        "fs_replace_large": 75.0,
+    }
+
     @classmethod
     def dispatch(cls, files, operation, arguments):
         if operation not in FILE_API_OPERATIONS:
@@ -77,12 +90,26 @@ class ClientFileAPI(FileHandlersMixin):
         if operation in FILE_API_WRITE_OPERATIONS and not files.writable:
             raise OSError(errno.EROFS, "client export is read-only")
         handler = cls(files, arguments)
+        if operation == "fs_grep":
+            # The Server's RPC timeout does not cancel dispatched Client work.
+            # Bound the scan independently and stop on transport disconnect.
+            handler._grep_deadline = time.monotonic() + cls.GREP_TIMEOUT_SECONDS
+            callback = arguments.get("_rpc_cancelled")
+            handler._grep_cancelled = callback if callable(callback) else None
         try:
             method = getattr(handler, "_handle_" + operation)
-            if operation in {"fs_list", "fs_stat", "fs_tree", "fs_grep", "fs_find"}:
-                method(handler.query)
+            def execute():
+                if operation in {"fs_list", "fs_stat", "fs_tree", "fs_grep", "fs_find"}:
+                    method(handler.query)
+                else:
+                    method()
+            budget = cls.RPC_TIMEOUT_SECONDS.get(operation)
+            if budget is None:
+                execute()
             else:
-                method()
+                with deadline_scope(budget, arguments.get("_rpc_cancelled")):
+                    check_deadline()
+                    execute()
         except ApiError as exc:
             handler.response = {"status": int(exc.status), "error": {
                 "code": exc.code, "message": exc.message, "details": exc.details}}
@@ -321,19 +348,23 @@ class ClientFileAPI(FileHandlersMixin):
         # Match the FUSE export's policy: neither symlinks nor special files.
         # Secret-bearing protected files are omitted entirely from traversal,
         # including list/tree/search/manifest recursion.
-        return [
-            (name, st)
-            for name, st in entries
-            if not self.files.is_protected_path(path / name)
-            and not getattr(st, "st_file_attributes", 0) & 0x400
-            and (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode))
-        ]
+        visible = []
+        for index, (name, st) in enumerate(entries):
+            if index % 64 == 0:
+                check_deadline()
+            if (not self.files.is_protected_path(path / name)
+                    and not getattr(st, "st_file_attributes", 0) & 0x400
+                    and (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode))):
+                visible.append((name, st))
+        return visible
 
     @staticmethod
     def _scan(path):
         entries = []
         with os.scandir(path) as iterator:
             for item in iterator:
+                if len(entries) % 64 == 0:
+                    check_deadline()
                 entries.append((item.name, item.stat(follow_symlinks=False)))
                 if len(entries) > 100000:
                     raise OSError(errno.E2BIG, "directory exceeds provider listing limit")

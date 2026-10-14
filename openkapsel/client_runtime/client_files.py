@@ -9,8 +9,13 @@ import stat
 import threading
 from pathlib import Path, PurePosixPath
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline, deadline_scope
 from openkapsel.files.safe_paths import SafePathAccess
-from openkapsel.mapping.mapping_transport import CHUNK_SIZE, READ_OPERATIONS
+from openkapsel.mapping.mapping_transport import (
+    CHUNK_SIZE, FILE_API_READ_OPERATIONS, READ_OPERATIONS,
+)
+
+COARSE_READ_OPERATIONS = frozenset("api_" + name for name in FILE_API_READ_OPERATIONS)
 
 
 class ClientFiles:
@@ -92,7 +97,7 @@ class ClientFiles:
                 ("st_mode", "st_size", "st_atime", "st_mtime", "st_ctime", "st_nlink", "st_ino",
                  "st_dev", "st_atime_ns", "st_mtime_ns", "st_ctime_ns")}
 
-    def dispatch(self, operation, args):
+    def dispatch(self, operation, args, *, cancelled=None):
         if not isinstance(args, dict):
             raise OSError(errno.EINVAL, "arguments must be an object")
         if operation == "rpc":
@@ -116,15 +121,37 @@ class ClientFiles:
             # SSH owns its connection/channel locks and does not access local
             # file handles. Remote I/O must not hold the local filesystem lock.
             if family == "ssh":
+                with deadline_scope(75.0, cancelled):
+                    return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
+            # Read-only RPC plugins have their own per-request state and never
+            # touch the seek-based handle table. Do not let a long Git/archive
+            # read block unrelated file requests or hold up local mutations.
+            if not spec["write"]:
+                if family in {"archive", "tabular"}:
+                    with deadline_scope(75.0, cancelled):
+                        return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
                 return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
             with self.lock:
                 return self.rpc_registry.dispatch_sync(self, family, rpc_operation, rpc_args)
         read_only = operation in READ_OPERATIONS
         if not read_only and not self.writable:
             raise OSError(errno.EROFS, "client export is read-only")
-        # POSIX directory descriptors prevent path-component substitution.
-        # Windows uses a dedicated adapter rather than silently weakening this boundary.
+        # Coarse-grained read-only File APIs use per-request file descriptors,
+        # never the session's mutable handle table. Their path guards still
+        # protect against symlink/reparse races on both POSIX and Windows.
+        if operation in COARSE_READ_OPERATIONS:
+            if cancelled is not None:
+                args = dict(args, _rpc_cancelled=cancelled)
+            return self._dispatch(operation, args)
+        # Ordinary handle seek/read/write and all mutations stay serialized.
+        # FUSE's low-level directory enumeration may also walk 100k entries.
+        # Constrain that one read without injecting a timeout into mutations.
         with self.lock:
+            if operation.startswith("api_") and cancelled is not None:
+                args = dict(args, _rpc_cancelled=cancelled)
+            if operation == "list":
+                with deadline_scope(60.0, cancelled):
+                    return self._dispatch(operation, args)
             return self._dispatch(operation, args)
 
     def _dispatch(self, op, args):
@@ -274,6 +301,7 @@ class ClientFiles:
                 names = []
                 with os.scandir(fd) as entries:
                     for item in entries:
+                        check_deadline()
                         if (
                             item.name != ".openkapsel"
                             and not self.is_protected_path(path / item.name)
@@ -282,6 +310,7 @@ class ClientFiles:
                             names.append(item.name)
                         if len(names) > 100000:
                             raise OSError(errno.E2BIG, "directory exceeds provider listing limit")
+                check_deadline()
                 names.sort()
                 selected = names[offset:offset + 500]
                 result = {"names": selected, "total": len(names)}

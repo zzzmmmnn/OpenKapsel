@@ -696,6 +696,37 @@ class SshRpcTests(unittest.TestCase):
         self.assertEqual("ssh_execution_uncertain", error["code"])
         self.assertTrue(error["details"]["command_may_have_completed"])
 
+    def test_sync_sftp_uses_bounded_channel_setup_and_deadline(self):
+        from openkapsel.client_runtime.rpc_deadline import deadline_scope
+        timeouts, subsystems = [], []
+        with (
+            patch.object(self.fake, "SFTPClient", lambda channel: FakeSFTP(self.fake.remote), create=True),
+            patch.object(FakeChannel, "settimeout",
+                         lambda channel, timeout: timeouts.append(timeout), create=True),
+            patch.object(FakeChannel, "invoke_subsystem",
+                         lambda channel, subsystem: subsystems.append(subsystem), create=True),
+        ):
+            result = self.call("stat", {"profile": "box", "path": "/remote/source.txt"})
+        self.assertEqual("file", result["type"])
+        self.assertEqual(["sftp"], subsystems)
+        self.assertEqual(1, len(timeouts))
+        self.assertGreater(timeouts[0], 0)
+        self.assertLessEqual(timeouts[0], 15)
+        self.assertEqual(1, len(self.fake.clients[0].transport.channels))
+
+        original = FakeSFTP.listdir_attr
+        def slow_directory(handle, path):
+            for entry in original(handle, path):
+                time.sleep(.025)
+                yield entry
+        with patch.object(FakeSFTP, "listdir_iter", slow_directory, create=True):
+            with deadline_scope(.015):
+                value = self.plugin.dispatch(self.files, "listdir", {
+                    "profile": "box", "path": "/remote",
+                })
+        self.assertEqual(504, value["status"], value)
+        self.assertEqual("client_rpc_timeout", value["error"]["code"])
+
     def test_sftp_stat_list_read_upload_download_reuse(self):
         listing = self.call("listdir", {"profile": "box", "path": "/remote"})
         connection_id = listing["connection_id"]

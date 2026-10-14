@@ -17,6 +17,7 @@ from typing import Any
 from openkapsel.errors import ApiError
 from openkapsel.files.safe_paths import ParentHandle, SafePathError
 from openkapsel.workspace.workspace_layout import INTERNAL_DIRECTORY
+from openkapsel.client_runtime.rpc_deadline import check_deadline
 from openkapsel.mapping.mapping_queries import MappingQueryMixin
 
 
@@ -73,7 +74,11 @@ class FileOperationSupportMixin(MappingQueryMixin):
             if self._stat_etag(before) != self._stat_etag(expected):
                 raise ApiError(409, "path_changed", "file changed while reading metadata; retry the request")
             digest = hashlib.sha256()
-            while chunk := handle.read(1024 * 1024):
+            while True:
+                check_deadline()
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
                 digest.update(chunk)
             if self._stat_etag(self._stream_stat(handle)) != self._stat_etag(before):
                 raise ApiError(409, "path_changed", "file changed while calculating its hash; retry the request")
@@ -436,7 +441,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
         return any(fnmatch.fnmatchcase(relative.rsplit("/", 1)[-1] if "/" not in pattern else relative, pattern)
                    for pattern in patterns)
 
-    def _grep_files(self, root: Path, depth: int, *, includes=(), excludes=()):
+    def _grep_files(self, root: Path, depth: int, *, includes=(), excludes=(), should_stop=None):
         root_stat = self._file_stat(root)
         if stat.S_ISREG(root_stat.st_mode):
             if not self._matches_glob(root.name, excludes) and (not includes or self._matches_glob(root.name, includes)):
@@ -446,6 +451,8 @@ class FileOperationSupportMixin(MappingQueryMixin):
             return
         stack = [(root, 0)]
         while stack:
+            if should_stop is not None and should_stop():
+                return
             directory, level = stack.pop()
             if self._mapping_root(directory) is not None:
                 yield directory  # The caller sends one query for this subtree.
@@ -457,6 +464,8 @@ class FileOperationSupportMixin(MappingQueryMixin):
                 continue
             directories = []
             for name, entry_stat in entries:
+                if should_stop is not None and should_stop():
+                    return
                 entry = directory / name
                 if self._is_hidden_internal_path(directory, entry) or stat.S_ISLNK(entry_stat.st_mode):
                     continue
@@ -482,6 +491,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
         state: dict[str, Any],
         known_stat: os.stat_result | None = None,
     ) -> dict[str, Any]:
+        check_deadline()
         if state["count"] >= self.server.config.max_tree_nodes:
             state["truncated"] = True
             return {"name": path.name or str(path), "path": str(path), "truncated": True}
@@ -492,6 +502,8 @@ class FileOperationSupportMixin(MappingQueryMixin):
         try:
             file_stat = known_stat if known_stat is not None else self._file_stat(path)
         except ApiError as exc:
+            if exc.code in {"client_rpc_timeout", "client_rpc_cancelled"}:
+                raise
             manager = getattr(self.server, "mappings", None)
             row = manager.at_path(path) if manager is not None else None
             if row is not None and path == manager.mount_path(row):
@@ -522,6 +534,8 @@ class FileOperationSupportMixin(MappingQueryMixin):
             try:
                 entries = self._directory_entries(path)
             except ApiError as exc:
+                if exc.code in {"client_rpc_timeout", "client_rpc_cancelled"}:
+                    raise
                 # A root-level filesystem can legitimately contain directories
                 # the service account may stat but not enter (ext4 lost+found is
                 # the common case). Preserve the node and continue siblings.
@@ -536,6 +550,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
                 )
             )
             for name, entry_stat in entries:
+                check_deadline()
                 entry = path / name
                 if self._is_hidden_internal_path(path, entry):
                     continue

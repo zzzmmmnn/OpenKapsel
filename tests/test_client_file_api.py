@@ -4,7 +4,9 @@ import errno
 import hashlib
 import os
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from openkapsel.client_runtime.client_files import ClientFiles
@@ -333,6 +335,42 @@ class ClientFileAPITests(unittest.TestCase):
         result = self.call("fs_grep", query={"query": ["NEEDLE"], "case_sensitive": ["false"],
                                                "regex": ["true"], "include": ["src/*.py"]})
         self.assertEqual(1, result["body"]["match_count"])
+
+    def test_grep_deadline_truncates_long_file_scan(self):
+        from openkapsel.client_runtime.client_file_api import ClientFileAPI
+        for n in range(35):
+            (self.root / f"{n:03}.txt").write_text("needle")
+        original = ClientFileAPI._open_binary
+        def slow_open(handler, path):
+            time.sleep(.014)
+            return original(handler, path)
+        with (patch.object(ClientFileAPI, "GREP_TIMEOUT_SECONDS", .055),
+              patch.object(ClientFileAPI, "_open_binary", slow_open)):
+            started = time.monotonic()
+            result = self.call("fs_grep", query={"query": ["needle"],
+                "max_results": ["100"]})
+        self.assertEqual(200, result["status"], result)
+        self.assertTrue(result["body"]["truncated"], result)
+        self.assertLess(result["body"]["files_searched"], 35)
+        self.assertLess(time.monotonic() - started, .5)
+
+    def test_grep_deadline_stops_empty_directory_walk(self):
+        from openkapsel.client_runtime.client_file_api import ClientFileAPI
+        for n in range(35):
+            (self.root / f"dir{n:03}").mkdir()
+        original = ClientFileAPI._directory_entries
+        def slow_entries(handler, path):
+            time.sleep(.014)
+            return original(handler, path)
+        with (patch.object(ClientFileAPI, "GREP_TIMEOUT_SECONDS", .055),
+              patch.object(ClientFileAPI, "_directory_entries", slow_entries)):
+            started = time.monotonic()
+            result = self.call("fs_grep", query={"query": ["not-found"],
+                "depth": ["2"]})
+        self.assertEqual(200, result["status"], result)
+        self.assertEqual(0, result["body"]["match_count"])
+        self.assertTrue(result["body"]["truncated"], result)
+        self.assertLess(time.monotonic() - started, .5)
 
     @unittest.skipIf(os.name == "nt", "symlink creation may require Windows developer mode")
     def test_symlinks_and_internal_files_are_not_exported(self):

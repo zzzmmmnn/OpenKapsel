@@ -5,6 +5,7 @@ import importlib.util
 import time
 import zipfile
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline
 from .._data import fail, identity, json_view, object_schema, validate
 from .csv_stream import MAX_COLUMNS, CURSOR_TTL_SECONDS, _digest, _encode_cursor, _decode_cursor
 
@@ -68,6 +69,7 @@ class ExcelStream:
         self.version = _digest(identity(snapshot.stat))
         self.dialect = _digest([fmt, {k: v for k, v in self.options.items() if k != "start_row"}])
         try:
+            check_deadline()
             if task:
                 task.check_cancelled()
             if fmt in {"xlsx", "xlsm"}:
@@ -78,6 +80,7 @@ class ExcelStream:
                     fail("excel_xml_safety", "openpyxl must have defusedxml protection enabled", 415)
                 self.book = load_workbook(snapshot.stream, read_only=True, data_only=self.options["value_mode"] == "cached",
                                           keep_links=False, keep_vba=False)
+                check_deadline()
                 self.sheets = [{"name": s.title, "reported_rows": s.max_row, "reported_columns": s.max_column}
                                for s in self.book.worksheets]
                 sheet_name = self.options.get("sheet", self.book.sheetnames[0] if self.book.sheetnames else "")
@@ -101,6 +104,7 @@ class ExcelStream:
                 if len(raw) > MAX_EXCEL_BYTES:
                     fail("excel_size_limit", "xls exceeds the 64 MiB input limit", 413)
                 self.book = xlrd.open_workbook(file_contents=raw, on_demand=True)
+                check_deadline()
                 sheet_name = self.options.get("sheet", self.book.sheet_names()[0] if self.book.nsheets else "")
                 if sheet_name not in self.book.sheet_names():
                     fail("excel_sheet_missing", "requested worksheet does not exist", 404)
@@ -159,6 +163,7 @@ class ExcelStream:
             self.iterator = iter(self.sheet.iter_rows(min_row=self.row + 1, values_only=True))
 
     def next_row(self):
+        check_deadline()
         if self.task:
             self.task.check_cancelled()
         if self.ended:

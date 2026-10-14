@@ -8,6 +8,7 @@ import json
 import time
 import zipfile
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline
 from openkapsel.errors import ApiError
 from .._data import (MAX_RESULT_BYTES, Snapshot, check_etag, export_path, fail,
                      object_schema, response, validate)
@@ -31,7 +32,7 @@ _READ = {**_BASE, "cursor": {"type": "string", "minLength": 1, "maxLength": 2048
          "max_result_bytes": {"type": "integer", "minimum": 1024, "maximum": 128 * 1024, "default": 64 * 1024},
          "scan_rows": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 100000},
          "scan_bytes": {"type": "integer", "minimum": 1024, "maximum": 64 * 1024 * 1024, "default": 16 * 1024 * 1024},
-         "time_budget_seconds": {"type": "number", "minimum": 0.01, "maximum": 30, "default": 5}}
+         "time_budget_seconds": {"type": "number", "minimum": 0.01, "maximum": 75, "default": 30}}
 _SCAN = {**_BASE, "cursor": _READ["cursor"], "where": _WHERE,
          "mode": {"type": "string", "enum": ["count", "aggregate"], "default": "count"},
          "group_by": {"type": "array", "maxItems": 4, "items": _COLUMN},
@@ -185,7 +186,8 @@ def _metadata(args, fmt, snap, stream, selected):
 
 
 def _read(files, args):
-    deadline = time.monotonic() + args.get("time_budget_seconds", 5)
+    deadline = time.monotonic() + args.get("time_budget_seconds", 30)
+    check_deadline()
     with _open(files, args) as (fmt, snap, stream):
         selected = _columns(args.get("columns"), stream.names)
         matches = _predicates(args.get("where", []), stream.names)
@@ -195,6 +197,7 @@ def _read(files, args):
         hint = stream.byte_hint() if fmt == "csv" else 0
         reason = "eof"
         while True:
+            check_deadline()
             if time.monotonic() >= deadline:
                 reason = "time_budget"
                 break
@@ -241,12 +244,14 @@ def _read(files, args):
 
 def _inspect(files, args):
     # Only a bounded header and sample are read, never COUNT(*) or a full hash.
+    check_deadline()
     with _open(files, args) as (fmt, snap, stream):
         offset, limit = args.get("column_offset", 0), args.get("column_limit", 100)
         selected = list(range(len(stream.names)))[offset:offset + limit]
         body = _metadata(args, fmt, snap, stream, selected)
         rows, size = [], 0
         for _ in range(args.get("sample_rows", 10)):
+            check_deadline()
             row = stream.next_row()
             if row is None:
                 break

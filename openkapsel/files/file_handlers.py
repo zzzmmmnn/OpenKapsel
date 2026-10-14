@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline
+
 import errno
 import fnmatch
 import hashlib
@@ -486,6 +488,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             results = []
             stack = [tree]
             while stack:
+                check_deadline()
                 node = dict(stack.pop())
                 stack.extend(reversed(node.pop("children", [])))
                 if include_sha256 and "sha256" not in node:
@@ -869,6 +872,14 @@ class FileHandlersMixin(FileOperationSupportMixin):
             pattern = re.compile(needle if regex else re.escape(needle), flags)
         except re.error as exc:
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_regex", f"invalid regular expression: {exc}") from None
+        # Mapping Client grep is a bounded, cooperative read operation;
+        # server-native grep retains its existing behavior.
+        deadline = getattr(self, "_grep_deadline", None)
+        cancelled = getattr(self, "_grep_cancelled", None)
+        def should_stop():
+            return ((deadline is not None and time.monotonic() >= deadline)
+                    or (cancelled is not None and cancelled()))
+
         matches: list[dict[str, Any]] = []
         files_searched = 0
         skipped_binary = 0
@@ -877,7 +888,13 @@ class FileHandlersMixin(FileOperationSupportMixin):
         unavailable_mappings = []
         includes = self._glob_patterns(query.get("include", []))
         excludes = self._glob_patterns(query.get("exclude", []))
-        for file_path in self._grep_files(root, depth, includes=includes, excludes=excludes):
+        for file_path in self._grep_files(
+            root, depth, includes=includes, excludes=excludes,
+            should_stop=should_stop if deadline is not None or cancelled is not None else None,
+        ):
+            if should_stop():
+                truncated = True
+                break
             mapping = self._mapping_root(file_path)
             if mapping is not None:
                 try:
@@ -920,6 +937,9 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 continue
             files_searched += 1
             for line_number, line in enumerate(text.splitlines(), start=1):
+                if line_number % 64 == 0 and should_stop():
+                    truncated = True
+                    break
                 for found in pattern.finditer(line):
                     matches.append(
                         {
@@ -954,7 +974,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                 "files_searched": files_searched,
                 "skipped_binary": skipped_binary,
                 "skipped_large": skipped_large,
-                "truncated": truncated or bool(unavailable_mappings),
+                "truncated": truncated or should_stop() or bool(unavailable_mappings),
                 **({"unavailable_mappings": unavailable_mappings} if unavailable_mappings else {}),
             },
         )
@@ -1158,6 +1178,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
         items = []
         total = 0
         for index, requested in enumerate(paths):
+            check_deadline()
             item = {"index": index, "path": requested}
             try:
                 if remaining == 0:
@@ -1170,6 +1191,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
                     require_standard_file_size(details, operation="ordinary text read")
                     skipped = offset
                     while skipped:
+                        check_deadline()
                         chunk = handle.read(min(skipped, 64 * 1024))
                         if not chunk:
                             break

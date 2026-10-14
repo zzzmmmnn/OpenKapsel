@@ -7,12 +7,18 @@ import logging
 import socket
 import threading
 
+from openkapsel.client_runtime.client_files import COARSE_READ_OPERATIONS
+from openkapsel.client_runtime.rpc_deadline import check_deadline, deadline_scope
+from openkapsel.errors import ApiError
 from openkapsel.mapping.mapping_transport import encode
 
 LOG = logging.getLogger("openkapsel.client")
 
 
 class ClientRpcSession:
+    # Count waiting for the shared mutation lock, not only execution time.
+    REQUEST_DEADLINE_SECONDS = 75.0
+
     def __init__(self, runtime, sock, stopped):
         self.runtime = runtime
         self.sock = sock
@@ -85,34 +91,57 @@ class ClientRpcSession:
 
     def _run(self, request):
         try:
-            # A request waiting for the local file lock must not begin a
-            # mutation after its session has been invalidated.
-            op, args = request.get("op"), request.get("args")
-            is_ssh = op == "rpc" and isinstance(args, dict) and args.get("family") == "ssh"
-            if is_ssh or isinstance(op, str) and op.startswith("task_"):
-                response = self._dispatch(request)
-            else:
-                with self.local_lock:
-                    response = self._dispatch(request)
-            if response is not None:
-                self._reply(response)
+            with deadline_scope(self.REQUEST_DEADLINE_SECONDS, self.stopped.is_set):
+                self._run_bounded(request)
         finally:
             self._finished()
+
+    def _run_bounded(self, request):
+        # A request waiting for the local file lock must not begin a
+        # mutation after its session has been invalidated.
+        op, args = request.get("op"), request.get("args")
+        is_ssh = op == "rpc" and isinstance(args, dict) and args.get("family") == "ssh"
+        # Coarse File API reads use independent descriptors, not the
+        # transport's seek-based file handle table. Running a slow grep
+        # under the shared lock used to stall ALL subsequent file and Git
+        # RPCs, even after the server abandoned the grep at its deadline.
+        is_file_api_read = isinstance(op, str) and op in COARSE_READ_OPERATIONS
+        is_rpc_read = False
+        if op == "rpc" and isinstance(args, dict):
+            spec = self.files.rpc_registry.operation_spec(
+                args.get("family"), args.get("operation")
+            ) if isinstance(args.get("family"), str) and isinstance(args.get("operation"), str) else None
+            is_rpc_read = spec is not None and not spec["write"]
+        if is_ssh or is_file_api_read or is_rpc_read or (
+            isinstance(op, str) and op.startswith("task_")
+        ):
+            response = self._dispatch(request)
+        else:
+            with self.local_lock:
+                response = self._dispatch(request)
+        if response is not None:
+            self._reply(response)
 
     def _dispatch(self, request):
         if self.stopped.is_set():
             return None
         op, args = request.get("op"), request.get("args")
         try:
+            check_deadline()
             if not isinstance(op, str) or not isinstance(args, dict):
                 raise OSError(errno.EINVAL, "invalid operation")
-            result = (self.runtime.tasks.dispatch(op, args) if op.startswith("task_")
-                      else self.files.dispatch(op, args))
+            if op.startswith("task_"):
+                result = self.runtime.tasks.dispatch(op, args)
+            else:
+                result = self.files.dispatch(op, args, cancelled=self.stopped.is_set)
             response = {"id": request["id"], "result": result}
             encode(response)
             return response
         except Exception as exc:
-            error = {"errno": getattr(exc, "errno", None) or errno.EINVAL}
+            error = {"errno": getattr(exc, "errno", None) or (
+                errno.ETIMEDOUT if isinstance(exc, ApiError) and exc.status == 504
+                else errno.EINVAL
+            )}
             if isinstance(exc, OSError) and isinstance(exc.strerror, str):
                 message = " ".join(exc.strerror.split())
                 if message:

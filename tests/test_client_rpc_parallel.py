@@ -175,6 +175,27 @@ class ClientRpcParallelTests(unittest.TestCase):
             self.assertEqual(errno.EINVAL, error.exception.errno)
             self.assertIn("st_mode", session.call("stat", {"path": "."}))
 
+    def test_mutation_queued_past_deadline_never_starts_after_lock_release(self):
+        # The previous server timeout did not cancel a waiting Client worker.
+        # The Client now enforces an absolute deadline covering lock waits.
+        with patch.object(ClientRpcSession, "REQUEST_DEADLINE_SECONDS", .05):
+            session = self.connect()
+            with self.runtime.files.lock:
+                result = self.call_thread(lambda: session.call("api_fs_mutate", {
+                    "body": {"items": [{
+                        "op": "file.create", "path": "late.txt", "content": "late",
+                    }]}, "query": {}, "display_root": "/mapped",
+                }))
+                deadline = time.monotonic() + 1
+                while not self.runtime.rpc_active and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(self.runtime.rpc_active)
+                time.sleep(.09)
+            ok, value = result.get(timeout=1)
+            self.assertFalse(ok)
+            self.assertEqual(errno.ETIMEDOUT, value.errno)
+            self.assertFalse((Path(self.directory.name) / "late.txt").exists())
+
     def test_local_mutation_waiting_for_lock_is_discarded_on_disconnect(self):
         session = self.connect()
         with self.runtime.files.lock:
@@ -213,6 +234,74 @@ class ClientRpcParallelTests(unittest.TestCase):
         finally:
             first.close()
             second.close()
+
+    def test_slow_grep_does_not_block_files_or_read_only_git_rpc(self):
+        from openkapsel.client_runtime.client_file_api import ClientFileAPI
+        entered = threading.Event()
+        original = ClientFileAPI.dispatch.__func__
+        def slow_grep(cls, files, operation, arguments):
+            if operation == "fs_grep":
+                entered.set()
+                self.release.wait(4)
+            return original(cls, files, operation, arguments)
+        def git_read(*args):
+            self.assertEqual("git", args[1])
+            self.assertEqual("status", args[2])
+            return {"git": "ready"}
+        with (patch.object(ClientFileAPI, "dispatch", classmethod(slow_grep)),
+              patch.object(self.runtime.files.rpc_registry, "dispatch_sync",
+                           side_effect=git_read)):
+            session = self.connect()
+            grep = self.call_thread(lambda: session.call("api_fs_grep", {
+                "query": {"path": ["."], "query": ["needle"]},
+                "body": {}, "display_root": "/workspace",
+            }))
+            self.assertTrue(entered.wait(1))
+            # A stalled read must NOT hold either the runtime-wide local
+            # lock or the per-session seek/handle-table lock.
+            queries = (
+                lambda: session.call("api_fs_list", {"query": {"path": ["."]},
+                    "body": {}, "display_root": "/workspace"}),
+                lambda: session.call("stat", {"path": "."}),
+                lambda: session.call("rpc", {"family": "git",
+                    "operation": "status", "args": {}}),
+            )
+            for query in queries:
+                result = self.call_thread(query)
+                ok, value = result.get(timeout=1)
+                self.assertTrue(ok, value)
+            self.assertTrue(grep.empty(), "grep unexpectedly completed before release")
+            self.release.set()
+            self.assertEqual(200, grep.get(timeout=2)[1]["status"])
+        self.assertFalse(self.errors)
+
+    def test_disconnected_grep_stops_without_holding_worker_slots(self):
+        from openkapsel.client_runtime.client_file_api import ClientFileAPI
+        for n in range(70):
+            (Path(self.directory.name) / f"file-{n:03}.txt").write_text("needle")
+        entered = threading.Event()
+        original = ClientFileAPI._open_binary
+        def slow_open(handler, path):
+            entered.set()
+            time.sleep(.015)
+            return original(handler, path)
+        with patch.object(ClientFileAPI, "_open_binary", slow_open):
+            session = self.connect()
+            started = time.monotonic()
+            grep = self.call_thread(lambda: session.call("api_fs_grep", {
+                "query": {"path": ["."], "query": ["needle"], "max_results": ["100"]},
+                "body": {}, "display_root": "/workspace",
+            }))
+            self.assertTrue(entered.wait(1))
+            session.close()
+            self.threads[-1].join(1)
+            self.assertFalse(grep.get(timeout=1)[0])
+            deadline = time.monotonic() + .7
+            while self.runtime.rpc_active and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertEqual(0, self.runtime.rpc_active)
+            self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(self.errors)
 
     def test_rpc_timeout_keeps_transport_heartbeat_and_other_requests_alive(self):
         entered = threading.Event()

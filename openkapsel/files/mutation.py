@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openkapsel.client_runtime.rpc_deadline import check_deadline
+
 import base64
 import binascii
 import hashlib
@@ -76,6 +78,7 @@ def _missing(handler, path: Path) -> bool:
 
 def _read_regular_bytes(handler, path: Path, expected_etag: str) -> tuple[bytes, os.stat_result]:
     with handler._open_binary(path) as handle:
+        check_deadline()
         before = handler._stream_stat(handle)
         if not stat.S_ISREG(before.st_mode):
             raise ApiError(400, "not_a_file", "mutation target is not a regular file")
@@ -840,6 +843,7 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
     preserve_artifacts = False
     try:
         for index, item in enumerate(items):
+            check_deadline()
             plan = _plan_item(handler, item, index)
             item_domain = _transaction_domain(handler, plan.path)
             if transaction_domain is None:
@@ -898,6 +902,7 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
             }
 
         for plan in plans:
+            check_deadline()
             if plan.deleted:
                 plan.backup = plan.path.with_name(
                     f".{plan.path.name}.openkapsel-transfer-txn-{transaction_id}-{plan.index}"
@@ -906,6 +911,9 @@ def execute_mutation(handler, body: dict[str, Any]) -> dict[str, Any]:
                 _stage_bytes(handler, plan, transaction_id)
 
         _revalidate(handler, plans)
+        # Once commit begins it must run to completion (or roll back).
+        # Never inject cancellation during the publish/rollback window.
+        check_deadline()
         paths = handler._safe_path_access()
         try:
             for plan in plans:
@@ -1031,7 +1039,16 @@ def read_large_range(handler, body: dict[str, Any]) -> dict[str, Any]:
         if offset > before.st_size:
             raise ApiError(416, "invalid_offset", "offset is beyond the end of the file", {"size": before.st_size})
         handle.seek(offset)
-        data = handle.read(length)
+        chunks = []
+        remaining = length
+        while remaining:
+            check_deadline()
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
         after = handler._stream_stat(handle)
     if handler._path_etag(path, before) != handler._path_etag(path, after):
         raise ApiError(409, "path_changed", "large file changed during range read")
@@ -1140,6 +1157,8 @@ def replace_large_range(handler, body: dict[str, Any]) -> dict[str, Any]:
                     "path_changed",
                     "large file path was replaced after its range was verified; no bytes were written",
                 )
+            # Do not time out during the write or its rollback.
+            check_deadline()
             try:
                 handle.seek(offset)
                 view = memoryview(data)
