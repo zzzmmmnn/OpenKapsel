@@ -9,10 +9,14 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
+import importlib.metadata
+from functools import lru_cache
 import json
 import os
 import queue
 import re
+import shlex
 import secrets
 import signal
 import stat
@@ -24,7 +28,7 @@ import tempfile
 import threading
 import time
 from multiprocessing import AuthenticationError
-from multiprocessing.connection import Client, Listener, answer_challenge, deliver_challenge
+from multiprocessing.connection import Client, Listener
 from pathlib import Path
 
 MAPPING_RE = re.compile(r"[A-Za-z0-9_-]{24}\Z")
@@ -34,11 +38,88 @@ MAX_RUNNING = 16
 MAX_PER_MAPPING = 4
 DEFAULT_TIMEOUT = 120
 MAX_OUTPUT = 64 * 1024 * 1024
-PROTOCOL = 1
+PROTOCOL = 2
+AUTH_MAGIC = b"OKJ2"
+IDLE_SECONDS = 10 * 60
+IDLE_POLL_SECONDS = 5.0
 MAX_MESSAGE = 2 * 1024 * 1024
 # Serialize cold starts in one Client process. The daemon's file lock still
 # enforces the singleton across separate Client processes.
 _START_LOCK = threading.Lock()
+
+
+
+@lru_cache(maxsize=1)
+def manager_identity():
+    """Identify imported code, even if an upgrade overwrites files in place.
+
+    Cached at first handshake: never claim new on-disk code is already
+    running in an older Python process.
+    """
+    files = (Path(__file__), Path(__file__).with_name("job_sandbox.py"),
+             Path(__file__).parent / "client_runtime" / "job_sandbox_config.py")
+    digest = hashlib.sha256()
+    for path in files:
+        if path.is_file():
+            digest.update(path.read_bytes())
+    digest.update(os.path.realpath(sys.executable).encode())
+    digest.update(str(Path(sys.prefix).resolve()).encode())
+    digest.update(str(sys.version_info[:3]).encode())
+    # The Client may dynamically load its source from a checkout while the
+    # venv contains an older installed dist-info. Use the imported code's
+    # package version, never stale pip metadata, for upgrade ordering.
+    from openkapsel import __version__ as version
+    try:
+        dist = importlib.metadata.distribution("openkapsel")
+        # Installation time orders builds when a version number is unchanged.
+        installed = dist._path.stat().st_mtime_ns
+    except (importlib.metadata.PackageNotFoundError, OSError, AttributeError):
+        installed = 0
+    newest_code = max((p.stat().st_mtime_ns for p in files if p.exists()), default=0)
+    return {"version": version, "runtime_id": digest.hexdigest(),
+            "installed_at": max(installed, newest_code)}
+
+
+def _recv_auth(conn, size, timeout=5.0):
+    if not conn.poll(timeout):
+        raise AuthenticationError("Job Manager IPC authentication timed out")
+    return conn.recv_bytes(size)
+
+
+def _server_auth(conn, key):
+    """Stable HMAC-SHA256 mutual authentication independent of Python versions."""
+    challenge = secrets.token_bytes(32)
+    conn.send_bytes(AUTH_MAGIC + b"S" + challenge)
+    reply = _recv_auth(conn, 4 + 1 + 32 + 32)
+    if len(reply) != 69 or not reply.startswith(AUTH_MAGIC + b"C"):
+        raise AuthenticationError("invalid Client IPC challenge reply")
+    client_nonce = reply[5:37]
+    mac = reply[37:]
+    expected = hmac.digest(key, b"client" + challenge + client_nonce, "sha256")
+    if not hmac.compare_digest(mac, expected):
+        raise AuthenticationError("Client Job Manager IPC authentication failed")
+    conn.send_bytes(AUTH_MAGIC + b"A" +
+                    hmac.digest(key, b"manager" + challenge + client_nonce, "sha256"))
+
+
+def _client_auth(conn, key):
+    challenge = _recv_auth(conn, 4 + 1 + 32)
+    if len(challenge) != 37 or not challenge.startswith(AUTH_MAGIC + b"S"):
+        raise AuthenticationError("incompatible Job Manager IPC authentication protocol")
+    nonce = secrets.token_bytes(32)
+    conn.send_bytes(AUTH_MAGIC + b"C" + nonce +
+                    hmac.digest(key, b"client" + challenge[5:] + nonce, "sha256"))
+    answer = _recv_auth(conn, 4 + 1 + 32)
+    expected = AUTH_MAGIC + b"A" + hmac.digest(
+        key, b"manager" + challenge[5:] + nonce, "sha256")
+    if not hmac.compare_digest(answer, expected):
+        raise AuthenticationError("Job Manager IPC server authentication failed")
+
+
+def _version_parts(value):
+    import re
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[+.-].*)?", value)
+    return tuple(map(int, match.groups())) if match else (0, 0, 0)
 
 
 def new_job_id():
@@ -169,6 +250,9 @@ class Manager:
     def __init__(self, home):
         self.home = prepare_home(home)
         self.ipc_key = ipc_authkey(self.home)
+        # Snapshot the running code BEFORE an installer can replace the
+        # corresponding files; do not calculate the identity on first ping.
+        self.identity = manager_identity()
         self.address, self.family = endpoint(self.home)
         self.db = sqlite3.connect(self.home / "jobs.sqlite3", check_same_thread=False,
                                   timeout=10)
@@ -201,6 +285,7 @@ class Manager:
         self.sandboxes = {}
         self.stopping = threading.Event()
         self.last_access = time.monotonic()
+        self.idle_exit = threading.Event()
         # A peer can open a Windows named pipe or AF_UNIX socket and stall
         # before finishing authentication. Bound these handshakes without
         # allowing one incomplete peer to block every subsequent request.
@@ -355,6 +440,7 @@ class Manager:
         finally:
             with self.lock:
                 self.processes.pop(tid, None)
+                self.last_access = time.monotonic()
                 # This file may still be in use by Podman during startup. It is
                 # intentionally not tied to the initiating Client lifetime.
                 (self.home / "masks" / tid).unlink(missing_ok=True)
@@ -605,7 +691,12 @@ class Manager:
     def request(self, req):
         op = req.get("op")
         if op == "ping":
-            return {"version": PROTOCOL, "pid": os.getpid()}
+            identity = self.identity
+            return {"version": PROTOCOL, "pid": os.getpid(),
+                    "release_version": identity["version"],
+                    "runtime_id": identity["runtime_id"],
+                    "installed_at": identity["installed_at"],
+                    "stopping": self.stopping.is_set()}
         if op == "shutdown":
             force = req.get("force", False)
             if type(force) is not bool:
@@ -697,17 +788,38 @@ class Manager:
 
     def _serve_peer(self, conn):
         try:
-            # Listener.accept(authkey=...) authenticates synchronously. A
-            # client that opens a pipe but never answers the challenge would
-            # otherwise permanently freeze the only accept loop on Windows.
-            deliver_challenge(conn, self.ipc_key)
-            answer_challenge(conn, self.ipc_key)
+            # Cross-Python fixed HMAC challenge; half-open peers cannot
+            # block the accept loop or consume a slot indefinitely.
+            _server_auth(conn, self.ipc_key)
         except (AuthenticationError, EOFError, OSError, ValueError):
             conn.close()
         else:
             self._connection(conn)
         finally:
             self.ipc_slots.release()
+
+    def _check_idle(self):
+        with self.lock:
+            if self.stopping.is_set() or time.monotonic() - self.last_access < IDLE_SECONDS:
+                return False
+            if self.db.execute(
+                "SELECT 1 FROM jobs WHERE finished_at IS NULL LIMIT 1"
+            ).fetchone():
+                return False
+            self.stopping.set()
+            self.idle_exit.set()
+            return True
+
+    def _idle_watch(self):
+        while not self.stopping.wait(IDLE_POLL_SECONDS):
+            if self._check_idle():
+                # Wake listener.accept() so its loop sees the stopping flag.
+                try:
+                    with Client(self.address, family=self.family, authkey=None):
+                        pass
+                except (OSError, EOFError):
+                    pass
+                break
 
     def serve(self):
         if self.family == "AF_UNIX":
@@ -719,6 +831,8 @@ class Manager:
                             authkey=None)
         if self.family == "AF_UNIX":
             os.chmod(self.address, 0o600)
+        watcher = threading.Thread(target=self._idle_watch, daemon=True)
+        watcher.start()
         try:
             while not self.stopping.is_set():
                 # Listener accepts one connection at a time, then
@@ -739,7 +853,9 @@ class Manager:
                     conn.close()
                     raise
         finally:
+            self.stopping.set()
             listener.close()
+            watcher.join(timeout=1)
             with self.lock:
                 for tid in list(self.processes):
                     self._signal(tid, force=True)
@@ -773,8 +889,9 @@ def connect_once(home, request):
             "unauthenticated legacy Job Manager still owns the socket; "
             "stop the old Manager before upgrading"
         )
-    conn = Client(address, family=family, authkey=ipc_authkey(home))
+    conn = Client(address, family=family, authkey=None)
     try:
+        _client_auth(conn, ipc_authkey(home))
         wire_send(conn, request)
         response = wire_recv(conn)
         if "error" in response:
@@ -786,26 +903,164 @@ def connect_once(home, request):
         conn.close()
 
 
-def ensure_running(home):
-    home = prepare_home(home)
+def _await_manager_exit(home, timeout=20):
+    """Wait for *actual* singleton lock release, not just socket removal."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        fd = singleton_lock(home)
+        if fd is not None:
+            os.close(fd)
+            return
+        time.sleep(.03)
+    raise TimeoutError("Job Manager did not finish exiting")
+
+
+def _legacy_manager_interpreter(home):
+    """Select exactly one same-user Manager bound to this exact state home.
+
+    This one-time pre-v2 migration does not trust a PID file or a merely
+    matching process name. When identification is uncertain, fail closed.
+    """
+    home = str(Path(home).resolve())
+    candidates = []
+
+    def check(argv, executable=None):
+        argv = [word.strip('"') for word in argv]
+        if len(argv) < 5 or argv[1:3] != ["-m", "openkapsel.job_manager"]:
+            return
+        if "--state" not in argv:
+            return
+        idx = argv.index("--state")
+        if idx + 1 >= len(argv) or str(Path(argv[idx + 1]).resolve()) != home:
+            return
+        binary = executable or argv[0]
+        if Path(binary).is_file():
+            candidates.append(str(Path(binary).resolve()))
+
+    if sys.platform == "linux":
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdecimal():
+                continue
+            try:
+                if proc.stat().st_uid != os.getuid():
+                    continue
+                args = (proc / "cmdline").read_bytes().rstrip(b"\x00").split(b"\x00")
+                argv = [arg.decode("utf-8", "surrogateescape") for arg in args]
+                check(argv)
+            except (FileNotFoundError, ProcessLookupError, PermissionError,
+                    OSError, ValueError):
+                continue
+    elif sys.platform == "darwin":
+        try:
+            listing = subprocess.run(
+                ["ps", "-ww", "-axo", "pid=,uid=,command="],
+                capture_output=True, text=True, timeout=5, check=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        for row in listing.stdout.splitlines():
+            try:
+                _pid, uid, cmd = row.strip().split(None, 2)
+                if int(uid) == os.getuid():
+                    check(shlex.split(cmd))
+            except (ValueError, OSError):
+                continue
+    elif os.name == "nt":
+        try:
+            listing = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-CimInstance Win32_Process | Where-Object {$_.CommandLine -like '*openkapsel.job_manager*'} | "
+                 "ForEach-Object { $owner=Invoke-CimMethod -InputObject $_ -MethodName GetOwner; "
+                 "if ($owner.User -eq $env:USERNAME -and $owner.Domain -eq $env:USERDOMAIN) "
+                 "{ $_ | Select-Object ExecutablePath,CommandLine } } | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, check=True)
+            records = json.loads(listing.stdout or "[]")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        for item in (records if isinstance(records, list) else [records]):
+            try:
+                check(shlex.split(item.get("CommandLine", ""), posix=False),
+                      item.get("ExecutablePath"))
+            except (ValueError, OSError, AttributeError):
+                continue
+
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+def _retire_legacy_manager(home):
+    """Migrate old multiprocessing-auth Managers using their own interpreter.
+
+    Never SIGKILL a running Job, or make a new daemon overwrite old metadata.
+    The legacy --stop command atomically refuses shutdown when jobs exist.
+    """
+    old_python = _legacy_manager_interpreter(home)
+    if old_python is None:
+        raise RuntimeError("legacy Manager IPC is incompatible; unable to identify its interpreter safely")
+    outcome = subprocess.run(
+        [old_python, "-I", "-m", "openkapsel.job_manager",
+         "--state", str(home), "--stop"],
+        cwd=str(Path(home).parent), capture_output=True, text=True, timeout=30)
+    if outcome.returncode:
+        raise RuntimeError(
+            "old Manager has active jobs or could not be retired: " +
+            (outcome.stdout or outcome.stderr)[-300:])
+    _await_manager_exit(home)
+
+
+def _upgrade_if_older(home, running, *, allow_stale=False):
+    if running.get("stopping"):
+        _await_manager_exit(home)
+        return None
+    if running.get("version") != PROTOCOL:
+        raise RuntimeError("Job Manager wire protocol incompatible with current Client")
+    actual = manager_identity()
+    current_version = _version_parts(actual["version"])
+    running_version = _version_parts(running.get("release_version", "0.0.0"))
+    # ping uses "version" for wire protocol and "release_version" for package.
+    if running_version > current_version:
+        return running  # Never downgrade a Manager shared by newer Clients.
+    if running_version == current_version:
+        if running.get("runtime_id") == actual["runtime_id"]:
+            return running
+        if running.get("installed_at", 0) >= actual["installed_at"]:
+            return running  # Prevent same-version clients from flip-flopping.
+    response = connect_once(home, {"op": "shutdown", "force": False})
+    if not response["stopping"]:
+        if allow_stale:
+            return running
+        raise RuntimeError("manager_upgrade_pending: active jobs must finish before Manager replacement")
+    # Wake accept loop; this operation is not a job and cannot interrupt one.
     try:
-        running = connect_once(home, {"op": "ping"})
-        if running.get("version") != PROTOCOL:
-            raise RuntimeError("Job Manager IPC protocol mismatch; explicit manager upgrade is required")
-        return running
-    except (OSError, EOFError, ConnectionError):
+        connect_once(home, {"op": "ping"})
+    except (OSError, EOFError, ConnectionError, AuthenticationError):
         pass
+    _await_manager_exit(home)
+    return None
+
+
+def ensure_running(home, *, allow_stale=False):
+    home = prepare_home(home)
     with _START_LOCK:
-        # Concurrent calls can all miss the initial ping. Recheck inside the
-        # lock before spawning: only one process per Client may attempt a cold
-        # start, while the existing daemon file lock handles other Clients.
+        # Serialize cold start and upgrade within this Client; daemon's file
+        # lock and atomic shutdown keep multiple independent Clients safe.
         try:
             running = connect_once(home, {"op": "ping"})
-            if running.get("version") != PROTOCOL:
-                raise RuntimeError("Job Manager IPC protocol mismatch; explicit manager upgrade is required")
-            return running
-        except (OSError, EOFError, ConnectionError):
-            pass
+        except AuthenticationError:
+            _retire_legacy_manager(home)
+            running = None
+        except (OSError, EOFError, ConnectionError) as exc:
+            # A mismatched 3.11/3.12 multiprocessing challenge may raise
+            # 'bad message length', not AuthenticationError. The verified
+            # legacy interpreter still has an atomic idle-only --stop.
+            if (isinstance(exc, OSError)
+                    and "bad message length" in str(exc).lower()
+                    and _legacy_manager_interpreter(home) is not None):
+                _retire_legacy_manager(home)
+            running = None
+        if running is not None:
+            result = _upgrade_if_older(home, running, allow_stale=allow_stale)
+            if result is not None:
+                return result
         log = open(home / "manager.log", "ab", buffering=0)
         try:
             daemon_process = subprocess.Popen(
@@ -815,8 +1070,6 @@ def ensure_running(home):
                 creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
                                if os.name == "nt" else 0),
             )
-            # Reap the detached daemon on its eventual exit without blocking
-            # ClientRuntime or triggering Popen ResourceWarning at garbage collection.
             threading.Thread(target=daemon_process.wait, daemon=True).start()
         finally:
             log.close()
@@ -826,8 +1079,8 @@ def ensure_running(home):
                 running = connect_once(home, {"op": "ping"})
                 if running.get("version") != PROTOCOL:
                     raise RuntimeError("Job Manager IPC protocol mismatch")
-                return running
-            except (OSError, EOFError, ConnectionError):
+                return _upgrade_if_older(home, running, allow_stale=allow_stale) or running
+            except (OSError, EOFError, ConnectionError, AuthenticationError):
                 time.sleep(.05)
         raise ConnectionError("shared Job Manager did not start")
 
@@ -835,7 +1088,7 @@ def ensure_running(home):
 def request(home, mapping_id, op, args=None):
     if not isinstance(mapping_id, str) or not MAPPING_RE.fullmatch(mapping_id):
         raise ValueError("mapping URL must end with a 24-character Mapping key")
-    ensure_running(home)
+    ensure_running(home, allow_stale=op not in {"task_start"})
     return connect_once(home, {"mapping_id": mapping_id, "op": op,
                                "args": args or {}})
 

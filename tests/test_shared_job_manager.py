@@ -72,6 +72,232 @@ class SharedManagerTests(unittest.TestCase):
             time.sleep(.035)
         self.fail(f"job {tid} did not finish")
 
+    def _start_short_idle_daemon(self, seconds=.30):
+        import subprocess
+        # Run the real Manager in a child, with a shorter test-only clock.
+        command = (
+            "import sys; from openkapsel import job_manager as manager; "
+            f"manager.IDLE_SECONDS={seconds}; "
+            "manager.IDLE_POLL_SECONDS=.03; "
+            "manager.main()"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", command, "--state", str(self.home)],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        from openkapsel.job_manager import connect_once
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                output = proc.communicate()
+                self.fail(f"short-idle daemon exited before handshake: {output!r}")
+            try:
+                self.assertEqual(proc.pid, connect_once(self.home, {"op": "ping"})["pid"])
+                return proc
+            except (OSError, EOFError, ConnectionError):
+                time.sleep(.02)
+        proc.kill()
+        proc.wait()
+        self.fail("short-idle manager failed to start")
+
+    def test_idle_manager_self_exits_then_next_job_starts_new_manager(self):
+        from openkapsel.job_manager import connect_once
+        proc = self._start_short_idle_daemon()
+        try:
+            proc.wait(timeout=4)
+            self.assertEqual(0, proc.returncode, proc.communicate()[1])
+            self.assertNotEqual(proc.pid, ensure_running(self.home)["pid"])
+            started = self._start(self.MAPPING_A, "&Id1e&", 'print("after-idle")')
+            self.assertEqual("&Id1e&", started["task_id"])
+            self.assertEqual(0, self._wait(self.MAPPING_A, "&Id1e&")["exit_code"])
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_idle_manager_never_exits_during_running_job(self):
+        from openkapsel.job_manager import connect_once
+        proc = self._start_short_idle_daemon()
+        try:
+            tid = "&Busy&"
+            self._start(self.MAPPING_A, tid, "import time;time.sleep(.8)")
+            time.sleep(.45)  # Past idle deadline, but the job is still alive.
+            self.assertIsNone(proc.poll(), "Manager killed an active Job")
+            self.assertTrue(self._get(self.MAPPING_A, tid)["running"])
+            self.assertEqual(0, self._wait(self.MAPPING_A, tid)["exit_code"])
+            proc.wait(timeout=4)
+            self.assertEqual(0, proc.returncode)
+            proc.communicate(timeout=1)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_older_idle_manager_replaced_automatically_without_force(self):
+        from openkapsel import job_manager as jm
+        before = ensure_running(self.home)["pid"]
+        real = jm.connect_once
+        first = [True]
+        def simulate_old_version(home, req):
+            info = real(home, req)
+            if req["op"] == "ping" and first[0]:
+                first[0] = False
+                return dict(info, release_version="2.0.0", runtime_id="outdated")
+            return info
+        with patch.object(jm, "connect_once", simulate_old_version):
+            new = ensure_running(self.home)
+        self.assertNotEqual(before, new["pid"])
+        self.assertEqual(jm.manager_identity()["runtime_id"], new["runtime_id"])
+
+    def test_same_version_older_build_replaced_newer_build_never_downgraded(self):
+        from openkapsel import job_manager as jm
+        before = ensure_running(self.home)["pid"]
+        current = jm.manager_identity()
+        old_seen = [False]
+        real = jm.connect_once
+
+        def older_build(home, req):
+            response = real(home, req)
+            if req["op"] == "ping" and not old_seen[0]:
+                old_seen[0] = True
+                return dict(response, release_version=current["version"],
+                            runtime_id="old-code", installed_at=current["installed_at"] - 1)
+            return response
+
+        with patch.object(jm, "connect_once", older_build):
+            latest = ensure_running(self.home)
+        self.assertNotEqual(before, latest["pid"])
+        self.assertEqual(current["runtime_id"], latest["runtime_id"])
+
+        def newer_build(home, req):
+            response = real(home, req)
+            if req["op"] == "ping":
+                return dict(response, runtime_id="newer-code",
+                            installed_at=current["installed_at"] + 1)
+            return response
+        with patch.object(jm, "connect_once", newer_build):
+            reused = ensure_running(self.home)
+        self.assertEqual(latest["pid"], reused["pid"])
+        self.assertEqual(latest["pid"], real(self.home, {"op": "ping"})["pid"])
+
+    def test_concurrent_upgrade_does_not_spawn_multiple_managers(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from openkapsel import job_manager as jm
+        before = ensure_running(self.home)["pid"]
+        real = jm.connect_once
+        unseen = [True]
+        def first_older(home, req):
+            result = real(home, req)
+            if req["op"] == "ping" and unseen[0]:
+                unseen[0] = False
+                return dict(result, release_version="2.0.0",
+                            runtime_id="old-code")
+            return result
+        with patch.object(jm, "connect_once", first_older):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                pids = list(pool.map(lambda _: ensure_running(self.home)["pid"], range(12)))
+        self.assertEqual(1, len(set(pids)), pids)
+        self.assertNotEqual(before, pids[0])
+
+    def test_old_manager_with_live_job_not_killed_for_auto_upgrade(self):
+        from openkapsel import job_manager as jm
+        first = ensure_running(self.home)
+        tid = "&Keep&"
+        self._start(self.MAPPING_A, tid, "import time;time.sleep(1)")
+        real = jm.connect_once
+        visits = [0]
+        def simulate_old_version(home, req):
+            info = real(home, req)
+            if req["op"] == "ping" and visits[0] == 0:
+                visits[0] += 1
+                return dict(info, release_version="2.0.0", runtime_id="outdated")
+            return info
+        with patch.object(jm, "connect_once", simulate_old_version):
+            with self.assertRaisesRegex(RuntimeError, "active jobs"):
+                ensure_running(self.home)
+        self.assertEqual(first["pid"], ensure_running(self.home)["pid"])
+        self.assertTrue(self._get(self.MAPPING_A, tid)["running"])
+        self.assertEqual(0, self._wait(self.MAPPING_A, tid)["exit_code"])
+
+    def test_old_manager_active_jobs_allow_inspection_but_block_new_job(self):
+        from openkapsel import job_manager as jm
+        tid = "&Stay&"
+        self._start(self.MAPPING_A, tid, "import time; time.sleep(1)")
+        real = jm.connect_once
+        def older_for_ping(home, req):
+            info = real(home, req)
+            if req["op"] == "ping":
+                return dict(info, release_version="2.0.0", runtime_id="old")
+            return info
+        with patch.object(jm, "connect_once", older_for_ping):
+            status = request(self.home, self.MAPPING_A, "task_get", {
+                "task_id": tid, "offset": 0,
+            })
+            self.assertTrue(status["running"])
+            with self.assertRaisesRegex(RuntimeError, "manager_upgrade_pending"):
+                self._start(self.MAPPING_A, "&NewJ&", 'print("should-not-start")')
+        self.assertEqual(0, self._wait(self.MAPPING_A, tid)["exit_code"])
+
+    def test_legacy_migration_uses_old_interpreter_nonforce_stop(self):
+        import subprocess
+        from openkapsel import job_manager as jm
+        with (patch.object(jm, "_legacy_manager_interpreter", return_value=sys.executable),
+              patch.object(jm.subprocess, "run", return_value=subprocess.CompletedProcess(
+                  [], 0, stdout='{"stopping":true,"jobs":[]}', stderr="")) as stopped,
+              patch.object(jm, "_await_manager_exit") as awaited):
+            jm._retire_legacy_manager(self.home)
+        argv = stopped.call_args.args[0]
+        self.assertEqual([sys.executable, "-I", "-m", "openkapsel.job_manager"],
+                         argv[:4])
+        self.assertIn("--stop", argv)
+        self.assertNotIn("--force", argv)
+        awaited.assert_called_once()
+
+    def test_manager_identity_persists_across_on_disk_updates(self):
+        from openkapsel import job_manager as jm
+        first = jm.manager_identity()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("reread source")):
+            again = jm.manager_identity()
+        self.assertEqual(first, again)
+
+    def test_manager_never_auto_downgrades_newer_runtime(self):
+        from openkapsel import job_manager as jm
+        first = ensure_running(self.home)
+        real = jm.connect_once
+        def simulate_newer(home, req):
+            info = real(home, req)
+            if req["op"] == "ping":
+                return dict(info, release_version="999.0.0", runtime_id="future")
+            return info
+        with patch.object(jm, "connect_once", simulate_newer):
+            self.assertEqual(first["pid"], ensure_running(self.home)["pid"])
+        self.assertEqual(first["pid"], real(self.home, {"op": "ping"})["pid"])
+
+    def test_hmac_authentication_is_cross_python_version_stable(self):
+        import shutil
+        import subprocess
+        from openkapsel.job_manager import connect_once
+        other = None
+        for name in ("python3.11", "python3.12", "python3.13"):
+            exe = shutil.which(name)
+            if exe and os.path.realpath(exe) != os.path.realpath(sys.executable):
+                other = exe
+                break
+        if other is None:
+            self.skipTest("no alternate Python interpreter available")
+        manager = ensure_running(self.home)
+        source = Path(__file__).resolve().parents[1]
+        env = dict(os.environ, PYTHONPATH=str(source))
+        command = (
+            "import sys; from openkapsel.job_manager import connect_once;"
+            "print(connect_once(sys.argv[1], {'op':'ping'})['pid'])"
+        )
+        result = subprocess.run([other, "-c", command, str(self.home)],
+                                capture_output=True, text=True, env=env, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(manager["pid"], int(result.stdout.strip()))
+
     def test_job_identifier_case_sensitive_four_alphanumeric(self):
         for _ in range(40):
             self.assertRegex(new_job_id(), r"^&[A-Za-z0-9]{4}&$")
@@ -203,20 +429,25 @@ class SharedManagerTests(unittest.TestCase):
     def test_ipc_requires_authentication_even_for_same_uid(self):
         from multiprocessing import AuthenticationError
         from multiprocessing.connection import Client as IpcClient
-        from openkapsel.job_manager import endpoint, ipc_authkey, wire_recv, wire_send
+        from openkapsel.job_manager import (
+            _client_auth, endpoint, ipc_authkey, wire_recv, wire_send,
+            PROTOCOL,
+        )
         ensure_running(self.home)
         address, family = endpoint(self.home)
-        with self.assertRaises((AuthenticationError, ConnectionResetError, EOFError)):
-            with IpcClient(address, family=family, authkey=b"unauthorized") as conn:
+        with self.assertRaises((AuthenticationError, ConnectionResetError, EOFError, OSError)):
+            with IpcClient(address, family=family, authkey=None) as conn:
+                _client_auth(conn, b"unauthorized")
                 wire_send(conn, {"op": "shutdown", "force": True})
                 wire_recv(conn)
         self.assertGreater(ensure_running(self.home)["pid"], 0)
         key = ipc_authkey(self.home)
         self.assertEqual(32, len(key))
-        with IpcClient(address, family=family, authkey=key) as conn:
+        with IpcClient(address, family=family, authkey=None) as conn:
+            _client_auth(conn, key)
             wire_send(conn, {"op": "ping"})
             result = wire_recv(conn)
-        self.assertEqual(1, result["result"]["version"])
+        self.assertEqual(PROTOCOL, result["result"]["version"])
 
     def test_explicit_manager_state_does_not_read_default_user_home(self):
         from contextlib import redirect_stderr
@@ -261,7 +492,7 @@ class SharedManagerTests(unittest.TestCase):
             self.assertTrue(done.wait(5), "incomplete IPC auth blocked valid requests")
             if "error" in result:
                 raise result["error"]
-            self.assertEqual(1, result["ping"]["version"])
+            self.assertEqual(2, result["ping"]["version"])
             self.assertEqual("&Ha1f&", result["job"]["task_id"])
             self.assertEqual(0, self._wait(self.MAPPING_A, "&Ha1f&")["exit_code"])
         finally:
