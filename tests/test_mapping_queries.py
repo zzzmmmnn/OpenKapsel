@@ -209,8 +209,13 @@ class MappingQueryTests(unittest.TestCase):
         (self.export / "nested").mkdir()
         (self.export / "nested" / "Needle-remote.txt").write_text("x")
         (self.scope / "Needle-local.txt").write_text("x")
-        status, result = self.find(timeout_seconds=5)
+        # Disable the *server-native* index, not only the mapped client's
+        # file_search RPC. Otherwise Linux's asynchronous watcher may not
+        # have indexed Needle-local.txt yet and this does not test fallback.
+        with patch.object(self.server, "filename_index", None):
+            status, result = self.find(timeout_seconds=5)
         self.assertEqual(200, status, result)
+        self.assertEqual("recursive", result["backend"])
         self.assertEqual(
             {"Needle-local.txt"},
             {Path(item["path"]).name for item in result["results"]},

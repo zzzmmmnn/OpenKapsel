@@ -142,15 +142,27 @@ class ClientDeadlineTests(unittest.TestCase):
     def test_mutation_commit_finishes_after_deadline_to_preserve_atomicity(self):
         # The time budget is checked before publication, never between
         # linked rename steps in an already-committing transaction.
+        # Use a deterministic monotonic clock. Real 15ms deadlines made
+        # this test flaky on loaded CI workers before commit even started.
+        from types import SimpleNamespace
+        import openkapsel.client_runtime.rpc_deadline as rpc_deadline
+        clock = [0.0]
         original = self.files.paths.rename
-        def slow_publish(*args, **kwargs):
-            time.sleep(.03)
+
+        def publish_after_deadline(*args, **kwargs):
+            # We reached the commit phase without expiring. Advance time
+            # past the deadline *during* publish, never before it starts.
+            clock[0] += .03
             return original(*args, **kwargs)
-        with patch.object(self.files.paths, "rename", slow_publish):
-            with patch.dict(ClientFileAPI.RPC_TIMEOUT_SECONDS, {"fs_mutate": .015}):
-                result = self.call("fs_mutate", body={"items": [
-                    {"op": "file.create", "path": "committed.txt", "content": "complete"},
-                ]})
+
+        fake_time = SimpleNamespace(monotonic=lambda: clock[0])
+        with patch.object(rpc_deadline, "time", fake_time):
+            with patch.object(self.files.paths, "rename", publish_after_deadline):
+                with patch.dict(ClientFileAPI.RPC_TIMEOUT_SECONDS, {"fs_mutate": .015}):
+                    result = self.call("fs_mutate", body={"items": [
+                        {"op": "file.create", "path": "committed.txt", "content": "complete"},
+                    ]})
+        self.assertGreater(clock[0], .015, "test never crossed the commit deadline")
         self.assertEqual(200, result["status"], result)
         self.assertEqual("complete", (self.root / "committed.txt").read_text())
 
