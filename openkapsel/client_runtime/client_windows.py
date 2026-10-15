@@ -23,6 +23,7 @@ from pathlib import Path
 
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.rpc_deadline import check_deadline
+from openkapsel.client_runtime.windows_filename_policy import check_windows_filename_parts
 
 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
@@ -55,8 +56,7 @@ class WindowsPaths:
     @contextlib.contextmanager
     def guard(self, path, *, include_final=False):
         parts = path.relative_to(self.root).parts
-        if any(p in {"..", ""} or ":" in p or p.endswith((" ", ".")) for p in parts):
-            raise OSError(errno.EACCES, "invalid Windows path component")
+        check_windows_filename_parts(parts)
         handles = []
         try:
             current = self.root
@@ -119,10 +119,7 @@ class WindowsClientFiles(ClientFiles):
 
     def path(self, value):
         path = super().path(value)
-        for part in path.relative_to(self.root).parts:
-            if part.endswith((" ", ".")) or any(c in part for c in '*?"<>|') or part.split(".")[0].upper() in {
-                "CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
-                raise OSError(errno.EACCES, "invalid Windows filename")
+        check_windows_filename_parts(path.relative_to(self.root).parts)
         return path
 
     def _dispatch(self, op, args):

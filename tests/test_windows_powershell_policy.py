@@ -144,6 +144,48 @@ class PowerShellFilesystemTests(unittest.TestCase):
             self.execute("Set-Content -LiteralPath existing.txt -Value forbidden")
 
 
+    def test_windows_device_names_and_ads_denied_before_file_io(self):
+        # _checked_path is intentionally testable on POSIX too: Windows
+        # names must fail before any ClientFiles/WindowsPaths operation.
+        from unittest.mock import patch
+
+        bad = (
+            "NUL", "nul.txt", "CON", "con.log", "PRN", "AUX", "COM1",
+            "com9.txt", "LPT1", "lpt9.log", "COM¹", "com².txt",
+            "LPT³", "CONIN$", "CONOUT$", "CLOCK$", "NUL .txt",
+            "sub/CON", "sub/nul.txt", "sub/a.txt:stream",
+            "existing.txt:stream", "existing.txt::$DATA",
+            "sub/trailing. ", "sub/trailing.", "sub/trailing ",
+            "sub/bad<name", "sub/bad\x01name",
+        )
+        for name in bad:
+            with self.subTest(path=name):
+                with patch.object(self.files, "path", side_effect=AssertionError("IO path was reached")):
+                    for write in (False, True):
+                        with self.assertRaises(OSError) as ctx:
+                            _checked_path(self.files, self.root, name, write=write)
+                        self.assertEqual(errno.EACCES, ctx.exception.errno)
+
+    def test_normal_similar_names_stay_usable(self):
+        for name in ("console.txt", "communications.txt", "COM10.txt",
+                     "LPT10", "auxiliary", "ordinary.name", "sub/notes.txt"):
+            with self.subTest(path=name):
+                path, relative = _checked_path(self.files, self.root, name, write=True)
+                self.assertEqual(self.root / name, path)
+                self.assertEqual(name, relative)
+
+    @unittest.skipUnless(os.name == "nt", "requires native WindowsPaths")
+    def test_windows_file_rpc_and_native_guard_also_reject_devices_and_ads(self):
+        for name in ("NUL", "con.txt", "COM¹", "LPT³.log", "existing.txt:stream",
+                     "sub/bad. "):
+            with self.subTest(path=name):
+                with self.assertRaises(OSError):
+                    self.files.path(name)
+                with self.assertRaises(OSError):
+                    with self.files.paths.guard(self.root / name):
+                        self.fail("unsafe name entered WindowsPaths.guard")
+
+
 class WindowsApprovalTasksTests(PowerShellFilesystemTests):
     def setUp(self):
         super().setUp()
@@ -170,7 +212,11 @@ class WindowsApprovalTasksTests(PowerShellFilesystemTests):
 
     def test_unknown_and_outside_commands_rejected_before_task(self):
         for command in ("whoami", "Get-Content ../outside.txt",
-                        "Get-Content -LiteralPath alias"):
+                        "Get-Content -LiteralPath alias",
+                        "Get-Content -LiteralPath NUL",
+                        "Get-Content -LiteralPath COM¹",
+                        "Get-Content -LiteralPath existing.txt:stream",
+                        "Set-Content -LiteralPath existing.txt:stream -Value unsafe"):
             if command.endswith("alias") and not (self.root / "alias").exists():
                 (self.root / "alias").symlink_to(self.outside)
             with self.subTest(command=command):

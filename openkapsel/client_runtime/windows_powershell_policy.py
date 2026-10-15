@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from openkapsel.client_runtime.windows_filename_policy import check_windows_filename_parts
+
 
 # Reject expansion, redirection, chaining, wildcards and any multiline script.
 _UNSAFE = frozenset(";\u0026|$\x60><(){}[]*?%\r\n\x00")
@@ -132,6 +134,10 @@ def _checked_path(files, cwd: Path, value: str, *, write: bool,
         relative = target.relative_to(files.root).as_posix()
     except ValueError:
         raise OSError(errno.EACCES, "path is outside exported files") from None
+    # Check before files.path or any Win32 I/O.  Device names (NUL, CON,
+    # COM1, ...), ADS (file:stream), and trailing-dot/space aliases must
+    # never be eligible for the approval-free PowerShell file subset.
+    check_windows_filename_parts(relative.split("/"))
     resolved = files.path(relative)
     from openkapsel.auth.path_access import effective_path_access
     access = effective_path_access(resolved, files.root, files.writable,
