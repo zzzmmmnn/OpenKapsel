@@ -110,10 +110,22 @@ class ClientTasks:
     def __init__(self, files, *, enabled=False, sandbox=True, backend="podman",
                  image="docker.io/library/python:3.14-slim-trixie", network=False,
                  max_tasks=2, max_seconds=600, memory_mb=256, processes=64, cpus=1,
-                 managed_sandbox=False, approval_only=False, powershell_rules=()):
+                 managed_sandbox=False, approval_only=False, powershell_rules=(),
+                 git_network_mode="full", git_allowed_domains=()):
         self.files = files
         self.approval_only = approval_only
         self.powershell_rules = tuple(powershell_rules)
+        # Network Git RPCs are independent of Shell, and do not run through
+        # the Job Manager. Apply the Client-owned network policy here rather
+        # than trusting Server-provided RPC arguments.
+        if git_network_mode not in {"none", "full", "domain_allowlist"}:
+            raise ValueError("invalid Client Git network policy")
+        from openkapsel.execution.network_proxy import normalize_domain_rules
+        git_allowed_domains = tuple(normalize_domain_rules(list(git_allowed_domains)))
+        if git_network_mode == "domain_allowlist" and not git_allowed_domains:
+            raise ValueError("Client Git domain allowlist requires domains")
+        self.git_network_mode = git_network_mode
+        self.git_allowed_domains = git_allowed_domains if git_network_mode == "domain_allowlist" else ()
         self.enabled, self.sandbox, self.backend = enabled, sandbox, backend
         self.image, self.network = image, network
         self.max_tasks, self.max_seconds = max_tasks, max_seconds
@@ -380,6 +392,12 @@ class ClientTasks:
         if not isinstance(family, str) or not isinstance(operation, str) or not isinstance(rpc_args, dict):
             raise OSError(errno.EINVAL, "invalid RPC task request")
         spec = self.files.rpc_registry.operation_spec(family, operation)
+        if family == "git" and operation in {"fetch", "pull", "push", "clone"}:
+            # Overwrite all untrusted network hints, including any supplied
+            # by a compromised Server or a direct Mapping RPC caller.
+            rpc_args = dict(rpc_args)
+            rpc_args["_network_mode"] = self.git_network_mode
+            rpc_args["_allowed_domains"] = list(self.git_allowed_domains)
         if spec is None or spec.get("execution") != "task":
             raise OSError(errno.EINVAL, "RPC operation is not task-based")
         if spec.get("write") and not self.files.writable:

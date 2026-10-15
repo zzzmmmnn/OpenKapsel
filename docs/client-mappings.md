@@ -254,10 +254,19 @@ MCP exposes all operations via the generic `rpc_call` tool. Writes `add`,
 `pull`, `push`, and `clone` use `write=true, execution=task`; provide `mapping_id` for a mapping or omit it to
 run against the server workspace. Git RPC tasks do not require Shell or client
 `allow_exec`. Mutations require write permission and Plan Context; mapped writes
-also require a writable mapping, while fetch/pull/push/clone require network permission
-and accept only policy-approved HTTPS remotes. Push sends only the selected branch\u2019s HEAD without force or tags, and never follows an unvalidated `pushurl`. They reject linked worktrees,
-alternate object stores, unsafe Git metadata/configuration, hooks/signing/helpers,
-and private `.openkapsel` paths. Host Git is required on the selected execution
+also require a writable mapping. For Git `fetch`/`pull`/`push`/`clone`,
+**Server-hosted Git uses the Server Token network policy; Mapping Git uses its
+own Client `job_sandbox.network` policy** instead (never the Server Token's
+network setting). Configured Mapping modes are `none` (deny),
+`domain_allowlist` (validate HTTPS destination hostname), and `full`;
+without `job_sandbox`, Mapping Git uses normal Client host networking.
+Git RPC tasks run in the Client RPC engine, not the Shell Job Manager, so
+this is a validated HTTPS remote policy, **not an OS network sandbox**.
+Known host credential providers and HTTPS proxy environment are supported
+for Git network operations, while untrusted repository/global helpers,
+URL redirects and executable Git config remain disabled. Push sends only the selected branch\u2019s HEAD without force or tags, and never follows an unvalidated `pushurl`. They reject linked worktrees,
+alternate object stores, unsafe Git metadata/configuration, arbitrary Git
+hooks/signing/helper commands, and private `.openkapsel` paths. Host Git is required on the selected execution
 host. There is no fallback from one selected host to the other. See
 [Git inspection](shell-and-mcp.md#git-inspection) for read limits and layouts.
 

@@ -436,7 +436,14 @@ class MappingHandlersMixin:
                 context_request,
                 plan_required=True,
             )
-        rpc_args = self._rpc_args_with_policy(family, operation, body.get("args", {}))
+        # A Mapping executes on its own Client. Its job_sandbox.network
+        # controls Git network RPCs there; Server Token network rules apply
+        # only to Server-hosted RPCs. Do not forward Server-derived policy.
+        rpc_args = dict(body.get("args", {}))
+        if family == "git" and operation in {"fetch", "pull", "push", "clone"}:
+            # Internal policy keys are exclusively injected by the Client.
+            rpc_args.pop("_network_mode", None)
+            rpc_args.pop("_allowed_domains", None)
         if execution == "task":
             from openkapsel.execution.shell_routing import client_summary
 

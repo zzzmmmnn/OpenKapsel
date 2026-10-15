@@ -157,6 +157,65 @@ class GitHTTPTests(unittest.TestCase):
                     payload["result"]["structuredContent"]["error"]["code"],
                 )
 
+    def test_mapping_git_push_uses_client_network_not_server_token(self):
+        """A Server Token without network access may dispatch to a Mapping.
+
+        The Client, not the Server, decides whether the remote HTTPS host is
+        permitted. Internal policy hints from callers are not forwarded.
+        """
+        self.record = self.server.tokens.update(
+            self.record.token, can_write=True, network_mode="none",
+            shell_mode="none",
+        )
+        export = Path(self.temp.name) / "mapped-git-network"
+        export.mkdir()
+        files = ClientFiles(export, writable=True)
+        row, _ = self.server.mappings.store.create(
+            self.record.path_prefix, "git-network-client",
+            writable=True, allow_exec=False,
+        )
+        intercepted = []
+        def call(op, args):
+            intercepted.append((op, args))
+            if op == "task_start":
+                return {"task_id": args["task_id"], "running": True,
+                        "kind": "rpc", "exit_code": None}
+            return files.dispatch(op, args)
+        self.server.mappings.sessions[row["id"]] = SimpleNamespace(
+            closed=False, ready=True,
+            capabilities={"rpc": files.rpc_capabilities}, call=call,
+        )
+        try:
+            plan = self.server.context_for(self.root).add(
+                "plan", "Mapping network test", taskname="git",
+                actor_id=self.record.actor_id,
+            )
+            status, _, raw = self.request(
+                "POST", self.base + f"/mapping/{row['id']}/rpc/git/push",
+                json.dumps({
+                    "args": {"cwd": ".", "remote": "origin",
+                             "_network_mode": "full",
+                             "_allowed_domains": ["example.com"]},
+                    "plan_id": plan, "taskname": "git",
+                    "message": "Check Mapping network ownership",
+                }).encode("utf-8"),
+                {"Content-Type": "application/json"},
+            )
+            self.assertEqual(202, status, raw)
+            payload = json.loads(raw)
+            self.assertEqual("client", payload["location"])
+            self.assertEqual(1, len(intercepted))
+            op, rpc_args = intercepted[0]
+            self.assertEqual("task_start", op)
+            self.assertEqual("git", rpc_args["rpc"]["family"])
+            self.assertEqual("push", rpc_args["rpc"]["operation"])
+            self.assertNotIn("_network_mode", rpc_args["rpc"]["args"])
+            self.assertNotIn("_allowed_domains", rpc_args["rpc"]["args"])
+        finally:
+            self.server.mappings.sessions.pop(row["id"], None)
+            self.server.mappings.store.delete(row["id"])
+            files.close()
+
     def test_mapping_git_generic_rpc_is_exposed(self):
         export = Path(self.temp.name) / "rpc-export"
         export.mkdir()

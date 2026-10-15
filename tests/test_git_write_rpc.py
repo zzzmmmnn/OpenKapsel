@@ -153,8 +153,11 @@ class GitWriteRpcTests(unittest.TestCase):
                 self.assertIn("--no-recurse-submodules", argv)
             self.assertIn("credential.helper=", argv)
             self.assertIn("http.followRedirects=false", argv)
-            self.assertIn("http.proxy=", argv)
+            self.assertNotIn("http.proxy=", argv)
             self.assertEqual("https", task.calls[0][2]["GIT_ALLOW_PROTOCOL"])
+            self.assertEqual(str(Path.home()), task.calls[0][2]["HOME"])
+            if sys.platform == "darwin":
+                self.assertIn("credential.helper=osxkeychain", argv)
 
         task = Task()
         result = mutate_git(
@@ -228,6 +231,102 @@ class GitWriteRpcTests(unittest.TestCase):
                       "_network_mode": "full"}, Task())
         self.assertEqual("git_detached_head", detached.exception.code)
 
+    def test_client_git_network_policy_overrides_remote_rpc_hints(self):
+        """Git subprocess policy is selected by the Client, not Server/AI."""
+        from unittest.mock import patch
+        from openkapsel.client_runtime.client_tasks import RpcTaskContext
+        self.git("remote", "add", "origin", "https://example.com/repo.git")
+        policy_cases = (
+            ("none", (), False),
+            ("domain_allowlist", ("other.example",), False),
+            ("domain_allowlist", ("example.com",), True),
+            ("full", (), True),
+        )
+        for index, (mode, domains, allowed) in enumerate(policy_cases):
+            with self.subTest(mode=mode, domains=domains):
+                self.tasks.close()
+                self.tasks = ClientTasks(
+                    self.files, enabled=False, max_tasks=2, max_seconds=30,
+                    git_network_mode=mode, git_allowed_domains=domains,
+                )
+                processes = []
+                def fake_process(_context, argv, *, cwd=None, env=None):
+                    processes.append((list(argv), dict(env)))
+                    return 0
+                with (patch.object(RpcTaskContext, "run_process", fake_process),
+                      patch("openkapsel.files.git_write._validate_git_metadata",
+                            return_value=(self.root / ".git",
+                                          '[remote "origin"]\nurl = https://example.com/repo.git\n')),
+                      patch("openkapsel.files.git_write._current_branch",
+                            return_value="main")):
+                    tid = f"git-policy-{index}"
+                    self.tasks.dispatch("task_start", {
+                        "task_id": tid,
+                        "rpc": {"family": "git", "operation": "push", "args": {
+                            "remote": "origin", "_network_mode": "full",
+                            "_allowed_domains": ["example.com"],
+                        }},
+                    })
+                    for _ in range(100):
+                        result = self.tasks.dispatch("task_get", {"task_id": tid})
+                        if not result["running"]:
+                            break
+                        time.sleep(.01)
+                    else:
+                        self.fail("Git policy task did not finish")
+                if allowed:
+                    self.assertEqual(0, result["exit_code"], result)
+                    self.assertEqual(1, len(processes))
+                else:
+                    self.assertEqual(1, result["exit_code"], result)
+                    self.assertEqual("git_network_denied", result["error"]["code"])
+                    self.assertEqual([], processes)
+
+    def test_network_git_credentials_and_proxy_from_host_but_no_untrusted_helpers(self):
+        from unittest.mock import patch
+        self.git("remote", "add", "origin", "https://example.com/repo.git")
+        class Task:
+            def __init__(self):
+                self.calls = []
+            def write(self, _value):
+                pass
+            def run_process(self, argv, *, cwd=None, env=None):
+                self.calls.append((list(argv), dict(env)))
+                return 0
+        for operation in ("fetch", "pull", "push", "clone"):
+            with self.subTest(operation=operation):
+                task = Task()
+                args = {"_network_mode": "domain_allowlist",
+                        "_allowed_domains": ["example.com"]}
+                if operation == "clone":
+                    args.update(cwd="newclone", source="https://example.com/repo.git")
+                with (patch("openkapsel.files.git_write._safe_credential_helpers",
+                            return_value=["manager"]),
+                      patch("openkapsel.files.git_write._validate_git_metadata",
+                            return_value=(self.root / ".git",
+                                          '[remote "origin"]\nurl = https://example.com/repo.git\n')),
+                      patch("openkapsel.files.git_write._current_branch",
+                            return_value="main"),
+                      patch("openkapsel.files.git_write._path_exists", return_value=False),
+                      patch.dict(os.environ, {"HTTPS_PROXY": "http://127.0.0.1:3128"})):
+                    if operation == "clone":
+                        with patch.object(self.files.paths, "open",
+                                          side_effect=lambda *_: os.open(self.root, os.O_RDONLY)):
+                            mutate_git(self.files, operation, args, task)
+                    else:
+                        mutate_git(self.files, operation, args, task)
+                argv, env = task.calls[0]
+                self.assertIn("credential.helper=", argv)
+                self.assertIn("credential.helper=manager", argv)
+                self.assertNotIn("http.proxy=", argv)
+                self.assertEqual("http://127.0.0.1:3128", env["HTTPS_PROXY"])
+                self.assertEqual(str(Path.home()), env["HOME"])
+                self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
+                self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
+                self.assertIn("http.followRedirects=false", argv)
+                self.assertIn("http.sslVerify=true", argv)
+                self.assertIn("--no-verify", argv) if operation == "push" else None
+
     def test_git_write_rejects_external_filter_configuration(self):
         self.git("config", "filter.evil.clean", "touch should-not-run")
         (self.root / "source.txt").write_text("changed\n", encoding="utf-8")
@@ -291,6 +390,7 @@ class GitPushCommandPolicyTests(unittest.TestCase):
         if sys.platform == "darwin":
             self.assertIn("credential.helper=osxkeychain", task.argv)
         self.assertIn("--no-follow-tags", task.argv)
+        self.assertNotIn("http.proxy=", task.argv)
         self.assertIn("--recurse-submodules=no", task.argv)
         self.assertNotIn("--force", task.argv)
         self.assertEqual(

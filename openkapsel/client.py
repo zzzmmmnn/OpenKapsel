@@ -252,7 +252,10 @@ def _create_resources(config, *, protected_paths=()):
                         approval_only=os.name == "nt",
                         powershell_rules=powershell_rules,
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
-                        network=config.get("network", False), **limits)
+                        network=config.get("network", False),
+                        git_network_mode=(job_sandbox["network_mode"] if job_sandbox else "full"),
+                        git_allowed_domains=(job_sandbox["allowed_domains"] if job_sandbox else ()),
+                        **limits)
     from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks
     if is_mapping:
         tasks = SharedClientTasks(tasks, url=config["url"], job_sandbox=job_sandbox)

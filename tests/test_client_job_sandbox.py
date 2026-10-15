@@ -80,6 +80,9 @@ class ClientJobSandboxTests(unittest.TestCase):
             self.assertEqual(str(self.root), spec["root"])
             self.assertFalse(spec["writable"])
             self.assertEqual(["example.com", ".github.com"], spec["allowed_domains"])
+            self.assertEqual("domain_allowlist", runtime.tasks.legacy.git_network_mode)
+            self.assertEqual(("example.com", ".github.com"),
+                             runtime.tasks.legacy.git_allowed_domains)
             self.assertTrue(domain_allowed("sub.github.com", tuple(spec["allowed_domains"])))
             self.assertFalse(domain_allowed("otherexample.com", tuple(spec["allowed_domains"])))
             self.assertEqual([True, False], [p["access"] == "ro" for p in spec["allowed_paths"]])
@@ -126,6 +129,7 @@ class ClientJobSandboxTests(unittest.TestCase):
             try:
                 self.assertEqual("approval_only", runtime.tasks.job_sandbox["type"])
                 self.assertEqual("full", runtime.tasks.job_sandbox["network_mode"])
+                self.assertEqual("full", runtime.tasks.legacy.git_network_mode)
                 # platform.system is mocked above, but os.name is the host OS;
                 # an actual Windows Client enables approval-only Shell.
                 self.assertEqual(os.name == "nt", runtime.tasks.capabilities()["approval_required"])

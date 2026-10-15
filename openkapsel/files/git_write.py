@@ -310,6 +310,30 @@ def _base_env(home: Path, args):
         GIT_ALLOW_PROTOCOL="https",
         LC_ALL="C",
     )
+    if args.get("_operation") in {"fetch", "pull", "push", "clone"}:
+        # Credential Manager/Keychain and existing proxy settings belong to
+        # the execution host. Do not re-enable Git global/repository config:
+        # those can specify arbitrary subprocesses, URL rewrites or hooks.
+        env["HOME"] = str(Path.home())
+        if os.name == "nt":
+            for key in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
+                        "PROGRAMDATA"):
+                if key in os.environ:
+                    env[key] = os.environ[key]
+        else:
+            # libsecret and Linux Credential Manager need the user's
+            # desktop session/secret-service socket and config directory.
+            # GIT_CONFIG_GLOBAL=/dev/null still blocks arbitrary Git config.
+            env["XDG_CONFIG_HOME"] = os.environ.get(
+                "XDG_CONFIG_HOME", str(Path.home() / ".config")
+            )
+            for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+                if key in os.environ:
+                    env[key] = os.environ[key]
+        for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+                    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+            if key in os.environ:
+                env[key] = os.environ[key]
     name = _identity(args.get("author_name"), "author_name")
     email = _identity(args.get("author_email"), "author_email")
     if name is not None:
@@ -340,13 +364,45 @@ def _common(executable: str, hooks: Path):
         "-c", "color.ui=false",
         "-c", "credential.helper=",
         "-c", "core.askPass=",
-        "-c", "http.proxy=",
         "-c", "http.sslVerify=true",
         "-c", "http.extraHeader=",
         "-c", "http.cookieFile=",
         "-c", "http.saveCookies=false",
         "-c", "http.followRedirects=false",
     ]
+
+
+def _safe_credential_helpers():
+    """Only known OS credential providers; never execute helper from Git config.
+
+    The injected blank credential.helper overrides local settings, and global
+    Git configuration stays disabled. Names are fixed, never AI-controlled.
+    """
+    if sys.platform == "darwin":
+        return ["osxkeychain"]
+    if os.name == "nt":
+        # Git for Windows can ship GCM inside Git's own exec-path, not on
+        # PATH; Git resolves this conventional helper name itself.
+        if shutil.which("git-credential-manager-core") and not shutil.which("git-credential-manager"):
+            return ["manager-core"]
+        return ["manager"]
+    if shutil.which("git-credential-manager"):
+        return ["manager"]
+    if shutil.which("git-credential-libsecret"):
+        return ["libsecret"]
+    # cache does not persist plaintext credentials or introduce scripts from
+    # repo config, and store only operates on an already existing credentials
+    # file (never create one automatically).
+    if shutil.which("git-credential-cache"):
+        return ["cache"]
+    credential_file = Path.home() / ".git-credentials"
+    try:
+        info = credential_file.stat(follow_symlinks=False)
+        if stat.S_ISREG(info.st_mode) and not info.st_mode & 0o077:
+            return ["store"]
+    except OSError:
+        pass
+    return []
 
 
 def _run_git(files, root: Path, args, task):
@@ -361,6 +417,9 @@ def _run_git(files, root: Path, args, task):
         hooks.mkdir()
         home.mkdir()
         common = _common(executable, hooks)
+        if operation in {"fetch", "pull", "push", "clone"}:
+            for helper in _safe_credential_helpers():
+                common.extend(("-c", "credential.helper=" + helper))
 
         if operation == "clone":
             source = _validate_https_url(args.get("source"), args)
@@ -463,11 +522,6 @@ def _run_git(files, root: Path, args, task):
                     # with neither force, tags, nor pre-push hooks.
                     branch = (_current_branch(files, gitdir) if args.get("branch") is None
                               else _branch(args["branch"]))
-                    # macOS system Git stores HTTPS credentials in Keychain.
-                    # Re-enable only its built-in Git helper for push, never
-                    # arbitrary repository/global credential.helper commands.
-                    if sys.platform == "darwin":
-                        common = [*common, "-c", "credential.helper=osxkeychain"]
                     argv = [*common, "push", "--porcelain", "--no-verify",
                             "--no-follow-tags", "--recurse-submodules=no",
                             "--", remote_url, f"HEAD:refs/heads/{branch}"]
