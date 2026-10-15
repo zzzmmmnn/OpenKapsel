@@ -92,7 +92,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
     def _handle_files_approval_request(self) -> None:
         """Ask for a read/write grant without performing any file operation."""
         body = self._read_json()
-        if set(body) - {"access", "target", "path", "scope_is_directory", "writer_nonce", "plan_id", "taskname", "message"}:
+        if set(body) - {"access", "target", "path", "scope_is_directory", "writer_nonce", "plan_id", "taskname", "message", "reason"}:
             raise ApiError(400, "invalid_request", "unexpected file approval request field")
         access = body.get("access")
         if access not in ("read", "write"):
@@ -132,7 +132,7 @@ class FileHandlersMixin(FileOperationSupportMixin):
             return
         try:
             self._require_capability(body, target, capability, path=scope,
-                                     original_path=scope,
+                                     create_ticket=True, original_path=scope,
                                      scope_is_directory=scope_is_directory)
         except ApiError as exc:
             if exc.code != "capability_approval_required":

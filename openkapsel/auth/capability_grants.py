@@ -19,6 +19,7 @@ PENDING_SECONDS = 300
 DEFAULT_SECONDS = 600
 MAX_SECONDS = 24 * 3600
 MAX_PENDING_PER_TOKEN = 32
+MAX_APPROVAL_REASON_CHARS = 500
 MAX_ATTEMPTS = 5
 PASSWORD_SETUP_SECONDS = 15 * 60
 
@@ -31,6 +32,7 @@ class Pending:
     capability: str
     deadline: float
     path: str = ""
+    reason: str = ""
     original_path: str = ""
     resolved_path: str = ""
     scope_is_directory: bool = True
@@ -140,7 +142,7 @@ class CapabilityGrants:
         return now
 
     def request(self, workspace: str, conversation_id: int, target: str, capability: str,
-                path: str = "", *, original_path: str = "",
+                path: str = "", *, reason: str = "", original_path: str = "",
                 resolved_path: str = "", scope_is_directory: bool = True) -> str:
         if not isinstance(workspace, str) or not target or capability not in CAPABILITIES:
             raise ValueError("invalid capability approval request")
@@ -159,6 +161,9 @@ class CapabilityGrants:
                 or ".." in resolved_path.split("/") or "\x00" in resolved_path
                 or "\\" in resolved_path))):
             raise ValueError("invalid resolved approval path")
+        if (not isinstance(reason, str) or len(reason) > MAX_APPROVAL_REASON_CHARS
+            or any(ord(c) < 32 and c not in "\\n\\r\\t" for c in reason)):
+            raise ValueError("reason must be a bounded text description (maximum 500 characters)")
         if type(conversation_id) is not int or conversation_id < 0:
             raise ValueError("invalid conversation id")
         with self.lock:
@@ -170,7 +175,7 @@ class CapabilityGrants:
             ticket = secrets.token_urlsafe(24)
             self.pending_requests[ticket] = Pending(
                 workspace, conversation_id, target, capability, now + PENDING_SECONDS,
-                path=path, original_path=original_path,
+                path=path, reason=reason, original_path=original_path,
                 resolved_path=resolved_path, scope_is_directory=scope_is_directory)
             return ticket
 

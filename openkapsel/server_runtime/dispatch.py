@@ -260,8 +260,34 @@ class RequestDispatchMixin:
             error_payload: dict[str, Any] = {
                 "error": {"code": exc.code, "message": exc.message}
             }
-            if exc.details is not None:
-                error_payload["error"]["details"] = exc.details
+            details = exc.details
+            # Denied File/Shell operations never generate approval tickets.
+            # A permission-like failure may be recoverable using an explicit
+            # request_approval, but never imply that an explicit policy deny,
+            # missing path, or OS permission can be overridden.
+            file_access = getattr(self, "_file_approval_operation", None)
+            shell_access = locals().get("route") == "/shell/exec"
+            if exc.status in {403, 404} and (file_access or shell_access):
+                if file_access and exc.code in {"permission_denied", "path_outside_root",
+                                                "read_only_path", "path_unavailable",
+                                                "capability_approval_required"}:
+                    hint = ("If this may be a temporary File API permission issue, call "
+                            "files.request_approval with the explicit target, access mode, "
+                            "writer_nonce, in-progress Plan and a reason. Approval cannot "
+                            "override protected paths or OS permissions.")
+                elif shell_access and exc.code in {"permission_denied", "client_execution_disabled",
+                                                   "capability_approval_required"}:
+                    hint = ("If temporary unsandboxed Shell approval is appropriate, call "
+                            "shell.request_approval with an explicit target, writer_nonce, "
+                            "in-progress Plan and reason. Approval cannot override Shell "
+                            "permission or a read-only Mapping.")
+                else:
+                    hint = None
+                if hint:
+                    details = {**(details if isinstance(details, dict) else {}),
+                               "approval_hint": hint}
+            if details is not None:
+                error_payload["error"]["details"] = details
             if self._wants_html() and not self._response_mode_envelope:
                 self._finalize_context_operation(exc.status, error_payload)
                 self._send_html(

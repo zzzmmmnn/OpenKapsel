@@ -127,15 +127,17 @@ Password forms require HTTPS; local loopback HTTP is supported for development.
 AI may proactively request `shell.unsandboxed` using REST `POST
 /shell/approval/request` or MCP `shell.request_approval` without starting a
 command. Supply the explicit target (`server` or Mapping ID), the owning
-Conversation's `writer_nonce`, and the in-progress `plan_id` with mutation
-Context. The response is `status=approval_required` with `approval_url`, or
-`status=granted` if already approved. Later Shell commands must still request
-`approved=true`. Alternatively, an ordinary approved Shell invocation can
-request a grant and return `capability_approval_required` when not approved.
-The user opens that URL,
-checks workspace/conversation/target/capability, enters the Workspace Password,
-and chooses 1–1440 minutes (default 10). AI retries after approval; the page never
-executes a command.
+Conversation's `writer_nonce`, an AI-written `reason` explaining the requested
+access, and the in-progress `plan_id` with mutation Context. The response is
+`status=approval_required` with `approval_url`, or `status=granted` if already
+approved. File API uses the corresponding `files.request_approval` endpoint and
+also accepts `reason`; both display it in the browser. Ordinary File/Shell
+operations never create approval URLs: if permission is insufficient, they
+return an error suggesting a proactive `request_approval` where appropriate.
+After approval, the AI retries with `approved=true`. The user opens the URL,
+checks Workspace, Conversation, target, capability and AI reason, enters the
+Workspace Password, and selects 10 minutes, 30 minutes, 2 hours, 6 hours or
+24 hours (default 10 minutes). The page never executes a command.
 
 Approvals are browser-cookie/CSRF-bound, script-free, single use, and valid for
 five minutes. Five incorrect passwords exhaust one URL. Shared workspace/address

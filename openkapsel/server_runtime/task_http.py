@@ -20,7 +20,7 @@ class TaskHttpMixin:
     def _handle_shell_approval_request(self) -> None:
         """Request approval for a specific Shell target without starting a job."""
         body = self._read_json()
-        if set(body) - {"target", "writer_nonce", "plan_id", "taskname", "message"}:
+        if set(body) - {"target", "writer_nonce", "plan_id", "taskname", "message", "reason"}:
             raise ApiError(400, "invalid_request", "unexpected approval request field")
         self._require_permission(
             self.token_record.shell_mode != "none", "Shell permission is required"
@@ -43,7 +43,7 @@ class TaskHttpMixin:
                                "update and reconnect client for approved Shell execution")
             target = row["id"]
         try:
-            self._require_capability(body, target, "shell.unsandboxed")
+            self._require_capability(body, target, "shell.unsandboxed", create_ticket=True)
         except ApiError as exc:
             if exc.code != "capability_approval_required":
                 raise

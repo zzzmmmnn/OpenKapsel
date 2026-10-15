@@ -9,7 +9,7 @@ import secrets
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from openkapsel.auth.capability_grants import PENDING_SECONDS
+from openkapsel.auth.capability_grants import PENDING_SECONDS, MAX_APPROVAL_REASON_CHARS
 from openkapsel.auth.oauth_consent import STYLE, consent_cookie
 from openkapsel.auth.oauth_store import OAuthError
 from openkapsel.errors import ApiError
@@ -20,7 +20,7 @@ LOGGER = logging.getLogger("openkapsel.capability")
 def page(body):
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Temporary capabilities - OpenKapsel</title><style>{STYLE}</style>'
+            f'<title>Temporary capabilities - OpenKapsel</title><style>{STYLE}select{{width:100%;padding:12px;border:1px solid #888;border-radius:8px;font:inherit;background:transparent;color:inherit}}</style>'
             f'</head><body><main><section class="card">{body}</section></main></body></html>')
 
 
@@ -55,7 +55,7 @@ class CapabilityHandlersMixin:
 
     def _require_capability(self, body, target, capability, *, path="", match_path=False,
                             request_path=None, original_path="", resolved_path="",
-                            scope_is_directory=True):
+                            scope_is_directory=True, create_ticket=False):
         self._require_password_transport()
         if not self.server.config.admin_enabled:
             raise ApiError(409, "capability_unavailable", "Capability approval requires administration to be enabled")
@@ -78,9 +78,27 @@ class CapabilityHandlersMixin:
             path = request_path
         if grants.granted(workspace, conversation, target, capability, path):
             return path
+        request_operation = ("shell.request_approval" if capability == "shell.unsandboxed"
+                             else "files.request_approval")
+        if not create_ticket:
+            raise ApiError(403, "capability_approval_required",
+                           "No matching temporary approval. Use " + request_operation
+                           + " with a reason and the same Conversation, target and Plan; "
+                           "after the user approves, retry with approved=true.",
+                           {"capability": capability, "target": target,
+                            "request_operation": request_operation})
+        reason = body.get("reason", body.get("message", ""))
+        if (not isinstance(reason, str) or not reason.strip()
+            or len(reason) > MAX_APPROVAL_REASON_CHARS
+            or any(ord(c) < 32 and c not in "\\n\\r\\t" for c in reason)):
+            if "reason" in body:
+                raise ApiError(400, "invalid_approval_reason",
+                               "reason must be non-empty text of at most 500 characters")
+            reason = ""
         try:
             ticket = grants.request(workspace, conversation, target, capability, path,
-                                    original_path=original_path, resolved_path=resolved_path,
+                                    reason=reason, original_path=original_path,
+                                    resolved_path=resolved_path,
                                     scope_is_directory=scope_is_directory)
         except RuntimeError:
             raise ApiError(429, "capability_approval_capacity", "Too many pending capability approvals; retry later") from None
@@ -130,6 +148,7 @@ class CapabilityHandlersMixin:
                 f"<dl><dt>Original requested path</dt><dd>{esc(original)}</dd>"
                 f"<dt><strong>Actual authorized directory</strong></dt>"
                 f"<dd><strong>{esc(actual)}</strong></dd></dl>"
+                f"<p><strong>AI request reason:</strong> {esc(item.reason or 'Not provided by the AI')}</p>"
                 f'<p class="notice">{esc(warning)}</p>'
                 f'<form method="post" action="{esc(self._admin_path() + "/capability/" + ticket, quote=True)}">'
                 f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
@@ -189,6 +208,8 @@ class CapabilityHandlersMixin:
                         grants.confirm_file(ticket, cookie)
                     elif item.path and item.capability in {"files.read", "files.write"}:
                         minutes = int(self._form_one(form, "minutes") or "10")
+                        if minutes not in {10, 30, 120, 360, 1440}:
+                            raise ValueError("Invalid approval duration")
                         grants.authenticate_file(ticket, self._form_one(form, "password"), minutes * 60)
                         try:
                             actual = self._resolve_approval_target(item)
@@ -202,6 +223,8 @@ class CapabilityHandlersMixin:
                         return
                     else:
                         minutes = int(self._form_one(form, "minutes") or "10")
+                        if minutes not in {10, 30, 120, 360, 1440}:
+                            raise ValueError("Invalid approval duration")
                         grants.approve(ticket, self._form_one(form, "password"), minutes * 60)
                 LOGGER.info("approved workspace=%r conversation=%s target=%r capability=%s", item.workspace, item.conversation_id, item.target, item.capability)
                 self._send_html(200, page("<h1>Capability approved</h1><p>The AI may retry its operation now. This page has not executed any command.</p>"), script_src="'none'")
@@ -246,11 +269,12 @@ class CapabilityHandlersMixin:
             path_details = f'<dt>Requested directory / path</dt><dd>{esc(shown)}</dd>'
             warning = ("The actual authorized directory is shown only after "
                        "the Workspace password is verified. " + warning)
-        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{path_details}</dl>
+        reason_detail = f'<dt>AI request reason</dt><dd style="white-space:pre-wrap">{esc(item.reason or "Not provided by the AI")}</dd>'
+        body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{path_details}{reason_detail}</dl>
 <p class="notice">{esc(warning)}Approve only the conversation and target you intend.</p>
 <form method="post" action="{esc(self._admin_path() + '/capability/' + ticket, quote=True)}" autocomplete="off">
 <input type="hidden" name="csrf" value="{proof}"><label>Workspace password</label><input type="password" name="password" required maxlength="1024" autocomplete="off">
-<label>Duration (minutes)</label><input type="number" name="minutes" min="1" max="1440" value="10" required><div class="actions"><button>Approve</button></div></form>
+<label>Duration</label><select name="minutes" required><option value="10" selected>10 minutes</option><option value="30">30 minutes</option><option value="120">2 hours</option><option value="360">6 hours</option><option value="1440">24 hours</option></select><div class="actions"><button>Approve</button></div></form>
 <p>The URL expires after five minutes and can be approved once. Approval does not rerun the operation. Restarting the server clears all temporary grants.</p>'''
         header = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300" + ("; Secure" if self._request_is_https() else "")
         self._send_html(status, page(body), headers={"Set-Cookie": header}, script_src="'none'")

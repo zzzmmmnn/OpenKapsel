@@ -195,10 +195,11 @@ client advertising `execution.shell_command`.
 **Request approval proactively without executing a Shell command:**
 
 REST `POST /shell/approval/request` accepts an explicit `target` (`"server"`
-or an authorized Mapping ID), `writer_nonce`, and mutation Context
+or an authorized Mapping ID), `writer_nonce`, a specific AI-written `reason`
+(displayed on the approval page), and mutation Context
 (`plan_id`, `taskname`, `message`). MCP `capability_call` uses
 `family="shell"`, `operation="request_approval"`, and
-`args={"target":"server","writer_nonce":"@Ab12@"}` with normal outer Plan
+`args={"target":"server","writer_nonce":"@Ab12@","reason":"Inspect the host environment"}` with normal outer Plan
 Context. Targets are explicit because no command or `cwd` is provided for
 automatic placement.
 
@@ -226,11 +227,10 @@ For MCP these fields go inside `args`; mutation Context stays in outer
 }
 ```
 
-Without approval the error code is `capability_approval_required` and
-`error.details.approval_url` contains the full browser URL. Display it and pause
-for user approval; retry the same request after approval. Each attempt may return
-a different five-minute single-use URL. Grants default to ten minutes, may last
-up to 24 hours, and are specific to the **Token Workspace** (stable `app_id`),
+Without approval, execution returns `capability_approval_required` with an
+explicit `shell.request_approval` instruction and **no URL**. Only a proactive
+`request_approval` call can generate a five-minute single-use URL. Grants offer 10 minutes, 30 minutes, 2 hours, 6 hours or 24 hours (default
+10 minutes), and are specific to the **Token Workspace** (stable `app_id`),
 Conversation and selected execution target. Distinct Tokens pointing to the
 same server directory need separate passwords and grants. Server approval does
 not approve any Mapping. Changing cwd may require a separate approval. A new

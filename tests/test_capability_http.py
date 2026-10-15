@@ -47,6 +47,24 @@ class CapabilityHTTPTests(unittest.TestCase):
         return location, {"Cookie": headers["Set-Cookie"].split(";", 1)[0], "Origin": "https://example.test"}, {"csrf": proof, "password": self.PASSWORD, "minutes": "10"}, raw
 
     def approve(self, result):
+        # A failed operation NEVER returns an approval URL. Exercise the
+        # caller\'s explicit proactive approval request before browser approval.
+        details = result["error"]["details"]
+        if "approval_url" not in details:
+            capability = details["capability"]
+            target = details["target"]
+            self.assertEqual("capability_approval_required", result["error"]["code"])
+            self.assertEqual("shell.request_approval" if capability == "shell.unsandboxed"
+                             else "files.request_approval", details["request_operation"])
+            if capability == "shell.unsandboxed":
+                status, pending = self.request_approval(target, reason="Test requested Shell capability")
+            else:
+                status, pending = self.request_file_approval(
+                    capability.removeprefix("files."), target,
+                    reason="Test requested File API capability")
+            self.assertEqual(200, status, pending)
+            self.assertEqual("approval_required", pending["status"])
+            result = {"error": {"details": pending}}
         location, headers, form, first_page = self.approval(result)
         status, _, raw = self.form(location, form, headers)
         self.assertEqual(200, status, raw)
@@ -71,6 +89,164 @@ class CapabilityHTTPTests(unittest.TestCase):
         body = {"target": target, "writer_nonce": self.ownership()[1]}
         body.update(values)
         return self.api("/shell/approval/request", body)
+
+    def test_approval_reason_is_shown_and_html_escaped_for_shell_and_file(self):
+        from html import escape
+
+        self.configure()
+        reason = 'Inspect <release-notes> & audit "Git changes"'
+        status, pending = self.request_approval(reason=reason)
+        self.assertEqual(200, status, pending)
+        self.assertEqual("approval_required", pending["status"])
+        ticket = urlsplit(pending["approval_url"]).path.rsplit("/", 1)[-1]
+        self.assertEqual(reason, self.server.capability_grants.pending(ticket).reason)
+        location, headers, form, page = self.approval({"error": {"details": pending}})
+        self.assertIn(b"AI request reason", page)
+        self.assertIn(escape(reason).encode(), page)
+        self.assertNotIn(reason.encode(), page)
+        self.assertEqual(403, self.form(location, dict(form, password="wrong"), headers)[0])
+        self.assertIn(escape(reason).encode(), self.request("GET", location, headers=headers)[2])
+
+        with tempfile.TemporaryDirectory(prefix="approval-reason-") as raw:
+            directory = Path(raw).resolve()
+            status, file_pending = self.request_file_approval(
+                "read", reason="Inspect diagnostics for a support request",
+                path=str(directory),
+            )
+            self.assertEqual(200, status, file_pending)
+            self.assertEqual("approval_required", file_pending["status"])
+            file_ticket = urlsplit(file_pending["approval_url"]).path.rsplit("/", 1)[-1]
+            self.assertEqual("Inspect diagnostics for a support request",
+                             self.server.capability_grants.pending(file_ticket).reason)
+            location, headers, form, page = self.approval({"error": {"details": file_pending}})
+            self.assertIn(b"Inspect diagnostics for a support request", page)
+            status, _, confirmation = self.form(location, form, headers)
+            self.assertEqual(200, status, confirmation)
+            self.assertIn(b"AI request reason", confirmation)
+            self.assertIn(b"Inspect diagnostics for a support request", confirmation)
+
+    def test_mcp_file_approval_reason_reaches_browser(self):
+        self.configure()
+        token, _, _ = self.authorize()
+        args = {
+            "family": "files", "operation": "request_approval",
+            "args": {
+                "target": "server", "access": "read",
+                "writer_nonce": self.ownership()[1],
+                "reason": "Review application diagnostic files",
+            },
+            "plan_id": self.plan, "taskname": "file approval",
+            "message": "Ask for File API access",
+        }
+        status, result = self.rpc(token["access_token"], "tools/call", {
+            "name": "capability_call", "arguments": args,
+        })
+        self.assertEqual(200, status, result)
+        self.assertFalse(result["result"]["isError"], result)
+        pending = result["result"]["structuredContent"]
+        self.assertEqual("approval_required", pending["status"])
+        self.assertIn(b"Review application diagnostic files",
+                      self.approval({"error": {"details": pending}})[3])
+
+    def test_operations_never_issue_tickets_and_suggest_proactive_approval(self):
+        self.configure()
+        grants = self.server.capability_grants
+        self.assertEqual({}, grants.pending_requests)
+        status, prompt = self.approved(reason="Do not create a link while executing")
+        self.assertEqual(403, status, prompt)
+        self.assertEqual("capability_approval_required", prompt["error"]["code"])
+        self.assertNotIn("approval_url", str(prompt))
+        self.assertEqual("shell.request_approval", prompt["error"]["details"]["request_operation"])
+        self.assertIn("approval_hint", prompt["error"]["details"])
+        self.assertEqual({}, grants.pending_requests)
+        status, file_prompt = self.api("/fs/read/files", {
+            "paths": ["example.txt"], "approved": True,
+            "target": "server", "writer_nonce": self.ownership()[1],
+            "reason": "Do not create a File approval link",
+        })
+        self.assertEqual(403, status, file_prompt)
+        self.assertEqual("capability_approval_required", file_prompt["error"]["code"])
+        self.assertNotIn("approval_url", str(file_prompt))
+        self.assertEqual("files.request_approval", file_prompt["error"]["details"]["request_operation"])
+        self.assertIn("approval_hint", file_prompt["error"]["details"])
+        self.assertEqual({}, grants.pending_requests)
+        # An ordinary File read denial also includes a conditional hint,
+        # without turning the attempt into a pending approval request.
+        self.server.tokens.update(self.record.token, can_read=False)
+        status, denial = self.api("/fs/read/files", {"paths": ["example.txt"]})
+        self.assertEqual(403, status, denial)
+        self.assertIn("approval_hint", denial["error"]["details"])
+        self.assertEqual({}, grants.pending_requests)
+        # The Windows fallback for an unrecognized command must also return
+        # advice rather than silently creating a browser ticket.
+        self.session.capabilities["execution"].update(
+            platform="win32", safe_powershell=True)
+        status, unknown = self.api("/shell/exec", {
+            "command": "Get-Process", "cwd": "laptop",
+            "writer_nonce": self.ownership()[1],
+        })
+        self.assertEqual(403, status, unknown)
+        self.assertEqual("capability_approval_required", unknown["error"]["code"])
+        self.assertEqual("shell.request_approval",
+                         unknown["error"]["details"]["request_operation"])
+        self.assertNotIn("approval_url", str(unknown))
+        self.assertEqual({}, grants.pending_requests)
+
+    def test_approval_duration_choices_are_validated_server_side(self):
+        self.configure()
+        # This test exercises repeated valid duration choices, not the
+        # independent browser password-attempt rate limiter.
+        limiter = patch.object(self.server.capability_limiter, "take", return_value=None)
+        limiter.start()
+        self.addCleanup(limiter.stop)
+        options = {10: b"10 minutes", 30: b"30 minutes", 120: b"2 hours",
+                   360: b"6 hours", 1440: b"24 hours"}
+        grants = self.server.capability_grants
+        for minutes in options:
+            with self.subTest(minutes=minutes):
+                status, pending = self.request_approval(reason="Timed approval")
+                self.assertEqual(200, status, pending)
+                location, headers, form, page = self.approval({"error": {"details": pending}})
+                self.assertIn(b'<select name="minutes" required>', page)
+                self.assertNotIn(b'type="number" name="minutes"', page)
+                for value, label in options.items():
+                    self.assertIn(f'<option value="{value}"'.encode(), page)
+                    self.assertIn(label, page)
+                if minutes == 10:
+                    # A crafted POST cannot choose an unadvertised duration.
+                    self.assertEqual(400, self.form(location, dict(form, minutes="11"), headers)[0])
+                    self.assertIsNotNone(grants.pending(location.rsplit("/", 1)[-1]))
+                status, _, confirmed = self.form(location, dict(form, minutes=str(minutes)), headers)
+                self.assertEqual(200, status, confirmed)
+                self.assertIn(b"Capability approved", confirmed)
+                entries = grants.list_grants(self.record.app_id)
+                self.assertEqual(1, len(entries))
+                self.assertGreaterEqual(entries[0]["remaining_seconds"], minutes * 60 - 4)
+                self.assertLessEqual(entries[0]["remaining_seconds"], minutes * 60)
+                grants.revoke_workspace(self.record.app_id)
+
+        with tempfile.TemporaryDirectory(prefix="approval-duration-") as raw:
+            status, pending = self.request_file_approval(
+                "read", path=str(Path(raw).resolve()), reason="Inspect files")
+            self.assertEqual(200, status)
+            location, headers, form, _ = self.approval({"error": {"details": pending}})
+            self.assertEqual(400, self.form(location, dict(form, minutes="1"), headers)[0])
+            status, _, page = self.form(location, dict(form, minutes="120"), headers)
+            self.assertEqual(200, status, page)
+            self.assertIn(b"Confirm actual File access directory", page)
+            self.assertEqual(200, self.form(location, {
+                "csrf": form["csrf"], "confirm": "actual_path"}, headers)[0])
+            entry = grants.list_grants(self.record.app_id)[0]
+            self.assertGreaterEqual(entry["remaining_seconds"], 120 * 60 - 4)
+
+    def test_approval_reason_validation(self):
+        self.configure()
+        for reason in ("", "  ", "bad" + chr(0) + "value", "x" * 501, 1):
+            with self.subTest(reason=repr(reason)):
+                status, body = self.request_approval(reason=reason)
+                self.assertEqual(400, status, body)
+                self.assertEqual("invalid_approval_reason", body["error"]["code"])
+        self.assertEqual({}, self.server.capability_grants.pending_requests)
 
     def test_shared_directory_tokens_have_independent_passwords_and_grants(self):
         self.configure()
@@ -168,7 +344,9 @@ class CapabilityHTTPTests(unittest.TestCase):
         status, body = self.approved()
         self.assertEqual(403, status)
         self.assertEqual("capability_approval_required", body["error"]["code"])
-        location, headers, form, _ = self.approval(body)
+        status, pending = self.request_approval()
+        self.assertEqual(200, status, pending)
+        location, headers, form, _ = self.approval({"error": {"details": pending}})
         self.assertEqual(403, self.form(location, form, headers)[0])
         self.assertFalse(self.server.capability_grants.granted(
             self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed"
@@ -866,8 +1044,9 @@ class CapabilityHTTPTests(unittest.TestCase):
             first_error = json.loads(first_prompt)["error"]
             self.assertEqual("capability_approval_required", first_error["code"])
             self.assertNotIn("path", first_error["details"])
-            self.assertIn("approval_url", first_error["details"])
-            self.approve({"error": {"details": first_error["details"]}})
+            self.assertNotIn("approval_url", first_error["details"])
+            self.assertEqual("files.request_approval", first_error["details"]["request_operation"])
+            self.approve({"error": first_error})
             status, _, unavailable = self.request(
                 "GET", self.base + "/fs/query/list?" + approved_query,
                 headers=self.headers)
@@ -1211,7 +1390,8 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual({"exec", "request_approval"}, set(operations))
         arguments = {
             "family": "shell", "operation": "request_approval",
-            "args": {"target": "server", "writer_nonce": self.ownership()[1]},
+            "args": {"target": "server", "writer_nonce": self.ownership()[1],
+                     "reason": "Compile and test local release artifacts"},
             "plan_id": self.plan, "taskname": "approve shell",
             "message": "Request proactive Shell approval",
         }
@@ -1224,6 +1404,8 @@ class CapabilityHTTPTests(unittest.TestCase):
             pending = data["structuredContent"]
             self.assertEqual("approval_required", pending["status"])
             self.assertIn("approval_url", pending)
+            self.assertIn(b"Compile and test local release artifacts",
+                          self.approval({"error": {"details": pending}})[3])
             launch.assert_not_called()
             self.approve({"error": {"details": pending}})
             status, result = self.rpc(token["access_token"], "tools/call",
@@ -1335,8 +1517,9 @@ class CapabilityHTTPTests(unittest.TestCase):
 
     def test_csrf_password_attempts_headers_and_no_secret_echo(self):
         self.configure()
-        _, result = self.approved()
-        location, headers, form, raw = self.approval(result)
+        status, pending = self.request_approval()
+        self.assertEqual(200, status, pending)
+        location, headers, form, raw = self.approval({"error": {"details": pending}})
         self.assertNotIn(self.PASSWORD.encode(), raw)
         self.assertIn(self.record.path_prefix.encode(), raw)
         self.assertIn(b"shell.unsandboxed", raw)
@@ -1354,9 +1537,10 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertNotIn(b"incorrect-secret", raw)
         self.assertEqual(400, self.form(location, form, headers)[0])
         self.assertFalse(self.server.capability_grants.granted(self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed"))
-        # New URL cannot reset the shared workspace password budget.
-        _, new = self.approved()
-        location, headers, form, _ = self.approval(new)
+        # Another proactive request cannot reset the shared password budget.
+        status, pending = self.request_approval()
+        self.assertEqual(200, status, pending)
+        location, headers, form, _ = self.approval({"error": {"details": pending}})
         self.assertEqual(429, self.form(location, form, headers)[0])
 
     def test_delegated_workspace_password_setup_link(self):
@@ -1591,13 +1775,14 @@ class CapabilityHTTPTests(unittest.TestCase):
 
     def test_expiry_blocks_new_jobs_and_preserves_running_job(self):
         self.configure()
-        _, first = self.approved()
-        _, second = self.approved()
-        self.assertNotEqual(first["error"]["details"]["approval_url"], second["error"]["details"]["approval_url"])
-        location = urlsplit(second["error"]["details"]["approval_url"]).path
+        self.assertEqual(403, self.approved()[0])
+        _, first = self.request_approval()
+        _, second = self.request_approval()
+        self.assertNotEqual(first["approval_url"], second["approval_url"])
+        location = urlsplit(second["approval_url"]).path
         self.server.capability_grants.pending_requests[location.rsplit("/", 1)[1]].deadline = 0
         self.assertEqual(400, self.request("GET", location)[0])
-        self.approve(first)
+        self.approve({"error": {"details": first}})
         status, task = self.approved(command="cat", interactive=True)
         self.assertEqual(202, status, task)
         self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed", "")] = 0
@@ -1613,7 +1798,8 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, result)
         self.assertTrue(result["result"]["isError"])
         error = result["result"]["structuredContent"]
-        self.assertIn(error["error"]["details"]["approval_url"], result["result"]["content"][0]["text"])
+        self.assertNotIn("approval_url", str(error))
+        self.assertIn("shell.request_approval", result["result"]["content"][0]["text"])
         self.approve(error)
         status, result = self.rpc(token["access_token"], "tools/call", {"name": "capability_call", "arguments": arguments})
         self.assertFalse(result["result"]["isError"], result)

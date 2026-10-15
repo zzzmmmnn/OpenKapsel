@@ -77,9 +77,11 @@ def _tool(
     }:
         schema["properties"].update({
             "approved": {"type": "boolean", "default": False,
-                         "description": "Explicitly use approved files.read or files.write for this Token and target."},
+                         "description": "Use an existing temporary File grant for this Token and target. Missing approval returns request_approval guidance, never an URL; call files.request_approval first."},
             "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
                              "description": "Owning Conversation writer nonce, required when approved=true."},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 500,
+                       "description": "Optional purpose metadata; to request approval and display a reason to the user, call files.request_approval explicitly."},
             "target": {"type": "string", "minLength": 1,
                        "description": "Required when approved=true: server or exact Mapping ID."},
         })
@@ -1005,12 +1007,14 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "files_request_approval",
         "Request File API approval",
-        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. An optional absolute path scopes an external directory and descendants; ordinary grants never unlock external paths. This performs no File operation. Returns approval_required with approval_url or granted. After approval, send approved=true, writer_nonce and target on each File API call.",
+        "Proactively request files.read or files.write for this Token and a specific server or Mapping target. An optional absolute path scopes an external directory and descendants; ordinary grants never unlock external paths. This performs no File operation. Provide reason to tell the user exactly why access is needed; it appears on the approval page. Returns approval_required with approval_url or granted. After approval, send approved=true, writer_nonce and target on each File API call.",
         _object_schema({
             "access": {"type": "string", "enum": ["read", "write"]},
             "target": {"type": "string", "minLength": 1,
                        "description": "server or exact Mapping ID"},
             "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 500,
+                       "description": "Specific purpose of the File access request. Displayed to the approving user."},
             "path": {"type": "string", "minLength": 2,
                      "description": "Optional absolute external directory, or file alias when scope_is_directory=false, on the selected target. The approved scope is the real directory."},
             "scope_is_directory": {"type": "boolean", "default": True,
@@ -1021,7 +1025,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "shell_request_approval",
         "Request temporary Shell approval",
-        "Request temporary approval for unsandboxed Shell execution on an explicit target without running a command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. The user must approve in the browser; later Shell execution still requires approved=true.",
+        "Request temporary approval for unsandboxed Shell execution on an explicit target without running a command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. Provide a specific reason for the user; it is displayed in the browser approval page. The user must approve in the browser; later Shell execution still requires approved=true.",
         _object_schema(
             {
                 "target": {
@@ -1032,6 +1036,8 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                     "type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
                     "description": "Writer nonce for the Conversation owning plan_id.",
                 },
+                "reason": {"type": "string", "minLength": 1, "maxLength": 500,
+                           "description": "Specific reason for unsandboxed Shell access, visible on the approval page."},
             },
             ("target", "writer_nonce"),
         ),
@@ -1044,7 +1050,9 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Start an asynchronous Shell job with &a1B2& reference ID. Omitted/null timeout defaults to 120s; client Shell with timeout <=120s runs in Client, >120s in shared Job Manager. Explicit finite positive timeouts have no maximum. target=auto routes mapped cwd to client, otherwise server; errors never fall back. Only Mapping Shell with timeout >120s survives Client restart via disk-backed Job Manager (16 global, 4 per Mapping key). Use family=task operations to inspect and control output.",
         _object_schema(
             {
-                "approved": {"type": "boolean", "default": False, "description": "Request approved unsandboxed Shell execution for this conversation and target. On capability_approval_required, show the approval_url, pause for user approval, then retry. Approval never reruns a command."},
+                "approved": {"type": "boolean", "default": False, "description": "Use an existing temporary unsandboxed Shell grant; a missing grant returns guidance, not a URL. Call shell.request_approval first to request user approval."},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 500,
+                           "description": "Optional operation purpose; only shell.request_approval can create a link and show its reason to the user."},
                 "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$", "description": "Owning Conversation writer nonce; required when approved=true. Conversation is derived from outer plan_id."},
                 "command": {"type": "string", "minLength": 1},
                 "mount_mappings": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Server-only native mapping dependencies by name or ID. Mapped cwd is automatic; command text is not inspected."},

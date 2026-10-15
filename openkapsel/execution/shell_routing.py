@@ -162,13 +162,16 @@ class ShellRoutingMixin:
             raise ApiError(403, "client_execution_requires_write",
                            "client execution requires a writable mapping and caller")
         if not approved and (not row["allow_exec"] or not execution.get("enabled")):
-            raise ApiError(403, "client_execution_disabled", "mapping and client execution must both be enabled")
+            raise ApiError(403, "client_execution_disabled",
+                           "Mapping or Client execution is disabled. If temporary unsandboxed "
+                           "execution is appropriate, use shell.request_approval with a reason "
+                           "for this target, then retry with approved=true.",
+                           {"request_operation": "shell.request_approval", "target": row["id"]})
         if windows and not approved and safe is None:
-            if body.get("writer_nonce"):
-                self._require_capability(body, row["id"], "shell.unsandboxed")
             raise ApiError(403, "capability_approval_required",
-                           "Windows Shell requires approval for unrecognized commands; "
-                           "request shell.request_approval and retry with approved=true",
+                           "Windows Shell requires temporary approval for unrecognized commands. "
+                           "Call shell.request_approval with an explicit target and reason; "
+                           "retry with approved=true after the user approves.",
                            {"capability": "shell.unsandboxed", "target": row["id"],
                             "request_operation": "shell.request_approval"})
         if approved:
