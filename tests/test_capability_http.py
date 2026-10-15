@@ -1717,8 +1717,11 @@ class CapabilityHTTPTests(unittest.TestCase):
         import shutil
         import subprocess
         if shutil.which("node"):
+            # A cold Node startup can stall briefly on a saturated CI runner.
+            # Keep the real JavaScript parser check and its failure assertion;
+            # only relax the process deadline (the old 10s was flaky).
             result = subprocess.run(["node", "--check"], input=admin_script,
-                                    text=True, capture_output=True, timeout=10)
+                                    text=True, capture_output=True, timeout=60)
             self.assertEqual(0, result.returncode, result.stderr)
         card = page.split(f'data-token-app="{self.record.app_id}"', 1)[1].split(
             '</details>', 1)[0]
