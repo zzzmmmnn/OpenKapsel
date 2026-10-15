@@ -199,7 +199,10 @@ class GitHTTPTests(unittest.TestCase):
                     "plan_id": plan, "taskname": "git",
                     "message": "Check Mapping network ownership",
                 }).encode("utf-8"),
-                {"Content-Type": "application/json"},
+                {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + self.record.control_token,
+                },
             )
             self.assertEqual(202, status, raw)
             payload = json.loads(raw)
