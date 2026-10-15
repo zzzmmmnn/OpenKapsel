@@ -112,6 +112,147 @@ class JobSandboxTests(unittest.TestCase):
                     prepared = prepare_job(spec, ["/bin/echo", "ok"], str(self.workspace), {}, self.state)
                     prepared.cleanup()
 
+    def test_broad_parent_grant_masks_manager_state_in_bubblewrap(self):
+        """Parent RW access must not expose Manager DB, spools or IPC key."""
+        from openkapsel.execution.sandbox_backends import SandboxLaunch
+
+        (self.state / "ipc.key").write_text("PRIVATE")
+        spec = self._spec(
+            "bubblewrap", writable=False, network_mode="none",
+            allowed_paths=[{"path": str(self.base), "access": "rw"}],
+        )
+        with (
+            patch("openkapsel.job_sandbox.platform.system", return_value="Linux"),
+            patch("openkapsel.job_sandbox.BubblewrapBackend.build_shell",
+                  return_value=SandboxLaunch("bubblewrap", ("/bin/true",))) as build,
+        ):
+            prepared = prepare_job(
+                spec, ["/bin/true"], str(self.workspace), {}, self.state,
+            )
+        try:
+            policy = build.call_args.args[0]
+            self.assertEqual(str(self.base), policy.allowed_paths[0].path)
+            self.assertIn(self.state, policy.hidden_paths)
+            self.assertFalse(policy.can_write)
+        finally:
+            prepared.cleanup()
+
+    def test_explicit_manager_deny_merges_with_auto_exclusion(self):
+        """A user's explicit deny must not make an otherwise valid grant fail."""
+        from openkapsel.execution.sandbox_backends import SandboxLaunch
+        key = self.state / "ipc.key"
+        key.write_text("PRIVATE")
+        with (
+            patch("openkapsel.job_sandbox.platform.system", return_value="Linux"),
+            patch("openkapsel.job_sandbox.BubblewrapBackend.build_shell",
+                  return_value=SandboxLaunch("bubblewrap", ("/bin/true",))) as build,
+        ):
+            prepared = prepare_job({
+                "type": "bubblewrap", "root": str(self.workspace),
+                "allowed_paths": [{"path": str(self.base), "access": "rw"}],
+                "hidden_paths": [str(self.state), str(key)],
+            }, ["/bin/true"], str(self.workspace), {}, self.state)
+        try:
+            excluded = build.call_args.args[0].hidden_paths
+            self.assertEqual(1, excluded.count(self.state))
+            self.assertNotIn(key, excluded)
+        finally:
+            prepared.cleanup()
+
+    def test_workspace_containing_manager_state_is_masked(self):
+        """Also support an exported workspace that encloses private state."""
+        from openkapsel.execution.sandbox_backends import SandboxLaunch
+
+        with (
+            patch("openkapsel.job_sandbox.platform.system", return_value="Linux"),
+            patch("openkapsel.job_sandbox.BubblewrapBackend.build_shell",
+                  return_value=SandboxLaunch("bubblewrap", ("/bin/true",))) as build,
+        ):
+            prepared = prepare_job(
+                {"type": "bubblewrap", "root": str(self.base), "writable": True},
+                ["/bin/true"], str(self.workspace), {}, self.state,
+            )
+        try:
+            self.assertIn(self.state, build.call_args.args[0].hidden_paths)
+        finally:
+            prepared.cleanup()
+
+    def test_cannot_grant_paths_inside_manager_private_state(self):
+        inside = self.state / "spool"
+        inside.mkdir()
+        for grant in (self.state, inside):
+            with self.subTest(grant=grant), patch(
+                "openkapsel.job_sandbox.platform.system", return_value="Linux"
+            ):
+                with self.assertRaisesRegex(ValueError, "grant is inside Manager state"):
+                    prepare_job({
+                        "type": "bubblewrap", "root": str(self.workspace),
+                        "allowed_paths": [{"path": str(grant), "access": "rw"}],
+                    }, ["/bin/true"], str(self.workspace), {}, self.state)
+
+    def test_seatbelt_parent_rw_denies_state_but_allows_job_scratch(self):
+        (self.state / "ipc.key").write_text("PRIVATE")
+        with (
+            patch("openkapsel.job_sandbox.platform.system", return_value="Darwin"),
+            patch("openkapsel.job_sandbox.shutil.which", return_value=sys.executable),
+            patch("openkapsel.job_sandbox._macos_xcode_developer_dir", return_value=None),
+        ):
+            prepared = prepare_job({
+                "type": "seatbelt", "root": str(self.workspace), "writable": False,
+                "allowed_paths": [{"path": str(self.base), "access": "rw"}],
+            }, ["/bin/true"], str(self.workspace), {}, self.state)
+        try:
+            profile = prepared.argv[prepared.argv.index("-p") + 1]
+            state_deny = f'(deny file-read* (subpath "{self.state}"))'
+            scratch_allow = f'(allow file-write* (subpath "{prepared.temp_dir}"))'
+            self.assertIn(f'(allow file-read* (subpath "{self.base}"))', profile)
+            self.assertIn(state_deny, profile)
+            self.assertIn(f'(deny file-write* (subpath "{self.state}"))', profile)
+            self.assertIn(f'(deny file-read* (literal "{self.state / "ipc.key"}"))', profile)
+            self.assertIn(scratch_allow, profile)
+            self.assertLess(profile.index(state_deny), profile.index(scratch_allow))
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin", "requires actual macOS Seatbelt")
+    def test_real_macos_broad_parent_grant_excludes_manager_state(self):
+        """Probe real read/write access: siblings allowed, Manager files denied."""
+        import shlex
+        secret = self.state / "ipc.key"
+        secret.write_text("MANAGER_SECRET")
+        output = self.base / "parent-write.txt"
+        command = (
+            f"if cat {shlex.quote(str(self.base / 'private.txt'))} >/dev/null 2>&1; "
+            "then echo parent-readable; else echo parent-denied; fi; "
+            f"if cat {shlex.quote(str(secret))} >/dev/null 2>&1; "
+            "then echo manager-readable; else echo manager-denied; fi; "
+            f"if printf allowed > {shlex.quote(str(output))} 2>/dev/null; "
+            "then echo parent-writable; else echo parent-write-denied; fi; "
+            f"if printf blocked > {shlex.quote(str(secret))} 2>/dev/null; "
+            "then echo manager-writable; else echo manager-write-denied; fi; "
+            'if printf scratch > "$TMPDIR/test-scratch" 2>/dev/null; '
+            "then echo scratch-writable; else echo scratch-denied; fi"
+        )
+        prepared = prepare_job({
+            "type": "seatbelt", "root": str(self.workspace), "writable": False,
+            "allowed_paths": [{"path": str(self.base), "access": "rw"}],
+        }, ["/bin/sh", "-c", command], str(self.workspace), dict(os.environ),
+            self.state)
+        try:
+            result = subprocess.run(
+                prepared.argv, cwd=self.workspace, env=prepared.environment,
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            for expected in ("parent-readable", "manager-denied",
+                             "parent-writable", "manager-write-denied",
+                             "scratch-writable"):
+                self.assertIn(expected, result.stdout, result.stdout + result.stderr)
+            self.assertEqual("MANAGER_SECRET", secret.read_text())
+            self.assertEqual("allowed", output.read_text())
+        finally:
+            prepared.cleanup()
+
     def test_parent_grant_and_config_deny_survive_manager_policy(self):
         from openkapsel.execution.sandbox_backends import SandboxLaunch
         outer = self.base / "shared"

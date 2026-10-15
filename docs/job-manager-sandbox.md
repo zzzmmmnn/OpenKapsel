@@ -94,7 +94,10 @@ The shared Manager authenticates IPC using a private 32-byte key stored in
 `job-manager/ipc.key` (mode 0600 on POSIX). Each connection uses
 `multiprocessing.connection` challenge-response authentication; random
 Mapping identifiers and Unix socket owner permissions alone are not credentials.
-The Manager state directory and IPC key are not sandbox-mounted.
+The Manager state directory and IPC key are not exposed to sandboxed jobs.
+If the Mapping root or an extra permitted directory contains Manager state,
+that private subtree is automatically excluded without rejecting the broader
+authorization. Only grants that point *inside* Manager private state are invalid.
 
 On macOS with Xcode selected, Seatbelt also permits **read-only** access
 to the trusted selected `/Applications/Xcode*.app` bundle. Apple's
@@ -122,8 +125,10 @@ Manager socket, the socket parent directory is additionally masked. On macOS,
 Seatbelt explicitly denies reading the IPC credential and accessing the socket
 directory, and **denies all outbound AF_UNIX sockets**, including
 `network_mode=full`; HTTP/S domain proxies use TCP loopback instead.
-The Manager state directory is otherwise outside the sandbox's readable roots,
-except for the specific per-Job temporary directory (used by `TMPDIR`).
+The Manager state directory remains unreadable and unwritable even if a broad
+parent directory is permitted. Seatbelt explicitly denies the full private
+subtree, then permits only the isolated per-Job scratch directory used by
+`TMPDIR`; Bubblewrap masks the Manager subtree with a private empty mount.
 These restrictions complement IPC authentication: a sandboxed process sharing
 the Manager's UID must never obtain Manager command access.
 
@@ -144,8 +149,8 @@ have been changed; the existing Client Shell/Podman configuration and the
 Manager's current-user default remain unchanged.
 
 The macOS integration tests execute real Seatbelt profiles and check denied
-filesystem and network access, proxy policy, output and cleanup. Windows
-adapter tests exercise settings translation, dependency refusal and cleanup,
-but native Windows isolation is not yet verified on a provisioned host. Linux CI
+filesystem and network access, proxy policy, output and cleanup. Windows uses
+an approval-only Shell policy with guarded literal PowerShell file commands,
+not an OS sandbox. Linux CI
 executes real Bubblewrap isolation under
 `OPENKAPSEL_REAL_SANDBOX_TESTS=1`, rather than treating mocks as isolation.

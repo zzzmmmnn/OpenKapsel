@@ -157,8 +157,11 @@ def prepare_job(
         raise ValueError("sandbox cwd must be inside sandbox root")
     # Never expose the Manager's state database and spool in the sandbox.
     state_root = home.resolve()
-    if _contains(root, state_root) or _contains(state_root, root):
-        raise ValueError("sandbox workspace overlaps Manager state")
+    # An exported root may CONTAIN the Manager's state: mask that private
+    # subtree rather than rejecting an otherwise legitimate workspace.
+    # Only a root INSIDE private Manager state is fundamentally unsafe.
+    if _contains(state_root, root):
+        raise ValueError("sandbox workspace is inside Manager state")
     writable = specification.get("writable", False)
     if type(writable) is not bool:
         raise ValueError("sandbox writable must be boolean")
@@ -193,8 +196,10 @@ def prepare_job(
         directory = _real_dir(item["path"])
         # Parent grants are valid for Shell, provided the backend reapplies
         # the exported root's stricter access after the broader grant.
-        if _contains(directory, state_root) or _contains(state_root, directory):
-            raise ValueError("sandbox grant overlaps Manager state")
+        # Parent grants are fine: the Manager state subtree is excluded below.
+        # Do not grant a directory that lies inside Manager private state.
+        if _contains(state_root, directory):
+            raise ValueError("sandbox grant is inside Manager state")
         grants.append(PathGrant(str(directory), access=access))
     excluded: list[Path] = []
     for item in hidden:
@@ -209,14 +214,13 @@ def prepare_job(
         if not (_contains(root, path) or any(
                 _contains(Path(grant.path), path) for grant in grants)):
             raise ValueError("hidden path must be within an allowed directory")
-        if _contains(path, state_root) or _contains(state_root, path):
-            raise ValueError("hidden path overlaps Manager state")
         excluded.append(path)
-    reduced = []
-    for path in sorted(set(excluded), key=lambda p: (len(p.parts), str(p))):
-        if not any(parent == path or parent in path.parents for parent in reduced):
-            reduced.append(path)
-    excluded = reduced
+    # A broad workspace or extra Shell grant may include the Manager's
+    # private state. Hide it at the sandbox boundary instead of failing the
+    # entire grant (deny has precedence over every RO/RW bind).
+    if any(_contains(base, state_root) for base in
+           (root, *(Path(grant.path) for grant in grants))):
+        excluded.append(state_root)
     # A narrower RW bind must never cancel a parent RO bind. Root RO has
     # priority for everything inside the root, but not external grants.
     # The Manager's AF_UNIX socket is in the OS temp dir, not under the
@@ -232,6 +236,13 @@ def prepare_job(
             if any(_contains(base, ipc_parent)
                    for base in (root, *(Path(item.path) for item in grants))):
                 excluded.append(ipc_parent)
+    # Merge explicit and automatic exclusions into non-overlapping mounts.
+    # An explicit deny of Manager state is valid, not a fatal overlap.
+    reduced = []
+    for path in sorted(set(excluded), key=lambda p: (len(p.parts), str(p))):
+        if not any(parent == path or parent in path.parents for parent in reduced):
+            reduced.append(path)
+    excluded = reduced
     readonly = [root] if not writable else []
     readonly.extend(Path(grant.path) for grant in grants if grant.access == "ro")
     grants = [grant for grant in grants if grant.access == "ro" or not any(
@@ -336,17 +347,20 @@ def prepare_job(
                 profile.append(f"(deny file-write* (subpath {_sb_quote(grant.path)}))")
         if not writable:
             profile.append(f"(deny file-write* (subpath {_sb_quote(root)}))")
-        profile.append(f"(allow file-read* (subpath {_sb_quote(job_dir)}))")
-        profile.append(f"(allow file-write* (subpath {_sb_quote(job_dir)}))")
         for directory in excluded:
             operation = "subpath" if directory.is_dir() else "literal"
             profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")
             profile.append(f"(deny file-write* ({operation} {_sb_quote(directory)}))")
-        # State is not mounted/allowed, except the private per-Job scratch
-        # directory. Do NOT deny all of state_root: a broad deny would also
-        # override the allowed job_dir and break TMPDIR/tempfile creation.
-        # Explicitly deny the IPC key and AF_UNIX socket subtree regardless
-        # of any extra runtime read grants.
+        # Deny the entire Manager state even when an unrelated system-level
+        # runtime-read grant reaches it. Seatbelt evaluates later matching
+        # rules last, so the one per-job scratch directory may be re-allowed
+        # without exposing the manager database, spool or IPC secret.
+        if state_root not in excluded:
+            profile.append(f"(deny file-read* (subpath {_sb_quote(state_root)}))")
+            profile.append(f"(deny file-write* (subpath {_sb_quote(state_root)}))")
+        profile.append(f"(allow file-read* (subpath {_sb_quote(job_dir)}))")
+        profile.append(f"(allow file-write* (subpath {_sb_quote(job_dir)}))")
+        # Deny IPC key explicitly as well as the parent state subtree.
         credential = state_root / "ipc.key"
         profile.append(f"(deny file-read* (literal {_sb_quote(credential)}))")
         profile.append(f"(deny file-write* (literal {_sb_quote(credential)}))")
