@@ -344,6 +344,20 @@ class GitWriteRpcTests(unittest.TestCase):
         self.assertEqual("git_unsafe_config", denied.exception.code)
         self.assertFalse(marker.exists())
 
+    def test_benign_existing_repo_config_not_blocked_by_section_name(self):
+        self.git("config", "filter.lfs.required", "true")
+        self.git("config", "credential.useHttpPath", "true")
+        self.git("config", "http.version", "HTTP/1.1")
+        self.git("config", "http.sslVerify", "false")
+        self.git("config", "core.fsmonitor", "!touch should-never-run")
+        self.git("config", "core.hooksPath", "/some/custom/user-hooks")
+        self.git("config", "merge.operator.name", "operator merge preset")
+        config = self.root / ".git" / "config"
+        with config.open("a", encoding="utf-8") as stream:
+            stream.write("\n# [include] not an actual include, just a comment\n")
+        self.run_rpc("branch_create", {"name": "trusted-existing-config"})
+        self.assertIn("trusted-existing-config", self.git("branch", "--list").stdout.decode())
+
     def test_git_write_rejects_external_filter_configuration(self):
         self.git("config", "filter.evil.clean", "touch should-not-run")
         (self.root / "source.txt").write_text("changed\n", encoding="utf-8")

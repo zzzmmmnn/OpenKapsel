@@ -69,6 +69,10 @@ class SafePathAccess:
     def __init__(self, roots: Iterable[Path]):
         normalized = {Path(root).absolute() for root in roots}
         self.roots = tuple(sorted(normalized, key=lambda item: len(item.parts), reverse=True))
+        # An operator-authorized root may be reached through an existing
+        # symlink in its ancestry. Pin the original resolved destination;
+        # never follow a subsequently retargeted alias or a symlink below it.
+        self._root_targets = {root: root.resolve(strict=False) for root in self.roots}
 
     def anchor(self, path: Path) -> tuple[Path, tuple[str, ...]]:
         absolute = path.absolute()
@@ -157,18 +161,20 @@ class SafePathAccess:
             )
             return destination_stat is not None
 
-    @staticmethod
-    def _open_root(root: Path) -> int:
-        # O_NOFOLLOW on os.open("/a/b/root") only protects the FINAL
-        # component. If /a/b becomes a symlink after authorization the old
-        # implementation could open an entirely different approved subtree.
-        # Walk from / with an anchored fd and refuse symlinks at EVERY level.
+    def _open_root(self, root: Path) -> int:
+        # A pre-existing operator-owned alias is acceptable. Resolve it at
+        # grant time and verify it is still the same alias target, then open
+        # the PINNED canonical root with descriptor-anchored O_NOFOLLOW.
+        # Even a swap between verification and opening cannot redirect I/O.
+        target = self._root_targets[root]
+        if root.resolve(strict=False) != target:
+            raise SafePathError(errno.EPERM, "authorized root alias has changed", str(root))
         if os.name == "nt":
             try:
-                return os.open(root, DIRECTORY_FLAGS)
+                return os.open(target, DIRECTORY_FLAGS)
             except OSError as exc:
                 raise SafePathAccess._safe_error(root, exc) from None
-        path = Path(root).absolute()
+        path = target.absolute()
         descriptor = -1
         try:
             descriptor = os.open(path.anchor, DIRECTORY_FLAGS)

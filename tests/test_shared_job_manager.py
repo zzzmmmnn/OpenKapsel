@@ -955,6 +955,48 @@ time.sleep(30)
         finally:
             runtime.close()
 
+    def test_unsandboxed_short_and_long_shell_keep_operator_environment(self):
+        config = {
+            "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
+            "token": self.TOKEN_A, "root": str(self.root),
+            "writable": True, "allow_exec": True, "sandbox": False,
+        }
+        runtime = ClientRuntime(config)
+        custom_home = str(self.base / "operator-home")
+        try:
+            with patch.dict(os.environ, {
+                "HOME": custom_home,
+                "SSH_AUTH_SOCK": str(self.base / "agent.sock"),
+                "OPENKAPSEL_OPERATOR_ENV_TEST": "operator-trusted",
+            }):
+                started = runtime.tasks.dispatch("task_start", {
+                    "task_id": "&EnVr&", "unsandboxed": True,
+                    "argv": [sys.executable, "-c",
+                             "import os; print(os.environ.get('HOME')); "
+                             "print(os.environ.get('OPENKAPSEL_OPERATOR_ENV_TEST'))"],
+                    "timeout_seconds": 30, "interactive": False,
+                })
+                self.assertEqual("&EnVr&", started["task_id"])
+                end = time.monotonic() + 5
+                while time.monotonic() < end:
+                    result = runtime.tasks.dispatch("task_get", {"task_id": "&EnVr&", "offset": 0})
+                    if not result["running"]:
+                        break
+                    time.sleep(.02)
+                self.assertEqual(0, result["exit_code"], result)
+                self.assertEqual([custom_home, "operator-trusted"],
+                                 base64.b64decode(result["output"]).decode().splitlines())
+                long_job = runtime.tasks._prepare({
+                    "task_id": "&EnVl&", "unsandboxed": True,
+                    "argv": [sys.executable, "-c", "pass"],
+                    "timeout_seconds": 121, "interactive": False,
+                })
+                self.assertEqual(custom_home, long_job["env"]["HOME"])
+                self.assertEqual("operator-trusted", long_job["env"]["OPENKAPSEL_OPERATOR_ENV_TEST"])
+                self.assertEqual(str(self.base / "agent.sock"), long_job["env"]["SSH_AUTH_SOCK"])
+        finally:
+            runtime.close()
+
     def test_default_and_120_second_shell_stay_in_client_without_manager(self):
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,

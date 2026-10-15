@@ -276,7 +276,13 @@ class ClientTasks:
                 not 0.1 <= timeout <= self.LOCAL_SHELL_MAX_SECONDS):
             raise OSError(errno.EINVAL, "local Shell timeout must be within 120 seconds")
         container = None
-        env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG") if key in os.environ}
+        # An approved unsandboxed Shell runs as the host user and inherits
+        # that user's normal environment, including HOME and SSH_AUTH_SOCK.
+        # Keep the restricted environment for sandboxed processes.
+        env = (dict(os.environ) if not sandboxed else {
+            key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG")
+            if key in os.environ
+        })
         if sandboxed:
             shell_id = tid[1:-1] if tid.startswith("&") and tid.endswith("&") else tid
             namespace = getattr(self, "shell_mapping_key", "")

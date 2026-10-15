@@ -195,6 +195,27 @@ class GitClientTests(unittest.TestCase):
         (self.root / "application.lock").write_text("data", encoding="utf-8")
         self.assertIn("application.lock", self.call("status")["output"])
 
+    def test_git_read_respects_operator_global_ignore_and_attributes(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            ignores = path / "ignore"
+            attrs = path / "attributes"
+            gitconfig = path / "gitconfig"
+            ignores.write_text("operator-ignored.txt\n", encoding="utf-8")
+            attrs.write_text("*.txt -diff\n", encoding="utf-8")
+            gitconfig.write_text(
+                f"[core]\n  excludesFile = {ignores}\n  attributesFile = {attrs}\n",
+                encoding="utf-8")
+            (self.root / "operator-ignored.txt").write_text("NOT VISIBLE")
+            (self.root / "source.txt").write_text("changed\n")
+            with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig)}):
+                status = self.call("status")["output"]
+                diff = self.call("diff")["output"]
+            self.assertNotIn("operator-ignored.txt", status)
+            self.assertIn("source.txt", status)
+            self.assertIn("Binary files", diff)
+
     def test_fsmonitor_is_disabled_without_rejecting_normal_config(self):
         self.git("config", "core.fsmonitor", "nonexistent-openkapsel-fsmonitor-helper")
         (self.root / "source.txt").write_text("changed\n", encoding="utf-8")

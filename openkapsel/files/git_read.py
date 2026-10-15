@@ -3,7 +3,7 @@
 The repository worktree and object database are never copied. Before launching
 Git, validate its metadata/configuration with the same safe-read policy used
 by Git mutations; commands run without a shell, external helpers, network,
-system/user Git configuration, or optional Git maintenance.
+optional Git maintenance. Trusted user/system Git configuration is retained.
 """
 from __future__ import annotations
 
@@ -94,14 +94,11 @@ def inspect_git(access, root, operation, options, timeout=15):
             filter_overrides = _check_local_config(
                 executable, config, env, root, deadline - time.monotonic())
             check()
-            # No shell or external helpers, and no system/user Git config.
-            # Local Git config is validated before use. Git receives its
-            # real worktree and index, so ignored files and symlinks behave
-            # as they do in normal Git.
+            # Trusted system/user attributes and excludes remain effective.
+            # AI-controlled repository filter commands are shadowed above;
+            # Git receives the actual worktree and index.
             process = subprocess.Popen(
-                [executable, "-c", "core.attributesFile=" + os.devnull,
-                 "-c", "core.excludesFile=" + os.devnull,
-                 *filter_overrides, *argv[1:]],
+                [executable, *filter_overrides, *argv[1:]],
                 cwd=root,
                 env=env,
                 stdin=subprocess.DEVNULL,

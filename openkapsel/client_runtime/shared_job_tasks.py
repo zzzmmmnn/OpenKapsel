@@ -153,9 +153,12 @@ class SharedClientTasks:
         if (type(timeout) not in (int, float) or
                 not 0.1 <= timeout < float("inf")):
             raise OSError(errno.EINVAL, "invalid task timeout")
-        env = {k: os.environ[k] for k in (
-            "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG"
-        ) if k in os.environ}
+        # Unsandboxed long jobs are explicitly approved host commands; don't
+        # discard the operator's environment. Sandboxed jobs keep isolation.
+        env = (dict(os.environ) if not sandboxed and native_sandbox is None else {
+            k: os.environ[k] for k in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG")
+            if k in os.environ
+        })
         executable = None
         container = None
         if sandboxed:

@@ -13,6 +13,7 @@ import errno
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -21,20 +22,50 @@ from openkapsel.errors import ApiError
 
 
 MAX_GIT_METADATA_NODES = 100_000
-_UNSAFE_CONFIG_MARKERS = (
-    "[include",
-    "[filter ",
-    '[filter "',
-    "[url ",
-    '[url "',
-    "[merge ",
-    '[merge "',
-    "[credential",
-    "[http",
-    "sshcommand",
-    "uploadpack",
-    "receivepack",
-)
+def _validate_repository_config(config: str) -> None:
+    """Reject executable AI-writable Git settings, not harmless section names.
+
+    Use Git's own config parser so comments, whitespace, duplicated keys and
+    quoted subsections are interpreted exactly as Git will interpret them.
+    The user/system configs are deliberately NOT subject to this check.
+    """
+    executable = shutil.which("git")
+    if not executable:
+        raise ApiError(503, "git_unavailable", "Git is not installed on the execution host")
+    try:
+        parsed = subprocess.run(
+            [executable, "config", "--null", "--list", "--no-includes", "--file", "-"],
+            input=config.encode("utf-8"), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=8, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ApiError(504, "git_timeout", "Git repository config validation timed out") from exc
+    if parsed.returncode or len(parsed.stdout) > 512 * 1024:
+        raise ApiError(409, "git_unsafe_config", "repository Git config cannot be parsed safely")
+    for entry in parsed.stdout.split(b"\0"):
+        if not entry:
+            continue
+        raw_key = entry.split(b"\n", 1)[0]
+        key = raw_key.decode("utf-8", errors="replace").lower()
+        parts = key.split(".")
+        # A repository can be changed by AI, unlike the operator's global
+        # config. Refuse keys that execute commands, load external configs,
+        # rewrite verified remotes, or expose credentials over the network.
+        unsafe = (
+            key.startswith(("include.", "includeif.", "url."))
+            or key in {"core.sshcommand", "core.worktree", "diff.external",
+                       "extensions.worktreeconfig"}
+            or key.endswith((".uploadpack", ".receivepack", ".vcs"))
+            or (parts[0] in {"filter", "diff", "merge"}
+                and parts[-1] in {"clean", "smudge", "process", "command",
+                                  "textconv", "driver"})
+            or (parts[0] == "credential" and parts[-1] == "helper")
+            or (parts[0] == "http" and parts[-1] in {
+                "extraheader", "cookiefile", "proxy"})
+        )
+        if unsafe:
+            raise ApiError(409, "git_unsafe_config",
+                           "repository Git config contains an executable or redirecting setting")
 
 
 def _read_file(files, path: Path, limit: int = 256 * 1024) -> bytes:
@@ -98,13 +129,8 @@ def _validate_git_metadata(files, root: Path, *, check_config=True):
         config = _read_file(files, gitdir / "config").decode("utf-8", errors="replace")
     except FileNotFoundError:
         pass
-    lowered = config.lower()
-    if check_config and any(marker in lowered for marker in _UNSAFE_CONFIG_MARKERS):
-        raise ApiError(
-            409,
-            "git_unsafe_config",
-            "repository configuration contains an external-helper or redirection feature",
-        )
+    if check_config:
+        _validate_repository_config(config)
 
     nodes = 0
     stack = [gitdir]

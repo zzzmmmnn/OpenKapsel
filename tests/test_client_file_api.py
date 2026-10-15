@@ -134,6 +134,32 @@ class ClientFileAPITests(unittest.TestCase):
                 fd = access.open(scoped_path / "private.txt", os.O_RDONLY)
                 os.close(fd)
 
+    @unittest.skipIf(os.name == "nt", "POSIX symlink path test")
+    def test_operator_root_symlink_ancestor_is_pinned_and_swap_denied(self):
+        from openkapsel.files.safe_paths import SafePathAccess, SafePathError
+
+        with tempfile.TemporaryDirectory(prefix="kapsel-root-alias-") as raw:
+            base = Path(raw).resolve()
+            first = base / "first"
+            second = base / "second"
+            for path in (first / "approved", second / "approved"):
+                path.mkdir(parents=True)
+            (first / "approved" / "ok.txt").write_text("PUBLIC")
+            (second / "approved" / "ok.txt").write_text("SECRET")
+            alias = base / "operator-alias"
+            alias.symlink_to(first, target_is_directory=True)
+            scoped = alias / "approved"
+            access = SafePathAccess((scoped,))
+            with os.fdopen(access.open(scoped / "ok.txt"), "r") as stream:
+                self.assertEqual("PUBLIC", stream.read())
+            (first / "approved" / "outside").symlink_to(second, target_is_directory=True)
+            with self.assertRaises(SafePathError):
+                access.open(scoped / "outside" / "approved" / "ok.txt")
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+            with self.assertRaises(SafePathError):
+                access.open(scoped / "ok.txt")
+
     def test_write_read_conditional_replace_and_native_paths_stay_private(self):
         content = "héllo " + str(self.root)
         self.assertEqual(201, self.call("fs_mkdir", {"path": "sub"})["status"])

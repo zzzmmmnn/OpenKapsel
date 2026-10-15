@@ -265,8 +265,12 @@ this is a validated HTTPS remote policy, **not an OS network sandbox**.
 Git RPC uses the host's existing system and user Git configuration, including
 its credential helpers on macOS, Linux and Windows, without choosing an
 OS-specific helper or requiring Git Credential Manager. AI-writable repository
-Git metadata is checked for executable helpers, includes and URL rewrites;
-hooks and signing are disabled by explicit command options. Terminal prompts
+Git metadata is parsed using Git's own config parser: benign sections and
+operator-compatible settings no longer fail solely on their names, but
+AI-writable repository entries that launch arbitrary helpers or rewrite URLs
+remain denied. Git read-only queries honor the operator's system/user global
+ignore and attributes files; repository-supplied executable filters stay
+disabled. Hooks and signing are disabled by explicit command options. Terminal prompts
 are disabled (`GIT_TERMINAL_PROMPT=0`) and GCM, if configured by the operator,
 uses `GCM_INTERACTIVE=never`. Native OS keychain helpers control any system
 prompts themselves. HTTPS redirects are disabled and the requested network
@@ -390,7 +394,10 @@ Linux/macOS retain their configured Sandbox backends.
 Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox` enabled, **all** Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
 
 To intentionally run unrestricted native Shell tasks without `job_sandbox`,
-explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. No missing sandbox ever causes automatic fallback to this mode.
+explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. An explicitly approved unsandboxed Shell inherits
+the host user's normal environment (including HOME and SSH_AUTH_SOCK) for both
+short and long jobs; sandboxed jobs still receive their restricted environment.
+No missing sandbox ever causes automatic fallback to this mode.
 
 The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/task/*` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
 
