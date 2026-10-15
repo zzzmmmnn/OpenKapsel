@@ -74,9 +74,28 @@ class ClientReconnectTests(unittest.TestCase):
         return replies[-1]
 
     def start(self, tid, program):
-        result = self.connection("task_start", {"task_id": tid, "argv": [sys.executable, "-u", "-c", program]})
+        # The synthetic provider represents a server that has already checked
+        # the Conversation-bound Shell approval. Windows Client task_start
+        # otherwise correctly rejects arbitrary Python argv execution.
+        result = self.connection("task_start", {
+            "task_id": tid, "argv": [sys.executable, "-u", "-c", program],
+            "unsandboxed": True,
+        })
         self.assertIn("result", result, result)
         return self.runtime.tasks.tasks[tid]
+
+    def test_unapproved_arbitrary_shell_is_rejected_in_windows_mode(self):
+        # The server is responsible for granting unsandboxed=True. Without
+        # that explicit authorization, Windows approval-only mode must not
+        # spawn a Python process even across a fresh WebSocket connection.
+        with patch.object(self.runtime.tasks, "approval_only", True):
+            denied = self.connection("task_start", {
+                "task_id": "unapproved-python", "argv": [sys.executable, "-V"],
+            })
+        self.assertIn("error", denied)
+        self.assertEqual(13, denied["error"]["errno"])
+        self.assertIn("requires approval", denied["error"]["message"])
+        self.assertNotIn("unapproved-python", self.runtime.tasks.tasks)
 
     def test_transport_timeout_is_configurable_and_bounded(self):
         config = dict(self.config, transport_timeout_seconds=75)
@@ -124,7 +143,10 @@ class ClientReconnectTests(unittest.TestCase):
         for i in range(5):
             task = self.start("completed-" + str(i), "print('result')")
             self.assertTrue(task["done"].wait(5))
-        denied = self.connection("task_start", {"task_id": "one-too-many", "argv": [sys.executable, "-V"]})
+        denied = self.connection("task_start", {
+            "task_id": "one-too-many", "argv": [sys.executable, "-V"],
+            "unsandboxed": True,
+        })
         self.assertIn("error", denied)
         self.assertEqual(5, len(self.connection("task_list", {})["result"]))
         self.connection("task_get", {"task_id": "completed-0"})
@@ -146,8 +168,11 @@ class ClientReconnectTests(unittest.TestCase):
         self.runtime = ClientRuntime(self.config)
 
     def test_offline_deadline_and_connection_failure_do_not_reset_runtime(self):
-        response = self.connection("task_start", {"task_id": "offline-deadline", "timeout_seconds": .2,
-            "argv": [sys.executable, "-u", "-c", "import time; time.sleep(60)"]})
+        response = self.connection("task_start", {
+            "task_id": "offline-deadline", "timeout_seconds": .2,
+            "argv": [sys.executable, "-u", "-c", "import time; time.sleep(60)"],
+            "unsandboxed": True,
+        })
         self.assertIn("result", response)
         with patch("websocket.create_connection", side_effect=OSError("offline")):
             with self.assertRaises(OSError):
@@ -591,7 +616,8 @@ class ClientReconnectTests(unittest.TestCase):
         try:
             first = connect()
             first.call("task_start", {"task_id": "websocket-task", "argv": [sys.executable, "-u", "-c",
-                "import sys; print('ready'); sys.stdin.readline(); print('offline result')"]})
+                "import sys; print('ready'); sys.stdin.readline(); print('offline result')"],
+                "unsandboxed": True})
             first.close()
             clients[-1].join(5)
             self.assertFalse(clients[-1].is_alive())
