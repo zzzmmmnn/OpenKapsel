@@ -27,6 +27,10 @@ CONVERSATION_WRITER_NONCE_PATTERN = re.compile(r"^@[A-Za-z0-9]{4}@$")
 _CONVERSATION_ALPHABET = string.ascii_letters + string.digits
 
 CONVERSATION_INSTRUCTIONS = (
+    "If you already have a valid writer_nonce and its conversation_id, you MUST reuse that Conversation for "
+    "subsequent tasks and Plans; DO NOT create a new Conversation just because the task or Plan changes. "
+    "Only create a new Conversation when explicitly requested to start a separate one or the existing one "
+    "cannot be continued. Shell approvals are bound to their Conversation. "
     "Conversation IDs are caller-supplied sequential non-negative integers. Before conversation_create, "
     "call conversation_query and use its next_conversation_id exactly; the first Conversation id is 0. "
     "This conversation is append-only. Preserve materially new user and AI context with conversation_append, "

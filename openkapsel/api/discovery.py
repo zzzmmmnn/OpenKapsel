@@ -1066,7 +1066,7 @@ class DiscoveryMixin:
                         "caller_supplied_sequential_ids": True,
                         "create_id_must_equal_next_conversation_id": True,
                         "writer_nonce_returned_on_create": True,
-                        "writer_nonce_usage": "retain the value returned by conversation_create and pass it back unchanged",
+                        "writer_nonce_usage": "When a valid writer_nonce and its conversation_id are already available, MUST reuse that same Conversation for new tasks and Plans. Do NOT call conversation_create merely for a new task or Plan; only create when explicitly requested to start a separate Conversation or the existing one cannot be continued. Retain writer_nonce and pass it unchanged; Shell approvals are Conversation-bound.",
                         "create_request_id": "optional per-actor durable retry key; identical request returns original writer_nonce even after server restart",
                         "create_request_conflict": "context_request_conflict (409) when request_id is reused with different content",
                         "roles": ["user", "ai", "summary"],
@@ -1694,7 +1694,7 @@ class DiscoveryMixin:
                         "entries": "created append-only entries with per-conversation sub_id",
                         "instructions": "mandatory AI usage guidance for later appends and Plan integration",
                     },
-                    "notes": "creation is atomic; conversation_id must equal the current next_conversation_id except for exact request_id replay (HTTP 200 returning original writer_nonce); requires at least two complete entries with first role=user then role=ai; changed request_id use conflicts (409)",
+                    "notes": "Do NOT create a new Conversation if a valid writer_nonce and conversation_id are already held; reuse them across tasks/Plans unless a separate Conversation is explicitly requested or the old one cannot continue. Creation is atomic; conversation_id must equal the current next_conversation_id except for exact request_id replay (HTTP 200 returning original writer_nonce); requires at least two complete entries with first role=user then role=ai; changed request_id use conflicts (409)",
                 },
                 "conversation_append": {
                     "authentication": "Bearer control token",

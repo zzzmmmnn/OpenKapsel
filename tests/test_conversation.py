@@ -27,6 +27,13 @@ class ConversationTests(unittest.TestCase):
             {"role": "ai", "content": f"AI acknowledges {label}."},
         ]
 
+    def test_create_instructions_require_reusing_existing_writer_nonce(self):
+        created = self.create_conversation()
+        instructions = created["instructions"]
+        self.assertIn("MUST reuse", instructions)
+        self.assertIn("DO NOT create a new Conversation", instructions)
+        self.assertIn("Shell approvals", instructions)
+
     def next_conversation_id(self) -> int:
         return self.store.conversation_query()[2]
 

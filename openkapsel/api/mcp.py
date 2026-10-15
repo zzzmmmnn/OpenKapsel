@@ -221,7 +221,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "conversation_create",
         "Create conversation",
-        "Create one append-only Conversation using the caller-supplied next sequential non-negative conversation_id. Call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns an opaque writer_nonce plus append instructions. Optional request_id makes retries idempotent and replays the original writer_nonce.",
+        "Do NOT call this tool if you already hold a valid writer_nonce and conversation_id: reuse that Conversation for subsequent tasks and Plans, unless explicitly asked to start a separate Conversation or the existing one cannot continue. Shell approvals are Conversation-bound. To create one append-only Conversation, call conversation_query first and use next_conversation_id exactly. The first record must be user and the second ai. Returns an opaque writer_nonce plus append instructions. Optional request_id makes retries idempotent and replays the original writer_nonce.",
         _object_schema(
             {
                 "conversation_id": conversation_id_schema(
