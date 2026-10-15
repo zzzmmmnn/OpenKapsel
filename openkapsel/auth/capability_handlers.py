@@ -104,7 +104,7 @@ class CapabilityHandlersMixin:
             raise ApiError(429, "capability_approval_capacity", "Too many pending capability approvals; retry later") from None
         LOGGER.info("approval requested workspace=%r conversation=%s target=%r capability=%s", workspace, conversation, target, capability)
         raise ApiError(403, "capability_approval_required", "Pause operation and request user approval.", {
-            "approval_url": self._public_base_url() + "/admin/capability/" + ticket,
+            "approval_url": self._public_base_url() + "/capability/" + ticket,
             "approval_expires_in": PENDING_SECONDS, "capability": capability, "target": target,
             **({"path": path} if path else {}),
         })
@@ -150,7 +150,7 @@ class CapabilityHandlersMixin:
                 f"<dd><strong>{esc(actual)}</strong></dd></dl>"
                 f"<p><strong>AI request reason:</strong> {esc(item.reason or 'Not provided by the AI')}</p>"
                 f'<p class="notice">{esc(warning)}</p>'
-                f'<form method="post" action="{esc(self._admin_path() + "/capability/" + ticket, quote=True)}">'
+                f'<form method="post" action="{esc(self._admin_path().removesuffix("/admin") + "/capability/" + ticket, quote=True)}">'
                 f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
                 '<button name="confirm" value="actual_path">Confirm actual directory and approve</button></form>')
 
@@ -272,7 +272,7 @@ class CapabilityHandlersMixin:
         reason_detail = f'<dt>AI request reason</dt><dd style="white-space:pre-wrap">{esc(item.reason or "Not provided by the AI")}</dd>'
         body += f'''<dl><dt>Workspace Token</dt><dd>{esc(workspace_label)}</dd><dt>Token ID</dt><dd>{esc(item.workspace)}</dd><dt>Conversation ID</dt><dd>{item.conversation_id}</dd><dt>Target</dt><dd>{esc(target)}</dd><dt>Capability</dt><dd>{esc(item.capability)}</dd>{path_details}{reason_detail}</dl>
 <p class="notice">{esc(warning)}Approve only the conversation and target you intend.</p>
-<form method="post" action="{esc(self._admin_path() + '/capability/' + ticket, quote=True)}" autocomplete="off">
+<form method="post" action="{esc(self._admin_path().removesuffix('/admin') + '/capability/' + ticket, quote=True)}" autocomplete="off">
 <input type="hidden" name="csrf" value="{proof}"><label>Workspace password</label><input type="password" name="password" required maxlength="1024" autocomplete="off">
 <label>Duration</label><select name="minutes" required><option value="10" selected>10 minutes</option><option value="30">30 minutes</option><option value="120">2 hours</option><option value="360">6 hours</option><option value="1440">24 hours</option></select><div class="actions"><button>Approve</button></div></form>
 <p>The URL expires after five minutes and can be approved once. Approval does not rerun the operation. Restarting the server clears all temporary grants.</p>'''

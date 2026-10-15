@@ -90,6 +90,43 @@ class CapabilityHTTPTests(unittest.TestCase):
         body.update(values)
         return self.api("/shell/approval/request", body)
 
+    def test_short_approval_url_routes_and_browser_post_actions(self):
+        self.configure()
+        status, pending = self.request_approval(
+            reason="Inspect the release on this target")
+        self.assertEqual(200, status, pending)
+        location = urlsplit(pending["approval_url"]).path
+        self.assertTrue(location.startswith("/kapsel/capability/"), location)
+        self.assertNotIn("/admin/", location)
+        old_link = location.replace("/capability/", "/admin/capability/")
+        self.assertEqual(200, self.request("GET", old_link)[0])
+        location, headers, form, page = self.approval(
+            {"error": {"details": pending}})
+        self.assertIn(f'action="{location}"'.encode(), page)
+        self.assertNotIn(b"/admin/capability/", page)
+        status, _, page = self.form(location, form, headers)
+        self.assertEqual(200, status, page)
+        self.assertIn(b"Capability approved", page)
+
+        with tempfile.TemporaryDirectory(prefix="approval-short-url-") as raw:
+            status, pending = self.request_file_approval(
+                "read", path=str(Path(raw).resolve()),
+                reason="Inspect requested diagnostic directory")
+            self.assertEqual(200, status, pending)
+            location, headers, form, page = self.approval(
+                {"error": {"details": pending}})
+            self.assertTrue(location.startswith("/kapsel/capability/"))
+            self.assertIn(f'action="{location}"'.encode(), page)
+            status, _, confirmation = self.form(location, form, headers)
+            self.assertEqual(200, status, confirmation)
+            self.assertIn(b"Confirm actual File access directory", confirmation)
+            self.assertIn(f'action="{location}"'.encode(), confirmation)
+            self.assertNotIn(b"/admin/capability/", confirmation)
+            status, _, page = self.form(
+                location, {"csrf": form["csrf"], "confirm": "actual_path"}, headers)
+            self.assertEqual(200, status, page)
+            self.assertIn(b"Capability approved", page)
+
     def test_approval_reason_is_shown_and_html_escaped_for_shell_and_file(self):
         from html import escape
 

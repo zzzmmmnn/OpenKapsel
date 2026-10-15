@@ -42,6 +42,10 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
         if path.startswith("/admin/password-setup/"):
             self._handle_workspace_password_setup(method, path.removeprefix("/admin/password-setup/"), raw_query)
             return
+        if path.startswith("/capability/"):
+            self._handle_capability_approval(method, path.removeprefix("/capability/"), raw_query)
+            return
+        # Accept existing unexpired approval links issued before the URL change.
         if path.startswith("/admin/capability/"):
             self._handle_capability_approval(method, path.removeprefix("/admin/capability/"), raw_query)
             return

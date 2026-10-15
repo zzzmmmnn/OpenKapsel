@@ -407,8 +407,13 @@ class HttpSupportMixin:
     def log_message(self, fmt: str, *args: Any) -> None:
         message = fmt % args
         request_path = self.path.split("?", 1)[0]
-        if "/admin/capability/" in request_path:
-            message = message.replace(self.path, request_path.split("/admin/capability/", 1)[0] + "/admin/capability/[redacted]")
+        for approval_path in ("/admin/capability/", "/capability/"):
+            if approval_path in request_path:
+                message = message.replace(
+                    self.path,
+                    request_path.split(approval_path, 1)[0] + approval_path + "[redacted]",
+                )
+                break
         if "/oauth/" in self.path or getattr(self, "_redact_request_query", False):
             message = message.replace(self.path, request_path)
         if request_path.startswith("/.well-known/") or (
