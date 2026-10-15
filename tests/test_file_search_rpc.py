@@ -115,6 +115,112 @@ class WindowsSqliteFallbackTests(unittest.TestCase):
         ):
             self.assertEqual(("sqlite_watch", None), _platform_backend())
 
+    def test_windows_without_everything_or_watchfiles_advertises_recursive_search(self):
+        from types import SimpleNamespace
+        from openkapsel.rpc_plugins.file_search import _platform_backend
+        with patch("openkapsel.rpc_plugins.file_search.os",
+                   SimpleNamespace(name="nt")), patch(
+            "openkapsel.rpc_plugins.file_search.everything_ipc.status",
+            return_value={"running": False},
+        ), patch(
+            "openkapsel.files.filename_index.watcher_available",
+            return_value=False,
+        ):
+            self.assertEqual(("recursive", None), _platform_backend())
+            state, reason, details = plugin.probe({})
+            self.assertEqual("available", state)
+            self.assertIsNone(reason)
+            self.assertEqual("recursive", details["backend"])
+
+    def test_recursive_fallback_without_index_filters_protected_and_reparse_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            (root / ".openkapsel").mkdir()
+            (root / ".recycle").mkdir()
+            (root / "secret").mkdir()
+            for path in ("a/Needle1.TXT", "b/needle2.txt",
+                         ".openkapsel/Needle-private.txt",
+                         ".recycle/Needle-recycled.txt", "secret/Needle-secret.txt"):
+                target = root / path
+                target.write_text("test")
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (outside / "Needle-outside.txt").write_text("hidden")
+            try:
+                (root / "outside-symlink").symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pass
+
+            files = ClientFiles(root, protected_paths=[root / "secret"],
+                                rpc_registry=object(), rpc_capabilities={"dummy": {}})
+            self.assertIsNone(files.filename_index)
+            with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                       return_value=("recursive", None)):
+                result = plugin.dispatch(files, "search", {
+                    "query": "NEEDLE", "sort_by": "path",
+                })
+                self.assertEqual(200, result["status"], result)
+                self.assertEqual("recursive", result["body"]["backend"])
+                self.assertEqual(["a/Needle1.TXT", "b/needle2.txt"],
+                                 [item["path"] for item in result["body"]["results"]])
+                page = plugin.dispatch(files, "search", {
+                    "query": "needle*.txt", "mode": "glob",
+                    "offset": 1, "limit": 1, "sort_by": "path",
+                })
+                self.assertEqual(["b/needle2.txt"],
+                                 [item["path"] for item in page["body"]["results"]])
+                self.assertFalse(page["body"]["truncated"])
+                top = plugin.dispatch(files, "search", {
+                    "query": "needle", "limit": 1, "sort_by": "path",
+                })
+                self.assertEqual(["a/Needle1.TXT"],
+                                 [item["path"] for item in top["body"]["results"]])
+                self.assertTrue(top["body"]["truncated"])
+                self.assertEqual(1, top["body"]["next_offset"])
+
+                # Watchfiles may exist but the SQLite snapshot is not ready.
+                with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                           return_value=("sqlite_watch", None)):
+                    warming = plugin.dispatch(files, "search", {"query": "Needle"})
+                    self.assertEqual("recursive", warming["body"]["backend"])
+                    self.assertEqual(2, len(warming["body"]["results"]))
+
+    def test_everything_failure_without_ready_sqlite_uses_recursive_scan(self):
+        from openkapsel.rpc_plugins.file_search.everything_ipc import EverythingIpcError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "needle.txt").write_text("ok")
+            files = ClientFiles(root, rpc_registry=object(),
+                                rpc_capabilities={"dummy": {}})
+            with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                       return_value=("everything_ipc", None)), patch(
+                "openkapsel.rpc_plugins.file_search.everything_ipc.query_paths",
+                side_effect=EverythingIpcError("Everything was stopped"),
+            ):
+                result = plugin.dispatch(files, "search", {"query": "needle"})
+            self.assertEqual(200, result["status"], result)
+            self.assertEqual("recursive", result["body"]["backend"])
+            self.assertEqual(["needle.txt"],
+                             [item["path"] for item in result["body"]["results"]])
+
+    def test_everything_disappearing_between_probe_and_ipc_still_searches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "needle.md").write_text("hi")
+            files = ClientFiles(root, rpc_registry=object(),
+                                rpc_capabilities={"dummy": {}})
+            from openkapsel.rpc_plugins import file_search
+            with patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                       side_effect=[("everything_ipc", None), ("recursive", None)]):
+                result = plugin.dispatch(files, "search", {"query": "needle"})
+            self.assertEqual(200, result["status"], result)
+            self.assertEqual("recursive", result["body"]["backend"])
+            self.assertEqual(["needle.md"], [
+                item["path"] for item in result["body"]["results"]])
+
     def test_fallback_uses_folded_trigram_index_and_original_case(self):
         import os
         from openkapsel.files.filename_index import FilenameIndex

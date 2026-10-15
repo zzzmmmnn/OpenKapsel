@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+from contextlib import nullcontext
 import os
 import re
 import selectors
@@ -56,13 +57,13 @@ def _platform_backend() -> tuple[str | None, str | None]:
         if everything_ipc.status()["running"]:
             return "everything_ipc", None
         from openkapsel.files.filename_index import watcher_available
-        return ("sqlite_watch", None) if watcher_available() else (None, None)
+        return ("sqlite_watch", None) if watcher_available() else ("recursive", None)
     if sys.platform == "darwin":
         executable = shutil.which("mdfind")
         return ("mdfind", executable) if executable else (None, None)
     if sys.platform.startswith("linux"):
         from openkapsel.files.filename_index import watcher_available
-        return ("sqlite_watch", None) if watcher_available() else (None, None)
+        return ("sqlite_watch", None) if watcher_available() else ("recursive", None)
     return None, None
 
 
@@ -74,7 +75,8 @@ def _backend_status() -> dict[str, Any]:
         details = everything_ipc.status()
         return {"backend": backend, "available": bool(details["running"]), **details}
     if backend is not None:
-        return {"backend": backend, "available": True}
+        return {"backend": backend, "available": True,
+                **({"reason": "index_dependency_missing"} if backend == "recursive" else {})}
     if sys.platform == "darwin":
         return {"backend": "mdfind", "available": False, "reason": "dependency_missing"}
     if sys.platform.startswith("linux"):
@@ -304,6 +306,83 @@ def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool, m
     return stat_item(relative_root.as_posix(), kind, details)
 
 
+def _search_recursive(
+    files, scope: Path, scope_arg: str, query: str, mode: str,
+    *, case_sensitive: bool, sort_by: str, sort_order: str, file_type: str,
+    offset: int, limit: int, timeout_seconds: float,
+):
+    """Last-resort native scan when Everything and the SQLite index cannot run.
+
+    Strictly confined to the export, including private names, protected paths,
+    mount boundaries and Windows reparse points; honors the same result limit
+    and deadline as the native indexed backends.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    ranked = TopResults(offset + limit, sort_by, sort_order)
+    device = os.stat(scope, follow_symlinks=False).st_dev
+    stack = [scope]
+    timed_out = False
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    guard = getattr(files.paths, "guard", None)
+    while stack:
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+        directory = stack.pop()
+        if files.is_protected_path(directory):
+            continue
+        try:
+            # Windows native handles reject junctions at every ancestor.
+            context = guard(directory, include_final=True) if guard else nullcontext()
+            with context:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if time.monotonic() >= deadline:
+                            timed_out = True
+                            break
+                        name = entry.name
+                        hidden = name.casefold() if os.name == "nt" else name
+                        if (hidden in {".openkapsel", ".recycle"} or
+                                FileOperationSupportMixin._is_internal_transfer_name(name)):
+                            continue
+                        child = Path(entry.path)
+                        if files.is_protected_path(child):
+                            continue
+                        try:
+                            details = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        if (details.st_dev != device or
+                                getattr(details, "st_file_attributes", 0) & reparse or
+                                stat.S_ISLNK(details.st_mode)):
+                            continue
+                        is_directory = stat.S_ISDIR(details.st_mode)
+                        if is_directory:
+                            stack.append(child)
+                        if not (is_directory or stat.S_ISREG(details.st_mode)):
+                            continue
+                        if file_type not in {"all", "directory" if is_directory else "file"}:
+                            continue
+                        item = _candidate(files, scope, str(child), query, case_sensitive, mode)
+                        if item is not None:
+                            ranked.add(item)
+        except OSError:
+            continue
+        if timed_out:
+            break
+    selected = ranked.results()[offset:offset + limit]
+    truncated = ranked.truncated or timed_out
+    return {
+        "backend": "recursive", "scope": scope_arg, "query": query,
+        "mode": mode, "sort_by": sort_by, "sort_order": sort_order,
+        "file_type": file_type, "case_sensitive": case_sensitive,
+        "offset": offset, "limit": limit, "timeout_seconds": timeout_seconds,
+        "results": selected, "returned": len(selected),
+        "truncated": truncated, "timed_out": timed_out,
+        "next_offset": offset + len(selected) if truncated else None,
+    }
+
+
 def _spotlight_name_predicate(query: str, mode: str) -> str:
     if mode == "glob":
         return _spotlight_glob_query(query)
@@ -437,6 +516,15 @@ def _search(files, args):
         accelerated = indexed_fallback()
         if accelerated is not None:
             return accelerated
+    if platform_backend in {"sqlite_watch", "recursive"}:
+        # Initial SQLite scan may be in progress; never disappear from the
+        # Mapping inventory or fail every query during index warmup.
+        return _search_recursive(
+            files, scope, scope_arg, query, mode,
+            case_sensitive=case_sensitive, sort_by=sort_by,
+            sort_order=sort_order, file_type=file_type,
+            offset=offset, limit=limit, timeout_seconds=timeout_seconds,
+        )
     if mode == "glob" and platform_backend not in {"mdfind", "everything_ipc"}:
         fail("file_search_unavailable",
              "glob search requires a ready local index or platform search backend", 503)
@@ -450,11 +538,26 @@ def _search(files, args):
                 offset=offset, limit=limit, timeout_seconds=timeout_seconds,
                 executable=executable,
             )
-    backend, paths = _backend_paths(
-        scope, query, case_sensitive, timeout_seconds, mode=mode,
-        sort_by=sort_by, sort_order=sort_order,
-        wanted=offset + limit + 1,
-    )
+    try:
+        backend, paths = _backend_paths(
+            scope, query, case_sensitive, timeout_seconds, mode=mode,
+            sort_by=sort_by, sort_order=sort_order,
+            wanted=offset + limit + 1,
+        )
+    except ApiError as exc:
+        # Everything can disappear between the first status probe and the
+        # actual query. Do not return 503 for a stopped Windows service.
+        if platform_backend != "everything_ipc" or exc.code != "file_search_unavailable":
+            raise
+        accelerated = indexed_fallback()
+        if accelerated is not None:
+            return accelerated
+        return _search_recursive(
+            files, scope, scope_arg, query, mode,
+            case_sensitive=case_sensitive, sort_by=sort_by,
+            sort_order=sort_order, file_type=file_type,
+            offset=offset, limit=limit, timeout_seconds=timeout_seconds,
+        )
 
     ranked = TopResults(offset + limit, sort_by, sort_order)
     seen = set()
@@ -490,6 +593,12 @@ def _search(files, args):
                 accelerated = indexed_fallback()
                 if accelerated is not None:
                     return accelerated
+                return _search_recursive(
+                    files, scope, scope_arg, query, mode,
+                    case_sensitive=case_sensitive, sort_by=sort_by,
+                    sort_order=sort_order, file_type=file_type,
+                    offset=offset, limit=limit, timeout_seconds=timeout_seconds,
+                )
             if exc.code != "file_search_timeout":
                 raise
             timed_out = True
@@ -527,7 +636,8 @@ class FileSearchRpcPlugin:
     description = (
         "Read-only indexed filename search scoped to the selected export. "
         "Uses Everything IPC on Windows when running, otherwise shared SQLite/watchfiles; "
-        "mdfind on macOS and SQLite/watchfiles on Linux."
+        "mdfind on macOS and SQLite/watchfiles on Linux. Bounded recursive "
+        "search remains available during index warmup or without watchfiles."
     )
     operations = {
         "search": {
