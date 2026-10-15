@@ -73,7 +73,13 @@ class PowerShellFilesystemTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = (Path(self.temp.name) / "export").resolve()
         self.root.mkdir()
-        self.files = ClientFiles(self.root, writable=True)
+        # Windows production uses WindowsClientFiles/WindowsPaths with native
+        # no-reparse handles; the base ClientFiles uses POSIX dir_fd traversal.
+        factory = ClientFiles
+        if os.name == "nt":
+            from openkapsel.client_runtime.client_windows import WindowsClientFiles
+            factory = WindowsClientFiles
+        self.files = factory(self.root, writable=True)
         self.addCleanup(self.files.close)
         (self.root / "existing.txt").write_text("OLD")
         (self.root / "sub").mkdir()
