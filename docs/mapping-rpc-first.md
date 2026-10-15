@@ -66,7 +66,7 @@ the existing bounded server spool until commit and stream it to the provider;
 the successful commit removes that spool. Shares remain immutable server-owned
 snapshots, so they necessarily consume the configured server share quota.
 
-A server Git snapshot cannot span virtual mapping roots: it returns
+A server Git read cannot span virtual mapping roots: it returns
 `git_mapping_boundary`. Inspect a repository wholly within one backend, use the
 mapping's Git plugin, or run an explicitly authorized server Shell command with
 native mapping dependencies. Shell semantics are not silently substituted for

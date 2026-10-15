@@ -77,7 +77,7 @@ def _metadata_entries(files, path: Path):
         os.close(fd)
 
 
-def _validate_git_metadata(files, root: Path):
+def _validate_git_metadata(files, root: Path, *, check_config=True):
     gitdir = root / ".git"
     try:
         fd = files.paths.open(gitdir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -99,7 +99,7 @@ def _validate_git_metadata(files, root: Path):
     except FileNotFoundError:
         pass
     lowered = config.lower()
-    if any(marker in lowered for marker in _UNSAFE_CONFIG_MARKERS):
+    if check_config and any(marker in lowered for marker in _UNSAFE_CONFIG_MARKERS):
         raise ApiError(
             409,
             "git_unsafe_config",

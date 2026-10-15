@@ -14,7 +14,7 @@ GIT_OPERATIONS = GIT_READ_OPERATIONS + GIT_WRITE_OPERATIONS + GIT_NETWORK_OPERAT
 
 
 def git_arguments(operation, options):
-    """Build the legacy/read REST argv for a sanitized Git snapshot."""
+    """Build fixed bounded Git read arguments for the real repository."""
     if operation not in GIT_READ_OPERATIONS:
         raise ApiError(400, "invalid_git_operation", "unsupported Git inspection operation")
     if not isinstance(options, dict):

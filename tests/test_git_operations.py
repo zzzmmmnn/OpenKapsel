@@ -1,13 +1,11 @@
 """Portable Git argv validation and real client execution tests."""
 
 import os
-from contextlib import contextmanager
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
@@ -40,6 +38,25 @@ class GitArgumentTests(unittest.TestCase):
         for limit in (True, 0, 201):
             with self.assertRaises(ApiError):
                 git_arguments("log", {"limit": limit})
+
+    @unittest.skipUnless(shutil.which("git"), "Git required")
+    def test_git_config_parser_disables_filters_and_rejects_includes(self):
+        from openkapsel.files.git_read import _check_local_config
+        executable = shutil.which("git")
+        environment = {"PATH": os.environ.get("PATH", ""),
+                       "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        self.assertEqual([], _check_local_config(
+            executable, "[core]\n    fsmonitor = false\n", environment, Path.cwd(), 3))
+        overrides = _check_local_config(executable,
+            '[filter\t"evil"]\n  clean = echo fake\n  process = helper\n',
+            environment, Path.cwd(), 3)
+        self.assertIn("filter.evil.clean=", overrides)
+        self.assertIn("filter.evil.process=", overrides)
+        self.assertIn("filter.evil.required=false", overrides)
+        with self.assertRaises(ApiError):
+            _check_local_config(executable,
+                '[includeIf "gitdir:~/"]\n  path = /tmp/private\n',
+                environment, Path.cwd(), 3)
 
     def test_arguments_remain_literal_and_external_helpers_disabled(self):
         value = "a' $(touch injected); file\n.txt"
@@ -114,24 +131,31 @@ class GitClientTests(unittest.TestCase):
         self.assertTrue(result["output_truncated"])
         self.assertLessEqual(len(result["output"].encode()), 65536)
 
-    def test_source_configuration_cannot_execute_commands_or_redirect_worktree(self):
+    def test_untrusted_repository_helper_config_is_rejected_without_execution(self):
         marker = self.root / "injected"
         self.git("config", "filter.evil.clean", "touch injected")
         self.git("config", "diff.external", "touch injected")
-        self.git("config", "core.worktree", str(self.root.parent))
         self.git("config", "include.path", str(self.root / "malicious-config"))
         (self.root / ".gitattributes").write_text("*.txt filter=evil diff=evil\n", encoding="utf-8")
         (self.root / "source.txt").write_text("changed\n", encoding="utf-8")
-        self.call("diff")
-        self.call("status")
+        for operation in ("diff", "status", "log", "show"):
+            response = self.files.dispatch("rpc", {
+                "family": "git", "operation": operation, "args": {},
+            })
+            self.assertEqual(409, response["status"], response)
+            self.assertEqual("git_unsafe_config", response["error"]["code"])
         self.assertFalse(marker.exists())
 
-    def test_snapshot_limit_and_external_object_store_fail_closed(self):
-        from openkapsel import git_read
-        with patch.object(git_read, "MAX_SNAPSHOT_BYTES", 1):
-            self.assertEqual(413, self.files.dispatch("rpc", {
-                "family": "git", "operation": "status", "args": {},
-            })["status"])
+    def test_large_ignored_worktree_needs_no_copy_and_alt_store_is_denied(self):
+        (self.root / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+        large = self.root / ".venv" / "large-sparse.bin"
+        large.parent.mkdir()
+        with large.open("wb") as stream:
+            stream.truncate(140 * 1024 * 1024)
+        output = self.call("status")["output"]
+        self.assertIn(".gitignore", output)
+        self.assertNotIn(".venv", output)
+        self.assertNotIn("snapshot_bytes", self.call("status"))
         alternate = self.root / ".git/objects/info/alternates"
         alternate.write_text(str(self.root.parent), encoding="utf-8")
         result = self.files.dispatch("rpc", {
@@ -139,48 +163,37 @@ class GitClientTests(unittest.TestCase):
         })
         self.assertEqual("git_unsupported_layout", result["error"]["code"])
 
-    def test_disappearing_git_maintenance_lock_is_not_snapshot_data(self):
-        objects = self.root / ".git/objects"
-        identity = objects.stat()
-        real_scandir = os.scandir
-        injected = []
-
-        class VanishedLock:
-            name = "maintenance.lock"
-            def stat(self, **kwargs):
-                raise FileNotFoundError("simulated lock removed after enumeration")
-
-        @contextmanager
-        def racing_scandir(path):
-            with real_scandir(path) as entries:
-                def iterate():
-                    current = os.fstat(path) if isinstance(path, int) else Path(path).stat()
-                    if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
-                        # Do not create a real Git-owned lock: background
-                        # maintenance may remove it before this test sees it.
-                        injected.append(True)
-                        yield VanishedLock()
-                    for entry in entries:
-                        yield entry
-                yield iterate()
-
-        with patch("openkapsel.files.git_read.os.scandir", racing_scandir):
-            response = self.files.dispatch("rpc", {
-                "family": "git", "operation": "show",
-                "args": {"options": {"revision": "bad-ref"}},
-            })
-        self.assertEqual([True], injected)
-        self.assertEqual(422, response["status"], response)
-        self.assertEqual("git_failed", response["error"]["code"])
-        # Only Git metadata locks are omitted, not regular workspace files.
+    def test_ignored_symlinks_and_tracked_symlinks_work_like_git(self):
+        (self.root / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+        (self.root / ".venv").mkdir()
+        try:
+            (self.root / ".venv" / "python").symlink_to(
+                self.root.parent / "nonexistent-external-target")
+            (self.root / "source-link").symlink_to("source.txt")
+        except (NotImplementedError, OSError):
+            self.skipTest("symlinks unavailable on this host")
+        self.git("add", "source-link")
+        self.assertIn("source-link", self.call("status")["output"])
+        self.assertNotIn(".venv", self.call("status")["output"])
+        self.assertIn("source-link", self.call("ls_files")["output"])
+        self.assertIn("source-link", self.call("diff", {"staged": True})["output"])
         (self.root / "application.lock").write_text("data", encoding="utf-8")
         self.assertIn("application.lock", self.call("status")["output"])
 
-    def test_repository_diff_helpers_are_not_invoked(self):
-        self.git("config", "diff.external", "nonexistent-openkapsel-diff-helper")
-        self.git("config", "diff.custom.textconv", "nonexistent-openkapsel-textconv-helper")
+    def test_fsmonitor_is_disabled_without_rejecting_normal_config(self):
         self.git("config", "core.fsmonitor", "nonexistent-openkapsel-fsmonitor-helper")
-        (self.root / ".gitattributes").write_text("*.txt diff=custom\n", encoding="utf-8")
         (self.root / "source.txt").write_text("changed\n", encoding="utf-8")
         self.assertIn("+changed", self.call("diff")["output"])
         self.assertNotIn("nonexistent-openkapsel", self.call("status")["output"])
+
+    def test_diff_and_filter_helpers_disabled_without_rejecting_repo(self):
+        marker = self.root / "helper-ran"
+        self.git("config", "diff.custom.textconv", "touch helper-ran")
+        self.git("config", "filter.evil.clean", "touch helper-ran")
+        self.git("config", "filter.evil.process", "touch helper-ran")
+        self.git("config", "filter.evil.required", "true")
+        (self.root / ".gitattributes").write_text("*.txt diff=custom filter=evil\n", encoding="utf-8")
+        (self.root / "source.txt").write_text("changed\n", encoding="utf-8")
+        self.assertIn("+changed", self.call("diff")["output"])
+        self.assertIn("source.txt", self.call("status")["output"])
+        self.assertFalse(marker.exists())
