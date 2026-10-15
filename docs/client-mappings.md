@@ -263,7 +263,15 @@ without `job_sandbox`, Mapping Git uses normal Client host networking.
 Git RPC tasks run in the Client RPC engine, not the Shell Job Manager, so
 this is a validated HTTPS remote policy, **not an OS network sandbox**.
 Known host credential providers and HTTPS proxy environment are supported
-for Git network operations, while untrusted repository/global helpers,
+for Git network operations, but Git Credential Manager runs with
+`GCM_INTERACTIVE=never`: only existing credentials are used; no browser/GUI
+sign-in is requested. On macOS, automatic Git RPC omits `osxkeychain` because
+Keychain access can show a system confirmation dialog independently of GCM;
+only non-GUI credential cache or an existing private Git credential store is
+considered. Linux also skips the native `libsecret` helper to avoid desktop
+keyring-unlock dialogs; GCM remains permitted under its noninteractive setting.
+Missing credentials fail rather than initiating a Git/GCM sign-in flow.
+Untrusted repository/global helpers,
 URL redirects and executable Git config remain disabled. Push sends only the selected branch\u2019s HEAD without force or tags, and never follows an unvalidated `pushurl`. They reject linked worktrees,
 alternate object stores, unsafe Git metadata/configuration, arbitrary Git
 hooks/signing/helper commands, and private `.openkapsel` paths. Host Git is required on the selected execution

@@ -157,7 +157,7 @@ class GitWriteRpcTests(unittest.TestCase):
             self.assertEqual("https", task.calls[0][2]["GIT_ALLOW_PROTOCOL"])
             self.assertEqual(str(Path.home()), task.calls[0][2]["HOME"])
             if sys.platform == "darwin":
-                self.assertIn("credential.helper=osxkeychain", argv)
+                self.assertNotIn("credential.helper=osxkeychain", argv)
 
         task = Task()
         result = mutate_git(
@@ -323,6 +323,7 @@ class GitWriteRpcTests(unittest.TestCase):
                 self.assertEqual(str(Path.home()), env["HOME"])
                 self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
                 self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
+                self.assertEqual("never", env["GCM_INTERACTIVE"])
                 self.assertIn("http.followRedirects=false", argv)
                 self.assertIn("http.sslVerify=true", argv)
                 self.assertIn("--no-verify", argv) if operation == "push" else None
@@ -388,7 +389,7 @@ class GitPushCommandPolicyTests(unittest.TestCase):
         self.assertEqual("https", task.env["GIT_ALLOW_PROTOCOL"])
         self.assertIn("--no-verify", task.argv)
         if sys.platform == "darwin":
-            self.assertIn("credential.helper=osxkeychain", task.argv)
+            self.assertNotIn("credential.helper=osxkeychain", task.argv)
         self.assertIn("--no-follow-tags", task.argv)
         self.assertNotIn("http.proxy=", task.argv)
         self.assertIn("--recurse-submodules=no", task.argv)
@@ -398,6 +399,50 @@ class GitPushCommandPolicyTests(unittest.TestCase):
             task.argv[-3:],
         )
         self.assertFalse(any("other.example.org" in value for value in task.argv))
+
+    def test_git_network_env_overrides_interactive_host_settings(self):
+        from unittest.mock import patch
+        from openkapsel.files.git_write import _base_env
+
+        with patch.dict(os.environ, {
+            "GCM_INTERACTIVE": "always", "GIT_TERMINAL_PROMPT": "1",
+            "GIT_ASKPASS": "/untrusted/askpass", "GCM_GUI_PROMPT": "true",
+        }):
+            for operation in ("fetch", "pull", "push", "clone"):
+                with self.subTest(operation=operation):
+                    env = _base_env(Path.cwd(), {"_operation": operation})
+                    self.assertEqual("never", env["GCM_INTERACTIVE"])
+                    self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
+                    self.assertEqual("", env["GIT_ASKPASS"])
+                    self.assertNotIn("GCM_GUI_PROMPT", env)
+
+    def test_macos_credential_helpers_never_call_keychain_or_gcm(self):
+        from unittest.mock import patch
+        from openkapsel.files.git_write import _safe_credential_helpers
+
+        known = {"git-credential-manager", "git-credential-osxkeychain",
+                 "git-credential-libsecret", "git-credential-cache"}
+        with patch("openkapsel.files.git_write.sys.platform", "darwin"), \
+             patch("openkapsel.files.git_write.Path.home",
+                   return_value=Path("/nonexistent-openkapsel-credentials-test")):
+            with patch("openkapsel.files.git_write.shutil.which",
+                       side_effect=lambda tool: tool if tool in known else None):
+                self.assertEqual(["cache"], _safe_credential_helpers())
+            with patch("openkapsel.files.git_write.shutil.which",
+                       side_effect=lambda tool: tool if tool in known - {"git-credential-cache"} else None):
+                self.assertEqual([], _safe_credential_helpers())
+
+    def test_linux_native_libsecret_cannot_trigger_desktop_unlock(self):
+        from unittest.mock import patch
+        from openkapsel.files.git_write import _safe_credential_helpers
+
+        # Simulate libsecret installed alongside a non-GUI cache helper.
+        with patch("openkapsel.files.git_write.sys.platform", "linux"), \
+             patch("openkapsel.files.git_write.shutil.which",
+                   side_effect=lambda tool: tool if tool in {
+                       "git-credential-libsecret", "git-credential-cache",
+                   } else None):
+            self.assertEqual(["cache"], _safe_credential_helpers())
 
     @unittest.skipUnless(shutil.which("git"), "Git required")
     def test_push_requires_network_policy_and_safe_branch(self):
