@@ -3321,9 +3321,13 @@ class WorkspaceServerTests(unittest.TestCase):
             approval["input_schema"]["required"],
         )
         self.assertEqual(
-            {"access", "target", "writer_nonce", "path", "scope_is_directory"},
+            {"access", "target", "writer_nonce", "path", "scope_is_directory", "reason"},
             set(approval["input_schema"]["properties"]),
         )
+        reason_schema = approval["input_schema"]["properties"]["reason"]
+        self.assertEqual("string", reason_schema["type"])
+        self.assertEqual(1, reason_schema["minLength"])
+        self.assertEqual(500, reason_schema["maxLength"])
         self.assertEqual("boolean", approval["input_schema"]["properties"]["scope_is_directory"]["type"])
         self.assertIs(True, approval["input_schema"]["properties"]["scope_is_directory"]["default"])
         self.assertFalse(approval["input_schema"]["additionalProperties"])
