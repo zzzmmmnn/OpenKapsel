@@ -235,9 +235,22 @@ def _create_resources(config, *, protected_paths=()):
     is_mapping = urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]
     if job_sandbox is not None and not is_mapping:
         raise ValueError("job_sandbox requires a mapping-connect Client")
+    # Interpret only literal, in-scope file commands without approval on Windows.
+    # Every other Windows Shell invocation requires explicit approval.
+    from types import SimpleNamespace
+    powershell_rules = (
+        tuple(SimpleNamespace(path=item["path"], access=item["access"])
+              for item in job_sandbox["allowed_paths"])
+        + tuple(SimpleNamespace(path=path, access="deny")
+                for path in job_sandbox["hidden_paths"])
+        if os.name == "nt" and job_sandbox is not None else ()
+    )
     tasks = ClientTasks(files, enabled=config.get("allow_exec", False),
-                        sandbox=config.get("sandbox", True) if job_sandbox is None else False,
-                        managed_sandbox=job_sandbox is not None,
+                        sandbox=(config.get("sandbox", True)
+                                 if job_sandbox is None and os.name != "nt" else False),
+                        managed_sandbox=job_sandbox is not None or os.name == "nt",
+                        approval_only=os.name == "nt",
+                        powershell_rules=powershell_rules,
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
                         network=config.get("network", False), **limits)
     from openkapsel.client_runtime.shared_job_tasks import SharedClientTasks

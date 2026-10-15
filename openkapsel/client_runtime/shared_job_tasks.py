@@ -46,7 +46,7 @@ class SharedClientTasks:
             manager_max_seconds=None,
             default_seconds=120,
         )
-        if self.job_sandbox is not None:
+        if self.job_sandbox is not None and not self.legacy.approval_only:
             result.update(
                 sandbox=True,
                 backend=self.job_sandbox["type"],
@@ -92,6 +92,10 @@ class SharedClientTasks:
                     not 0.1 <= timeout < float("inf")):
                 raise OSError(errno.EINVAL, "invalid Shell timeout")
             invocation = dict(args, timeout_seconds=timeout)
+            if self.legacy.approval_only and not unsandboxed:
+                # An unapproved Windows command may only run the Client's
+                # literal file-command interpreter, never the shared Manager.
+                return self.legacy.dispatch(op, invocation)
             if timeout <= 120 and (self.job_sandbox is None or unsandboxed):
                 # Legacy short Shell remains Client-owned. When native Job
                 # sandboxing is configured, *every* Shell must use the Manager

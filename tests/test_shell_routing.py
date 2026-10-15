@@ -110,6 +110,40 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         finally:
             self.server.mappings.store.delete(other["id"])
 
+    def test_windows_literal_powershell_is_checked_before_shell_approval(self):
+        # Simulate a guarded Windows Client without launching a native process.
+        self.legacy_tasks.approval_only = True
+        self.session.capabilities["execution"] = dict(
+            self.tasks.capabilities(), platform="win32"
+        )
+        (self.export / "visible.txt").write_text("VISIBLE")
+        status, safe = self.api(
+            "/shell/exec",
+            {"command": "Get-Content -LiteralPath visible.txt",
+             "cwd": "laptop", "target": "client"},
+        )
+        self.assertEqual(202, status, safe)
+        self.assertEqual("VISIBLE", self.finished(safe["task_id"])["stdout"])
+        status, outside = self.api(
+            "/shell/exec",
+            {"command": "Get-Content -LiteralPath ../secret",
+             "cwd": "laptop", "target": "client"},
+        )
+        self.assertNotEqual(202, status, outside)
+        status, unknown = self.api(
+            "/shell/exec",
+            {"command": "Get-Process",
+             "cwd": "laptop", "target": "client"},
+        )
+        self.assertEqual(403, status, unknown)
+        self.assertEqual("capability_approval_required", unknown["error"]["code"])
+        status, chained = self.api(
+            "/shell/exec",
+            {"command": "Get-ChildItem; whoami",
+             "cwd": "laptop", "target": "client"},
+        )
+        self.assertEqual(403, status, chained)
+
     def test_remote_output_input_reconnect_and_termination(self):
         status, result = self.api("/shell/exec", {"command": "cat", "cwd": "laptop", "target": "client", "interactive": True})
         self.assertEqual(202, status, result)

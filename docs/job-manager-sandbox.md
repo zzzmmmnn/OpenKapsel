@@ -17,7 +17,7 @@ execution. This is an internal Manager IPC contract, not a public REST parameter
   The sandbox may connect only to that port; the proxy validates domain names,
   destination ports, DNS answers and public addresses. A restricted program
   cannot initiate arbitrary TCP connections merely by ignoring `HTTP_PROXY`.
-- `srt_windows`: Windows only; wraps each Job in Anthropic Sandbox Runtime
+- `srt_windows`: legacy Windows Sandbox Runtime backend. **Temporarily disabled** for Mapping Shell: literal-only filesystem commands run inside the Client's guarded file interpreter, and all other commands require explicit Shell approval and run as the Client OS user without isolation.
   0.0.79+ (Node.js 22.12+). SRT's Rust `srt-win.exe` uses a dedicated
   `srt-sandbox` account, SID-restricted WFP egress filter and NTFS ACLs.
   First run requires `npm install -g @anthropic-ai/sandbox-runtime` and an

@@ -110,8 +110,10 @@ class ClientTasks:
     def __init__(self, files, *, enabled=False, sandbox=True, backend="podman",
                  image="docker.io/library/python:3.14-slim-trixie", network=False,
                  max_tasks=2, max_seconds=600, memory_mb=256, processes=64, cpus=1,
-                 managed_sandbox=False):
+                 managed_sandbox=False, approval_only=False, powershell_rules=()):
         self.files = files
+        self.approval_only = approval_only
+        self.powershell_rules = tuple(powershell_rules)
         self.enabled, self.sandbox, self.backend = enabled, sandbox, backend
         self.image, self.network = image, network
         self.max_tasks, self.max_seconds = max_tasks, max_seconds
@@ -138,6 +140,8 @@ class ClientTasks:
 
     def capabilities(self):
         return {"enabled": self.enabled, "sandbox": self.sandbox,
+                "approval_required": self.approval_only,
+                "safe_powershell": self.approval_only,
                 "backend": self.backend if self.sandbox else "native-unsandboxed",
                 "platform": sys.platform, "max_tasks": self.max_tasks,
                 "shell_command": True, "unsandboxed": True, "shell": "cmd.exe" if os.name == "nt" and not self.sandbox else "/bin/sh",
@@ -175,6 +179,14 @@ class ClientTasks:
                     if unsandboxed:
                         raise OSError(errno.EACCES, "Shell approval cannot authorize RPC")
                     return self._start_rpc(tid, args)
+                if self.approval_only and not unsandboxed:
+                    from openkapsel.client_runtime.windows_powershell_policy import parse_simple_powershell
+                    parsed = parse_simple_powershell(args.get("command"))
+                    if parsed is None:
+                        raise OSError(errno.EACCES, "Windows Shell command requires approval")
+                    if not self.enabled:
+                        raise OSError(errno.EACCES, "client execution is disabled")
+                    return self._start_simple_powershell(tid, args, parsed)
                 if not self.enabled and not unsandboxed:
                     raise OSError(errno.EACCES, "client execution is disabled")
                 return self._start(tid, args)
@@ -294,6 +306,69 @@ class ClientTasks:
         threading.Thread(target=self._collect, args=(task,), daemon=True).start()
         if interactive:
             threading.Thread(target=self._input, args=(task,), daemon=True).start()
+        threading.Thread(target=self._deadline, args=(task,), daemon=True).start()
+        return self._public(task)
+
+    def _start_simple_powershell(self, tid, args, parsed):
+        """Execute only allowlisted filesystem actions; no PowerShell process."""
+        from openkapsel.client_runtime.windows_powershell_policy import (
+            _checked_path, execute_simple_powershell,
+        )
+        if args.get("argv") is not None or args.get("interactive", False) is not False:
+            raise OSError(errno.EACCES, "safe PowerShell only supports a single noninteractive command")
+        timeout = args.get("timeout_seconds", self.LOCAL_SHELL_MAX_SECONDS)
+        if timeout is None:
+            timeout = self.LOCAL_SHELL_MAX_SECONDS
+        if (type(timeout) not in (int, float) or
+                not 0.1 <= timeout <= self.LOCAL_SHELL_MAX_SECONDS):
+            raise OSError(errno.EINVAL, "safe PowerShell timeout must be within 120 seconds")
+        cwd = self.files.path(args.get("cwd", "."))
+        if hasattr(self.files.paths, "guard"):
+            with self.files.paths.guard(cwd, include_final=True):
+                if not cwd.is_dir():
+                    raise OSError(errno.ENOTDIR, "cwd must be a directory")
+        else:
+            descriptor = self.files.paths.open(cwd, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            os.close(descriptor)
+        if parsed.operation != "pwd":
+            _checked_path(self.files, cwd, parsed.path, write=parsed.write,
+                          rules=self.powershell_rules)
+        if len(self.tasks) >= self.max_tasks + 4:
+            raise OSError(errno.EBUSY, "client retained task limit reached")
+        if self.closed or sum(t["finished_at"] is None for t in self.tasks.values()) >= self.max_tasks:
+            raise OSError(errno.EBUSY, "client task limit reached")
+        task = {
+            "id": tid, "kind": "safe_shell", "started_at": time.time(),
+            "finished_at": None, "collected_at": None, "interactive": False,
+            "stdin_closed": True, "interrupted": False, "force_killed": False,
+            "output": bytearray(), "output_lock": threading.Lock(),
+            "truncated": False, "timeout": float(timeout),
+            "cancel": threading.Event(), "done": threading.Event(), "exit_code": None,
+        }
+        self.tasks[tid] = task
+
+        def run():
+            try:
+                if task["cancel"].is_set():
+                    raise OSError(errno.ECANCELED, "task cancelled")
+                output = execute_simple_powershell(
+                    self.files, cwd, parsed, rules=self.powershell_rules,
+                ).encode("utf-8", errors="replace")
+                with task["output_lock"]:
+                    if not task["cancel"].is_set():
+                        task["output"].extend(output[:2 * 1024 * 1024])
+                        task["truncated"] = len(output) > 2 * 1024 * 1024
+                task["exit_code"] = 130 if task["cancel"].is_set() else 0
+            except (OSError, ValueError) as exc:
+                with task["output_lock"]:
+                    data = (str(exc) + "\n").encode("utf-8", errors="replace")
+                    task["output"].extend(data[:8192])
+                task["exit_code"] = 1
+            finally:
+                task["finished_at"] = time.time()
+                task["done"].set()
+
+        threading.Thread(target=run, daemon=True).start()
         threading.Thread(target=self._deadline, args=(task,), daemon=True).start()
         return self._public(task)
 
@@ -461,7 +536,7 @@ class ClientTasks:
         exit_code = task["process"].poll() if kind == "shell" else task.get("exit_code")
         result = {
             "task_id": task["id"],
-            "kind": kind,
+            "kind": "shell" if kind == "safe_shell" else kind,
             "location": "client",
             "started_at": task["started_at"],
             "finished_at": task["finished_at"],
@@ -501,6 +576,9 @@ class ClientTasks:
         if task["finished_at"] is not None:
             return
         task["force_killed" if force else "interrupted"] = True
+        if task.get("kind") == "safe_shell":
+            task["cancel"].set()
+            return
         if task.get("kind", "shell") == "rpc":
             task["rpc_context"].cancel(force=force)
             return

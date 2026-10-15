@@ -83,8 +83,17 @@ class ClientJobSandboxTests(unittest.TestCase):
             self.assertTrue(domain_allowed("sub.github.com", tuple(spec["allowed_domains"])))
             self.assertFalse(domain_allowed("otherexample.com", tuple(spec["allowed_domains"])))
             self.assertEqual([True, False], [p["access"] == "ro" for p in spec["allowed_paths"]])
-            self.assertTrue(runtime.tasks.capabilities()["sandbox"])
-            self.assertEqual(0, runtime.tasks.capabilities()["restart_persistence_timeout_gt"])
+            if platform.system() == "Windows":
+                # Windows does not launch SRT during temporary approval mode.
+                capabilities = runtime.tasks.capabilities()
+                self.assertFalse(capabilities["sandbox"])
+                self.assertTrue(capabilities["safe_powershell"])
+                self.assertTrue(capabilities["approval_required"])
+                self.assertEqual("native-unsandboxed", capabilities["backend"])
+                self.assertEqual(120, capabilities["restart_persistence_timeout_gt"])
+            else:
+                self.assertTrue(runtime.tasks.capabilities()["sandbox"])
+                self.assertEqual(0, runtime.tasks.capabilities()["restart_persistence_timeout_gt"])
         finally:
             runtime.close()
 

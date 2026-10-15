@@ -143,17 +143,34 @@ class ShellRoutingMixin:
         if body.get("mount_mappings"):
             raise ApiError(400, "server_mapping_dependencies", "mount_mappings applies only to server execution")
         row = self._mapping_for_caller(row["id"])
-        if not row["writable"] or not self.token_record.can_write:
-            raise ApiError(403, "client_execution_requires_write", "client execution requires a writable mapping and caller")
         with self.server.mappings.lock:
             session = self.server.mappings.sessions.get(row["id"])
             execution = session.capabilities.get("execution", {}) if session else {}
         if session is None or session.closed or not row["enabled"]:
             raise ApiError(503, "mapping_unavailable", "mapping client is offline")
-        if not approved and (not row["allow_exec"] or not execution.get("enabled")):
-            raise ApiError(403, "client_execution_disabled", "mapping and client execution must both be enabled")
         if not execution.get("shell_command"):
             raise ApiError(409, "client_upgrade_required", "update and reconnect client for unified Shell execution")
+        safe = None
+        windows = execution.get("platform") == "win32"
+        if windows and execution.get("safe_powershell") and not approved:
+            if not self._optional_bool(body, "interactive", False):
+                from openkapsel.client_runtime.windows_powershell_policy import parse_simple_powershell
+                safe = parse_simple_powershell(body.get("command"))
+        if safe is not None and not safe.write:
+            self._require_permission(self.token_record.can_read, "File read permission is required")
+        elif not row["writable"] or not self.token_record.can_write:
+            raise ApiError(403, "client_execution_requires_write",
+                           "client execution requires a writable mapping and caller")
+        if not approved and (not row["allow_exec"] or not execution.get("enabled")):
+            raise ApiError(403, "client_execution_disabled", "mapping and client execution must both be enabled")
+        if windows and not approved and safe is None:
+            if body.get("writer_nonce"):
+                self._require_capability(body, row["id"], "shell.unsandboxed")
+            raise ApiError(403, "capability_approval_required",
+                           "Windows Shell requires approval for unrecognized commands; "
+                           "request shell.request_approval and retry with approved=true",
+                           {"capability": "shell.unsandboxed", "target": row["id"],
+                            "request_operation": "shell.request_approval"})
         if approved:
             if not execution.get("unsandboxed"):
                 raise ApiError(409, "client_upgrade_required", "update and reconnect client for approved Shell execution")

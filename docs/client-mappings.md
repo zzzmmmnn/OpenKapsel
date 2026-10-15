@@ -380,6 +380,36 @@ not retroactively restricted after changing the configuration. See
 [Job Manager sandbox](job-manager-sandbox.md) for isolation guarantees and
 the Manager IPC format.
 
+### Windows temporary approval mode
+
+On Windows, OpenKapsel temporarily does **not** start Anthropic SRT for Mapping
+Shell jobs. The Client interprets a small, literal-only set of PowerShell
+filesystem commands directly using the same guarded file provider as File RPC.
+It does **not** invoke PowerShell for these commands. Supported aliases include:
+
+- `Get-Location`/`pwd`, `Get-ChildItem`/`ls`/`dir`, `Get-Item`,
+  `Get-Content`/`cat`/`type`, and `Test-Path`.
+- `Set-Content -LiteralPath <path> -Value <literal>`,
+  `Add-Content -LiteralPath <path> -Value <literal>`,
+  `New-Item -ItemType Directory -LiteralPath <path>`,
+  and `Remove-Item -LiteralPath <file>`.
+
+No pipelines, variables, wildcards, command substitutions, semicolons,
+redirection, optional switches, recursive deletion, or scripts are recognized.
+Known file commands whose paths escape the Mapping export, target a
+protected/reparse path, or violate `ro`/`deny` are refused. In-scope reads
+require token read permission; writes require token write permission and an
+enabled writable Mapping. The token must also allow Shell invocation. Unknown
+Shell commands require explicit `shell.request_approval` and then
+`approved=true`; otherwise they are rejected. Approved commands execute with
+the Client's full Windows OS-user rights and **are not sandboxed**. The
+`job_sandbox.network` policy does not restrict approved native processes.
+This is an application-level command allowlist, **not** an OS sandbox.
+
+Linux/macOS retain their configured Sandbox backends. The Windows SRT
+installation instructions below describe the optional legacy runtime, which
+is not currently used for Windows Mapping Shell jobs.
+
 ### Windows Sandbox Runtime installation
 
 Install **Node.js 22.12+**, then once per machine in PowerShell:
