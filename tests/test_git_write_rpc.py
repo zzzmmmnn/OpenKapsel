@@ -157,7 +157,7 @@ class GitWriteRpcTests(unittest.TestCase):
             self.assertEqual("https", task.calls[0][2]["GIT_ALLOW_PROTOCOL"])
             self.assertEqual(str(Path.home()), task.calls[0][2]["HOME"])
             if sys.platform == "darwin":
-                self.assertNotIn("credential.helper=osxkeychain", argv)
+                self.assertIn("credential.helper=osxkeychain", argv)
 
         task = Task()
         result = mutate_git(
@@ -389,7 +389,7 @@ class GitPushCommandPolicyTests(unittest.TestCase):
         self.assertEqual("https", task.env["GIT_ALLOW_PROTOCOL"])
         self.assertIn("--no-verify", task.argv)
         if sys.platform == "darwin":
-            self.assertNotIn("credential.helper=osxkeychain", task.argv)
+            self.assertIn("credential.helper=osxkeychain", task.argv)
         self.assertIn("--no-follow-tags", task.argv)
         self.assertNotIn("http.proxy=", task.argv)
         self.assertIn("--recurse-submodules=no", task.argv)
@@ -416,7 +416,7 @@ class GitPushCommandPolicyTests(unittest.TestCase):
                     self.assertEqual("", env["GIT_ASKPASS"])
                     self.assertNotIn("GCM_GUI_PROMPT", env)
 
-    def test_macos_credential_helpers_use_noninteractive_gcm_not_native_keychain(self):
+    def test_macos_credential_helpers_use_system_keychain(self):
         from unittest.mock import patch
         from openkapsel.files.git_write import _safe_credential_helpers
 
@@ -427,13 +427,12 @@ class GitPushCommandPolicyTests(unittest.TestCase):
                    return_value=Path("/nonexistent-openkapsel-credentials-test")):
             with patch("openkapsel.files.git_write.shutil.which",
                        side_effect=lambda tool: tool if tool in known else None):
-                self.assertEqual(["manager"], _safe_credential_helpers())
+                self.assertEqual(["osxkeychain"], _safe_credential_helpers())
             with patch("openkapsel.files.git_write.shutil.which",
-                       side_effect=lambda tool: tool if tool in known - {"git-credential-manager"} else None):
-                self.assertEqual(["cache"], _safe_credential_helpers())
-            with patch("openkapsel.files.git_write.shutil.which",
-                       side_effect=lambda tool: tool if tool in known - {"git-credential-manager", "git-credential-cache"} else None):
-                self.assertEqual([], _safe_credential_helpers())
+                       return_value=None):
+                # Git can find its built-in helper in git --exec-path even if
+                # the helper executable is not directly on PATH.
+                self.assertEqual(["osxkeychain"], _safe_credential_helpers())
 
     def test_linux_native_libsecret_cannot_trigger_desktop_unlock(self):
         from unittest.mock import patch
