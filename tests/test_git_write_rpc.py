@@ -416,7 +416,7 @@ class GitPushCommandPolicyTests(unittest.TestCase):
                     self.assertEqual("", env["GIT_ASKPASS"])
                     self.assertNotIn("GCM_GUI_PROMPT", env)
 
-    def test_macos_credential_helpers_never_call_keychain_or_gcm(self):
+    def test_macos_credential_helpers_use_noninteractive_gcm_not_native_keychain(self):
         from unittest.mock import patch
         from openkapsel.files.git_write import _safe_credential_helpers
 
@@ -427,9 +427,12 @@ class GitPushCommandPolicyTests(unittest.TestCase):
                    return_value=Path("/nonexistent-openkapsel-credentials-test")):
             with patch("openkapsel.files.git_write.shutil.which",
                        side_effect=lambda tool: tool if tool in known else None):
+                self.assertEqual(["manager"], _safe_credential_helpers())
+            with patch("openkapsel.files.git_write.shutil.which",
+                       side_effect=lambda tool: tool if tool in known - {"git-credential-manager"} else None):
                 self.assertEqual(["cache"], _safe_credential_helpers())
             with patch("openkapsel.files.git_write.shutil.which",
-                       side_effect=lambda tool: tool if tool in known - {"git-credential-cache"} else None):
+                       side_effect=lambda tool: tool if tool in known - {"git-credential-manager", "git-credential-cache"} else None):
                 self.assertEqual([], _safe_credential_helpers())
 
     def test_linux_native_libsecret_cannot_trigger_desktop_unlock(self):

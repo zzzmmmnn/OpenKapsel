@@ -265,10 +265,11 @@ this is a validated HTTPS remote policy, **not an OS network sandbox**.
 Known host credential providers and HTTPS proxy environment are supported
 for Git network operations, but Git Credential Manager runs with
 `GCM_INTERACTIVE=never`: only existing credentials are used; no browser/GUI
-sign-in is requested. On macOS, automatic Git RPC omits `osxkeychain` because
-Keychain access can show a system confirmation dialog independently of GCM;
-only non-GUI credential cache or an existing private Git credential store is
-considered. Linux also skips the native `libsecret` helper to avoid desktop
+sign-in is requested. On macOS, automatic Git RPC may use GCM but omits the
+native `osxkeychain` helper because Keychain access can show a system
+confirmation dialog independently of GCM. Without GCM it falls back to a
+non-GUI credential cache or an existing private Git credential store. Linux
+also skips the native `libsecret` helper to avoid desktop
 keyring-unlock dialogs; GCM remains permitted under its noninteractive setting.
 Missing credentials fail rather than initiating a Git/GCM sign-in flow.
 Untrusted repository/global helpers,

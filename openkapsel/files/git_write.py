@@ -382,19 +382,19 @@ def _safe_credential_helpers():
     The injected blank credential.helper overrides local settings, and global
     Git configuration stays disabled. Names are fixed, never AI-controlled.
     """
-    # git-credential-osxkeychain may open a macOS SecurityAgent dialog even
-    # when Git and GCM prompts are disabled. On macOS use only the non-GUI
-    # cache or pre-existing restrictive-permission store fallback below.
+    # Never invoke native osxkeychain directly: it can trigger an OS dialog.
+    # Prefer GCM, which honors GCM_INTERACTIVE=never, including on macOS;
+    # failing authentication without saved credentials must stay noninteractive.
     if os.name == "nt":
         # Git for Windows can ship GCM inside Git's own exec-path, not on
         # PATH; Git resolves this conventional helper name itself.
         if shutil.which("git-credential-manager-core") and not shutil.which("git-credential-manager"):
             return ["manager-core"]
         return ["manager"]
-    # On Linux, GCM honors GCM_INTERACTIVE=never. Do not use the native
-    # libsecret helper: the Secret Service itself can display a keyring unlock
-    # prompt independently of Git/GCM's interactive settings.
-    if sys.platform != "darwin" and shutil.which("git-credential-manager"):
+    # Do not invoke native libsecret on Linux either: the Secret Service can
+    # independently prompt for keyring unlocking. GCM is controlled by its
+    # explicit noninteractive mode on both Linux and macOS.
+    if shutil.which("git-credential-manager"):
         return ["manager"]
     # cache does not persist plaintext credentials or introduce scripts from
     # repo config, and store only operates on an already existing credentials
