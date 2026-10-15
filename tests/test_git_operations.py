@@ -221,9 +221,21 @@ class GitClientTests(unittest.TestCase):
             gitconfig = path / "gitconfig"
             ignores.write_text("operator-ignored.txt\n", encoding="utf-8")
             attrs.write_text("*.txt -diff\n", encoding="utf-8")
-            gitconfig.write_text(
-                f"[core]\n  excludesFile = {ignores}\n  attributesFile = {attrs}\n",
-                encoding="utf-8")
+            # Git config treats backslashes as escapes. Writing Windows
+            # Path strings directly into config produces invalid entries
+            # (e.g. C:\\Users\\...) and fails even before Git status runs.
+            # Let Git serialize both paths using its native quoting rules.
+            for key, target in (("core.excludesFile", ignores),
+                                ("core.attributesFile", attrs)):
+                subprocess.run(
+                    ["git", "config", "--file", str(gitconfig), key, str(target)],
+                    check=True, capture_output=True,
+                )
+                parsed = subprocess.run(
+                    ["git", "config", "--file", str(gitconfig), "--get", key],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(str(target), parsed.stdout.strip())
             (self.root / "operator-ignored.txt").write_text("NOT VISIBLE")
             (self.root / "source.txt").write_text("changed\n")
             with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig)}):
