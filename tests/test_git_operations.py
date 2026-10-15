@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_tasks import ClientTasks
@@ -70,6 +71,23 @@ class GitArgumentTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("git"), "Git required")
 class GitClientTests(unittest.TestCase):
     def setUp(self):
+        # Git Read intentionally inherits the operator's global/system config.
+        # GitHub Windows runners may configure core.excludesFile=nul, which is
+        # not a real ignore file to Git for Windows. The fixture must supply
+        # its OWN trusted host config instead of depending on the runner's.
+        self.host_config_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.host_config_dir.cleanup)
+        host_config = Path(self.host_config_dir.name) / "gitconfig"
+        host_config.write_text("# hermetic operator Git config for RPC tests\n",
+                               encoding="utf-8")
+        self.host_environment = patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": str(host_config),
+            "GIT_CONFIG_SYSTEM": str(host_config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "XDG_CONFIG_HOME": str(Path(self.host_config_dir.name) / "xdg"),
+        })
+        self.host_environment.start()
+        self.addCleanup(self.host_environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         factory = ClientFiles
@@ -196,7 +214,6 @@ class GitClientTests(unittest.TestCase):
         self.assertIn("application.lock", self.call("status")["output"])
 
     def test_git_read_respects_operator_global_ignore_and_attributes(self):
-        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             ignores = path / "ignore"
