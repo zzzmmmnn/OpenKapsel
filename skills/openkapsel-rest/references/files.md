@@ -31,6 +31,19 @@ Prefer `POST /fs/read/files` with `{"paths":["src/main.py","README.md"],"limit":
 
 Content grep at `/fs/query/grep` supports repeated `include`/`exclude` query parameters, e.g. `include=*.py&exclude=node_modules`. Slash-free patterns match basenames; slash-containing patterns match root-relative POSIX paths, with case-sensitive Python fnmatch semantics (`*` spans `/`). Excludes win and prune matching directories; includes only filter files. Each group allows 64 patterns of up to 512 characters. Its MCP tool is `fs_grep`.
 
+For temporary File access that is not covered by existing permissions,
+request `POST /files/approval/request` first with `access: "read"|"write"`,
+explicit `target: "server"` or an exact Mapping ID, the owning Conversation's
+`writer_nonce`, a concrete `reason`, and the in-progress Plan Context headers.
+For access outside the configured workspace, also supply the absolute `path`;
+use `scope_is_directory: false` for a file path or symlink. Only the request
+returns an approval URL. After Workspace Password approval, File API calls must
+separately include `approved: true`, the same `writer_nonce`, explicit
+`target`, and Plan Context. A read grant never implies write access, and an
+unscoped grant cannot unlock external paths. Mapping write protection,
+deny/read-only rules, protected configuration and OS permissions still apply.
+Generic RPC and upload endpoints cannot use File approval grants.
+
 For a single mapping, these operations run client-locally in one RPC with an
 updated client. RPC-first servers do not fall back to FUSE. Reduce batch size,
 text budget or depth on 413, or use binary transfer for large payloads.

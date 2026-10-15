@@ -4,52 +4,52 @@ Read `GET /discovery/shell` before use. It states whether Shell is `none`, `rest
 
 Restricted Shell and full Shell have different boundaries. Restricted Shell is confined by its configured backend, mounts, network setting, and available cgroup limits. Full Shell runs as the OpenKapsel service user and is not constrained by token path grants or the network flag.
 
-## Git inspection
+## Git inspection and mutations
 
-Git inspection is a read-only RPC capability, not Shell execution. REST uses
-`POST /rpc/git/<operation>` for the server workspace or
-`POST /mapping/<mapping_name>/rpc/git/<operation>` for a mapped repository.
-MCP uses the same `git` family through the generic `rpc_call` tool. Reads work
-with Shell disabled, client `allow_exec=false`, and read-only mappings.
+Git is a dedicated RPC family, not Shell execution. For the server use
+`POST /rpc/git/<operation>`; for a Mapping use
+`POST /mapping/<mapping_name>/rpc/git/<operation>`. MCP uses the generic
+`rpc_call` family `git`. Shell permission is not needed. Read calls also
+work with disabled client Shell execution or a read-only Mapping.
 
-Supported read operations are `status`, `diff`, `diff_stat`, `log`,
-`show`, and `ls_files`. Put operation-specific parameters under `args`.
+Supported synchronous reads: `status`, `diff`, `diff_stat`, `log`,
+`show`, `ls_files`, `branch`, `blame`, `tag`, `stash`.
+Use `args` for operation-specific parameters. The selected `cwd` identifies
+a repository with an ordinary SHA-1 `.git` directory; common read options
+include `paths` (bounded literal repository-relative names), `revision`,
+`to_revision`, `staged`, `limit`, `skip`, `all`, and `path` for
+`blame`, only when supported by that operation. Invalid options are rejected;
+inspect runtime Discovery or Mapping `operation_specs` for the exact schema.
 
-`path` must identify a repository root with an ordinary SHA-1 `.git` directory.
-Git runs on a private sanitized temporary snapshot: source config, includes,
-hooks, filter definitions, global config, and private `.openkapsel` storage
-are not loaded. No original workspace path is passed to the Git process.
-There is no arbitrary argv, no Shell task, and no execution-permission fallback.
-Git must be installed on the selected execution host. A mapped path uses the
-`git` RPC family version 2; old clients must update/reconnect and fail closed
-until the requested operation is advertised.
+Reads execute fixed Git commands directly in the original repository; **no
+working-tree or object-database snapshot is copied**. AI-controlled repository
+Git metadata is validated, and commands run without a Shell, network access,
+hooks, maintenance or external filter execution. Trusted operator system/user
+configuration (including global ignore and attributes) remains effective.
+Repository-local safe settings and ordinary symlinks are supported; executable
+repository filters are disabled for the read subprocess. Alternate object
+stores, linked Git dirs and redirecting/executable repository config are
+rejected. There is no arbitrary Git argv.
 
-Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per
-process, 15-second default timeout (maximum 20), and 64 KiB output per stream.
-Metadata-only queries (log/show/ls-files/staged or two-revision diffs) do not
-copy working files; status and working-tree diffs do. This uses local temporary
-disk and adds copying overhead; it does not transfer the snapshot to the server.
-Linked worktrees, external object alternates, and symlinks/reparse points or
-special files encountered in copied paths are rejected. Repository-local
-configuration (including custom filters, ignore settings and autocrlf) is not
-applied; output may therefore differ from normal developer Git commands.
-Snapshots are not transactional across files. A server Git snapshot cannot cross
-a virtual mapping root (`git_mapping_boundary`); inspect a repository entirely
-in one backend or use its client Git RPC. Do not substitute an unapproved Shell
-command for a read-authorized inspection.
+Reads are synchronous, with a default 15-second deadline (maximum 20 seconds),
+four simultaneous inspections per process and 64 KiB bounded stdout/stderr.
+Responses include `operation`, `running: false`, `exit_code`, `output`,
+`stderr`, `output_truncated`, `stderr_truncated`. There is no read task ID,
+polling or `snapshot_bytes` field. Truncated results require narrower queries.
+Log is TSV; other operations return Git text. Git failure returns 422 with
+details; invalid/unsafe metadata or layout can return 409, deadlines 504.
+Server Git RPC cannot cross a Mapping boundary; select that Mapping instead.
 
-Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
-`output_truncated`, `stderr_truncated`, and `snapshot_bytes`; there is no
-task ID or polling. Narrow queries when output is truncated. Errors use 413 for
-snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
-422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
-Read Context is optional. Server Git mutations use
-`POST /rpc/git/<operation>`; mapped Git mutations use
-`POST /mapping/<mapping_name>/rpc/git/<operation>`. `add`, `commit`, `restore`,
-`checkout`, `fetch`, `pull`, and `clone` are task operations and use ordinary
-`/task/*` lifecycle APIs without requiring Shell permission. They require write
-permission and Plan Context; mapped writes also require a writable mapping, and
-fetch/pull/clone additionally obey the token network/domain policy.
+Supported asynchronous write/task operations include `add`, `commit`,
+`restore`, `checkout`, `branch_create`, `branch_delete`, `tag_create`,
+`tag_delete`, `stash_push`, `stash_apply`, `stash_pop`, `stash_drop`,
+`fetch`, `pull`, `push`, and `clone`. They use the ordinary `/task/*`
+lifecycle, require write permission and an in-progress Plan Context, and
+mapped writes additionally require a writable Mapping. Network Git operations
+require token network/domain permission and validated HTTPS destinations.
+Git hooks and unsafe repository-provided execution settings are blocked.
+Check runtime Discovery for supported operations, current restrictions and
+version compatibility; never replay an uncertain write task start.
 
 ## Persistent Shell environment
 
@@ -204,12 +204,17 @@ Interrupt and kill have no JSON body, so send all three `OpenKapsel-*` Context h
 `GET /sandbox/processes?offset=0&limit=100` is available only for restricted Shell when server cgroup support is enabled. It reports aggregate memory/CPU/PID/OOM counters and process rows. A task limit, PID limit, memory limit, or CPU limit is independent; consult Discovery rather than assuming defaults.
 
 
-For temporary unsandboxed execution, include `approved: true` and the owning
-Conversation's `writer_nonce` with normal Plan Context. If the server returns
-`capability_approval_required`, display the complete `error.details.approval_url`,
-pause for the user to enter the Workspace Password, then retry. The page never
-runs the command. URLs last five minutes and grants default to ten minutes
-(maximum 24 hours), independently for Server and each Mapping. Only approved
-Mapping requests override disabled execution; other permissions stay required.
-Grants expire on revocation, password reset or Server restart. Expiry does not
-terminate an already started job. OAuth sign-in does not grant unsandboxed Shell access.
+For temporary unsandboxed execution, first request permission with
+`POST /shell/approval/request`, JSON `{"target":"server","writer_nonce":"@xxxx@","reason":"specific reason"}`
+(or use the exact Mapping ID as `target`). Include the owning in-progress Plan
+Context headers. Only this explicit request creates an `approval_url`; an ordinary
+Shell error never creates a URL. Display the returned URL and obtain Workspace
+Password approval **before** executing the command. After approval, call
+`POST /shell/exec` with `approved: true` and the same Conversation's
+`writer_nonce`, plus normal Plan Context. The approval page never runs a command.
+URLs last five minutes and grants default to ten minutes (maximum 24 hours),
+independently for Server and each Mapping. An approved Mapping execution may
+bypass disabled client Shell execution, but a writable Mapping and remaining
+permissions are still required. Grants expire on revocation, password reset,
+or Server restart. Expiry does not terminate an already started job.
+OAuth sign-in does not grant unsandboxed Shell access.
