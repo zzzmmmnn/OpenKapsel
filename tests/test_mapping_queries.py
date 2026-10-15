@@ -184,10 +184,10 @@ class MappingQueryTests(unittest.TestCase):
         # CI runners may not have watchfiles/mdfind/Everything, so advertise the mocked
         # backend explicitly before dispatching fs_find.
         self.files.rpc_capabilities["file_search"] = {"state": "available"}
-        with patch(
-            "openkapsel.rpc_plugins.file_search._backend_paths",
-            return_value=("mock-index", iter([str(wanted)])),
-        ) as indexed:
+        with (patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                    return_value=("mdfind", "/mock/mdfind")),
+              patch("openkapsel.rpc_plugins.file_search._backend_paths",
+                    return_value=("mock-index", iter([str(wanted)]))) as indexed):
             status, result = self.api(
                 "/fs/query/find?path=laptop&query=needle&timeout_seconds=5"
             )

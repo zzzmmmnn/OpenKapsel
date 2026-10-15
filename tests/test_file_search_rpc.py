@@ -526,10 +526,13 @@ class FileSearchRpcTests(unittest.TestCase):
                     "indexed search timed out; narrow the query or scope",
                 )
 
-            with patch(
-                "openkapsel.rpc_plugins.file_search._backend_paths",
-                return_value=("mock", paths()),
-            ) as backend:
+            # Explicitly select a live index-backed route. On Linux runners
+            # without watchfiles, the real route legitimately uses recursive
+            # fallback and would never consume the mocked indexed iterator.
+            with (patch("openkapsel.rpc_plugins.file_search._platform_backend",
+                        return_value=("mdfind", "/mock/mdfind")),
+                  patch("openkapsel.rpc_plugins.file_search._backend_paths",
+                        return_value=("mock", paths())) as backend):
                 result = plugin.dispatch(
                     files,
                     "search",
