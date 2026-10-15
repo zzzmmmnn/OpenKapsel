@@ -18,7 +18,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from openkapsel.errors import ApiError
-from openkapsel.execution.network_proxy import domain_allowed, normalize_domain_rules
 
 
 MAX_GIT_METADATA_NODES = 100_000
@@ -244,7 +243,11 @@ def _network_policy(args):
     raw = args.get("_allowed_domains", [])
     if not isinstance(raw, (list, tuple)) or any(not isinstance(item, str) for item in raw):
         raise ApiError(400, "invalid_request", "invalid Git network domain policy")
-    rules = normalize_domain_rules(list(raw)) if mode == "domain_allowlist" else ()
+    if mode == "domain_allowlist":
+        from openkapsel.execution.network_proxy import normalize_domain_rules
+        rules = normalize_domain_rules(list(raw))
+    else:
+        rules = ()
     if mode == "domain_allowlist" and not rules:
         raise ApiError(403, "git_network_denied", "Git network domain allowlist is empty")
     return mode, rules
@@ -270,8 +273,10 @@ def _validate_https_url(value, args):
     if port not in {None, 443}:
         raise ApiError(400, "git_remote_unsupported", "Git HTTPS remotes must use port 443")
     mode, rules = _network_policy(args)
-    if mode == "domain_allowlist" and not domain_allowed(parsed.hostname, rules):
-        raise ApiError(403, "git_network_denied", "Git remote host is not in the token network allowlist")
+    if mode == "domain_allowlist":
+        from openkapsel.execution.network_proxy import domain_allowed
+        if not domain_allowed(parsed.hostname, rules):
+            raise ApiError(403, "git_network_denied", "Git remote host is not in the token network allowlist")
     return value
 
 
