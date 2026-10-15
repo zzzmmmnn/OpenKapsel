@@ -50,10 +50,10 @@ class ClientRpcCapabilityTests(unittest.TestCase):
         self.assertFalse(capabilities["archive"]["operation_specs"]["read"]["write"])
         self.assertEqual("task", capabilities["archive"]["operation_specs"]["create"]["execution"])
         self.assertTrue(capabilities["archive"]["operation_specs"]["create"]["write"])
-        for operation in ("status", "diff", "log", "show", "ls_files", "diff_stat"):
+        for operation in ("status", "diff", "log", "show", "ls_files", "diff_stat", "branch", "blame", "tag", "stash"):
             self.assertEqual("sync", capabilities["git"]["operation_specs"][operation]["execution"])
             self.assertFalse(capabilities["git"]["operation_specs"][operation]["write"])
-        for operation in ("add", "commit", "restore", "checkout", "fetch", "pull", "clone"):
+        for operation in ("add", "commit", "restore", "checkout", "branch_create", "branch_delete", "tag_create", "tag_delete", "stash_push", "stash_apply", "stash_pop", "stash_drop", "fetch", "pull", "push", "clone"):
             self.assertEqual("task", capabilities["git"]["operation_specs"][operation]["execution"])
             self.assertTrue(capabilities["git"]["operation_specs"][operation]["write"])
         self.assertIn(".zip", capabilities["archive"]["details"]["extensions"])

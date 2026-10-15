@@ -2356,7 +2356,7 @@ class DiscoveryMixin:
                         "batching": "Same-mapping batches execute on the client. Mixed-root batches use the guarded local/RPC backend and never require FUSE.",
                         "errors": "For mapping_response_too_large (413), reduce limit, depth, or batch size. Never blindly replay a mutation after an ambiguous timeout.",
                     },
-                    "git": {"version": 2, "fallback": "none", "generic_rpc_exposed": True, "server_rpc": True, "sync_reads": ["status", "diff", "log", "show", "ls_files", "diff_stat"], "task_writes": ["add", "commit", "restore", "checkout", "fetch", "pull", "clone"]},
+                    "git": {"version": 2, "fallback": "none", "generic_rpc_exposed": True, "server_rpc": True, "sync_reads": ["status", "diff", "log", "show", "ls_files", "diff_stat", "branch", "blame", "tag", "stash"], "task_writes": ["add", "commit", "restore", "checkout", "branch_create", "branch_delete", "tag_create", "tag_delete", "stash_push", "stash_apply", "stash_pop", "stash_drop", "fetch", "pull", "push", "clone"]},
                     "archive": {"version": 1, "fallback": "none", "generic_rpc_exposed": True, "server_rpc": True, "sync_reads": ["list", "read"], "task_writes": ["create", "extract"],
                                 "formats": "Runtime-advertised Python standard-library archive extensions."},
                     "structured": {"version": 1, "fallback": "none",
@@ -2384,7 +2384,7 @@ class DiscoveryMixin:
             "file_transfer": {"description": "GET returns progress/state. POST ./fs/transfer/cancel/<id> or ./fs/transfer/resume/<id> requires mutation context. Cross-mapping fs/move also returns a transfer id: copy is verified before source recycling; copied_source_retained means the destination exists but the source was not recycled."},
             "server_rpc": {
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},
-                "description": "Invoke one server RPC family operation against the token workspace. Built-in server families include Git and Archive. execution=sync returns directly; execution=task returns 202 plus a normal server task_id. write=false requires read permission; write=true requires control authorization, write permission, and Plan Context. Git fetch/pull/clone also obey the token network policy."},
+                "description": "Invoke one server RPC family operation against the token workspace. Built-in server families include Git and Archive. execution=sync returns directly; execution=task returns 202 plus a normal server task_id. write=false requires read permission; write=true requires control authorization, write permission, and Plan Context. Git fetch/pull/push/clone also obey the token network policy."},
             "mapping_list": {"description": "List mapping names/roots, online/write state, and client capabilities. Use each mapping name in RPC paths. RPC operation_specs include description, JSON input_schema, write, and execution=sync|task."},
             "mapping_rpc": {
                 "body": {"args": "<plugin-specific object>", "timeout_seconds": "optional for execution=task", "plan_id": "required when operation write=true", "taskname": "required when operation write=true", "message": "required when operation write=true"},

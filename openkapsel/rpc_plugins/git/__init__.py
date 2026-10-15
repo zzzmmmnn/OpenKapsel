@@ -18,6 +18,10 @@ _DESCRIPTIONS = {
     "log": "Show bounded commit history.",
     "show": "Show one bounded revision without running repository helpers.",
     "ls_files": "List tracked repository files.",
+    "branch": "List local (or optionally remote) branch names without changing refs.",
+    "blame": "Show bounded line attribution for one repository-relative file.",
+    "tag": "List repository tags.",
+    "stash": "List current stash entries.",
 }
 
 
@@ -41,19 +45,28 @@ def _schema(operation: str) -> dict[str, Any]:
             "default": 15,
         },
     }
-    if operation in {"diff", "diff_stat", "log", "show"}:
+    if operation in {"branch", "tag", "stash", "blame"}:
+        properties.pop("paths")
+    if operation in {"diff", "diff_stat", "log", "show", "blame"}:
         properties["revision"] = {"type": "string", "maxLength": 256}
     if operation in {"diff", "diff_stat"}:
         properties["to_revision"] = {"type": "string", "maxLength": 256}
         properties["staged"] = {"type": "boolean", "default": False}
+    if operation == "blame":
+        properties["path"] = {"type": "string", "minLength": 1, "maxLength": 4096}
+    if operation == "branch":
+        properties["all"] = {"type": "boolean", "default": False}
     if operation == "log":
         properties["limit"] = {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
         properties["skip"] = {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0}
-    return {
+    schema = {
         "type": "object",
         "properties": properties,
         "additionalProperties": False,
     }
+    if operation == "blame":
+        schema["required"] = ["path"]
+    return schema
 
 
 def _write_schema(properties: dict[str, Any], required=()):
@@ -71,7 +84,7 @@ class GitRpcPlugin:
     default_enabled = True
     description = (
         "Fixed Git reads and common mutations for server or mapping RPC execution. "
-        "Hooks/signing/helpers are disabled; fetch/pull/clone require caller-supplied network policy."
+        "Hooks/signing/helpers are disabled; fetch/pull/push/clone require caller-supplied network policy."
     )
     operations = {
         **{
@@ -121,6 +134,60 @@ class GitRpcPlugin:
                 "new_branch": {"type": "string", "minLength": 1, "maxLength": 256},
             }, ("revision",)),
         },
+        "branch_create": {
+            "description": "Create a local branch at HEAD or a specified revision; never force overwrite.",
+            "write": True, "execution": "task",
+            "input_schema": _write_schema({
+                "name": {"type": "string", "minLength": 1, "maxLength": 256},
+                "start_point": {"type": "string", "minLength": 1, "maxLength": 256},
+            }, ("name",)),
+        },
+        "branch_delete": {
+            "description": "Safely delete a fully merged local branch; never force delete.",
+            "write": True, "execution": "task",
+            "input_schema": _write_schema({
+                "name": {"type": "string", "minLength": 1, "maxLength": 256},
+            }, ("name",)),
+        },
+        "tag_create": {
+            "description": "Create a lightweight tag or an unsigned annotated tag when message is supplied; never overwrite.",
+            "write": True, "execution": "task",
+            "input_schema": _write_schema({
+                "name": {"type": "string", "minLength": 1, "maxLength": 256},
+                "revision": {"type": "string", "minLength": 1, "maxLength": 256},
+                "message": {"type": "string", "minLength": 1, "maxLength": 10000},
+            }, ("name",)),
+        },
+        "tag_delete": {
+            "description": "Delete one local tag without modifying remote refs.",
+            "write": True, "execution": "task",
+            "input_schema": _write_schema({
+                "name": {"type": "string", "minLength": 1, "maxLength": 256},
+            }, ("name",)),
+        },
+        "stash_push": {
+            "description": "Stash tracked changes; optionally include untracked files or limit to selected paths.",
+            "write": True, "execution": "task",
+            "input_schema": _write_schema({
+                "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
+                "message": {"type": "string", "minLength": 1, "maxLength": 200},
+                "include_untracked": {"type": "boolean", "default": False},
+            }),
+        },
+        **{
+            operation: {
+                "description": description,
+                "write": True, "execution": "task",
+                "input_schema": _write_schema({
+                    "index": {"type": "integer", "minimum": 0, "maximum": 1000},
+                }, ("index",) if operation == "stash_drop" else ()),
+            }
+            for operation, description in (
+                ("stash_apply", "Apply one stash without removing it."),
+                ("stash_pop", "Apply one stash and drop it on success."),
+                ("stash_drop", "Drop exactly one stash entry by explicit index."),
+            )
+        },
         "fetch": {
             "description": "Fetch one HTTPS remote (origin by default) under the caller's network policy.",
             "write": True,
@@ -132,6 +199,15 @@ class GitRpcPlugin:
             "write": True,
             "execution": "task",
             "input_schema": _write_schema({"remote": {"type": "string", "maxLength": 256}}),
+        },
+        "push": {
+            "description": "Push the current HEAD to one branch on an HTTPS remote (origin by default). No force, tags or hooks.",
+            "write": True,
+            "execution": "task",
+            "input_schema": _write_schema({
+                "remote": {"type": "string", "maxLength": 256},
+                "branch": {"type": "string", "maxLength": 256},
+            }),
         },
         "clone": {
             "description": "Clone one HTTPS repository into a new export-relative destination under the caller's network policy.",

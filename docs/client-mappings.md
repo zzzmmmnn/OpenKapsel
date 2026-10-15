@@ -244,16 +244,18 @@ handles instead of redirecting in-progress I/O to a replacement provider.
 Client path guards, protected internal directories, and mapping/client write
 restrictions still apply. Unmounted backing directories are inaccessible.
 
-Git RPC family `git` version `2` keeps `status`, `diff`, `diff_stat`, `log`,
-`show`, and `ls_files` as `write=false, execution=sync` sanitized-snapshot reads.
-MCP exposes these reads and the write operations through the single generic `rpc_call`
-tool. The same family exposes `add`, `commit`, `restore`, `checkout`, `fetch`,
-`pull`, and `clone` as
-`write=true, execution=task`; provide `mapping_id` for a mapping or omit it to
+Git RPC family `git` version `2` offers `status`, `diff`, `diff_stat`, `log`,
+`show`, `ls_files`, `branch`, `blame`, `tag`, and `stash` as
+`write=false, execution=sync` queries against the original repository.
+`branch`, `tag`, and `stash` list local Git state, and `blame` attributes a file.
+MCP exposes all operations via the generic `rpc_call` tool. Writes `add`,
+`commit`, `restore`, `checkout`, `branch_create`, `branch_delete`, `tag_create`,
+`tag_delete`, `stash_push`, `stash_apply`, `stash_pop`, `stash_drop`, `fetch`,
+`pull`, `push`, and `clone` use `write=true, execution=task`; provide `mapping_id` for a mapping or omit it to
 run against the server workspace. Git RPC tasks do not require Shell or client
 `allow_exec`. Mutations require write permission and Plan Context; mapped writes
-also require a writable mapping, while fetch/pull/clone require network permission
-and accept only policy-approved HTTPS remotes. They reject linked worktrees,
+also require a writable mapping, while fetch/pull/push/clone require network permission
+and accept only policy-approved HTTPS remotes. Push sends only the selected branch\u2019s HEAD without force or tags, and never follows an unvalidated `pushurl`. They reject linked worktrees,
 alternate object stores, unsafe Git metadata/configuration, hooks/signing/helpers,
 and private `.openkapsel` paths. Host Git is required on the selected execution
 host. There is no fallback from one selected host to the other. See

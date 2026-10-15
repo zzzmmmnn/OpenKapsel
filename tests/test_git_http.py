@@ -141,18 +141,21 @@ class GitHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         self.assertIn("Server RPC commit", payload["result"]["structuredContent"]["result"]["output"])
 
-        status, payload = self.rpc(conn["secret"], "tools/call", {
-            "name": "rpc_call",
-            "arguments": {
-                "family": "git", "operation": "fetch", "args": {"cwd": "."}, **context,
-            },
-        })
-        self.assertEqual(200, status, payload)
-        self.assertTrue(payload["result"]["isError"], payload)
-        self.assertEqual(
-            "git_network_denied",
-            payload["result"]["structuredContent"]["error"]["code"],
-        )
+        for operation in ("fetch", "push"):
+            with self.subTest(operation=operation):
+                status, payload = self.rpc(conn["secret"], "tools/call", {
+                    "name": "rpc_call",
+                    "arguments": {
+                        "family": "git", "operation": operation,
+                        "args": {"cwd": "."}, **context,
+                    },
+                })
+                self.assertEqual(200, status, payload)
+                self.assertTrue(payload["result"]["isError"], payload)
+                self.assertEqual(
+                    "git_network_denied",
+                    payload["result"]["structuredContent"]["error"]["code"],
+                )
 
     def test_mapping_git_generic_rpc_is_exposed(self):
         export = Path(self.temp.name) / "rpc-export"

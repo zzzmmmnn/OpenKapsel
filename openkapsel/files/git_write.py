@@ -12,6 +12,7 @@ import errno
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -170,6 +171,37 @@ def _branch(value):
         or any(char in value for char in "~^:?*[")
     ):
         raise ApiError(400, "invalid_request", "new_branch is not a safe branch name")
+    return value
+
+
+def _current_branch(files, gitdir: Path) -> str:
+    """Choose only the checked-out local branch; never infer a push refspec."""
+    try:
+        head = _read_file(files, gitdir / "HEAD", limit=4096).decode("utf-8")
+    except (UnicodeError, FileNotFoundError) as exc:
+        raise ApiError(409, "git_branch_unavailable", "cannot read current Git branch") from exc
+    prefix = "ref: refs/heads/"
+    if not head.startswith(prefix):
+        raise ApiError(409, "git_detached_head", "push requires a branch or an explicit branch name")
+    return _branch(head[len(prefix):].strip())
+
+
+def _stash_index(value, *, required=False):
+    if value is None and not required:
+        value = 0
+    if type(value) is not int or not 0 <= value <= 1000:
+        raise ApiError(400, "invalid_request", "stash index must be an integer between 0 and 1000")
+    return f"stash@{{{value}}}"
+
+
+def _tag_name(value):
+    # Git tag names share the same refs/ syntax and command-option hazards.
+    return _branch(value)
+
+
+def _message(value, key="message", maximum=10000):
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum or chr(0) in value:
+        raise ApiError(400, "invalid_request", f"{key} must be a bounded non-empty message")
     return value
 
 
@@ -377,14 +409,69 @@ def _run_git(files, root: Path, args, task):
                 if args.get("new_branch") is not None:
                     argv += ["-b", _branch(args["new_branch"])]
                 argv += [revision]
-            elif operation in {"fetch", "pull"}:
+            elif operation == "branch_create":
+                name = _branch(args.get("name"))
+                start = _revision(args.get("start_point", "HEAD"), "start_point")
+                argv = [*common, "branch", "--no-track", "--", name, start]
+            elif operation == "branch_delete":
+                name = _branch(args.get("name"))
+                argv = [*common, "branch", "--delete", "--", name]
+            elif operation == "tag_create":
+                name = _tag_name(args.get("name"))
+                revision = _revision(args.get("revision", "HEAD"))
+                message = args.get("message")
+                if message is not None:
+                    message = _message(message)
+                argv = [*common, "tag"]
+                if message is not None:
+                    argv += ["--annotate", "--no-sign", "-m", message]
+                argv += ["--", name, revision]
+            elif operation == "tag_delete":
+                name = _tag_name(args.get("name"))
+                argv = [*common, "tag", "--delete", "--", name]
+            elif operation == "stash_push":
+                paths = _paths(args.get("paths"))
+                include_untracked = args.get("include_untracked", False)
+                if type(include_untracked) is not bool:
+                    raise ApiError(400, "invalid_request", "include_untracked must be boolean")
+                message = args.get("message")
+                if message is not None:
+                    message = _message(message, maximum=200)
+                argv = [*common, "stash", "push"]
+                if include_untracked:
+                    argv.append("--include-untracked")
+                if message is not None:
+                    argv += ["-m", message]
+                if paths:
+                    argv += ["--", *paths]
+            elif operation in {"stash_apply", "stash_pop", "stash_drop"}:
+                index = _stash_index(args.get("index"), required=operation == "stash_drop")
+                action = operation.split("_", 1)[1]
+                argv = [*common, "stash", action, index]
+            elif operation in {"fetch", "pull", "push"}:
                 remote = _remote(args.get("remote"))
                 remote_url = _remote_url(config_text, remote, args)
-                common = [*common, "-c", f"remote.{remote}.url={remote_url}"]
-                if operation == "fetch":
-                    argv = [*common, "fetch", "--no-recurse-submodules", remote]
+                if operation == "push":
+                    # Always pass the vetted HTTPS URL directly, not the remote
+                    # name: remote.<name>.pushurl could otherwise redirect a
+                    # push to an unvalidated destination. Push only one branch,
+                    # with neither force, tags, nor pre-push hooks.
+                    branch = (_current_branch(files, gitdir) if args.get("branch") is None
+                              else _branch(args["branch"]))
+                    # macOS system Git stores HTTPS credentials in Keychain.
+                    # Re-enable only its built-in Git helper for push, never
+                    # arbitrary repository/global credential.helper commands.
+                    if sys.platform == "darwin":
+                        common = [*common, "-c", "credential.helper=osxkeychain"]
+                    argv = [*common, "push", "--porcelain", "--no-verify",
+                            "--no-follow-tags", "--recurse-submodules=no",
+                            "--", remote_url, f"HEAD:refs/heads/{branch}"]
                 else:
-                    argv = [*common, "pull", "--ff-only", "--no-recurse-submodules", remote]
+                    common = [*common, "-c", f"remote.{remote}.url={remote_url}"]
+                    if operation == "fetch":
+                        argv = [*common, "fetch", "--no-recurse-submodules", remote]
+                    else:
+                        argv = [*common, "pull", "--ff-only", "--no-recurse-submodules", remote]
             else:
                 raise ApiError(400, "invalid_git_operation", "unsupported Git write operation")
 

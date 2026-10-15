@@ -63,41 +63,42 @@ MCP uses the same `git` family through the generic `rpc_call` tool. Reads work
 with Shell disabled, client `allow_exec=false`, and read-only mappings.
 
 Supported read operations are `status`, `diff`, `diff_stat`, `log`,
-`show`, and `ls_files`. Operation arguments live under the request `args`
+`show`, `ls_files`, `branch`, `blame`, `tag`, and `stash`.
+`branch` lists local/remote branches, `blame` takes one relative file path,
+`tag` lists tags, and `stash` lists stash entries. Arguments live under `args`
 object and are advertised by RPC Discovery metadata.
 
-`path` must identify a repository root with an ordinary SHA-1 `.git` directory.
-Git runs on a private sanitized temporary snapshot: source config, includes,
-hooks, filter definitions, global config, and private `.openkapsel` storage
-are not loaded. No original workspace path is passed to the Git process.
-There is no arbitrary argv, no Shell task, and no execution-permission fallback.
-Git must be installed on the selected execution host. A mapped path uses the
-`git` RPC family version 2; old clients must update/reconnect and fail closed
-until the requested operation is advertised.
+`cwd` must identify a repository root with an ordinary `.git` directory.
+Read-only operations run directly in that repository, without copying the
+worktree or object database. Git receives fixed arguments; external diff and
+filter executables, hooks, system/user Git configuration, and network helpers
+are disabled. Repository-local settings such as ignore rules remain in effect.
+Git must be installed on the selected execution host. Mapping clients must
+advertise the operation; there is no fallback to Shell or another host.
 
-Limits: 128 MiB copied data, 100000 nodes, 4 simultaneous inspections per
+Limits: 100000 inspected Git metadata nodes, 4 simultaneous inspections per
 process, 15-second default timeout (maximum 20), and 64 KiB output per stream.
-Metadata-only queries (log/show/ls-files/staged or two-revision diffs) do not
-copy working files; status and working-tree diffs do. This uses local temporary
-disk and adds copying overhead; it does not transfer the snapshot to the server.
-Linked worktrees, external object alternates, and symlinks/reparse points or
-special files encountered in copied paths are rejected. Repository-local
-configuration (including custom filters, ignore settings and autocrlf) is not
-applied; output may therefore differ from normal developer Git commands.
-Snapshots are not transactional across files.
+No working-tree snapshot size limit applies. Linked worktrees and external
+object alternates remain unsupported, but ordinary tracked or ignored symlinks
+in the working tree are supported by native Git. Queries run against the live
+repository, so a concurrent writer may change the observed state.
 
 Responses are synchronous: 200 with `output`, `stderr`, `exit_code`,
-`output_truncated`, `stderr_truncated`, and `snapshot_bytes`; there is no
-task ID or polling. Narrow queries when output is truncated. Errors use 413 for
-snapshot limits, 409 for unsupported layouts, 504 for deadline expiry, and
-422 for Git errors. Log is TSV; other outputs are Git text, not parsed rows.
+`output_truncated`, and `stderr_truncated`; there is no task ID or polling.
+Narrow queries when output is truncated. Errors include 409 for unsupported
+layouts, 504 for deadline expiry, and 422 for Git errors. Log is TSV; other
+outputs are Git text, not parsed rows.
 MCP uses the generic `rpc_call` tool for both Git reads and mutations. Use
 `family=git`; provide `mapping_id` for a mapped repository or omit it for the
-server workspace. `add`, `commit`, `restore`, `checkout`, `fetch`, `pull`,
-and `clone` run as RPC tasks and use the normal task APIs; they do not require
+server workspace. `add`, `commit`, `restore`, `checkout`, `branch_create`,
+`branch_delete`, `tag_create`, `tag_delete`, `stash_push`, `stash_apply`,
+`stash_pop`, `stash_drop`, `fetch`, `pull`, `push`, and `clone` run as RPC tasks
+and use the normal task APIs; they do not require
 Shell permission. Mutations require write permission and Plan Context, mapped
-writes also require a writable mapping, and fetch/pull/clone additionally obey
-the caller's network/domain policy. Complex arbitrary Git commands still require
+writes also require a writable mapping, and fetch/pull/push/clone additionally obey
+the caller's network/domain policy. `branch_delete` never forces an unmerged
+branch; `tag_create` does not overwrite; `stash_drop` requires an explicit
+stash index. Complex arbitrary Git commands still require
 an explicitly authorized Shell command.
 
 ### Persistent environment

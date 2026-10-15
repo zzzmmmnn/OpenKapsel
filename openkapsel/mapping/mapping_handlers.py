@@ -245,7 +245,7 @@ class MappingHandlersMixin:
 
     def _rpc_args_with_policy(self, family, operation, args):
         payload = dict(args)
-        if family == "git" and operation in {"fetch", "pull", "clone"}:
+        if family == "git" and operation in {"fetch", "pull", "push", "clone"}:
             if self.token_record.network_mode == "none":
                 raise ApiError(403, "git_network_denied", "Git network access is not granted")
             payload["_network_mode"] = self.token_record.network_mode
@@ -327,7 +327,7 @@ class MappingHandlersMixin:
                 timeout_seconds=float(timeout) if timeout is not None else 600.0,
                 owner_token=self.token_record.token,
                 write=write,
-                network_access=(family == "git" and operation in {"fetch", "pull", "clone"}),
+                network_access=(family == "git" and operation in {"fetch", "pull", "push", "clone"}),
                 runner=lambda context: self.server.rpc_registry.dispatch_task(
                     files, family, operation, rpc_args, context
                 ),

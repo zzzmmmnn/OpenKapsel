@@ -99,7 +99,7 @@ class GitClientTests(unittest.TestCase):
 
     def test_all_six_operations_and_staged_changes(self):
         (self.root / "source.txt").write_text("modified\n", encoding="utf-8")
-        for operation in GIT_READ_OPERATIONS:
+        for operation in ("status", "diff", "log", "show", "ls_files", "diff_stat"):
             result = self.call(operation)
             self.assertTrue(result["output"], operation)
         self.assertIn("+modified", self.call("diff")["output"])
@@ -108,6 +108,21 @@ class GitClientTests(unittest.TestCase):
         self.assertIn("+modified", self.call("diff", {"staged": True})["output"])
         self.assertIn("original", self.call("show", {"revision": "HEAD:source.txt"})["output"])
         self.assertEqual("", self.call("ls_files", {"paths": ["missing"]})["output"])
+
+    def test_branch_blame_tag_and_stash_are_readonly_queries(self):
+        branch = self.git("branch", "--show-current").stdout.decode().strip()
+        self.assertIn(branch, self.call("branch")["output"])
+        self.assertIn(branch, self.call("branch", {"all": True})["output"])
+        self.assertEqual("", self.call("tag")["output"])
+        self.assertEqual("", self.call("stash")["output"])
+        self.assertIn("original", self.call("blame", {"path": "source.txt"})["output"])
+        self.assertIn("source.txt", self.call("blame", {"path": "source.txt"})["output"])
+        for options in ({"path": "../outside"}, {"path": "/etc/passwd"},
+                        {"path": "a:b"}, {"path": ".openkapsel/config"}):
+            response = self.files.dispatch("rpc", {
+                "family": "git", "operation": "blame", "args": {"options": options},
+            })
+            self.assertEqual(400, response["status"], response)
 
     def test_policy_output_budget_and_bad_revision(self):
         with self.assertRaises(OSError):

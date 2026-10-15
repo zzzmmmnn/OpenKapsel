@@ -7,9 +7,12 @@ import os
 from openkapsel.errors import ApiError
 
 
-GIT_READ_OPERATIONS = ("status", "diff", "log", "show", "ls_files", "diff_stat")
-GIT_WRITE_OPERATIONS = ("add", "commit", "restore", "checkout")
-GIT_NETWORK_OPERATIONS = ("fetch", "pull", "clone")
+GIT_READ_OPERATIONS = ("status", "diff", "log", "show", "ls_files", "diff_stat",
+                       "branch", "blame", "tag", "stash")
+GIT_WRITE_OPERATIONS = ("add", "commit", "restore", "checkout",
+                        "branch_create", "branch_delete", "tag_create", "tag_delete",
+                        "stash_push", "stash_apply", "stash_pop", "stash_drop")
+GIT_NETWORK_OPERATIONS = ("fetch", "pull", "push", "clone")
 GIT_OPERATIONS = GIT_READ_OPERATIONS + GIT_WRITE_OPERATIONS + GIT_NETWORK_OPERATIONS
 
 
@@ -22,10 +25,18 @@ def git_arguments(operation, options):
     allowed = {"paths"}
     if operation in {"diff", "diff_stat"}:
         allowed |= {"revision", "to_revision", "staged"}
-    if operation in {"log", "show"}:
+    if operation in {"log", "show", "blame"}:
         allowed.add("revision")
+    if operation == "blame":
+        allowed.add("path")
+    if operation == "branch":
+        allowed.add("all")
     if operation == "log":
         allowed |= {"limit", "skip"}
+    if operation in {"branch", "tag", "stash"}:
+        allowed.discard("paths")
+    if operation == "blame":
+        allowed.discard("paths")
     if set(options) - allowed:
         raise ApiError(400, "invalid_request", "unsupported Git option")
 
@@ -67,6 +78,20 @@ def git_arguments(operation, options):
         "-c", "submodule.recurse=false", "-c", "maintenance.auto=false",
         "-c", "gc.auto=0",
     ]
+    if operation == "branch":
+        all_branches = options.get("all", False)
+        if type(all_branches) is not bool:
+            raise ApiError(400, "invalid_request", "all must be boolean")
+        return argv + ["branch", "--no-color", "--list", *(["--all"] if all_branches else [])]
+    if operation == "tag":
+        return argv + ["tag", "--list", "--sort=-creatordate"]
+    if operation == "stash":
+        return argv + ["stash", "list", "--format=%gd%x09%gs"]
+    if operation == "blame":
+        path = options.get("path")
+        if not isinstance(path, str) or not path or len(path) > 4096 or path.startswith("/") or chr(92) in path or chr(0) in path or ":" in path or ".." in path.split("/") or ".openkapsel" in path.split("/"):
+            raise ApiError(400, "invalid_request", "path must be a literal repository-relative file")
+        return argv + ["blame", "--porcelain", "--no-textconv", revision("revision", "HEAD"), "--", path]
     if operation == "status":
         argv += ["status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=all"]
     elif operation == "ls_files":
@@ -110,13 +135,18 @@ def git_tool_properties(operation):
         "file": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
         "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 20, "default": 15},
     }
-    if operation in {"diff", "diff_stat", "log", "show"}:
+    if operation in {"diff", "diff_stat", "log", "show", "blame"}:
         properties["revision"] = {"type": "string", "maxLength": 256}
     if operation in {"diff", "diff_stat"}:
         properties.update(
             to_revision={"type": "string", "maxLength": 256},
             staged={"type": "boolean"},
         )
+    if operation == "blame":
+        properties["path"] = {"type": "string", "minLength": 1, "maxLength": 4096}
+        properties.pop("file", None)
+    if operation == "branch":
+        properties["all"] = {"type": "boolean", "default": False}
     if operation == "log":
         properties.update(
             limit={"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
