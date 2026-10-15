@@ -1,8 +1,9 @@
 """Cancellable fixed Git mutations for server and client RPC tasks.
 
 The operation set is intentionally small. Complex Git invocations belong in
-Shell. Hooks/signing/global config are disabled and network operations accept
-HTTPS remotes only under an explicit token network policy.
+Shell. AI-controlled repository settings and Git hooks are restricted; trusted
+host Git configuration is retained. Network operations require HTTPS remotes
+under the selected token's network policy.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import errno
 import os
 import shutil
 import stat
-import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -297,13 +297,17 @@ def _remote_url(config_text: str, remote: str, args) -> str:
 
 def _base_env(home: Path, args):
     env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG") if key in os.environ}
+    # Honor Git configuration environment set by the client OS account,
+    # including non-default user/system config locations and -c options.
+    # RPC arguments cannot supply or modify these values.
+    env.update({key: value for key, value in os.environ.items()
+                if key.startswith("GIT_CONFIG_")})
     env.update(
-        HOME=str(home),
-        XDG_CONFIG_HOME=str(home),
-        GIT_CONFIG_NOSYSTEM="1",
-        GIT_CONFIG_GLOBAL=os.devnull,
-        GIT_CONFIG_SYSTEM=os.devnull,
-        GIT_ATTR_NOSYSTEM="1",
+        # Host user/system Git configuration is operator-controlled, unlike
+        # AI-writable repository Git metadata. Keep native Git credentials,
+        # signing identities and other user-defined host defaults.
+        HOME=str(Path.home()),
+        XDG_CONFIG_HOME=os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")),
         GIT_TERMINAL_PROMPT="0",
         GIT_ASKPASS="",
         # GIT_TERMINAL_PROMPT does not disable Git Credential Manager's
@@ -315,22 +319,15 @@ def _base_env(home: Path, args):
         LC_ALL="C",
     )
     if args.get("_operation") in {"fetch", "pull", "push", "clone"}:
-        # Credential Manager/Keychain and existing proxy settings belong to
-        # the execution host. Do not re-enable Git global/repository config:
-        # those can specify arbitrary subprocesses, URL rewrites or hooks.
-        env["HOME"] = str(Path.home())
+        # Use existing user credentials and proxy settings; repository config
+        # is validated separately so AI-provided executable helpers are denied.
         if os.name == "nt":
             for key in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
                         "PROGRAMDATA"):
                 if key in os.environ:
                     env[key] = os.environ[key]
         else:
-            # libsecret and Linux Credential Manager need the user's
-            # desktop session/secret-service socket and config directory.
-            # GIT_CONFIG_GLOBAL=/dev/null still blocks arbitrary Git config.
-            env["XDG_CONFIG_HOME"] = os.environ.get(
-                "XDG_CONFIG_HOME", str(Path.home() / ".config")
-            )
+            # Desktop credential helpers may use the user's session bus.
             for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
                 if key in os.environ:
                     env[key] = os.environ[key]
@@ -366,50 +363,10 @@ def _common(executable: str, hooks: Path):
         "-c", "maintenance.auto=false",
         "-c", "gc.auto=0",
         "-c", "color.ui=false",
-        "-c", "credential.helper=",
         "-c", "core.askPass=",
         "-c", "http.sslVerify=true",
-        "-c", "http.extraHeader=",
-        "-c", "http.cookieFile=",
-        "-c", "http.saveCookies=false",
         "-c", "http.followRedirects=false",
     ]
-
-
-def _safe_credential_helpers():
-    """Only known OS credential providers; never execute helper from Git config.
-
-    The injected blank credential.helper overrides local settings, and global
-    Git configuration stays disabled. Names are fixed, never AI-controlled.
-    """
-    # macOS system Git stores credentials in Keychain via this fixed helper.
-    # Reuse the host's existing credential provider without accepting helper
-    # commands from repository or global Git configuration.
-    if sys.platform == "darwin":
-        return ["osxkeychain"]
-    if os.name == "nt":
-        # Git for Windows can ship GCM inside Git's own exec-path, not on
-        # PATH; Git resolves this conventional helper name itself.
-        if shutil.which("git-credential-manager-core") and not shutil.which("git-credential-manager"):
-            return ["manager-core"]
-        return ["manager"]
-    # Do not invoke native libsecret on Linux: the Secret Service can
-    # independently prompt for keyring unlocking. GCM uses noninteractive mode.
-    if shutil.which("git-credential-manager"):
-        return ["manager"]
-    # cache does not persist plaintext credentials or introduce scripts from
-    # repo config, and store only operates on an already existing credentials
-    # file (never create one automatically).
-    if shutil.which("git-credential-cache"):
-        return ["cache"]
-    credential_file = Path.home() / ".git-credentials"
-    try:
-        info = credential_file.stat(follow_symlinks=False)
-        if stat.S_ISREG(info.st_mode) and not info.st_mode & 0o077:
-            return ["store"]
-    except OSError:
-        pass
-    return []
 
 
 def _run_git(files, root: Path, args, task):
@@ -424,10 +381,6 @@ def _run_git(files, root: Path, args, task):
         hooks.mkdir()
         home.mkdir()
         common = _common(executable, hooks)
-        if operation in {"fetch", "pull", "push", "clone"}:
-            for helper in _safe_credential_helpers():
-                common.extend(("-c", "credential.helper=" + helper))
-
         if operation == "clone":
             source = _validate_https_url(args.get("source"), args)
             if root == files.root or ".openkapsel" in root.relative_to(files.root).parts:

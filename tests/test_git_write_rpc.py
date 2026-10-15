@@ -151,13 +151,11 @@ class GitWriteRpcTests(unittest.TestCase):
                 self.assertNotIn("origin", argv)
             else:
                 self.assertIn("--no-recurse-submodules", argv)
-            self.assertIn("credential.helper=", argv)
+            self.assertFalse(any(value.startswith("credential.helper=") for value in argv))
             self.assertIn("http.followRedirects=false", argv)
             self.assertNotIn("http.proxy=", argv)
             self.assertEqual("https", task.calls[0][2]["GIT_ALLOW_PROTOCOL"])
             self.assertEqual(str(Path.home()), task.calls[0][2]["HOME"])
-            if sys.platform == "darwin":
-                self.assertIn("credential.helper=osxkeychain", argv)
 
         task = Task()
         result = mutate_git(
@@ -282,7 +280,7 @@ class GitWriteRpcTests(unittest.TestCase):
                     self.assertEqual("git_network_denied", result["error"]["code"])
                     self.assertEqual([], processes)
 
-    def test_network_git_credentials_and_proxy_from_host_but_no_untrusted_helpers(self):
+    def test_network_git_uses_host_configuration_and_proxy(self):
         from unittest.mock import patch
         self.git("remote", "add", "origin", "https://example.com/repo.git")
         class Task:
@@ -300,9 +298,7 @@ class GitWriteRpcTests(unittest.TestCase):
                         "_allowed_domains": ["example.com"]}
                 if operation == "clone":
                     args.update(cwd="newclone", source="https://example.com/repo.git")
-                with (patch("openkapsel.files.git_write._safe_credential_helpers",
-                            return_value=["manager"]),
-                      patch("openkapsel.files.git_write._validate_git_metadata",
+                with (patch("openkapsel.files.git_write._validate_git_metadata",
                             return_value=(self.root / ".git",
                                           '[remote "origin"]\nurl = https://example.com/repo.git\n')),
                       patch("openkapsel.files.git_write._current_branch",
@@ -316,17 +312,37 @@ class GitWriteRpcTests(unittest.TestCase):
                     else:
                         mutate_git(self.files, operation, args, task)
                 argv, env = task.calls[0]
-                self.assertIn("credential.helper=", argv)
-                self.assertIn("credential.helper=manager", argv)
+                self.assertFalse(any(value.startswith("credential.helper=") for value in argv))
                 self.assertNotIn("http.proxy=", argv)
                 self.assertEqual("http://127.0.0.1:3128", env["HTTPS_PROXY"])
                 self.assertEqual(str(Path.home()), env["HOME"])
-                self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
+                for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"):
+                    self.assertEqual(os.environ.get(key), env.get(key))
                 self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
                 self.assertEqual("never", env["GCM_INTERACTIVE"])
                 self.assertIn("http.followRedirects=false", argv)
                 self.assertIn("http.sslVerify=true", argv)
                 self.assertIn("--no-verify", argv) if operation == "push" else None
+
+    def test_ai_controlled_repo_credential_helper_cannot_execute(self):
+        """A local helper remains untrusted even when host helpers are enabled."""
+        self.git("remote", "add", "origin", "https://example.test/repo.git")
+        marker = self.root / "credential-helper-executed"
+        self.git("config", "credential.helper", f"!touch {marker}")
+
+        class NeverRun:
+            def write(self, _value):
+                pass
+
+            def run_process(self, *_args, **_kwargs):
+                raise AssertionError("AI-provided credential helper must not run")
+
+        with self.assertRaises(ApiError) as denied:
+            mutate_git(self.files, "push", {
+                "remote": "origin", "_network_mode": "full",
+            }, NeverRun())
+        self.assertEqual("git_unsafe_config", denied.exception.code)
+        self.assertFalse(marker.exists())
 
     def test_git_write_rejects_external_filter_configuration(self):
         self.git("config", "filter.evil.clean", "touch should-not-run")
@@ -388,8 +404,7 @@ class GitPushCommandPolicyTests(unittest.TestCase):
         self.assertEqual("push", result["operation"])
         self.assertEqual("https", task.env["GIT_ALLOW_PROTOCOL"])
         self.assertIn("--no-verify", task.argv)
-        if sys.platform == "darwin":
-            self.assertIn("credential.helper=osxkeychain", task.argv)
+        self.assertFalse(any(value.startswith("credential.helper=") for value in task.argv))
         self.assertIn("--no-follow-tags", task.argv)
         self.assertNotIn("http.proxy=", task.argv)
         self.assertIn("--recurse-submodules=no", task.argv)
@@ -407,6 +422,9 @@ class GitPushCommandPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "GCM_INTERACTIVE": "always", "GIT_TERMINAL_PROMPT": "1",
             "GIT_ASKPASS": "/untrusted/askpass", "GCM_GUI_PROMPT": "true",
+            "GIT_CONFIG_GLOBAL": "/operator/gitconfig",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.useHttpPath",
+            "GIT_CONFIG_VALUE_0": "true",
         }):
             for operation in ("fetch", "pull", "push", "clone"):
                 with self.subTest(operation=operation):
@@ -415,36 +433,43 @@ class GitPushCommandPolicyTests(unittest.TestCase):
                     self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
                     self.assertEqual("", env["GIT_ASKPASS"])
                     self.assertNotIn("GCM_GUI_PROMPT", env)
+                    self.assertEqual("/operator/gitconfig", env["GIT_CONFIG_GLOBAL"])
+                    self.assertEqual("1", env["GIT_CONFIG_COUNT"])
+                    self.assertEqual("credential.useHttpPath", env["GIT_CONFIG_KEY_0"])
 
-    def test_macos_credential_helpers_use_system_keychain(self):
+    @unittest.skipUnless(shutil.which("git"), "Git required")
+    def test_trusted_host_git_config_selects_credentials_without_os_override(self):
         from unittest.mock import patch
-        from openkapsel.files.git_write import _safe_credential_helpers
+        from openkapsel.files.git_write import _base_env, _common
+        import subprocess
 
-        known = {"git-credential-manager", "git-credential-osxkeychain",
-                 "git-credential-libsecret", "git-credential-cache"}
-        with patch("openkapsel.files.git_write.sys.platform", "darwin"), \
-             patch("openkapsel.files.git_write.Path.home",
-                   return_value=Path("/nonexistent-openkapsel-credentials-test")):
-            with patch("openkapsel.files.git_write.shutil.which",
-                       side_effect=lambda tool: tool if tool in known else None):
-                self.assertEqual(["osxkeychain"], _safe_credential_helpers())
-            with patch("openkapsel.files.git_write.shutil.which",
-                       return_value=None):
-                # Git can find its built-in helper in git --exec-path even if
-                # the helper executable is not directly on PATH.
-                self.assertEqual(["osxkeychain"], _safe_credential_helpers())
-
-    def test_linux_native_libsecret_cannot_trigger_desktop_unlock(self):
-        from unittest.mock import patch
-        from openkapsel.files.git_write import _safe_credential_helpers
-
-        # Simulate libsecret installed alongside a non-GUI cache helper.
-        with patch("openkapsel.files.git_write.sys.platform", "linux"), \
-             patch("openkapsel.files.git_write.shutil.which",
-                   side_effect=lambda tool: tool if tool in {
-                       "git-credential-libsecret", "git-credential-cache",
-                   } else None):
-            self.assertEqual(["cache"], _safe_credential_helpers())
+        # A host administrator can configure any helper, including per-host
+        # ones, with no OS-specific OpenKapsel allowlist or execution.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".gitconfig").write_text(
+                '[credential]\n\thelper = host-managed-custom-helper\n'
+                '[credential "https://git.example.test"]\n'
+                '\thelper = host-managed-per-host-helper\n', encoding="utf-8")
+            with patch("openkapsel.files.git_write.Path.home", return_value=home), \
+                 patch.dict(os.environ, {"XDG_CONFIG_HOME": str(home / ".config"),
+                                      "GIT_CONFIG_GLOBAL": str(home / ".gitconfig") }):
+                env = _base_env(home / "isolated", {"_operation": "push"})
+                args = _common(shutil.which("git"), home)
+                result = subprocess.run(
+                    [*args, "config", "--global", "--get-all", "credential.helper"],
+                    env=env, capture_output=True, text=True, timeout=10)
+                per_host = subprocess.run(
+                    [*args, "config", "--global", "--get",
+                     "credential.https://git.example.test.helper"],
+                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("host-managed-custom-helper", result.stdout.strip())
+            self.assertEqual(0, per_host.returncode, per_host.stderr)
+            self.assertEqual("host-managed-per-host-helper", per_host.stdout.strip())
+            self.assertEqual(str(home), env["HOME"])
+            self.assertFalse(any(x.startswith("credential.helper=") for x in args))
+            self.assertFalse(any(x.startswith("http.extraHeader=") for x in args))
 
     @unittest.skipUnless(shutil.which("git"), "Git required")
     def test_push_requires_network_policy_and_safe_branch(self):

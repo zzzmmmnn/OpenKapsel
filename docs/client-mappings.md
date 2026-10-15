@@ -262,18 +262,17 @@ network setting). Configured Mapping modes are `none` (deny),
 without `job_sandbox`, Mapping Git uses normal Client host networking.
 Git RPC tasks run in the Client RPC engine, not the Shell Job Manager, so
 this is a validated HTTPS remote policy, **not an OS network sandbox**.
-Known host credential providers and HTTPS proxy environment are supported
-for Git network operations, but Git Credential Manager runs with
-`GCM_INTERACTIVE=never`: only existing credentials are used; no browser/GUI
-sign-in is requested. On macOS, Git RPC explicitly uses Git's fixed
-`osxkeychain` helper to reuse existing system Keychain credentials without
-loading arbitrary repository/global Git configuration. macOS Keychain UI is
-controlled by the OS independently of `GCM_INTERACTIVE=never`. Linux skips
-the native `libsecret` helper to avoid desktop keyring-unlock dialogs; GCM
-remains permitted under its noninteractive setting. Missing credentials
-fail rather than initiating Git/GCM's terminal or browser sign-in flow.
-Untrusted repository/global helpers,
-URL redirects and executable Git config remain disabled. Push sends only the selected branch\u2019s HEAD without force or tags, and never follows an unvalidated `pushurl`. They reject linked worktrees,
+Git RPC uses the host's existing system and user Git configuration, including
+its credential helpers on macOS, Linux and Windows, without choosing an
+OS-specific helper or requiring Git Credential Manager. AI-writable repository
+Git metadata is checked for executable helpers, includes and URL rewrites;
+hooks and signing are disabled by explicit command options. Terminal prompts
+are disabled (`GIT_TERMINAL_PROMPT=0`) and GCM, if configured by the operator,
+uses `GCM_INTERACTIVE=never`. Native OS keychain helpers control any system
+prompts themselves. HTTPS redirects are disabled and the requested network
+URL is validated against the token's policy. Push sends only the selected
+branch's HEAD without force or tags, and never follows an unvalidated
+`pushurl`. Git RPC rejects linked worktrees,
 alternate object stores, unsafe Git metadata/configuration, arbitrary Git
 hooks/signing/helper commands, and private `.openkapsel` paths. Host Git is required on the selected execution
 host. There is no fallback from one selected host to the other. See
