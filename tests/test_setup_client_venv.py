@@ -133,27 +133,6 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unsupported"):
                 bootstrap.platform_name()
 
-    def test_windows_npm_prerequisite_diagnostic_does_not_install(self):
-        import json
-        from unittest.mock import Mock
-        with patch.object(bootstrap.shutil, "which", side_effect=lambda name:
-                          "/fake/" + name if name in {"node", "npm"} else None):
-            listing = subprocess.CompletedProcess(
-                [], 0, stdout=json.dumps({
-                    "dependencies": {"@anthropic-ai/sandbox-runtime": {"version": "1.0"}}
-                }),
-            )
-            with patch.object(bootstrap.subprocess, "run", return_value=listing) as execute:
-                status = bootstrap.windows_sandbox_diagnostic()
-                self.assertIn("installed globally", status)
-                command = execute.call_args.args[0]
-                self.assertIn("list", command)
-                self.assertNotIn("install", command)
-        with patch.object(bootstrap.shutil, "which", return_value=None):
-            with patch.object(bootstrap.subprocess, "run") as execute:
-                self.assertIn("prerequisite missing", bootstrap.windows_sandbox_diagnostic())
-                execute.assert_not_called()
-
     def test_pip_install_selection_is_missing_only(self):
         with patch.object(bootstrap, "run_command") as run:
             bootstrap.install_missing(Path("/example/venv/python"), [])

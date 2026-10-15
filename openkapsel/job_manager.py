@@ -558,7 +558,7 @@ class Manager:
             if specification.get("type") == "current_user":
                 if specification != {"type": "current_user"}:
                     raise ValueError("current_user sandbox takes no options")
-            elif specification.get("type") not in {"bubblewrap", "seatbelt", "srt_windows"}:
+            elif specification.get("type") not in {"bubblewrap", "seatbelt"}:
                 raise ValueError("unsupported sandbox environment")
         else:
             specification = {"type": "current_user"}

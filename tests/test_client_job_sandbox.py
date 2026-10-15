@@ -74,7 +74,7 @@ class ClientJobSandboxTests(unittest.TestCase):
             spec = runtime.tasks.job_sandbox
             self.assertEqual(
                 {"Linux": "bubblewrap", "Darwin": "seatbelt",
-                 "Windows": "srt_windows"}[platform.system()],
+                 "Windows": "approval_only"}[platform.system()],
                 spec["type"],
             )
             self.assertEqual(str(self.root), spec["root"])
@@ -84,7 +84,7 @@ class ClientJobSandboxTests(unittest.TestCase):
             self.assertFalse(domain_allowed("otherexample.com", tuple(spec["allowed_domains"])))
             self.assertEqual([True, False], [p["access"] == "ro" for p in spec["allowed_paths"]])
             if platform.system() == "Windows":
-                # Windows does not launch SRT during temporary approval mode.
+                # Windows interprets literal file operations and requires approval for other Shell commands.
                 capabilities = runtime.tasks.capabilities()
                 self.assertFalse(capabilities["sandbox"])
                 self.assertTrue(capabilities["safe_powershell"])
@@ -116,14 +116,20 @@ class ClientJobSandboxTests(unittest.TestCase):
         with patch("openkapsel.client_runtime.job_sandbox_config.platform.system", return_value="Windows"):
             runtime = ClientRuntime(self._config())
             try:
-                self.assertEqual("srt_windows", runtime.tasks.job_sandbox["type"])
+                self.assertEqual("approval_only", runtime.tasks.job_sandbox["type"])
             finally:
                 runtime.close()
         with patch("openkapsel.client_runtime.job_sandbox_config.platform.system", return_value="Windows"):
-            with self.assertRaisesRegex(ValueError, "Windows SRT does not support"):
-                runtime = ClientRuntime(self._config(job_sandbox={
-                    "network": {"mode": "full"},
-                }))
+            runtime = ClientRuntime(self._config(job_sandbox={
+                "network": {"mode": "full"},
+            }))
+            try:
+                self.assertEqual("approval_only", runtime.tasks.job_sandbox["type"])
+                self.assertEqual("full", runtime.tasks.job_sandbox["network_mode"])
+                # platform.system is mocked above, but os.name is the host OS;
+                # an actual Windows Client enables approval-only Shell.
+                self.assertEqual(os.name == "nt", runtime.tasks.capabilities()["approval_required"])
+            finally:
                 runtime.close()
         # Explicit extra mounts may never expose a protected config file.
         protected_dir = self.base / "secrets"

@@ -17,17 +17,11 @@ execution. This is an internal Manager IPC contract, not a public REST parameter
   The sandbox may connect only to that port; the proxy validates domain names,
   destination ports, DNS answers and public addresses. A restricted program
   cannot initiate arbitrary TCP connections merely by ignoring `HTTP_PROXY`.
-- `srt_windows`: legacy Windows Sandbox Runtime backend. **Temporarily disabled** for Mapping Shell: literal-only filesystem commands run inside the Client's guarded file interpreter, and all other commands require explicit Shell approval and run as the Client OS user without isolation.
-  0.0.79+ (Node.js 22.12+). SRT's Rust `srt-win.exe` uses a dedicated
-  `srt-sandbox` account, SID-restricted WFP egress filter and NTFS ACLs.
-  First run requires `npm install -g @anthropic-ai/sandbox-runtime` and an
-  approved `srt windows-install`. The Manager writes an independent private
-  SRT settings JSON and invokes the globally installed Node entrypoint.
-  `none` and `domain_allowlist` work with SRT's proxy; `full` currently
-  **fails closed** because this SRT version cannot express an unrestricted
-  Windows egress policy. The shared sandbox account SID means directory
-  grants across concurrently running Windows Jobs may overlap; these Jobs
-  intentionally remain parallel in this initial implementation.
+Windows does not accept a native Job Manager sandbox type. Recognized literal
+PowerShell file commands are interpreted using the Client's guarded File RPC
+provider; other Shell commands require explicit approval and run without
+OS isolation. Approved Windows processes are not restricted by
+`job_sandbox.network` or extra directory rules.
 
 Example JSON **value of the `sandbox` string**:
 
@@ -53,19 +47,19 @@ directory**. Manager IPC intentionally does not accept old `read_only`
 entries. Denies take precedence over all grants, and read-only ancestors
 take precedence over descendant rw grants. `writable` is the implicit
 workspace root access. Directory denies mask contents on Bubblewrap/Podman;
-file denies are read-only /dev/null bind mounts. Seatbelt and SRT apply
+file denies are read-only /dev/null bind mounts. Seatbelt applies
 read/write denies. Existing direct-child `.openkapsel` directories and
 Client configuration are automatically hidden by Client policy generation.
-For Client configuration see `docs/client-mappings.md` (`job_sandbox`
-automatically derives `type`, `root`, and `writable` and forwards the
-Manager's JSON **string** for every Shell invocation). The Manager's own state, job output,
+For Client configuration see `docs/client-mappings.md` (Linux/macOS
+`job_sandbox` derives `type`, `root`, and `writable` and forwards the
+Manager's JSON string; Windows uses guarded literal file operations). The Manager's own state, job output,
 and IPC files may not be mounted as workspace or as an extra grant.
 
 `network_mode` is `none` (default), `full`, or `domain_allowlist`.
 `allowed_domains` must be nonempty only with `domain_allowlist`, and uses the
 same normalization and suffix-match rules as Server Shell. The proxy is
 restricted to HTTP port 80 and HTTPS port 443, not arbitrary raw TCP protocols.
-If the requested backend or proxy cannot launch, the job is rejected.
+If the requested Linux/macOS backend or proxy cannot launch, the job is rejected.
 
 ## Server Token path access and legacy compatibility
 

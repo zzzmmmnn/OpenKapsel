@@ -58,12 +58,9 @@ venv location. An existing directory that is not a healthy Python venv is
 **never overwritten automatically**. Dependency installation uses pip and
 therefore needs access to a configured package index or cached wheels.
 
-This script installs **Python dependencies only**. On Windows, it checks
-whether Node.js/npm and the globally installed `@anthropic-ai/sandbox-runtime`
-package appear present, without installing them. For Windows native Shell
-sandboxing, see the [additional Windows SRT installation](#windows-sandbox-runtime-installation)
-below. The installer diagnostic by itself does not prove the machine has the
-required SRT sandbox user and WFP protection.
+This script installs **Python dependencies only**. Windows does not require
+Node.js/npm or an external sandbox runtime. Windows Shell uses guarded literal
+file commands and explicit approval for other commands.
 
 A minimal manual installation with only `websocket-client` and
 `python-socks` can still be used for basic Client connection where the
@@ -287,13 +284,13 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 ## Client execution policy
 
-### Native Job Manager sandbox configuration (Linux/macOS/Windows)
+### Native Job Manager sandbox configuration (Linux/macOS)
 
-Add `job_sandbox` to the Client JSON configuration to enable the native
-Job Manager sandbox. **Do not set a `type` manually.** The Client derives
-`bubblewrap` on Linux, `seatbelt` on macOS, or `srt_windows` on Windows,
-normalizes the policy, and serializes it into the Manager's `task_start.sandbox`
-JSON **string**. The Windows implementation uses Anthropic SRT (alpha).
+On Linux/macOS, `job_sandbox` enables Bubblewrap or Seatbelt for Mapping
+Shell. Do not set `type` manually: the Client derives and validates it.
+On **Windows**, the same `job_sandbox.paths` entries inform the guarded
+PowerShell file-command interpreter but **no OS sandbox is started**.
+Approved Windows Shell commands run with the Client's OS-user rights.
 
 ```json
 {
@@ -317,72 +314,35 @@ JSON **string**. The Windows implementation uses Anthropic SRT (alpha).
 }
 ```
 
-The exported Mapping `root` is always automatically included. Its write
-permission follows the existing top-level `writable` setting. Extra Shell
-Sandbox grants may also enclose the Mapping root: a writable parent **cannot**
-make a read-only Mapping root writable, and a read-only ancestor still takes
-precedence. Additional `paths` affect only Shell Sandbox visibility; File APIs
-and Git/Archive RPC remain restricted to the exported Mapping root. Each
-additional entry under `job_sandbox.paths` specifies `access: "rw"` (read/write),
-`access: "ro"` (read-only; `"r"` is an alias), or `access: "deny"`
-(no read, write or delete). Additional rw/ro paths must be existing absolute
-directories; deny paths may be existing files or directories within the
-workspace or a permitted extra directory. **The more restrictive mode always
-wins: deny > ro > rw**, including nested rules and duplicates. The automatic
-workspace root permission is controlled by `writable`. Overlapping rules are
-supported; when an ancestor is read-only a narrower rw rule cannot reopen it.
-The Client rejects legacy `paths[].read_only` fields (no compatibility shim
-for this experimental Manager sandbox protocol).
+The exported Mapping root is always included; its write permission follows
+`writable`. Extra `job_sandbox.paths` entries use `rw`, `ro` (alias `r`)
+or `deny`, with **deny > ro > rw** precedence. Up to 32 entries are
+supported, including nested grants. Invalid or nonexistent paths fail closed.
+Client configuration and existing `.openkapsel` directories are denied.
+File RPC cannot access outside the Mapping export even if an extra Shell path
+is granted.
 
-At most 32 explicit path rules are accepted. Root-of-filesystem grants,
-nonexistent paths, unknown access modes and grants overlapping the Manager's
-private state fail closed. Existing `.openkapsel` subdirectories directly
-under the workspace root and each extra permitted directory, plus protected
-Client configuration files, are automatically denied in Shell. When the
-Client sandbox is configured, denied paths inside the exported Mapping root
-are also hidden from its file APIs (including search). A path inside a granted
-parent may contain protected Client configuration: that configuration is
-automatically denied rather than forbidding access to the entire parent.
-Hidden paths are evaluated at sandbox preparation time; avoid creating new
-secret directories after a job starts without refreshing its sandbox policy.
+On Linux/macOS, `job_sandbox.network.mode` accepts `none` (default),
+`full` or `domain_allowlist`; for the last option the Manager uses a
+domain-filtering proxy. With native sandboxing configured, **every Shell
+job**, including short ones, is managed in the sandbox; a failed sandbox
+start never falls back to unrestricted execution. Linux needs Bubblewrap
+(and RootlessKit where applicable); macOS uses `/usr/bin/sandbox-exec`.
 
-`job_sandbox.network.mode` is one of:
+On Windows, path rules are enforced only for recognized literal PowerShell
+commands **within** the Mapping export. Extra Shell grants never broaden
+those commands to external paths. The `network` configuration is validated
+but **not enforced** on approved native Windows Shell processes. There is no
+OS network or filesystem sandbox for approved commands; unrecognized
+commands require `shell.request_approval`. Async RPC and SSH are separate
+capabilities not constrained by Shell sandbox settings.
 
-- `none` (default): deny outbound network connections.
-- `full`: allow network access on Linux and macOS; currently **rejected
-  on Windows** because SRT's SID-wide WFP policy denies direct egress and its
-  allowlist does not support an allow-all wildcard.
-- `domain_allowlist`: domain-filtered proxy access (Manager-owned on Linux/
-  macOS; SRT-owned HTTP/SOCKS proxy on Windows).
-  `domains` is required, and uses **the same matching rules as Server**:
-  `github.com` matches exactly; `.githubusercontent.com` matches both
-  the apex name and its subdomains. DNS/domain names are normalized using
-  the Server proxy's validation. On Windows, `.githubusercontent.com`
-  becomes both `githubusercontent.com` and `*.githubusercontent.com` in
-  the SRT configuration, because SRT wildcard matching does not include the
-  base domain. Non-whitelisted domains are rejected by the proxy; direct
-  connections cannot bypass it. Programs generally need to support the
-  injected proxy variables; raw TCP is not transparently redirected.
+See [Job Manager sandbox](job-manager-sandbox.md) for native Linux/macOS
+isolation and the Manager IPC contract.
 
-With `job_sandbox`, **every Mapping Shell job**, including the default
-120-second and shorter jobs, runs in the shared Job Manager. This prevents
-a short command from bypassing sandbox restrictions and makes Shell output
-Manager-owned and persistent. The old `sandbox` (Podman boolean), `backend`,
-and top-level `network` settings apply only when `job_sandbox` is absent;
-the new native policy takes precedence if present. Async task-based RPC and
-SSH are separate capabilities and are **not** constrained by this Shell
-sandbox. Without `job_sandbox`, current short/long Shell routing is unchanged.
+### Windows approval-only Shell mode
 
-Configuration errors or missing native tools fail closed. Install `bwrap`
-on Linux (and RootlessKit where the shared backend requires it); macOS uses
-`/usr/bin/sandbox-exec`. Windows requires SRT as below. Existing jobs are
-not retroactively restricted after changing the configuration. See
-[Job Manager sandbox](job-manager-sandbox.md) for isolation guarantees and
-the Manager IPC format.
-
-### Windows temporary approval mode
-
-On Windows, OpenKapsel temporarily does **not** start Anthropic SRT for Mapping
+On Windows, OpenKapsel does not start an OS sandbox for Mapping
 Shell jobs. The Client interprets a small, literal-only set of PowerShell
 filesystem commands directly using the same guarded file provider as File RPC.
 It does **not** invoke PowerShell for these commands. Supported aliases include:
@@ -406,50 +366,7 @@ the Client's full Windows OS-user rights and **are not sandboxed**. The
 `job_sandbox.network` policy does not restrict approved native processes.
 This is an application-level command allowlist, **not** an OS sandbox.
 
-Linux/macOS retain their configured Sandbox backends. The Windows SRT
-installation instructions below describe the optional legacy runtime, which
-is not currently used for Windows Mapping Shell jobs.
-
-### Windows Sandbox Runtime installation
-
-Install **Node.js 22.12+**, then once per machine in PowerShell:
-
-```powershell
-npm install -g @anthropic-ai/sandbox-runtime
-srt windows-install
-```
-
-The second command requests approval (UAC). SRT provisions the
-`srt-sandbox` local account, NTFS ACL support and SID-scoped WFP network
-fence. The Client setup script only checks npm package presence; it does not
-perform this privileged machine-wide initialization. Missing npm/Node, a
-missing/incompatible SRT package, or an unprovisioned WFP/user setup causes
-the Job to fail; **no unsandboxed fallback** is allowed.
-
-The Client JSON `job_sandbox` configuration and directory permissions are
-identical on all platforms. Windows SRT accepts `network.mode=none` and
-`domain_allowlist` in this first release. It does **not** yet accept
-`network.mode=full` (Client startup rejects this configuration); use a domain
-allowlist when Windows Shell tasks need internet access.
-
-The Manager runs the **globally installed npm package's Node CLI** with a
-private per-Job `--settings` JSON file, rather than executing an editable
-`srt.cmd` wrapper. Each Job remains independently managed and can run
-concurrently up to the usual Manager limits. SRT uses **one shared sandbox
-account SID** and session-level NTFS ACL grants: while Jobs overlap, one
-sandboxed Job might be able to access another Job's additionally granted
-directory. This first release intentionally does not provide per-Job path
-confidentiality on Windows. Use only trusted combinations of concurrently
-running Jobs when they have different extra directory grants. SRT also has
-a small default allowed proxy port range; concurrent Jobs may exhaust those
-ports before the Manager's own capacity limit.
-
-Windows SRT executes under a **different local user**, so tools installed
-only under the interactive user's profile might not be accessible. Prefer
-machine-wide Python, Node, Git and other CLI installations or explicitly
-grant their read-only runtime paths. See
-[Anthropic's Windows alpha documentation](https://github.com/anthropics/sandbox-runtime#windows-alpha)
-for sandbox provisioning and restrictions.
+Linux/macOS retain their configured Sandbox backends.
 
 Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox` enabled, **all** Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
 
@@ -485,8 +402,8 @@ extra `allowed_paths`, `hidden_paths`, `network_mode`, and normalized
 sandboxes; it never falls back silently.
 
 Podman on macOS/Windows runs Linux workloads, not native platform tests.
-The native implementation covers Linux Bubblewrap, macOS Seatbelt and
-Windows Anthropic SRT (alpha; requires one-time approved Windows installation).
+Native Job Manager sandboxing covers Linux Bubblewrap and macOS Seatbelt;
+Windows uses guarded literal commands or explicit approval.
 
 Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 

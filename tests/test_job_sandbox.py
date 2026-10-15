@@ -91,8 +91,9 @@ class JobSandboxTests(unittest.TestCase):
             prepared.cleanup()
 
     def test_invalid_grants_and_modes_rejected_before_launch(self):
-        kind = {"Darwin": "seatbelt", "Linux": "bubblewrap",
-                "Windows": "srt_windows"}[platform.system()]
+        if platform.system() == "Windows":
+            self.skipTest("Windows has no native Job Manager sandbox")
+        kind = {"Darwin": "seatbelt", "Linux": "bubblewrap"}[platform.system()]
         cases = [
             dict(root="/"),
             dict(writable="yes"),

@@ -24,7 +24,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     elif system == "Darwin":
         kind = "seatbelt"
     elif system == "Windows":
-        kind = "srt_windows"
+        kind = "approval_only"
     else:
         raise ValueError("job_sandbox requires Linux, macOS or Windows")
     # "root" is the Client's exported workspace; no redundant, mutable config.
@@ -114,11 +114,6 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     mode = network.get("mode", "none")
     if not isinstance(mode, str) or mode not in {"none", "full", "domain_allowlist"}:
         raise ValueError("job_sandbox.network.mode must be none, full or domain_allowlist")
-    if kind == "srt_windows" and mode == "full":
-        raise ValueError(
-            "Windows SRT does not support job_sandbox.network.mode=full; "
-            "use none or domain_allowlist"
-        )
     domains = network.get("domains", [])
     if not isinstance(domains, list) or len(domains) > 128 or not all(
         isinstance(item, str) for item in domains

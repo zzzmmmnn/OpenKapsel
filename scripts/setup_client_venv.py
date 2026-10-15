@@ -13,7 +13,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -201,32 +200,6 @@ def install_missing(python: Path, missing: list[str]) -> None:
                      "only-if-needed", *missing])
 
 
-def windows_sandbox_diagnostic() -> str:
-    """Inspect (without installing) the future Windows sandbox prerequisites.
-
-    npm list reads the local global package inventory; no registry query or
-    installation takes place. Runtime integration will do its own hard checks.
-    """
-    node = shutil.which("node")
-    npm = shutil.which("npm")
-    if not node or not npm:
-        missing = [tool for tool, path in (("node", node), ("npm", npm)) if not path]
-        return f"Windows sandbox runtime prerequisite missing: {', '.join(missing)}"
-    try:
-        result = subprocess.run(
-            [npm, "list", "--global", "--depth=0", "--json",
-             "@anthropic-ai/sandbox-runtime"],
-            capture_output=True, text=True, timeout=15, check=False,
-        )
-        packages = json.loads(result.stdout or "{}").get("dependencies", {})
-        if isinstance(packages, dict) and "@anthropic-ai/sandbox-runtime" in packages:
-            return "Windows sandbox-runtime npm package: installed globally (not yet integrated)"
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return "Windows sandbox-runtime npm package: status unavailable"
-    return ("Windows sandbox-runtime npm package: not found globally; "
-            "future backend prerequisite is npm install -g @anthropic-ai/sandbox-runtime")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -250,8 +223,6 @@ def main() -> int:
     name = platform_name()
     directory = args.venv.expanduser().resolve()
     print(f"Platform: {name}; Client environment: {directory}", flush=True)
-    if name == "Windows":
-        print(windows_sandbox_diagnostic(), flush=True)
     python = ensure_virtualenv(directory, check_only=args.check)
     audit = audit_in_venv(python)
     print(f"Checking {audit['requirements']} Client requirements...", flush=True)
