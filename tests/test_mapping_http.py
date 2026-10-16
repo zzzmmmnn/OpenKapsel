@@ -23,7 +23,7 @@ class MappingHTTPTests(unittest.TestCase):
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         auth = {"Cookie": cookie}
         session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
-        form = {"action": "create", "app_id": self.record.app_id, "name": "laptop", "writable": "on"}
+        form = {"action": "create", "app_id": self.record.app_id, "name": "laptop", "writable": "on", "allow_exec": "on"}
         self.assertEqual(403, self.form(path, form, auth)[0])
         self.assertEqual([], self.server.mappings.store.list())
         form["csrf"] = session.csrf
@@ -40,6 +40,9 @@ class MappingHTTPTests(unittest.TestCase):
             self.assertIn(icon, page)
         row = self.server.mappings.store.list()[0]
         self.assertEqual(config["url"], "wss://example.test/kapsel/mapping-connect/" + row["id"])
+        self.assertTrue(row["writable"])
+        self.assertTrue(row["allow_exec"])
+        self.assertTrue(config["writable"])
         self.server.mappings.store.authenticate(row["id"], config["token"])
         second = self.server.tokens.create(
             name="Second", path_prefix="second", shell_mode="none", expires_at=None,
@@ -56,10 +59,11 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertEqual("moved", moved["name"])
         self.assertIn('name="workspace"', raw.decode())
         self.assertTrue(config["sandbox"])
-        self.assertFalse(config["allow_exec"])
+        self.assertTrue(config["allow_exec"])
         self.assertEqual(60, config["transport_timeout_seconds"])
         self.assertNotIn("source_root", config)
-        self.assertFalse(config["auto_reload"])
+        self.assertTrue(config["auto_reload"])
+        self.assertEqual({}, config["job_sandbox"])
         self.assertEqual({"git": True, "archive": True}, config["rpc"])
         self.assertEqual({}, config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
@@ -69,6 +73,43 @@ class MappingHTTPTests(unittest.TestCase):
         for credential in (None, config["token"]):
             headers = {} if credential is None else {"Authorization": "Bearer " + credential}
             self.assertEqual(401, self.request("GET", base + "/task/list?target=client", headers=headers)[0])
+
+    def test_new_mapping_form_defaults_and_explicit_readonly_override(self):
+        path = "/kapsel/admin/mappings"
+        status, headers, _ = self.form(
+            "/kapsel/admin/login",
+            {"username": "admin", "password": "test-password-123"},
+        )
+        self.assertEqual(303, status)
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        auth = {"Cookie": cookie}
+        status, _, raw = self.request("GET", path, headers=auth)
+        self.assertEqual(200, status, raw)
+        create = raw.decode().split('<h2>Create mapping</h2>', 1)[1]
+        self.assertIn('name="writable" checked', create)
+        self.assertIn('name="allow_exec" checked', create)
+        session = self.server.admin_sessions.get(cookie.split("=", 1)[1])
+        form = {
+            "csrf": session.csrf,
+            "action": "create",
+            "app_id": self.record.app_id,
+            "name": "readonly-client",
+        }
+        with patch.object(self.server.mappings, "mount"):
+            status, _, raw = self.form(path, form, auth)
+        self.assertEqual(200, status, raw)
+        row = self.server.mappings.store.list()[0]
+        self.assertFalse(row["writable"])
+        self.assertFalse(row["allow_exec"])
+        page = raw.decode()
+        config = json.loads(html.unescape(re.search(
+            r'<pre[^>]*id="mapping-client-config"[^>]*>(.*?)</pre>',
+            page, re.S,
+        )[1]))
+        self.assertFalse(config["writable"])
+        self.assertFalse(config["allow_exec"])
+        self.assertTrue(config["auto_reload"])
+        self.assertEqual({}, config["job_sandbox"])
 
     def test_generic_readonly_rpc_plugin_rest_and_mcp(self):
         from types import SimpleNamespace

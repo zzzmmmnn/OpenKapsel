@@ -121,7 +121,7 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
         """A single-use bearer link for a Token password, without admin login."""
         self._require_password_transport()
         grants = self.server.capability_grants
-        if raw_query or not re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
             self._send_html(400, page("<h1>Password setup unavailable</h1>"), script_src="'none'")
             return
         workspace = grants.password_setup_workspace(ticket)

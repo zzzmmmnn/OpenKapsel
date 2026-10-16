@@ -770,8 +770,8 @@ class MappingHandlersMixin:
         url = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1).rstrip("/")
         return "Save this credential now; it is shown only once.\n" + json.dumps({
             "url": url + "/mapping-connect/" + row["id"], "token": secret,
-            "root": "/path/to/export", "writable": row["writable"], "allow_exec": False,
-            "auto_reload": False,
+            "root": "/path/to/export", "writable": row["writable"], "allow_exec": row["allow_exec"],
+            "auto_reload": True, "job_sandbox": {},
             "transport_timeout_seconds": 60,
             "rpc": {"git": True, "archive": True},
             "rpc_plugins": {},

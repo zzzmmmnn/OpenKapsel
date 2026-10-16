@@ -1652,7 +1652,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertIsNone(grants.password_setup_workspace(old_ticket))
         self.assertEqual(400, self.request("GET", "/kapsel/admin/password-setup/" + old_ticket)[0])
         location = "/kapsel/admin/password-setup/" + ticket
-        status, headers, page = self.request("GET", location)
+        status, headers, page = self.request("GET", location + "?utm_source=chatgpt.com")
         self.assertEqual(200, status, page)
         self.assertIn(b'name="confirm_password"', page)
         self.assertNotIn(self.record.control_token.encode(), page)
@@ -1666,13 +1666,13 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual(403, self.form(location, form, dict(recipient, Origin="https://evil.test"))[0])
         self.assertEqual(400, self.form(location, dict(form, confirm_password="other-pass"), recipient)[0])
         self.assertTrue(grants.verify_workspace_password(self.record.app_id, self.PASSWORD))
-        status, _, result = self.form(location, form, recipient)
+        status, _, result = self.form(location + "?utm_source=chatgpt.com", form, recipient)
         self.assertEqual(200, status, result)
         self.assertIn(b"Workspace password saved", result)
         self.assertTrue(grants.verify_workspace_password(self.record.app_id, "new-pass-123"))
         self.assertFalse(grants.verify_workspace_password(self.record.app_id, self.PASSWORD))
         self.assertIsNone(grants.password_setup_workspace(ticket))
-        self.assertEqual(400, self.request("GET", location)[0])
+        self.assertEqual(400, self.request("GET", location + "?utm_source=chatgpt.com")[0])
         self.assertEqual(400, self.form(location, form, recipient)[0])
 
     def test_six_character_workspace_password_admin_and_approval(self):

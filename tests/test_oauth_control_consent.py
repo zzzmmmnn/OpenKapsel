@@ -51,6 +51,67 @@ class ControlConsentHTTPTests(unittest.TestCase):
         self.assertEqual(pending["rid"], self.server.oauth.request(pending["rid"])["id"])
         self.assertIsNone(self.server.oauth.get(self.cid)["client_id"])
 
+    def test_browser_oauth_links_ignore_tracking_but_require_protocol_fields(self):
+        pending = self.pending()
+        rid = pending["rid"]
+        original = pending["location"]
+        cookie = {"Cookie": pending["cookie"]}
+        for query in ("&utm_source=chatgpt.com",
+                      "&utm_source=chatgpt.com&utm_medium=referral"):
+            status, _, raw = self.request("GET", original + query, headers=cookie)
+            self.assertEqual(200, status, raw)
+            self.assertIn(b'name="csrf"', raw)
+        for query in ("&unknown=foo", "&control_token=secret",
+                      "&request=" + rid):
+            status, _, _ = self.request("GET", original + query, headers=cookie)
+            self.assertEqual(400, status)
+        legacy = "/kapsel/admin/oauth/approve?request=" + rid + "&utm_source=chatgpt.com"
+        status, headers, _ = self.request("GET", legacy)
+        self.assertEqual(303, status)
+        self.assertEqual(original, headers["Location"])
+        form = {
+            "request": rid,
+            "decision": "approve",
+            "csrf": pending["csrf"],
+            "control_token": self.record.control_token,
+        }
+        post = self.prefix + "/consent?utm_source=chatgpt.com"
+        auth = {"Cookie": pending["cookie"], "Origin": "https://example.test"}
+        self.assertEqual(403, self.form(
+            post, dict(form, csrf="wrong"), auth)[0])
+        self.assertEqual(400, self.form(
+            self.prefix + "/consent?not_tracking=value", form, auth)[0])
+        self.assert_pending(pending)
+        self.assertEqual(303, self.form(post, form, auth)[0])
+        self.assertEqual(400, self.form(post, form, auth)[0])
+
+    def test_oauth_authorize_link_ignores_utm_source(self):
+        meta = {
+            "redirect_uris": ["https://client.test/callback"],
+            "token_endpoint_auth_method": "none",
+        }
+        status, _, raw = self.request(
+            "POST", self.prefix + "/register",
+            json.dumps(meta), {"Content-Type": "application/json"},
+        )
+        self.assertEqual(201, status, raw)
+        client = json.loads(raw)
+        params = {
+            "client_id": client["client_id"],
+            "response_type": "code",
+            "redirect_uri": meta["redirect_uris"][0],
+            "code_challenge": challenge("z" * 64),
+            "code_challenge_method": "S256",
+            "resource": self.resource,
+        }
+        status, headers, raw = self.request(
+            "GET", self.prefix + "/authorize?" + urlencode(params) +
+            "&utm_source=chatgpt.com",
+        )
+        self.assertEqual(303, status, raw)
+        self.assertIn("request=", headers["Location"])
+        self.assertNotIn("utm_source", headers["Location"])
+
     def test_standalone_page_security_headers_and_no_admin_session(self):
         from openkapsel.auth.tokens import PathGrant
         external = self.server.config.root.parent / "permitted-external-fixture"

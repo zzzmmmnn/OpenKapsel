@@ -49,6 +49,18 @@ class OAuthHandlersMixin(OAuthConsentMixin):
             raise OAuthError("invalid_request", "Duplicate parameters are not allowed")
         return {key: items[0] for key, items in values.items()}
 
+    def _oauth_browser_query(self, raw_query: str, *, max_num_fields: int = 16) -> dict[str, str]:
+        """Ignore link attribution without relaxing OAuth protocol fields.
+
+        Temporary consent URLs can acquire utm_* parameters when opened from
+        a chat client. Preserve duplicate checks and strict protocol fields;
+        never treat attribution as a request ID or authorization value.
+        """
+        fields = self._oauth_fields(parse_qs(
+            raw_query, keep_blank_values=True, max_num_fields=max_num_fields
+        ))
+        return {key: value for key, value in fields.items() if not key.startswith("utm_")}
+
     def _dispatch_oauth(self, method: str, path: str, raw_query: str) -> bool:
         base_path = self.server.config.url_base_path
         # RFC 8414 / RFC 9728 insert .well-known before the issuer/resource path.
@@ -62,7 +74,7 @@ class OAuthHandlersMixin(OAuthConsentMixin):
                 if method != "GET":
                     raise OAuthError("invalid_request", "Reload authorization in the client; the old approval form is no longer accepted")
                 self._discard_request_body()
-                query = self._oauth_fields(parse_qs(raw_query, keep_blank_values=True, max_num_fields=4))
+                query = self._oauth_browser_query(raw_query)
                 if set(query) != {"request"}:
                     raise OAuthError("invalid_request", "Invalid authorization request")
                 pending = self.server.oauth.request(query["request"])
@@ -102,7 +114,7 @@ class OAuthHandlersMixin(OAuthConsentMixin):
                 self._send_json(201, self.server.oauth.register(cid, self._read_json()))
             elif method == "GET" and action == "authorize":
                 self._discard_request_body()
-                params = self._oauth_fields(parse_qs(raw_query, keep_blank_values=True, max_num_fields=32))
+                params = self._oauth_browser_query(raw_query, max_num_fields=40)
                 if "control_token" in params:
                     raise OAuthError("invalid_request", "Control credentials must not be sent in authorization URLs")
                 rid = self.server.oauth.start(cid, params, resource)

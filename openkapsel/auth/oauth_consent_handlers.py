@@ -67,13 +67,13 @@ class OAuthConsentMixin:
             self._oauth_base(cid)
             if method == "GET":
                 self._discard_request_body()
-                query = self._oauth_fields(parse_qs(raw_query, keep_blank_values=True, max_num_fields=4))
+                query = self._oauth_browser_query(raw_query)
                 if set(query) != {"request"}:
                     raise OAuthError("invalid_request", "The authorization page requires only a request ID")
                 rid = query["request"]
                 form = None
             elif method == "POST":
-                if raw_query or self._request_content_length(required=True) > 8192:
+                if self._oauth_browser_query(raw_query) or self._request_content_length(required=True) > 8192:
                     raise OAuthError("invalid_request", "Consent accepts a bounded form body, not query parameters")
                 form = self._oauth_fields(self._read_form())
                 if set(form) - {"request", "csrf", "decision", "control_token", "workspace_password"}:
