@@ -564,14 +564,14 @@ def _token_card(
         '<span class="muted">Renewal does not change the preview token or workspace lifetime.</span></div>'
     )
     control_block = (
-        renew_block
-        + '<label>Control token (write, upload, Shell, Network, and Scheduled tasks)</label>'
+        '<label>Control token (write, upload, Shell, Network, and Scheduled tasks)</label>'
         f'<div class="token" id="{control_id}">{control_header}</div>'
         '<div class="actions">'
         f'<button type="button" class="secondary" onclick="copyToken(\'{control_id}\',this)">'
         "Copy Authorization header</button>"
         f'<button type="button" class="secondary" onclick="copyUrlAndToken(\'{workspace_url_id}\',\'{control_id}\',this)">'
         "Copy URL + control token</button></div>"
+        + renew_block
     )
     card = card.replace(
         '<label>Web preview URL (independent read-only credential)</label>',
@@ -655,6 +655,50 @@ def _collapsible_token_card(
     permission_fields = permission_separator + permission_fields
     app_id = html.escape(record.app_id, quote=True)
     workspace = html.escape(record.path_prefix, quote=True)
+
+    # Connection details are reference data, not credential-management actions.
+    # Keep them in the first tab; only rotation/renewal/deletion stay in Credentials.
+    rest_details, renewal_start, credential_settings = credentials.partition(
+        '<div class="notice"><strong>Read/control credential expiration</strong><br>'
+    )
+    if not renewal_start or '<label>Control token ' not in rest_details:
+        raise ValueError("REST connection details could not be separated")
+    credentials = renewal_start + credential_settings
+
+    token_key = "".join(char for char in record.token if char.isalnum())[:18]
+    url_id = "url-" + token_key
+    preview_id = "preview-" + token_key
+    initial_copy_actions = (
+        f'<div class="actions"><button type="button" class="secondary" '
+        f'onclick="copyToken(\'{url_id}\',this)">Copy Workspace URL</button>'
+        f'<button type="button" class="secondary" '
+        f'onclick="copyToken(\'{preview_id}\',this)">Copy web preview URL</button></div>'
+    )
+    if heading.count(initial_copy_actions) != 1:
+        raise ValueError("Token copy controls could not be relocated")
+    heading = heading.replace(initial_copy_actions, "", 1)
+
+    rest_details = (
+        '<div class="token-rest-info"><h3>REST connection</h3>'
+        '<label>Workspace URL</label>' + rest_details
+        + '<div class="actions">'
+        f'<button type="button" class="secondary" onclick="copyToken(\'{url_id}\',this)">'
+        'Copy Workspace URL</button></div></div>'
+    )
+    preview_marker = f'<div class="token" id="{preview_id}">'
+    before_preview, preview_start, after_preview = credentials.partition(preview_marker)
+    if not preview_start:
+        raise ValueError("Preview URL could not be found in Credentials")
+    preview_value, preview_end, preview_tail = after_preview.partition('</div>')
+    if not preview_end:
+        raise ValueError("Preview URL markup is malformed")
+    credentials = (
+        before_preview + preview_start + preview_value + preview_end
+        + '<div class="actions">'
+        f'<button type="button" class="secondary" onclick="copyToken(\'{preview_id}\',this)">'
+        'Copy web preview URL</button></div>'
+        + preview_tail
+    )
     tabs = (
         '<div class="token-tablist" role="tablist" aria-label="Token settings">'
         + "".join(
@@ -716,6 +760,7 @@ def _collapsible_token_card(
         .replace('<form method=', '<form data-token-update method=', 1)
         + '<input type="hidden" name="token_pane" value="basic" data-token-pane-field>'
         + pane_open("basic")
+        + rest_details
         + '<div class="grid">' + basic_fields + '</div></section>'
         + pane_open("permissions", hidden=True)
         + '<div class="grid">' + permission_fields + '</div></section>'

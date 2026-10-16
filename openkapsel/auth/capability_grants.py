@@ -15,7 +15,7 @@ from pathlib import Path
 from openkapsel.auth.security import hash_password, verify_password
 
 CAPABILITIES = frozenset({"shell.unsandboxed", "files.read", "files.write"})
-PENDING_SECONDS = 300
+PENDING_SECONDS = 30 * 60
 DEFAULT_SECONDS = 600
 MAX_SECONDS = 24 * 3600
 MAX_PENDING_PER_TOKEN = 32

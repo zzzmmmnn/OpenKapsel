@@ -140,7 +140,7 @@ Workspace Password, and selects 10 minutes, 30 minutes, 2 hours, 6 hours or
 24 hours (default 10 minutes). The page never executes a command.
 
 Approvals are browser-cookie/CSRF-bound, script-free, single use, and valid for
-five minutes. Five incorrect passwords exhaust one URL. Shared workspace/address
+thirty minutes. Five incorrect passwords exhaust one URL. Shared workspace/address
 attempt budgets prevent newly requested URLs resetting password budgets. Audit
 logs contain the workspace, conversation, capability and target, never passwords
 or approval IDs. Context history also excludes writer nonces and approval URLs.

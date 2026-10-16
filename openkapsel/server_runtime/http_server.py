@@ -145,8 +145,11 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.file_transfers = FileTransferManager(config.upload_state_dir.parent / "file-transfers", self.mappings, self.recycle_for, self.transfer_slots)
         from .request_handler import WorkspaceRequestHandler
 
-        super().__init__(address, WorkspaceRequestHandler)
+        # TCPServer may call server_close when bind fails, before __init__
+        # reaches the filename index or scheduler initialization.
         self.filename_index = None
+        self.scheduler = None
+        super().__init__(address, WorkspaceRequestHandler)
         if sys.platform.startswith("linux"):
             from openkapsel.files.filename_index import FilenameIndex
             try:
@@ -219,7 +222,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         if self.filename_index is not None:
             self.filename_index.close()
         self.api_workers.close()
-        self.scheduler.close()
+        if self.scheduler is not None:
+            self.scheduler.close()
         self.tasks.close()
         self.rpc_registry.close()
         self.file_transfers.close()

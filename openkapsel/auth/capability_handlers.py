@@ -116,7 +116,7 @@ class CapabilityHandlersMixin:
         if item.target == "server":
             return "Workspace Server"
         row = self.server.mappings.store.get(item.target)
-        if row["workspace"] != record.path_prefix or not row["enabled"]:
+        if row is None or row["workspace"] != record.path_prefix or not row["enabled"]:
             raise ValueError("Mapping is unavailable or ownership changed")
         return row["name"] + " (" + item.target + ")"
 
@@ -160,11 +160,33 @@ class CapabilityHandlersMixin:
         try:
             self._require_password_transport()
             if raw_query or not re.fullmatch(r"[A-Za-z0-9_-]{32}", ticket):
-                raise ValueError("Invalid approval URL")
+                self._send_html(400, page(
+                    "<h1>Invalid approval URL</h1><p>Request a new approval link.</p>"
+                ), script_src="'none'")
+                return
             item = grants.pending(ticket)
             if item is None:
-                raise ValueError("Approval expired or already used; ask the AI to retry")
-            target = self._capability_binding(item)
+                self._send_html(400, page(
+                    "<h1>Approval link unavailable</h1>"
+                    "<p>The link has expired, was already used, or was revoked. "
+                    "Request a new approval link.</p>"
+                ), script_src="'none'")
+                return
+            try:
+                target = self._capability_binding(item)
+            except (ValueError, KeyError):
+                # A ticket may still be live even when its Token or Mapping
+                # has changed. Do not misdiagnose that as a time expiry.
+                LOGGER.warning(
+                    "approval target unavailable workspace=%r target=%r capability=%r",
+                    item.workspace, item.target, item.capability,
+                )
+                self._send_html(409, page(
+                    "<h1>Approval target unavailable</h1>"
+                    "<p>The linked Workspace or Mapping is no longer available. "
+                    "Request a new approval after checking the target.</p>"
+                ), script_src="'none'")
+                return
             name = "__Host-openkapsel_capability" if self._request_is_https() else "openkapsel_capability"
             cookie = consent_cookie(self.headers, name)
             if method == "POST":
@@ -248,7 +270,7 @@ class CapabilityHandlersMixin:
         if (status == 200 and item.confirmation_cookie and
             grants.verify_file_confirmation_browser(ticket, cookie)):
             body = self._file_confirmation_page(item, ticket, proof)
-            header = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300" + ("; Secure" if self._request_is_https() else "")
+            header = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age={PENDING_SECONDS}" + ("; Secure" if self._request_is_https() else "")
             self._send_html(200, page(body), headers={"Set-Cookie": header}, script_src="'none'")
             return
         body = f'<h1>Approve temporary capability</h1><p class="error">{esc(error)}</p>' if error else '<h1>Approve temporary capability</h1>'
@@ -275,8 +297,8 @@ class CapabilityHandlersMixin:
 <form method="post" action="{esc(self._admin_path().removesuffix('/admin') + '/capability/' + ticket, quote=True)}" autocomplete="off">
 <input type="hidden" name="csrf" value="{proof}"><label>Workspace password</label><input type="password" name="password" required maxlength="1024" autocomplete="off">
 <label>Duration</label><select name="minutes" required><option value="10" selected>10 minutes</option><option value="30">30 minutes</option><option value="120">2 hours</option><option value="360">6 hours</option><option value="1440">24 hours</option></select><div class="actions"><button>Approve</button></div></form>
-<p>The URL expires after five minutes and can be approved once. Approval does not rerun the operation. Restarting the server clears all temporary grants.</p>'''
-        header = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=300" + ("; Secure" if self._request_is_https() else "")
+<p>The URL expires after {PENDING_SECONDS // 60} minutes and can be approved once. Approval does not rerun the operation. Restarting the server clears all temporary grants.</p>'''
+        header = f"{name}={cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age={PENDING_SECONDS}" + ("; Secure" if self._request_is_https() else "")
         self._send_html(status, page(body), headers={"Set-Cookie": header}, script_src="'none'")
 
     def _handle_admin_capabilities(self, method):

@@ -229,7 +229,7 @@ For MCP these fields go inside `args`; mutation Context stays in outer
 
 Without approval, execution returns `capability_approval_required` with an
 explicit `shell.request_approval` instruction and **no URL**. Only a proactive
-`request_approval` call can generate a five-minute single-use URL. Grants offer 10 minutes, 30 minutes, 2 hours, 6 hours or 24 hours (default
+`request_approval` call can generate a thirty-minute single-use URL. Grants offer 10 minutes, 30 minutes, 2 hours, 6 hours or 24 hours (default
 10 minutes), and are specific to the **Token Workspace** (stable `app_id`),
 Conversation and selected execution target. Distinct Tokens pointing to the
 same server directory need separate passwords and grants. Server approval does

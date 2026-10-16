@@ -163,7 +163,7 @@ class CapabilityGrantTests(unittest.TestCase):
             ]
             with self.assertRaisesRegex(RuntimeError, "too many pending"):
                 self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
-        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=401):
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=1901):
             new_ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
             self.assertIsNone(self.store.pending(tickets[0]))
             self.assertEqual(1, len(self.store.pending_requests))
@@ -181,10 +181,12 @@ class CapabilityGrantTests(unittest.TestCase):
             self.store.request("token-18", 0, "server", "shell.unsandboxed")
         )
 
-    def test_pending_five_minutes_and_grant_expiry(self):
+    def test_pending_thirty_minutes_and_grant_expiry(self):
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=100):
             ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")
-        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=401):
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=1899):
+            self.assertIsNotNone(self.store.pending(ticket))
+        with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=1900):
             self.assertIsNone(self.store.pending(ticket))
         with patch("openkapsel.auth.capability_grants.time.monotonic", return_value=500):
             ticket = self.store.request(self.workspace, 1, "server", "shell.unsandboxed")

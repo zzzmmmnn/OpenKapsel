@@ -34,6 +34,7 @@ from openkapsel.api.discovery_sections import (
 )
 from openkapsel.errors import ApiError
 from openkapsel.auth.oauth_consent import consent_metadata
+from openkapsel.auth.capability_grants import PENDING_SECONDS
 from openkapsel.files.mutation import (
     LARGE_FILE_WINDOW_MAX_BYTES,
     SMALL_FILE_MAX_BYTES,
@@ -2115,7 +2116,7 @@ class DiscoveryMixin:
                         "error_code": "capability_approval_required",
                         "approval_request_operation": "shell.request_approval",
                         "reason": "For temporary approval, explicitly call shell.request_approval with reason; only that operation creates an approval URL. A denied shell.exec/approved=true returns an actionable error without URL.",
-                        "approval_seconds": 300,
+                        "approval_seconds": PENDING_SECONDS,
                         "default_grant_seconds": 600,
                         "maximum_grant_seconds": 86400,
                         "scope": ["workspace", "conversation_id", "target", "capability"],

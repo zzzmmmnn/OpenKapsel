@@ -212,7 +212,7 @@ Shell error never creates a URL. Display the returned URL and obtain Workspace
 Password approval **before** executing the command. After approval, call
 `POST /shell/exec` with `approved: true` and the same Conversation's
 `writer_nonce`, plus normal Plan Context. The approval page never runs a command.
-URLs last five minutes and grants default to ten minutes (maximum 24 hours),
+URLs last thirty minutes and grants default to ten minutes (maximum 24 hours),
 independently for Server and each Mapping. An approved Mapping execution may
 bypass disabled client Shell execution, but a writable Mapping and remaining
 permissions are still required. Grants expire on revocation, password reset,

@@ -127,6 +127,28 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, page)
             self.assertIn(b"Capability approved", page)
 
+    def test_approval_failure_pages_distinguish_missing_target_from_expiry(self):
+        self.configure()
+        status, pending = self.request_approval(
+            reason="Verify browser ticket failure cases")
+        self.assertEqual(200, status, pending)
+        location, headers, form, _ = self.approval(
+            {"error": {"details": pending}})
+        self.assertEqual(200, self.form(location, form, headers)[0])
+        status, _, body = self.request("GET", location)
+        self.assertEqual(400, status, body)
+        self.assertIn(b"Approval link unavailable", body)
+        self.assertNotIn(b"Approval target unavailable", body)
+
+        ticket = self.server.capability_grants.request(
+            self.record.app_id, self.ownership()[0],
+            "missing-mapping", "shell.unsandboxed",
+        )
+        status, _, body = self.request("GET", "/kapsel/capability/" + ticket)
+        self.assertEqual(409, status, body)
+        self.assertIn(b"Approval target unavailable", body)
+        self.assertNotIn(b"Approval link unavailable", body)
+
     def test_approval_reason_is_shown_and_html_escaped_for_shell_and_file(self):
         from html import escape
 
@@ -1358,7 +1380,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual("approval_required", pending["status"])
             self.assertEqual("server", pending["target"])
             self.assertEqual("shell.unsandboxed", pending["capability"])
-            self.assertEqual(300, pending["approval_expires_in"])
+            self.assertEqual(30 * 60, pending["approval_expires_in"])
             launch.assert_not_called()
             self.assertFalse(marker.exists())
             self.approve({"error": {"details": pending}})
@@ -1565,6 +1587,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual("no-referrer", response_headers["Referrer-Policy"])
         self.assertIn("script-src 'none'", response_headers["Content-Security-Policy"])
         self.assertIn("Secure", response_headers["Set-Cookie"])
+        self.assertIn("Max-Age=1800", response_headers["Set-Cookie"])
         self.assertEqual(403, self.form(location, form, {})[0])
         self.assertEqual(403, self.form(location, dict(form, csrf="無效"), headers)[0])
         self.assertEqual(403, self.form(location, form, dict(headers, Origin="https://evil.test"))[0])
@@ -1743,7 +1766,31 @@ class CapabilityHTTPTests(unittest.TestCase):
                      "can_schedule", "enabled", "shell_mode", "network_mode",
                      "sandbox_max_processes", "allowed_domains"):
             self.assertIn(name, names)
+        basic = card.split('data-token-pane="basic"', 1)[1].split('</section>', 1)[0]
+        self.assertIn("<h3>REST connection</h3>", basic)
+        self.assertIn("<label>Workspace URL</label>", basic)
+        self.assertIn('Authorization: Bearer ', basic)
+        self.assertIn('Copy Workspace URL', basic)
+        self.assertIn('Copy Authorization header', basic)
+        self.assertIn('Copy URL + control token', basic)
+        self.assertIn('copyUrlAndToken(', basic)
+        self.assertNotIn('Read/control credential expiration', basic)
+        self.assertNotIn('Regenerate control token', basic)
+        self.assertNotIn('Copy web preview URL', basic)
+
         credentials = card.split('data-token-pane="credentials"', 1)[1].split('</section>', 1)[0]
+        self.assertNotIn("<h3>REST connection</h3>", credentials)
+        self.assertNotIn('Copy Workspace URL', credentials)
+        self.assertNotIn('Copy Authorization header', credentials)
+        self.assertNotIn('Copy URL + control token', credentials)
+        self.assertIn('Web preview URL (independent read-only credential)', credentials)
+        self.assertIn('Copy web preview URL', credentials)
+        self.assertIn('Read/control credential expiration', credentials)
+        self.assertIn('name="action" value="renew"', credentials)
+        self.assertIn('Regenerate read-only URL token', credentials)
+        self.assertIn('Regenerate control token', credentials)
+        self.assertIn('Regenerate preview token', credentials)
+        self.assertIn('Permanently delete', credentials)
         self.assertNotIn('name="action" value="password"', credentials)
         password_pane = card.split('data-token-pane="workspace-password"', 1)[1]
         self.assertIn('action="/kapsel/admin/capabilities"', password_pane)

@@ -127,7 +127,7 @@ paths, Mapping write-protection, protected client configuration, or OS user
 permissions. File API access does not authorize Git/Archive RPC, recycle
 management, resumable uploads, or sharing.
 File requests spanning multiple targets cannot borrow another target's grant.
-Approval URLs last five minutes; grants default to ten minutes and are
+Approval URLs last thirty minutes; grants default to ten minutes and are
 scoped to the Token, Conversation, target and capability.
 
 ## Mutation context
