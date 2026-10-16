@@ -127,6 +127,32 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, page)
             self.assertIn(b"Capability approved", page)
 
+    def test_approval_link_ignores_appended_tracking_query(self):
+        self.configure()
+        status, pending = self.request_approval(
+            reason="Verify attribution query does not invalidate approval")
+        self.assertEqual(200, status, pending)
+        location = urlsplit(pending["approval_url"]).path
+        old_location = location.replace("/capability/", "/admin/capability/")
+        for path in (location, old_location):
+            for query in ("?utm_source=chatgpt.com",
+                          "?utm_source=chatgpt.com&utm_medium=referral",
+                          "?other_tracking=ignored"):
+                status, _, body = self.request("GET", path + query)
+                self.assertEqual(200, status, body)
+                self.assertIn(b"Approve temporary capability", body)
+        location, headers, form, _ = self.approval(
+            {"error": {"details": pending}})
+        self.assertEqual(403, self.form(
+            location + "?utm_source=chatgpt.com",
+            dict(form, csrf="invalid"), headers)[0])
+        status, _, body = self.form(
+            location + "?utm_source=chatgpt.com", form, headers)
+        self.assertEqual(200, status, body)
+        self.assertIn(b"Capability approved", body)
+        self.assertEqual(400, self.request(
+            "GET", location + "?utm_source=chatgpt.com")[0])
+
     def test_approval_failure_pages_distinguish_missing_target_from_expiry(self):
         self.configure()
         status, pending = self.request_approval(

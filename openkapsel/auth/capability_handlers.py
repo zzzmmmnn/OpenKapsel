@@ -159,7 +159,11 @@ class CapabilityHandlersMixin:
         status, error = 200, ""
         try:
             self._require_password_transport()
-            if raw_query or not re.fullmatch(r"[A-Za-z0-9_-]{32}", ticket):
+            # Chat clients can append attribution query parameters (such as
+            # ?utm_source=chatgpt.com). Only the 32-character path ticket is
+            # used for lookup; query parameters never supply credentials or
+            # influence the approved capability or browser CSRF verification.
+            if not re.fullmatch(r"[A-Za-z0-9_-]{32}", ticket):
                 self._send_html(400, page(
                     "<h1>Invalid approval URL</h1><p>Request a new approval link.</p>"
                 ), script_src="'none'")
