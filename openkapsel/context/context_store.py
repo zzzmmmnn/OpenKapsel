@@ -796,6 +796,12 @@ class ContextStore:
                 raise RuntimeError(
                     f"plan revision is {row['revision']}, not {expected_revision}"
                 )
+            # Completion is terminal. Historical rows with an existing debrief
+            # must remain closed even if an older server reopened their status.
+            if row["plan_status"] == "completed" or connection.execute(
+                "SELECT 1 FROM plan_debriefs WHERE plan_id = ?", (entry_id,)
+            ).fetchone() is not None:
+                raise ValueError("completed plan cannot be modified; create a new plan")
             if plan_status == "completed":
                 incomplete_descendant = connection.execute(
                     """
