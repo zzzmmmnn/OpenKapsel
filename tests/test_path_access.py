@@ -56,6 +56,27 @@ class PathAccessTests(unittest.TestCase):
             external_alias / "blocked", self.root, True,
             (SimpleNamespace(path=str(external_alias), access="deny"),),
             resolve_symlinks=False))
+        # Deeper children override parent ro/deny; only same-depth ties
+        # follow deny > ro > rw. Configuration ordering is irrelevant.
+        child = self.sub / "writable"
+        nested = child / "restricted"
+        for reverse in (False, True):
+            entries = [
+                PathGrant(str(self.sub), access="ro"),
+                PathGrant(str(child), access="rw"),
+                PathGrant(str(nested), access="deny"),
+                PathGrant(str(nested / "override"), access="rw"),
+            ]
+            if reverse:
+                entries.reverse()
+            self.assertEqual("rw", effective_path_access(child / "ok", self.root, True, entries))
+            self.assertEqual("deny", effective_path_access(nested / "blocked", self.root, True, entries))
+            self.assertEqual("rw", effective_path_access(nested / "override" / "ok", self.root, True, entries))
+            self.assertEqual("ro", effective_path_access(self.sub / "other", self.root, True, entries))
+        self.assertEqual("ro", effective_path_access(child / "file", self.root, True, (
+            PathGrant(str(child), access="ro"), PathGrant(str(child), access="rw"))))
+        self.assertEqual("deny", effective_path_access(child / "file", self.root, True, (
+            PathGrant(str(child), access="deny"), PathGrant(str(child), access="rw"))))
         self.assertEqual("ro", PathGrant(str(self.sub), access="r").access)
 
     def test_legacy_server_record_read_only_is_normalized(self):
@@ -156,7 +177,7 @@ class PathAccessTests(unittest.TestCase):
                     {"path": str(extra), "access": "deny"},
                 ]},
             }, files)
-            self.assertEqual([], spec["allowed_paths"])
+            self.assertEqual([{"path": str(extra), "access": "deny"}], spec["allowed_paths"])
             self.assertNotIn(str(extra), spec["hidden_paths"])
             spec = make_job_sandbox({
                 "job_sandbox": {"paths": [
@@ -164,8 +185,15 @@ class PathAccessTests(unittest.TestCase):
                     {"path": str(extra), "access": "deny"},
                 ]},
             }, files)
-            self.assertEqual([], spec["allowed_paths"])
+            self.assertIn({"path": str(extra), "access": "deny"}, spec["allowed_paths"])
+            self.assertIn({"path": str(child), "access": "rw"}, spec["allowed_paths"])
             self.assertNotIn(str(extra), spec["hidden_paths"])
+            files.sandbox_path_rules = tuple(SimpleNamespace(**r) for r in spec["allowed_paths"])
+            self.assertTrue(files.is_protected_path(extra / "ungranted"))
+            self.assertFalse(files.is_protected_path(child / "accessible"))
+            files.ensure_mutable_path(child / "writable")
+            with self.assertRaises(OSError):
+                files.ensure_mutable_path(extra / "ungranted")
         finally:
             files.close()
 
@@ -185,13 +213,15 @@ class PathAccessTests(unittest.TestCase):
                     ]
                 },
             }, files)
-            self.assertIn(str(self.secret), spec["hidden_paths"])
+            self.assertIn({"path": str(self.secret), "access": "deny"}, spec["allowed_paths"])
+            self.assertNotIn(str(self.secret), spec["hidden_paths"])
             self.assertIn(str(self.root / "data" / ".openkapsel"), spec["hidden_paths"])
             self.assertIn(str(readonly / ".openkapsel"), spec["hidden_paths"])
             self.assertIn({"path": str(self.sub), "access": "ro"}, spec["allowed_paths"])
             files.sandbox_denied_paths = frozenset(
                 Path(p) for p in spec["hidden_paths"] if self.root in Path(p).parents
             )
+            files.sandbox_path_rules = tuple(SimpleNamespace(**r) for r in spec["allowed_paths"])
             with self.assertRaises(OSError):
                 files.path("data/secret.json")
             with self.assertRaises(OSError):

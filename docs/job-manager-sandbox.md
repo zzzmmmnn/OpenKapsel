@@ -69,7 +69,10 @@ Deny entries can refer to an existing regular file or directory below the
 Token workspace or a separately granted extra directory. Under an existing
 read/write root, add a narrower rule such as
 `/data/project/.openkapsel` with **Deny access**; the other files remain
-readable/writable. Rules compose regardless of order using **deny > ro > rw**.
+readable/writable. **More-specific child paths override parent rules**;
+only conflicting rules on the exact same path use `deny > ro > rw`.
+System-protected Client configuration and Manager-private paths cannot be
+overridden by ordinary child rules.
 The short alias `r` is normalized to `ro` in programmatic rules.
 
 Server Token records retain backwards compatibility: persisted entries with

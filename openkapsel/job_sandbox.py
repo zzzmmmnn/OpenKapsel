@@ -191,9 +191,17 @@ def prepare_job(
         access = item["access"]
         if access == "r":
             access = "ro"
-        if access not in {"rw", "ro"}:
-            raise ValueError("allowed_paths entries require rw or ro access")
-        directory = _real_dir(item["path"])
+        if access not in {"rw", "ro", "deny"}:
+            raise ValueError("allowed_paths entries require rw, ro or deny access")
+        if access == "deny":
+            value = Path(item["path"])
+            if not value.is_absolute():
+                raise ValueError("deny path must be absolute")
+            directory = value.resolve(strict=True)
+            if not (directory.is_file() or directory.is_dir()):
+                raise ValueError("deny sandbox path must exist")
+        else:
+            directory = _real_dir(item["path"])
         # Parent grants are valid for Shell, provided the backend reapplies
         # the exported root's stricter access after the broader grant.
         # Parent grants are fine: the Manager state subtree is excluded below.
@@ -221,8 +229,9 @@ def prepare_job(
     if any(_contains(base, state_root) for base in
            (root, *(Path(grant.path) for grant in grants))):
         excluded.append(state_root)
-    # A narrower RW bind must never cancel a parent RO bind. Root RO has
-    # priority for everything inside the root, but not external grants.
+    # More-specific rules override parent rules, including ro and deny.
+    # The Manager's private state, IPC socket, and hidden configuration
+    # remain unconditional exclusions applied after all configured grants.
     # The Manager's AF_UNIX socket is in the OS temp dir, not under the
     # private state directory. Mask it even if a broad sandbox grant could
     # otherwise include that directory. The Manager additionally authenticates
@@ -243,12 +252,8 @@ def prepare_job(
         if not any(parent == path or parent in path.parents for parent in reduced):
             reduced.append(path)
     excluded = reduced
-    readonly = [root] if not writable else []
-    readonly.extend(Path(grant.path) for grant in grants if grant.access == "ro")
-    grants = [grant for grant in grants if grant.access == "ro" or not any(
-        _contains(ro_path, Path(grant.path)) for ro_path in readonly
-    )]
-    # Drop grants that only name areas hidden by a deny rule; deny wins.
+    # Drop grants inside system-protected hidden locations, not inside
+    # ordinary configured deny ancestors: a child may override those.
     grants = [grant for grant in grants if not any(
         _contains(path, Path(grant.path)) for path in excluded
     )]
@@ -332,21 +337,24 @@ def prepare_job(
             # exception to the selected Xcode.app, never /Applications.
             xcode_app = developer.parent.parent
             profile.append(f"(allow file-read* (subpath {_sb_quote(xcode_app)}))")
-        for directory in (root, *(Path(item.path) for item in grants)):
-            profile.append(f"(allow file-read* (subpath {_sb_quote(directory)}))")
-        if writable:
-            profile.append(f"(allow file-write* (subpath {_sb_quote(root)}))")
-        for grant in grants:
-            if not grant.read_only:
-                profile.append(f"(allow file-write* (subpath {_sb_quote(grant.path)}))")
-        # macOS Seatbelt uses the last matching overlapping rule. Apply every
-        # read-only restriction AFTER broader writable grants, independently
-        # of configuration order; otherwise the parent reopens a denied child.
-        for grant in grants:
-            if grant.read_only:
-                profile.append(f"(deny file-write* (subpath {_sb_quote(grant.path)}))")
-        if not writable:
-            profile.append(f"(deny file-write* (subpath {_sb_quote(root)}))")
+        # Seatbelt resolves overlaps in profile order: broad entries first,
+        # then deepest children. Restrictive modes win only at identical paths.
+        entries = [(root, "rw" if writable else "ro"), *(
+            (Path(grant.path), grant.access) for grant in grants)]
+        strength = {"rw": 0, "ro": 1, "deny": 2}
+        for directory, access in sorted(
+                entries, key=lambda entry: (len(entry[0].parts), strength[entry[1]])):
+            scope = "subpath" if directory.is_dir() else "literal"
+            if access != "deny":
+                # Re-allow a child under a configured denied ancestor.
+                profile.append(f"(allow file-read* ({scope} {_sb_quote(directory)}))")
+            if access == "rw":
+                profile.append(f"(allow file-write* ({scope} {_sb_quote(directory)}))")
+            elif access == "ro":
+                profile.append(f"(deny file-write* ({scope} {_sb_quote(directory)}))")
+            else:
+                profile.append(f"(deny file-read* ({scope} {_sb_quote(directory)}))")
+                profile.append(f"(deny file-write* ({scope} {_sb_quote(directory)}))")
         for directory in excluded:
             operation = "subpath" if directory.is_dir() else "literal"
             profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")

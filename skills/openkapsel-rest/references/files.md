@@ -2,13 +2,14 @@
 
 Read `GET /discovery/files` first when server-specific limits or availability matter.
 
-A Workspace Password-confirmed `files.write` approval temporarily elevates an
-ordinary Token or Mapping Client `job_sandbox.paths` `ro` rule to writable
-only with `approved=true`, matching `target`, `writer_nonce`, an in-progress
-Plan and the granted workspace/canonical directory scope. Without approval,
-`ro` remains read-only. Explicit `deny`, Mapping write protection, Client
-configuration/private paths and host OS permissions remain enforced, including
-for moving or removing a parent directory.
+Normal Token/Client `job_sandbox.paths` rules use the **deepest matching
+path**. Only conflicts for the **same path** use `deny > ro > rw`. A Workspace
+Password-confirmed `files.write` grant overrides **all ordinary descendant
+rules** (`rw`/`ro`/`deny`) inside its approved canonical workspace/directory
+scope with matching `approved=true`, `target`, `writer_nonce`, Token and
+in-progress Plan. Outside this scope, normal rules remain. Mapping-wide write
+protection, system-protected Client configuration/metadata and host OS
+permissions remain enforced; File approval does not grant Shell/RPC access.
 
 For parsed configuration edits or table queries, use the optional [structured/tabular RPC families](data-rpc.md) instead of reading an entire binary or multi-gigabyte CSV through text APIs.
 

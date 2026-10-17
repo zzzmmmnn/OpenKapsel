@@ -122,15 +122,14 @@ advertise `file_stream.external_root_file_api=true` and
 external File API approvals/operations with `mapping_client_upgrade_required` rather
 than silently accessing the normal export.
 
-**Security boundaries:** A confirmed `files.write` grant temporarily
-**elevates Token and Client Sandbox read-only (`ro`/`r`) paths** within the
-approved workspace or canonical external directory scope. This is an explicit
-exception to the ordinary `deny > ro > rw` policy, applicable only to
-`approved=true` calls with the matching Token, Conversation, target and
-in-progress Plan. `deny` remains absolute: neither a direct write nor a
-parent-directory rename/delete can affect a denied subtree. Approval also
-never bypasses Mapping write-protection, protected client configuration, or OS user
-permissions. File API access does not authorize Git/Archive RPC, recycle
+**Security boundaries:** Ordinary Token/Client Sandbox path rules use the
+most-specific matching child, with `deny > ro > rw` only at the same exact
+path. A confirmed `files.write` grant overrides **all configured
+`rw`/`ro`/`deny` rules**, including narrower children, within its approved
+canonical workspace/directory scope. This requires `approved=true` and the
+matching Token, Conversation, target, and in-progress Plan. Rules outside the
+scope remain effective. Approval does not bypass Mapping write-protection,
+system-protected Client configuration/private metadata, or OS permissions. File API access does not authorize Git/Archive RPC, recycle
 management, resumable uploads, or sharing.
 File requests spanning multiple targets cannot borrow another target's grant.
 Approval URLs last thirty minutes; grants default to ten minutes and are

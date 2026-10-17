@@ -72,6 +72,9 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     for resolved, access in used.items():
         if access == "deny":
             denied.append(resolved)
+            # Configured deny is a regular path rule. A more-specific rw/ro
+            # child may override it; only automatically hidden Client paths
+            # have absolute priority.
             continue
         # Extra paths are Shell-only grants. A parent of the exported root is
         # allowed; the Manager must preserve the root's stricter write policy.
@@ -90,24 +93,23 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         # an ancestor of an extra grant: the now-shadowed permit need not
         # be mounted at all, so no filesystem mask is needed.
         if any(denied_path == base or denied_path in base.parents for base in raw_permits):
-            denied.remove(denied_path)
             continue
         raise ValueError("deny path must be inside root or another permitted directory")
-    grants = [grant for grant in grants if not any(
-        denied_path == Path(grant["path"]) or
-        denied_path in Path(grant["path"]).parents for denied_path in all_denied
-    )]
-    permitted = [root, *(Path(g["path"]) for g in grants)]
+    # Keep more-specific permits underneath a denied ancestor. They are
+    # intentional exceptions, not grants that should be discarded.
+    grants.extend({"path": str(path), "access": "deny"} for path in denied)
+    permitted = [root, *(Path(g["path"]) for g in grants if g["access"] != "deny")]
     # Automatic deny applies to the workspace metadata and direct .openkapsel
     # subdirectory of each extra grant; also hide any Client config under a
     # permitted parent. Deny is never canceled by a more specific permit.
+    hard_denied = []
     for base in permitted:
         internal = base / ".openkapsel"
         if internal.exists():
-            denied.append(internal.resolve(strict=True))
+            hard_denied.append(internal.resolve(strict=True))
     for secret in protected:
         if secret.exists() and any(secret == base or base in secret.parents for base in permitted):
-            denied.append(secret.resolve(strict=True))
+            hard_denied.append(secret.resolve(strict=True))
     network = options.get("network", {"mode": "none"})
     if (not isinstance(network, dict) or set(network) - {"mode", "domains"}):
         raise ValueError("job_sandbox.network must be an object with mode and domains")
@@ -126,7 +128,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     elif domains:
         raise ValueError("job_sandbox.network.domains requires domain_allowlist mode")
     reduced = []
-    for path in sorted(set(denied), key=lambda p: (len(p.parts), str(p))):
+    for path in sorted(set(hard_denied), key=lambda p: (len(p.parts), str(p))):
         if not any(parent == path or parent in path.parents for parent in reduced):
             reduced.append(path)
     hidden = [str(path) for path in reduced]

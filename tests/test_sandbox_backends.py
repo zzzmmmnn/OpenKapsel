@@ -198,7 +198,7 @@ class PodmanBackendTests(unittest.TestCase):
                 executable.chmod(0o755)
             for can_write, parent_access, expected_root, expected_parent in (
                 (False, "rw", "--ro-bind", "--bind"),
-                (True, "ro", "--ro-bind", "--ro-bind"),
+                (True, "ro", "--bind", "--ro-bind"),
                 (True, "rw", "--bind", "--bind"),
             ):
                 with self.subTest(can_write=can_write, parent_access=parent_access):
@@ -231,6 +231,44 @@ class PodmanBackendTests(unittest.TestCase):
                     hidden_pos = argv.index(str(config))
                     self.assertGreater(hidden_pos, root_pos)
                     self.assertEqual(["--ro-bind", "/dev/null"], list(argv[hidden_pos - 2:hidden_pos]))
+
+    def test_bubblewrap_deepest_child_overrides_parent_readonly_and_deny(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw).resolve()
+            root = base / "workspace"; root.mkdir()
+            parent = root / "parent"; parent.mkdir()
+            child = parent / "child"; child.mkdir()
+            denied = child / "denied"; denied.mkdir()
+            reopened = denied / "reopened"; reopened.mkdir()
+            hard = reopened / ".openkapsel"; hard.mkdir()
+            bwrap, rootlesskit = base / "bwrap", base / "rootlesskit"
+            for exe in (bwrap, rootlesskit):
+                exe.write_text("#!/bin/sh\n")
+                exe.chmod(0o755)
+            spec = SandboxSpec(
+                command="true", cwd=root, scope_root=root, can_write=True,
+                network_mode="none", allowed_domains=(), proxy_root=base / "proxy",
+                allowed_paths=tuple(PathGrant(str(p), access=mode)
+                    for p, mode in ((parent,"ro"), (child,"rw"),
+                                    (denied,"deny"), (reopened,"rw"))),
+                hidden_paths=(hard,), limits=SandboxLimits(16, 256*1024*1024,100),
+                owner_token="test", allow_grant_writes_when_scope_readonly=True,
+            )
+            with patch("openkapsel.execution.sandbox_backends.apparmor_restricts_user_namespaces",
+                       return_value=False):
+                argv = BubblewrapBackend(bwrap,rootlesskit,aggregate_resources=False).build_shell(spec).argv
+            def mount(path):
+                return next((i,argv[i]) for i in range(len(argv)-2)
+                            if argv[i] in {"--bind","--ro-bind","--tmpfs"}
+                            and ((argv[i]=="--tmpfs" and argv[i+1]==str(path))
+                                 or (argv[i+1]==str(path) and argv[i+2]==str(path))))
+            p0,p1,p2,p3 = (mount(p) for p in (parent,child,denied,reopened))
+            self.assertEqual(["--ro-bind","--bind","--tmpfs","--bind"],
+                             [p0[1],p1[1],p2[1],p3[1]])
+            self.assertLess(p0[0],p1[0])
+            self.assertLess(p1[0],p2[0])
+            self.assertLess(p2[0],p3[0])
+            self.assertGreater(argv.index(str(hard)),p3[0])
 
     def test_controller_uses_stop_kill_and_forced_cleanup(self) -> None:
         controller = PodmanController(Path("/usr/bin/podman"), "openkapsel-test")

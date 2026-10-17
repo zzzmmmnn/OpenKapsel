@@ -163,30 +163,38 @@ class BubblewrapBackend:
         # grants first, then re-bind the workspace with its effective access:
         # otherwise the later parent mount would overwrite the root's RO bind.
         # Keep narrower grants after the workspace, and deny masks last.
-        readonly = [spec.scope_root] if not spec.can_write else []
-        readonly += [Path(p.path) for p in spec.allowed_paths if p.access == "ro"]
-        grants = sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts))
+        from openkapsel.auth.path_access import effective_path_access
+        strengths = {"rw": 0, "ro": 1, "deny": 2}
+        grants = sorted(spec.allowed_paths, key=lambda item: (
+            len(Path(item.path).parts), strengths[item.access]))
 
         def bind_grant(grant):
             path = Path(grant.path)
             if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
                 return
-            mode = "--ro-bind" if (grant.access != "rw" or any(
-                path == ro or ro in path.parents for ro in readonly
-            ) or (
-                not spec.can_write and not spec.allow_grant_writes_when_scope_readonly
-            )) else "--bind"
             self._append_parent_dirs(argv, path.parent)
+            policy = effective_path_access(path, spec.scope_root,
+                spec.can_write, spec.allowed_paths, resolve_symlinks=False)
+            if policy == "deny":
+                # A later, narrower bind can reopen a subtree of a configured
+                # deny, but hidden system-private paths are always masked last.
+                if path.is_dir():
+                    argv.extend(["--tmpfs", str(path)])
+                else:
+                    argv.extend(["--ro-bind", "/dev/null", str(path)])
+                return
+            mode = "--bind" if policy == "rw" and (
+                spec.can_write or spec.allow_grant_writes_when_scope_readonly
+            ) else "--ro-bind"
             argv.extend([mode, grant.path, grant.path])
 
         for grant in grants:
             path = Path(grant.path)
             if path == spec.scope_root or path in spec.scope_root.parents:
                 bind_grant(grant)
-        root_ro = any(
-            ro == spec.scope_root or ro in spec.scope_root.parents for ro in readonly
-        )
-        argv.extend(["--ro-bind" if root_ro else "--bind", scope, scope])
+        root_mode = effective_path_access(spec.scope_root, spec.scope_root,
+            spec.can_write, spec.allowed_paths, resolve_symlinks=False)
+        argv.extend(["--bind" if root_mode == "rw" else "--ro-bind", scope, scope])
         if spec.environment_file is not None:
             argv.extend(
                 ["--ro-bind", str(spec.environment_file), ENVIRONMENT_MOUNT]

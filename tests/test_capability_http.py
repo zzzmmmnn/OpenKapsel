@@ -1387,11 +1387,13 @@ class CapabilityHTTPTests(unittest.TestCase):
         root = self.server.tokens.scope_root(self.record)
         (root / "secret.txt").write_text("not available")
         (root / "readonly").mkdir()
+        (root / "readonly" / "deny-child").mkdir()
         self.server.tokens.update(
             self.record.token, can_read=False, can_write=False, shell_mode="restricted",
             allowed_paths=(
                 PathGrant(str(root / "secret.txt"), access="deny"),
                 PathGrant(str(root / "readonly"), access="ro"),
+                PathGrant(str(root / "readonly" / "deny-child"), access="deny"),
             ),
         )
         for access in ("read", "write"):
@@ -1416,12 +1418,23 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual(201, status, allowed)
         self.assertTrue((root / "readonly/newdir").exists())
         self.assertFalse((root / "readonly/plain").exists())
-        # Explicitly denied paths are still inaccessible despite the grant.
-        status, denied = self.api("/fs/write/mkdir", {
+        # The same confirmed write grant also overrides narrower deny.
+        status, blocked = self.api("/fs/write/mkdir", {
+            "path": "readonly/deny-child/plain",
+        })
+        self.assertNotIn(status, (200, 201), blocked)
+        status, elevated = self.api("/fs/write/mkdir", {
+            "path": "readonly/deny-child/approved", "approved": True,
+            "target": "server", "writer_nonce": nonce,
+        })
+        self.assertEqual(201, status, elevated)
+        self.assertTrue((root / "readonly" / "deny-child" / "approved").is_dir())
+        # A denied regular file is not a directory, even when approved.
+        status, blocked = self.api("/fs/write/mkdir", {
             "path": "secret.txt/blocked", "approved": True,
             "target": "server", "writer_nonce": nonce,
         })
-        self.assertNotIn(status, (200, 201), denied)
+        self.assertNotIn(status, (200, 201), blocked)
         # The same read/write approvals do not authorize Shell tasks.
         status, body = self.approved()
         self.assertEqual(403, status)

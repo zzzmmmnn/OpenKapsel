@@ -68,7 +68,19 @@ class FileApproval:
                 raise ValueError("not a directory")
             absolute_scope(str(scope))
             if self.files is not None:
-                self.files.ensure_accessible_path(actual)
+                if write:
+                    # Password-confirmed write elevation can target a path
+                    # whose ordinary Client rule is deny, but never a hard
+                    # system/private resource or its protected ancestor.
+                    protected = (*self.files.global_protected_paths,
+                                 *self.files.sandbox_denied_paths)
+                    # A granted parent may contain private children; only
+                    # the private path itself (or its descendants) is forbidden
+                    # at grant time. Mutating the parent is checked at execution.
+                    if any(actual == p or p in actual.parents for p in protected):
+                        raise OSError(errno.EACCES, "protected Client path")
+                else:
+                    self.files.ensure_accessible_path(actual)
         except (OSError, RuntimeError, ValueError):
             raise ApiError(400, "approval_path_unavailable", "approval path is unavailable") from None
         # Canonical scopes, not aliases. The execute path rechecks realpaths
@@ -114,24 +126,21 @@ class FileApproval:
         if not (internal and auth["workspace"] or
                 any(resolved == p or p in resolved.parents for p in scopes)):
             raise ApiError(404, "path_unavailable", "path does not exist or access is denied")
-        if any(p == ".openkapsel" or p.startswith(".openkapsel-") for p in resolved.parts):
+        if any(p == ".openkapsel" or p.startswith(".openkapsel-")
+               for part in (candidate, resolved) for p in part.parts):
             raise ApiError(403, "reserved_path", "internal paths cannot be approved")
-        # Password-approved files.write elevates read-only Token and Client
-        # Sandbox rules inside the explicitly granted scope. An explicit deny
-        # is never elevated, and ordinary unapproved checks remain unchanged.
-        applicable_rules = tuple(rule for rule in rules if not (write and rule.access == "ro"))
-        granted_rules = (*applicable_rules, *(SimpleNamespace(path=str(p), access="rw" if write else "ro") for p in scopes))
-        for checked in (candidate, resolved):
-            policy = effective_path_access(checked, root, write, granted_rules, resolve_symlinks=False)
-            # An alias outside all scopes may name an authorized canonical
-            # path. Explicit deny always applies to either spelling.
-            if policy == "deny" or write and policy == "ro":
-                raise ApiError(403, "path_access_denied", "path is denied or read-only")
+        # Approved files.write is an explicit scoped override of *all* normal
+        # Token/Client path rules, even narrower configured ro/deny entries.
+        # The hard protected Client paths, .openkapsel metadata and OS
+        # restrictions remain independent of these ordinary settings.
         if write:
-            for rule in rules:
-                protected = Path(rule.path)
-                if rule.access == "deny" and (resolved == protected or resolved in protected.parents):
-                    raise ApiError(403, "path_access_denied", "directory contains protected paths")
+            return resolved
+        granted_rules = (*rules, *(SimpleNamespace(path=str(p), access="ro") for p in scopes))
+        for checked in (candidate, resolved):
+            policy = effective_path_access(checked, root, False, granted_rules,
+                                           resolve_symlinks=False)
+            if policy == "deny":
+                raise ApiError(403, "path_access_denied", "path is denied")
         return resolved
 
     @classmethod

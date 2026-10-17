@@ -1,7 +1,8 @@
 """Effective path policy for Server Token Shell and File APIs.
 
-Rules compose by strict priority: deny > ro > rw, regardless of depth or
-configuration ordering. The workspace's default access is implicit.
+The most-specific matching path wins, independent of configuration order.
+Only rules tied on that same path compose by deny > ro > rw. The workspace's
+default access is implicit. Protected metadata is never exposed.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -17,17 +18,15 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
     roots.extend((normalize(rule.path), rule.access) for rule in grants)
     matches = [(base, mode) for base, mode in roots
                if path == base or base in path.parents]
-    # A deny-only match outside the export root must still be a deny. This
-    # matters for aliases pointing into an approved canonical scope: the
-    # lexical spelling may match only an explicit deny rule.
-    modes = {mode for _, mode in matches}
-    if "deny" in modes:
-        return "deny"
-    permitted = [base for base, mode in matches if mode != "deny"]
-    if not permitted:
+    if not matches:
         return None
-    # Paths named .openkapsel are not exported even under extra grants.
-    if any(".openkapsel" in path.relative_to(base).parts for base in permitted):
+    # Metadata hiding is a system boundary, not a configured path rule.
+    if any(part == ".openkapsel" or part.startswith(".openkapsel-")
+           for part in path.parts):
+        return "deny"
+    deepest = max(len(base.parts) for base, _ in matches)
+    modes = {mode for base, mode in matches if len(base.parts) == deepest}
+    if "deny" in modes:
         return "deny"
     if "ro" in modes:
         return "ro"

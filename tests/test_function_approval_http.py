@@ -122,6 +122,8 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
             (directory / 'text.txt').write_text(directory.name)
         hidden = directories[0] / 'private'
         hidden.mkdir()
+        hard = directories[0] / '.openkapsel'
+        hard.mkdir()
         config = {'url': f'ws://127.0.0.1:{self.server.server_port}/kapsel/mapping-connect/{row["id"]}',
                   'token': token, 'root': str(self.export), 'writable': True, 'allow_exec': False,
                   'job_sandbox': {'paths': [
@@ -141,6 +143,10 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                 # The unapproved File API is still bound by Client ro.
                 with self.assertRaises(OSError):
                     runtime.files.ensure_mutable_path(directories[0] / 'created')
+                with self.assertRaises(OSError):
+                    runtime.files.ensure_mutable_path(hidden / 'blocked')
+                self.assertTrue(runtime.files.is_protected_path(hidden / 'blocked'))
+                self.assertTrue(runtime.files.is_protected_path(hard / 'config'))
                 for directory in directories:
                     status, pending = self.request_file_approval('read', row['id'], path=str(directory))
                     self.assertEqual(200, status, pending)
@@ -164,12 +170,21 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                     'approved': True, 'target': row['id'], 'writer_nonce': self.ownership()[1]})
                 self.assertIn(status, (200, 201), written)
                 self.assertTrue((directories[0] / 'created').is_dir())
-                status, denied = self.api('/fs/write/mkdir', {
+                # The confirmed files.write scope overrides narrower Client
+                # deny entries, while the automatically hidden config stays
+                # inaccessible even to the same approval.
+                status, allowed = self.api('/fs/write/mkdir', {
                     'path': str(hidden / 'blocked'),
                     'approved': True, 'target': row['id'],
                     'writer_nonce': self.ownership()[1]})
+                self.assertEqual(201, status, allowed)
+                self.assertTrue((hidden / 'blocked').is_dir())
+                status, denied = self.api('/fs/write/mkdir', {
+                    'path': str(hard / 'blocked'),
+                    'approved': True, 'target': row['id'],
+                    'writer_nonce': self.ownership()[1]})
                 self.assertIn(status, (403, 404), denied)
-                self.assertFalse((hidden / 'blocked').exists())
+                self.assertFalse((hard / 'blocked').exists())
                 status, denied = self.api('/fs/write/mkdir', {
                     'path': str(directories[1] / 'unapproved-write-scope'),
                     'approved': True, 'target': row['id'],
