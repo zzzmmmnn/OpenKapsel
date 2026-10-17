@@ -128,7 +128,7 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                   'token': token, 'root': str(self.export), 'writable': True, 'allow_exec': False,
                   'job_sandbox': {'paths': [
                       {'path': str(directories[0]), 'access': 'ro'},
-                      {'path': str(hidden), 'access': 'deny'},
+                      {'path': str(hidden), 'access': 'protect'},
                   ]}}
         with patch.dict(os.environ, {'OPENKAPSEL_JOB_MANAGER_HOME': str(self.manager_home)}):
             runtime = ClientRuntime(config)
@@ -173,6 +173,15 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                 # The confirmed files.write scope overrides narrower Client
                 # deny entries, while the automatically hidden config stays
                 # inaccessible even to the same approval.
+                status, denied = self.api('/fs/write/mkdir', {
+                    'path': str(hidden / 'blocked'),
+                    'approved': True, 'target': row['id'],
+                    'writer_nonce': self.ownership()[1]})
+                self.assertIn(status, (403, 404), denied)
+                self.assertFalse((hidden / 'blocked').exists())
+                status, pending = self.request_file_approval('write', row['id'], path=str(hidden))
+                self.assertEqual(200, status, pending)
+                self.approve({'error': {'details': pending}})
                 status, allowed = self.api('/fs/write/mkdir', {
                     'path': str(hidden / 'blocked'),
                     'approved': True, 'target': row['id'],

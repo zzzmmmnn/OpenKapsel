@@ -11,7 +11,7 @@
 - 可省略 `approval_prepare`；存在時只呼叫一次，採用 Client 回傳的 request/display。未宣告時不送 prepare RPC。只有內部協議能執行 prepare/grant。
 - 密碼驗證之前不解析檔案真實路徑；Client 在 grant callback 解析 canonical scope，Browser 顯示 Client proposal，再由同一個驗證過密碼的瀏覽器確認。確認時重新計算並比對 proposal／舊 auth revision，避免 symlink 換向或並行授權覆蓋。
 - Native File API、原始二進位讀寫、MCP binary read、recycle list/restore/purge 均透過 Local Client 入口執行，共用 FileExecutionMixin 引擎。原有 Mapping／Storage Provider、索引、ETag、atomic mutation 與傳輸引擎保留。
-- Mapping File 函數在 Client 執行，支援多個外部 scope、讀寫分離、symlink／traversal 檢查、deny/ro/rw、全域設定檔及外部 sandbox deny 保護。
+- Mapping File 函數在 Client 執行，支援多個外部 scope、讀寫分離、symlink／traversal 檢查、deny/protect/ro/rw、全域設定檔及外部 sandbox deny 保護。
 - 批准後的 Mapping binary stream 使用私有函數與 Client descriptor；固定 transport generation，不重播不確定的寫入，descriptor 只屬於該 Client RPC session。覆蓋大於一個 RPC chunk 的上傳、SHA-256、禁止覆蓋、Range、HEAD 與條件 ETag 讀取。
 - 修正 reason 驗證、每票密碼嘗試上限、Token/Mapping 二次綁定檢查、舊 Admin Shell revoke 相容性，以及密碼驗證／撤銷之間的鎖順序衝突。回呼期間到期或撤銷不會重新產生授權。
 - Source fingerprint 已涵蓋新共用／Client／Server 模組；CI client matrix 加入新的 FunctionRegistry、FunctionGrants、Files 與 Local Client 測試。

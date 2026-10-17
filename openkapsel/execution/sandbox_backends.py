@@ -164,7 +164,7 @@ class BubblewrapBackend:
         # otherwise the later parent mount would overwrite the root's RO bind.
         # Keep narrower grants after the workspace, and deny masks last.
         from openkapsel.auth.path_access import effective_path_access
-        strengths = {"rw": 0, "ro": 1, "deny": 2}
+        strengths = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
         grants = sorted(spec.allowed_paths, key=lambda item: (
             len(Path(item.path).parts), strengths[item.access]))
 
@@ -175,9 +175,9 @@ class BubblewrapBackend:
             self._append_parent_dirs(argv, path.parent)
             policy = effective_path_access(path, spec.scope_root,
                 spec.can_write, spec.allowed_paths, resolve_symlinks=False)
-            if policy == "deny":
-                # A later, narrower bind can reopen a subtree of a configured
-                # deny, but hidden system-private paths are always masked last.
+            if policy in {"protect", "deny"}:
+                # Protect is an ordinary mask, reopenable by a narrower rw.
+                # Absolute deny is never reopened, including deeper grants.
                 if path.is_dir():
                     argv.extend(["--tmpfs", str(path)])
                 else:
@@ -199,14 +199,27 @@ class BubblewrapBackend:
             argv.extend(
                 ["--ro-bind", str(spec.environment_file), ENVIRONMENT_MOUNT]
             )
+        # Native Mapping exports are implicit; later configured protect/deny
+        # rules must be able to restrict their contents.
+        for path in spec.native_mapping_paths:
+            argv.extend(["--bind" if spec.can_write else "--ro-bind", str(path), str(path)])
         for grant in grants:
             path = Path(grant.path)
             if path != spec.scope_root and path not in spec.scope_root.parents:
                 bind_grant(grant)
-        for path in spec.native_mapping_paths:
-            argv.extend(["--bind" if spec.can_write else "--ro-bind", str(path), str(path)])
         for path in spec.denied_mapping_paths:
             argv.extend(["--ro-bind", str(spec.mapping_mask_source), str(path)])
+        # Apply absolute deny masks after narrower configured binds.
+        for grant in grants:
+            if grant.access == "deny":
+                path = Path(grant.path)
+                if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
+                    continue
+                self._append_parent_dirs(argv, path.parent)
+                if path.is_dir():
+                    argv.extend(["--tmpfs", str(path)])
+                else:
+                    argv.extend(["--ro-bind", "/dev/null", str(path)])
         for hidden in spec.hidden_paths:
             # Existing directories become empty, and files receive a
             # read-only /dev/null bind in Job Manager's file-mask adapter.
@@ -449,20 +462,46 @@ class PodmanBackend:
             argv.extend(
                 ["--volume", f"{spec.environment_file}:{ENVIRONMENT_MOUNT}:ro"]
             )
-        readonly = [spec.scope_root] if not spec.can_write else []
-        readonly.extend(Path(g.path) for g in spec.allowed_paths if g.access == "ro")
-        for grant in sorted(spec.allowed_paths, key=lambda item: len(Path(item.path).parts)):
+        from openkapsel.auth.path_access import effective_path_access
+        strength = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
+        # Native Mapping mounts are implicit. Explicit nested rules are
+        # mounted afterwards so protect can mask them or a narrower rw can
+        # reopen only its expressly configured child subtree.
+        for path in spec.native_mapping_paths:
+            argv.extend(["--volume", f"{path}:{path}:{'rw' if spec.can_write else 'ro'}"])
+        for grant in sorted(spec.allowed_paths, key=lambda g:
+                (len(Path(g.path).parts), strength[g.access])):
             path = Path(grant.path)
             if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
                 continue
-            mode = "ro" if not spec.can_write or grant.access != "rw" or any(
-                path == ro or ro in path.parents for ro in readonly
-            ) else "rw"
-            argv.extend(["--volume", f"{grant.path}:{grant.path}:{mode}"])
-        for path in spec.native_mapping_paths:
-            argv.extend(["--volume", f"{path}:{path}:{'rw' if spec.can_write else 'ro'}"])
+            if grant.access == "deny":
+                continue  # Absolute masks are mounted after ALL grants.
+            policy = effective_path_access(path, spec.scope_root,
+                spec.can_write, spec.allowed_paths, resolve_symlinks=False)
+            if policy in {"protect", "deny"}:
+                if path.is_dir():
+                    argv.extend(["--tmpfs", f"{path}:rw,nosuid,nodev,noexec,mode=700"])
+                else:
+                    argv.extend(["--volume", f"/dev/null:{path}:ro"])
+            else:
+                mode = "rw" if policy == "rw" and (
+                    spec.can_write or spec.allow_grant_writes_when_scope_readonly
+                ) else "ro"
+                argv.extend(["--volume", f"{grant.path}:{grant.path}:{mode}"])
         for path in spec.denied_mapping_paths:
             argv.extend(["--volume", f"{spec.mapping_mask_source}:{path}:ro"])
+        # Absolute deny is never re-opened by more-specific configured or
+        # Mapping mounts, unlike a normal protect barrier.
+        for grant in spec.allowed_paths:
+            if grant.access != "deny":
+                continue
+            path = Path(grant.path)
+            if any(hidden == path or hidden in path.parents for hidden in spec.hidden_paths):
+                continue
+            if path.is_dir():
+                argv.extend(["--tmpfs", f"{path}:rw,nosuid,nodev,noexec,mode=700"])
+            else:
+                argv.extend(["--volume", f"/dev/null:{path}:ro"])
         for hidden in spec.hidden_paths:
             if hidden.is_dir():
                 argv.extend(["--tmpfs", f"{hidden}:rw,nosuid,nodev,noexec,mode=700"])

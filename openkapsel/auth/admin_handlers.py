@@ -691,8 +691,8 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
             cleaned = path.strip()
             if not cleaned:
                 continue
-            if mode not in {"ro", "r", "rw", "deny"}:
-                raise ValueError("path access mode must be rw, ro/r or deny")
+            if mode not in {"ro", "r", "rw", "protect", "deny"}:
+                raise ValueError("path access mode must be rw, ro/r, protect or deny")
             grants.append(PathGrant(path=cleaned, access=mode))
         return tuple(grants)
 

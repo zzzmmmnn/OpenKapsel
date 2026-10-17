@@ -1,8 +1,8 @@
 """Effective path policy for Server Token Shell and File APIs.
 
 The most-specific matching path wins, independent of configuration order.
-Only rules tied on that same path compose by deny > ro > rw. The workspace's
-default access is implicit. Protected metadata is never exposed.
+An absolute deny wins at any ancestor depth. Other rules resolve by deepest
+path, with protect > ro > rw at identical depth. System metadata stays denied.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -24,10 +24,13 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
     if any(part == ".openkapsel" or part.startswith(".openkapsel-")
            for part in path.parts):
         return "deny"
+    # Absolute deny cannot be escaped through child grants or Approval.
+    if any(mode == "deny" for _, mode in matches):
+        return "deny"
     deepest = max(len(base.parts) for base, _ in matches)
     modes = {mode for base, mode in matches if len(base.parts) == deepest}
-    if "deny" in modes:
-        return "deny"
+    if "protect" in modes:
+        return "protect"
     if "ro" in modes:
         return "ro"
     return "rw"

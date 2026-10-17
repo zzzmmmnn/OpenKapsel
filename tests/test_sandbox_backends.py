@@ -91,6 +91,45 @@ class PodmanBackendTests(unittest.TestCase):
             self.assertIn("registry.example.test/python:3.14-slim", argv)
             self.assertIsInstance(launch.controller, PodmanController)
 
+    def test_podman_protect_child_rw_and_absolute_deny_order(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw).resolve()
+            executable = base / "podman"
+            executable.write_text("#!/bin/sh\n")
+            executable.chmod(0o755)
+            root = base / "root"; root.mkdir()
+            protected = root / "protected"; protected.mkdir()
+            permitted = protected / "permitted"; permitted.mkdir()
+            denied = root / "denied"; denied.mkdir()
+            forbidden_child = denied / "child"; forbidden_child.mkdir()
+            spec = SandboxSpec(
+                command="true", cwd=root, scope_root=root, can_write=True,
+                network_mode="none", allowed_domains=(), proxy_root=base / "proxy",
+                allowed_paths=(
+                    PathGrant(str(protected), access="protect"),
+                    PathGrant(str(permitted), access="rw"),
+                    PathGrant(str(denied), access="deny"),
+                    PathGrant(str(forbidden_child), access="rw"),
+                ), hidden_paths=(), limits=SandboxLimits(16,256*1024*1024,100),
+                owner_token="test",
+            )
+            with patch("openkapsel.execution.sandbox_backends.subprocess.run",
+                       return_value=subprocess.CompletedProcess([],0,"crun\n","")):
+                argv = self._backend(executable).build_shell(spec).argv
+            def tmpfs_index(path):
+                return next(i for i, token in enumerate(argv[:-1])
+                            if token=="--tmpfs" and argv[i+1].startswith(str(path)+":"))
+            def volume_index(path):
+                return next(i for i, token in enumerate(argv[:-1])
+                            if token=="--volume" and argv[i+1].startswith(str(path)+":"))
+            self.assertLess(tmpfs_index(protected),volume_index(permitted))
+            # Child under absolute deny is masked too (never host-bound);
+            # final ancestor deny remains the last configured mask.
+            self.assertLess(tmpfs_index(forbidden_child),tmpfs_index(denied))
+            self.assertNotIn(f"{forbidden_child}:{forbidden_child}:rw",argv)
+            self.assertNotIn(f"{protected}:{protected}:ro",argv)
+            self.assertIn(f"{permitted}:{permitted}:rw",argv)
+
     def test_lists_installed_images_and_renders_one_option_per_image(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "podman"
@@ -250,7 +289,7 @@ class PodmanBackendTests(unittest.TestCase):
                 network_mode="none", allowed_domains=(), proxy_root=base / "proxy",
                 allowed_paths=tuple(PathGrant(str(p), access=mode)
                     for p, mode in ((parent,"ro"), (child,"rw"),
-                                    (denied,"deny"), (reopened,"rw"))),
+                                    (denied,"protect"), (reopened,"rw"))),
                 hidden_paths=(hard,), limits=SandboxLimits(16, 256*1024*1024,100),
                 owner_token="test", allow_grant_writes_when_scope_readonly=True,
             )
@@ -269,6 +308,26 @@ class PodmanBackendTests(unittest.TestCase):
             self.assertLess(p1[0],p2[0])
             self.assertLess(p2[0],p3[0])
             self.assertGreater(argv.index(str(hard)),p3[0])
+            # The same child rw grant cannot reopen an immutable deny.
+            denied_spec = SandboxSpec(
+                command="true", cwd=root, scope_root=root, can_write=True,
+                network_mode="none", allowed_domains=(), proxy_root=base / "proxy",
+                allowed_paths=(PathGrant(str(denied),access="deny"),
+                               PathGrant(str(reopened),access="rw")),
+                hidden_paths=(hard,), limits=SandboxLimits(16,256*1024*1024,100),
+                owner_token="test", allow_grant_writes_when_scope_readonly=True,
+            )
+            with patch("openkapsel.execution.sandbox_backends.apparmor_restricts_user_namespaces",
+                       return_value=False):
+                denied_argv = BubblewrapBackend(bwrap,rootlesskit,aggregate_resources=False).build_shell(denied_spec).argv
+            masks = [i for i,value in enumerate(denied_argv)
+                     if value=="--tmpfs" and denied_argv[i+1]==str(denied)]
+            child_mounts = [i for i,value in enumerate(denied_argv)
+                            if value=="--tmpfs" and denied_argv[i+1]==str(reopened)]
+            self.assertTrue(masks, denied_argv)
+            self.assertTrue(child_mounts, denied_argv)
+            self.assertGreater(max(masks),max(child_mounts))
+
 
     def test_controller_uses_stop_kill_and_forced_cleanup(self) -> None:
         controller = PodmanController(Path("/usr/bin/podman"), "openkapsel-test")

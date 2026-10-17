@@ -2,14 +2,18 @@
 
 Read `GET /discovery/files` first when server-specific limits or availability matter.
 
-Normal Token/Client `job_sandbox.paths` rules use the **deepest matching
-path**. Only conflicts for the **same path** use `deny > ro > rw`. A Workspace
-Password-confirmed `files.write` grant overrides **all ordinary descendant
-rules** (`rw`/`ro`/`deny`) inside its approved canonical workspace/directory
-scope with matching `approved=true`, `target`, `writer_nonce`, Token and
-in-progress Plan. Outside this scope, normal rules remain. Mapping-wide write
-protection, system-protected Client configuration/metadata and host OS
-permissions remain enforced; File approval does not grant Shell/RPC access.
+Modes are `rw`, `ro`, `protect`, `deny`. Absolute `deny` at
+any ancestor cannot be bypassed by child configuration or File Approval.
+Otherwise deepest path wins; same-path ties use
+`deny > protect > ro > rw`. `protect` blocks ordinary reads/writes, but
+a separately confirmed `files.read`/`files.write` Approval for its exact
+directory or a narrower canonical child unlocks only the requested subtree.
+An ancestor Approval never opens nested `protect`; previously approved
+child scopes remain independent. `files.write` elevates ordinary `ro`
+within its scope, using `approved=true`, matching `target`,
+`writer_nonce`, Token and active Plan. Mapping-wide write protection,
+hard Client configuration/metadata, and OS permissions remain enforced;
+File Approval does not grant Shell or Git RPC access.
 
 For parsed configuration edits or table queries, use the optional [structured/tabular RPC families](data-rpc.md) instead of reading an entire binary or multi-gigabyte CSV through text APIs.
 

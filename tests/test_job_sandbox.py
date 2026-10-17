@@ -287,12 +287,14 @@ class JobSandboxTests(unittest.TestCase):
         child = parent / "rw"; child.mkdir()
         denied = child / "deny"; denied.mkdir()
         reopened = denied / "reopen"; reopened.mkdir()
+        hard_deny = child / "hard"; hard_deny.mkdir()
+        hard_child = hard_deny / "child"; hard_child.mkdir()
         secret = reopened / ".openkapsel"; secret.mkdir()
         (secret / "config").write_text("PRIVATE")
         code = (
             "from pathlib import Path; p=Path.cwd();"
             "\nfor f in ('parent/nope','parent/rw/yes','parent/rw/deny/nope',"
-            "'parent/rw/deny/reopen/yes'):\n"
+            "'parent/rw/deny/reopen/yes','parent/rw/hard/child/blocked'):\n"
             " try: (p/f).write_text('ok'); print(f, 'WRITTEN')\n"
             " except OSError: print(f, 'DENIED')\n"
             "\ntry: (p/'parent/rw/deny/reopen/.openkapsel/config').read_text();"
@@ -304,8 +306,10 @@ class JobSandboxTests(unittest.TestCase):
             "network_mode": "none", "allowed_paths": [
                 {"path":str(parent),"access":"ro"},
                 {"path":str(child),"access":"rw"},
-                {"path":str(denied),"access":"deny"},
+                {"path":str(denied),"access":"protect"},
                 {"path":str(reopened),"access":"rw"},
+                {"path":str(hard_deny),"access":"deny"},
+                {"path":str(hard_child),"access":"rw"},
             ], "hidden_paths": [str(secret)],
         }, [sys.executable,"-c",code],str(self.workspace),dict(os.environ),self.state)
         try:
@@ -314,9 +318,11 @@ class JobSandboxTests(unittest.TestCase):
             self.assertEqual(0,result.returncode,result.stderr)
             for expected in ("parent/nope DENIED","parent/rw/yes WRITTEN",
                              "parent/rw/deny/nope DENIED",
-                             "parent/rw/deny/reopen/yes WRITTEN","CONFIG_DENIED"):
+                             "parent/rw/deny/reopen/yes WRITTEN",
+                             "parent/rw/hard/child/blocked DENIED","CONFIG_DENIED"):
                 self.assertIn(expected,result.stdout,result.stderr)
             self.assertFalse((denied/"nope").exists())
+            self.assertFalse((hard_child/"blocked").exists())
             self.assertEqual("ok",(reopened/"yes").read_text())
             self.assertEqual("PRIVATE",(secret/"config").read_text())
         finally:

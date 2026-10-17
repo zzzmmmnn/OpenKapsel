@@ -340,9 +340,10 @@ Approved Windows Shell commands run with the Client's OS-user rights.
 The exported Mapping root is always included; its write permission follows
 `writable`. Extra `job_sandbox.paths` entries use `rw`, `ro` (alias `r`)
 or `deny`. **The most-specific matching path wins**, independent of
-configuration order; a child `rw` may override parent `ro` or `deny`.
-Only identical-path conflicts use `deny > ro > rw`. Up to 32 rules are
-supported, including nested grants. Invalid or nonexistent paths fail closed.
+configuration order; a child `rw` may override parent `ro` or `protect`.
+Absolute `deny` at any ancestor cannot be overridden by child rules or File Approval. Otherwise deepest path wins, with same-path priority `deny > protect > ro > rw`. `protect` blocks ordinary reads/writes but can be independently approved for itself or a narrower child. Broad ancestor approvals never unlock nested `protect`. When any
+absolute `deny` rule is configured, approved unsandboxed Shell is rejected
+because it cannot enforce absolute path restrictions. Up to 32 rules are supported. Invalid or nonexistent paths fail closed.
 Client configuration and existing `.openkapsel` directories are denied.
 File RPC cannot access outside the Mapping export even if an extra Shell path
 is granted.

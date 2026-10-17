@@ -46,8 +46,8 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         access = item["access"]
         if access == "r":
             access = "ro"
-        if access not in {"rw", "ro", "deny"}:
-            raise ValueError("job_sandbox.paths access must be rw, ro/r or deny")
+        if access not in {"rw", "ro", "protect", "deny"}:
+            raise ValueError("job_sandbox.paths access must be rw, ro/r, protect or deny")
         value = item["path"]
         if not isinstance(value, str) or not value or "\x00" in value:
             raise ValueError("job_sandbox path must be an absolute path")
@@ -57,24 +57,21 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         resolved = path.resolve(strict=True)
         if resolved == Path(resolved.anchor):
             raise ValueError("job_sandbox cannot authorize filesystem root")
-        if access != "deny" and not resolved.is_dir():
+        if access not in {"protect", "deny"} and not resolved.is_dir():
             raise ValueError("rw/ro sandbox paths must be directories")
-        if access == "deny" and not (resolved.is_dir() or resolved.is_file()):
-            raise ValueError("deny sandbox path must be a file or directory")
+        if access in {"protect", "deny"} and not (resolved.is_dir() or resolved.is_file()):
+            raise ValueError("protect/deny sandbox path must be a file or directory")
         if access in {"rw", "ro"}:
             raw_permits.append(resolved)
         if resolved in used:
-            priority = {"rw": 0, "ro": 1, "deny": 2}
+            priority = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
             access = max((access, used[resolved]), key=lambda x: priority[x])
         used[resolved] = access
     # An explicit permit cannot grant a protected secret path itself. A
     # writable parent is fine because its protected contents are auto-denied.
     for resolved, access in used.items():
-        if access == "deny":
+        if access in {"protect", "deny"}:
             denied.append(resolved)
-            # Configured deny is a regular path rule. A more-specific rw/ro
-            # child may override it; only automatically hidden Client paths
-            # have absolute priority.
             continue
         # Extra paths are Shell-only grants. A parent of the exported root is
         # allowed; the Manager must preserve the root's stricter write policy.
@@ -95,9 +92,10 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         if any(denied_path == base or denied_path in base.parents for base in raw_permits):
             continue
         raise ValueError("deny path must be inside root or another permitted directory")
-    # Keep more-specific permits underneath a denied ancestor. They are
-    # intentional exceptions, not grants that should be discarded.
-    grants.extend({"path": str(path), "access": "deny"} for path in denied)
+    # Deny is absolute; protect is a configurable barrier for which a
+    # more-specific ordinary grant (or independent File approval) can open
+    # a narrow exception.
+    grants.extend({"path": str(path), "access": used[path]} for path in denied)
     permitted = [root, *(Path(g["path"]) for g in grants if g["access"] != "deny")]
     # Automatic deny applies to the workspace metadata and direct .openkapsel
     # subdirectory of each extra grant; also hide any Client config under a

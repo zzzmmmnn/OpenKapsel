@@ -142,7 +142,7 @@ def _checked_path(files, cwd: Path, value: str, *, write: bool,
     from openkapsel.auth.path_access import effective_path_access
     access = effective_path_access(resolved, files.root, files.writable,
                                    rules, resolve_symlinks=False)
-    if access in {None, "deny"}:
+    if access in {None, "protect", "deny"}:
         raise OSError(errno.EACCES, "path is denied")
     if write:
         if access != "rw":

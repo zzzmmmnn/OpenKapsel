@@ -111,37 +111,51 @@ class HttpSupportMixin:
             from openkapsel.client_runtime.file_approval import FileApproval
             FileApproval.check(str(path), self.token_scope_root, approval[0],
                                write=True, rules=approval[1])
-        if not elevated:
-            for rule in self.token_record.allowed_paths:
-                protected = Path(rule.path)
-                if rule.access in {"ro", "deny"} and protected != target and target in protected.parents:
+        rules = approval[1] if elevated else self.token_record.allowed_paths
+        for rule in rules:
+            protected = Path(rule.path)
+            if protected != target and target in protected.parents:
+                if rule.access == "deny" or (not elevated and rule.access in {"ro", "protect"}):
                     raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied",
-                                   "directory contains protected sandbox paths")
+                                   "directory contains restricted sandbox paths")
+                if elevated and rule.access == "protect":
+                    from openkapsel.client_runtime.file_approval import FileApproval
+                    try:
+                        FileApproval.check(str(protected), self.token_scope_root,
+                                           approval[0], write=True, rules=rules)
+                    except ApiError:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied",
+                                       "directory contains protected paths") from None
+        if elevated:
+            # An approved external canonical directory is not under the
+            # normal Token root. FileApproval.check above already validated
+            # its explicit scope and immutable deny/protect boundaries.
+            return
         policy = effective_path_access(
             path, self.token_scope_root, self.token_record.can_write,
-            (() if elevated else self.token_record.allowed_paths),
+            self.token_record.allowed_paths,
         )
-        if policy == "deny":
-            raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")
+        if policy in {"protect", "deny"}:
+            raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is protected or denied")
         if policy != "rw":
             raise ApiError(HTTPStatus.FORBIDDEN, "read_only_path",
                            "path is read-only or outside authorized directories")
 
     def _assert_inside_root(self, path: Path) -> None:
         approval = getattr(self, "_file_function_policy", None)
-        if approval is not None and approval[2] is True:
-            # The verified write grant intentionally supersedes all Token
-            # path rules, including more-specific deny entries.
+        if approval is not None:
+            # Verify scoped approval and immutable absolute deny before
+            # bypassing the ordinary Token read/write policy.
             from openkapsel.client_runtime.file_approval import FileApproval
             FileApproval.check(str(path), self.token_scope_root, approval[0],
-                               write=True, rules=approval[1])
+                               write=approval[2], rules=approval[1])
             return
         policy = effective_path_access(
             path, self.token_scope_root, self.token_record.can_write,
             self.token_record.allowed_paths,
         )
-        if policy == "deny":
-            raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")
+        if policy in {"protect", "deny"}:
+            raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is protected or denied")
         if policy is None:
             operation = getattr(self, "_file_approval_operation", None)
             details = None
