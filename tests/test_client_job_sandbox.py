@@ -100,6 +100,32 @@ class ClientJobSandboxTests(unittest.TestCase):
         finally:
             runtime.close()
 
+    def test_absolute_deny_refuses_approved_unsandboxed_shell(self):
+        import errno
+        denied = self.root / "absolute-deny"
+        denied.mkdir()
+        secret = denied / "secret.txt"
+        secret.write_text("PRIVATE")
+        runtime = ClientRuntime(self._config(
+            writable=True,
+            job_sandbox={
+                "paths": [{"path": str(denied), "access": "deny"}],
+                "network": {"mode": "none"},
+            },
+        ))
+        try:
+            job = {"task_id": "&De01&", "command": "echo LEAK > absolute-deny/secret.txt",
+                   "unsandboxed": True, "timeout_seconds": 5}
+            with self.assertRaises(OSError) as blocked:
+                runtime.tasks.dispatch("task_start", job)
+            self.assertEqual(errno.EACCES, blocked.exception.errno)
+            with self.assertRaises(OSError) as blocked:
+                runtime.tasks.legacy.dispatch("task_start", job)
+            self.assertEqual(errno.EACCES, blocked.exception.errno)
+            self.assertEqual("PRIVATE", secret.read_text())
+        finally:
+            runtime.close()
+
     def test_invalid_configs_fail_closed(self):
         cases = [
             {"job_sandbox": {"type": "seatbelt"}},

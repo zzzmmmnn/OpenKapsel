@@ -82,7 +82,7 @@ class ClientFiles:
             from openkapsel.auth.path_access import effective_path_access
             return any(effective_path_access(
                 checked, self.root, self.writable, self.sandbox_path_rules,
-                resolve_symlinks=False) == "deny"
+                resolve_symlinks=False) in {"protect", "deny"}
                 for checked in (path, path.resolve(strict=False)))
         return False
 
@@ -96,14 +96,14 @@ class ClientFiles:
         from openkapsel.auth.path_access import effective_path_access
         if self.sandbox_path_rules and any(effective_path_access(
                 checked, self.root, self.writable, self.sandbox_path_rules,
-                resolve_symlinks=False) in {"ro", "deny"}
+                resolve_symlinks=False) in {"ro", "protect", "deny"}
                 for checked in (path, path.resolve(strict=False))):
             raise OSError(errno.EACCES, "sandbox path is read-only or denied")
         # Do not allow deleting/renaming an ancestor of a restricted
         # subtree. This never interferes with writing inside nested rw.
         for rule in self.sandbox_path_rules:
             restricted = Path(rule.path)
-            if rule.access in {"ro", "deny"} and path != restricted and path in restricted.parents:
+            if rule.access in {"ro", "protect", "deny"} and path != restricted and path in restricted.parents:
                 raise OSError(errno.EACCES, "directory contains restricted paths")
         for protected in (*self.protected_paths, *self.sandbox_denied_paths):
             if (path == protected or protected in path.parents or

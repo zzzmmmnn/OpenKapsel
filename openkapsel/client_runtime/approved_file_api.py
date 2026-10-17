@@ -41,8 +41,9 @@ class ApprovedFiles:
         path = FileApproval.check(value, self.root, self.auth, write=self.write, rules=self.rules)
         if self._protected(path):
             raise OSError(errno.ENOENT, "path does not exist")
-        if not self.write:
-            self.base.ensure_accessible_path(path)
+        # FileApproval.check already enforced protect/deny and canonical
+        # scoped authorization. Reapplying the normal Client restriction
+        # would undo a confirmed files.read approval of protect.
         return path
 
     def _protected(self, path):
@@ -55,8 +56,19 @@ class ApprovedFiles:
         if path in (self.root, *self.scopes):
             raise OSError(errno.EACCES, "approved root is protected")
         FileApproval.check(str(path), self.root, self.auth, write=True, rules=self.rules)
-        # A scoped write grant replaces ordinary ro/deny sandbox rules;
-        # only private Client configuration and metadata remain protected.
+        # An approved parent must not be removed when doing so would
+        # destroy absolute denied or still-protected descendant content.
+        for rule in self.rules:
+            restricted = Path(rule.path)
+            if path != restricted and path in restricted.parents:
+                if rule.access == "deny":
+                    raise OSError(errno.EACCES, "directory contains absolute deny")
+                if rule.access == "protect":
+                    try:
+                        FileApproval.check(str(restricted), self.root, self.auth,
+                                           write=True, rules=self.rules)
+                    except ApiError:
+                        raise OSError(errno.EACCES, "directory contains protected paths") from None
         if any(path == p or p in path.parents or path in p.parents
                for p in (*self.base.global_protected_paths, *self.base.sandbox_denied_paths)):
             raise OSError(errno.EACCES, "protected path")
@@ -83,7 +95,9 @@ class ApprovedFiles:
         # The approved write scope supersedes user-configured rules, but
         # retains the Client's automatic hard-deny private paths.
         files.sandbox_denied_paths = self.base.sandbox_denied_paths
-        files.sandbox_path_rules = ()
+        # Keep absolute deny on recycle; parent operations cannot bypass it.
+        files.sandbox_path_rules = tuple(rule for rule in self.base.sandbox_path_rules
+                                         if rule.access == "deny")
         args = {"path": path.relative_to(root).as_posix()}
         if original is not None:
             args["original_path"] = original.relative_to(root).as_posix()
@@ -100,7 +114,7 @@ class ApprovedFileAPI(ClientFileAPI):
         raw_rules = arguments.get("rules", [])
         if not isinstance(raw_rules, list) or any(
             not isinstance(r, dict) or set(r) != {"path", "access"}
-            or not isinstance(r["path"], str) or r["access"] not in {"ro", "rw", "deny"}
+            or not isinstance(r["path"], str) or r["access"] not in {"ro", "rw", "protect", "deny"}
             for r in raw_rules):
             raise OSError(errno.EINVAL, "invalid File policy")
         rules = tuple(SimpleNamespace(path=str(Path(r["path"]) if Path(r["path"]).is_absolute()

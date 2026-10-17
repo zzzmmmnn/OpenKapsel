@@ -45,12 +45,14 @@ def validated_path_grants(record: TokenRecord) -> tuple[PathGrant, ...]:
                 f"extra accessible directory is unavailable: {grant.path}",
             ) from None
         if resolved != configured or not (
-                resolved.is_dir() or (grant.access == "deny" and resolved.is_file())):
+                resolved.is_dir() or (grant.access in {"protect", "deny"} and resolved.is_file())):
             raise ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "extra_path_changed",
                 f"extra accessible directory changed after authorization: {grant.path}",
             )
+    # Preserve protect barriers for native backends: more-specific explicit
+    # grants may reopen them. Drop any permit below an absolute deny.
     denied = [Path(grant.path) for grant in record.allowed_paths if grant.access == "deny"]
     return tuple(
         grant for grant in record.allowed_paths
@@ -83,6 +85,9 @@ def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tu
     for grant in grants:
         path = Path(grant.path)
         if grant.access == "deny":
+            # Only absolute deny is a hard overlay. Protect is represented
+            # as an ordinary sandbox mask so a deeper explicit rw can reopen
+            # its own subtree without exposing the protected parent.
             if any(path == base or base in path.parents for base in active_grants):
                 hidden.append(path)
         else:
@@ -113,14 +118,17 @@ def resolve_shell_cwd(scope_root: Path, record: TokenRecord, value: str) -> Path
         raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_directory", "cwd is not a directory") from None
     if not resolved.is_dir():
         raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_directory", "cwd is not a directory")
+    # Refuse configured protection before accepting a path merely because it
+    # is inside the workspace. The sandbox also masks it, but resolving cwd
+    # to an inaccessible directory must fail rather than launching a job.
+    policy = effective_path_access(resolved, scope_root, record.can_write, record.allowed_paths)
+    if policy in {"protect", "deny"}:
+        raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "Shell cwd is protected or denied")
     try:
         resolved.relative_to(scope_root)
         return resolved
     except ValueError:
         pass
-    policy = effective_path_access(resolved, scope_root, record.can_write, record.allowed_paths)
-    if policy == "deny":
-        raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "Shell cwd is denied")
     for grant in validated_path_grants(record):
         try:
             resolved.relative_to(Path(grant.path))
@@ -211,6 +219,8 @@ def start_shell_task(server, record, scope_root, *, command, cwd_value,
     """Authorize dependencies and mount before cwd resolution or sandbox setup."""
     if record.shell_mode == "none":
         raise ApiError(403, "permission_denied", "shell permission is not granted")
+    if unsandboxed and any(rule.access == "deny" for rule in record.allowed_paths):
+        raise ApiError(403, "absolute_deny", "Unsandboxed Shell cannot bypass absolute deny paths")
     if not isinstance(cwd_value, str) or "\x00" in cwd_value:
         raise ApiError(400, "invalid_path", "cwd must be a NUL-free string")
     if not isinstance(command, str) or not command or len(command) > 100000:
@@ -269,6 +279,9 @@ def _start_shell_task(
             "permission_denied",
             "shell permission is not granted",
         )
+    if unsandboxed and any(rule.access == "deny" for rule in record.allowed_paths):
+        raise ApiError(HTTPStatus.FORBIDDEN, "absolute_deny",
+                       "Unsandboxed Shell cannot bypass absolute deny paths")
     if not command or len(command) > 100_000:
         raise ApiError(
             HTTPStatus.REQUEST_ENTITY_TOO_LARGE,

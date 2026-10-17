@@ -68,26 +68,27 @@ class FileApproval:
                 raise ValueError("not a directory")
             absolute_scope(str(scope))
             if self.files is not None:
-                if write:
-                    # Password-confirmed write elevation can target a path
-                    # whose ordinary Client rule is deny, but never a hard
-                    # system/private resource or its protected ancestor.
-                    protected = (*self.files.global_protected_paths,
-                                 *self.files.sandbox_denied_paths)
-                    # A granted parent may contain private children; only
-                    # the private path itself (or its descendants) is forbidden
-                    # at grant time. Mutating the parent is checked at execution.
-                    if any(actual == p or p in actual.parents for p in protected):
-                        raise OSError(errno.EACCES, "protected Client path")
-                else:
-                    self.files.ensure_accessible_path(actual)
+                # Either read or write Approval may target protect, even when
+                # ordinary Client access cannot inspect the protected path.
+                # Absolute deny and hard Client configuration never qualify.
+                protected = (*self.files.global_protected_paths,
+                             *self.files.sandbox_denied_paths)
+                if any(actual == p or p in actual.parents for p in protected):
+                    raise OSError(errno.EACCES, "protected Client path")
+                for checked in (Path(raw), actual):
+                    if effective_path_access(checked, self.files.root,
+                            self.files.writable, self.files.sandbox_path_rules,
+                            resolve_symlinks=False) == "deny":
+                        raise OSError(errno.EACCES, "absolute deny cannot be approved")
         except (OSError, RuntimeError, ValueError):
             raise ApiError(400, "approval_path_unavailable", "approval path is unavailable") from None
         # Canonical scopes, not aliases. The execute path rechecks realpaths
         # on every operation and pins descriptors to these approved roots.
-        roots = [Path(p) for p in updated["paths"]]
-        if not any(scope == p or p in scope.parents for p in roots):
-            roots = [p for p in roots if scope not in p.parents] + [scope]
+        # Never collapse child scopes into their parent: an independently
+        # approved protect exception must remain distinguishable from the
+        # earlier approval of a broad ancestor.
+        roots = {Path(p) for p in updated["paths"]}
+        roots.add(scope)
         updated["paths"] = sorted(str(p) for p in roots)
         return updated
 
@@ -129,18 +130,26 @@ class FileApproval:
         if any(p == ".openkapsel" or p.startswith(".openkapsel-")
                for part in (candidate, resolved) for p in part.parts):
             raise ApiError(403, "reserved_path", "internal paths cannot be approved")
-        # Approved files.write is an explicit scoped override of *all* normal
-        # Token/Client path rules, even narrower configured ro/deny entries.
-        # The hard protected Client paths, .openkapsel metadata and OS
-        # restrictions remain independent of these ordinary settings.
-        if write:
-            return resolved
-        granted_rules = (*rules, *(SimpleNamespace(path=str(p), access="ro") for p in scopes))
+        # For each spelling, absolute deny always wins. A configured
+        # protect can only be unlocked by an independent approval whose
+        # canonical scope is at or below the effective protected directory;
+        # broad parent/workspace approval does not cross this boundary.
         for checked in (candidate, resolved):
-            policy = effective_path_access(checked, root, False, granted_rules,
+            policy = effective_path_access(checked, root, False, rules,
                                            resolve_symlinks=False)
             if policy == "deny":
                 raise ApiError(403, "path_access_denied", "path is denied")
+            if policy == "protect":
+                protect_paths = [
+                    Path(rule.path) for rule in rules if rule.access == "protect"
+                    and (checked == Path(rule.path) or Path(rule.path) in checked.parents)
+                ]
+                boundary = max(protect_paths, key=lambda p: len(p.parts))
+                if not any((scope == boundary or boundary in scope.parents)
+                           and (resolved == scope or scope in resolved.parents)
+                           for scope in scopes):
+                    raise ApiError(403, "path_access_denied",
+                                   "protected directory needs its own File approval")
         return resolved
 
     @classmethod
@@ -239,7 +248,10 @@ class FileApproval:
             return auth["workspace"]
         try:
             actual = absolute_scope(request["path"]).resolve(strict=False)
-            return any(actual == p or p in actual.parents for p in paths)
+            # A broad ancestor may not cover an intervening protect rule.
+            # Status checking must never skip an independent nested approval.
+            # Exact grants are retained even when an ancestor was approved.
+            return actual in paths
         except (OSError, RuntimeError):
             return False
 

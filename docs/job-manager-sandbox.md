@@ -70,9 +70,9 @@ Token workspace or a separately granted extra directory. Under an existing
 read/write root, add a narrower rule such as
 `/data/project/.openkapsel` with **Deny access**; the other files remain
 readable/writable. **More-specific child paths override parent rules**;
-only conflicting rules on the exact same path use `deny > ro > rw`.
-System-protected Client configuration and Manager-private paths cannot be
-overridden by ordinary child rules.
+`deny` at any ancestor is absolute and cannot be overridden. Other rules use deepest matching path, with same-path priority `deny > protect > ro > rw`. `protect` blocks access except when its exact directory or a narrower child is independently approved. Broad File Approvals do not cross protect boundaries. Client configuration and Manager-private paths stay hard denied. A Token
+or Mapping with an absolute `deny` cannot run an unsandboxed Shell even
+with a temporary Shell approval, because that would bypass the deny.
 The short alias `r` is normalized to `ro` in programmatic rules.
 
 Server Token records retain backwards compatibility: persisted entries with
@@ -83,8 +83,7 @@ for existing integrations. Server File API read/write/list and restricted
 Shell enforce the same deny rules. Existing direct-child `.openkapsel`
 subdirectories below extra granted directories are automatically hidden;
 within the token workspace, the existing recursive metadata hide continues.
-An explicit deny is incompatible with `shell_mode=full` because an unrestricted
-host Shell could bypass it: set Shell permission to Restricted (or None).
+Explicit `protect` or `deny` is incompatible with `shell_mode=full`, which could bypass path restrictions: use Restricted Shell or None. File Approval does not grant Shell access.
 
 Podman overlays directories with `--tmpfs` and individual files with a
 read-only `/dev/null` bind after permitted mounts. Bubblewrap does the

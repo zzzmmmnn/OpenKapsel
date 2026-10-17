@@ -1388,12 +1388,16 @@ class CapabilityHTTPTests(unittest.TestCase):
         (root / "secret.txt").write_text("not available")
         (root / "readonly").mkdir()
         (root / "readonly" / "deny-child").mkdir()
+        (root / "absolute-denied").mkdir()
+        (root / "absolute-denied" / "child").mkdir()
         self.server.tokens.update(
             self.record.token, can_read=False, can_write=False, shell_mode="restricted",
             allowed_paths=(
                 PathGrant(str(root / "secret.txt"), access="deny"),
                 PathGrant(str(root / "readonly"), access="ro"),
-                PathGrant(str(root / "readonly" / "deny-child"), access="deny"),
+                PathGrant(str(root / "readonly" / "deny-child"), access="protect"),
+                PathGrant(str(root / "absolute-denied"), access="deny"),
+                PathGrant(str(root / "absolute-denied" / "child"), access="ro"),
             ),
         )
         for access in ("read", "write"):
@@ -1427,6 +1431,14 @@ class CapabilityHTTPTests(unittest.TestCase):
             "path": "readonly/deny-child/approved", "approved": True,
             "target": "server", "writer_nonce": nonce,
         })
+        self.assertIn(status, (403, 404), elevated)
+        status, pending = self.request_file_approval("write", path=str(root / "readonly" / "deny-child"))
+        self.assertEqual(200, status, pending)
+        self.approve({"error": {"details": pending}})
+        status, elevated = self.api("/fs/write/mkdir", {
+            "path": "readonly/deny-child/approved", "approved": True,
+            "target": "server", "writer_nonce": nonce,
+        })
         self.assertEqual(201, status, elevated)
         self.assertTrue((root / "readonly" / "deny-child" / "approved").is_dir())
         # A denied regular file is not a directory, even when approved.
@@ -1435,6 +1447,20 @@ class CapabilityHTTPTests(unittest.TestCase):
             "target": "server", "writer_nonce": nonce,
         })
         self.assertNotIn(status, (200, 201), blocked)
+        # Absolute deny wins even over an approved workspace and a more
+        # specific child Token rule. This is an existing real directory.
+        status, blocked = self.api("/fs/write/mkdir", {
+            "path": "absolute-denied/child/forbidden",
+            "approved": True, "target": "server", "writer_nonce": nonce,
+        })
+        self.assertIn(status, (403, 404), blocked)
+        self.assertFalse((root / "absolute-denied/child/forbidden").exists())
+        status, blocked_read = self.api("/fs/read/files", {
+            "paths": ["absolute-denied/child"], "approved": True,
+            "target": "server", "writer_nonce": nonce,
+        })
+        self.assertEqual(207, status, blocked_read)
+        self.assertEqual("path_unavailable", blocked_read["items"][0]["error"]["code"])
         # The same read/write approvals do not authorize Shell tasks.
         status, body = self.approved()
         self.assertEqual(403, status)

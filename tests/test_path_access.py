@@ -56,27 +56,40 @@ class PathAccessTests(unittest.TestCase):
             external_alias / "blocked", self.root, True,
             (SimpleNamespace(path=str(external_alias), access="deny"),),
             resolve_symlinks=False))
-        # Deeper children override parent ro/deny; only same-depth ties
-        # follow deny > ro > rw. Configuration ordering is irrelevant.
+        # Child rw overrides parent protect, but never absolute deny.
+        # Same-depth ties follow deny > protect > ro > rw. Configuration ordering is irrelevant.
         child = self.sub / "writable"
         nested = child / "restricted"
         for reverse in (False, True):
             entries = [
                 PathGrant(str(self.sub), access="ro"),
                 PathGrant(str(child), access="rw"),
-                PathGrant(str(nested), access="deny"),
+                PathGrant(str(nested), access="protect"),
                 PathGrant(str(nested / "override"), access="rw"),
             ]
             if reverse:
                 entries.reverse()
             self.assertEqual("rw", effective_path_access(child / "ok", self.root, True, entries))
-            self.assertEqual("deny", effective_path_access(nested / "blocked", self.root, True, entries))
+            self.assertEqual("protect", effective_path_access(nested / "blocked", self.root, True, entries))
             self.assertEqual("rw", effective_path_access(nested / "override" / "ok", self.root, True, entries))
             self.assertEqual("ro", effective_path_access(self.sub / "other", self.root, True, entries))
         self.assertEqual("ro", effective_path_access(child / "file", self.root, True, (
             PathGrant(str(child), access="ro"), PathGrant(str(child), access="rw"))))
         self.assertEqual("deny", effective_path_access(child / "file", self.root, True, (
             PathGrant(str(child), access="deny"), PathGrant(str(child), access="rw"))))
+        # An absolute ancestor deny cannot be reopened by a deeper rw.
+        self.assertEqual("deny", effective_path_access(
+            nested / "override" / "file", self.root, True, (
+                PathGrant(str(nested), access="deny"),
+                PathGrant(str(nested / "override"), access="rw"))))
+        self.assertEqual("protect", effective_path_access(
+            child / "file", self.root, True, (
+                PathGrant(str(child), access="protect"),
+                PathGrant(str(child), access="rw"))))
+        self.assertEqual("deny", effective_path_access(
+            child / "file", self.root, True, (
+                PathGrant(str(child), access="protect"),
+                PathGrant(str(child), access="deny"))))
         self.assertEqual("ro", PathGrant(str(self.sub), access="r").access)
 
     def test_legacy_server_record_read_only_is_normalized(self):
@@ -156,6 +169,17 @@ class PathAccessTests(unittest.TestCase):
             handler._assert_path_writable(self.sub)  # cannot rename/delete parent of deny
         handler._assert_path_writable(self.root / "normal.txt")
 
+    def test_absolute_deny_refuses_unsandboxed_server_shell(self):
+        from openkapsel.execution.shell_execution import start_shell_task
+        record = TokenRecord(
+            token="z" * 40, name="absolute-deny", created_at=utc_now(),
+            path_prefix=".", shell_mode="restricted",
+            allowed_paths=(PathGrant(str(self.secret), access="deny"),),
+        )
+        with self.assertRaises(ApiError):
+            start_shell_task(None, record, self.root, command="echo EXPOSED",
+                             cwd_value=".", timeout_seconds=5, unsandboxed=True)
+
     def test_admin_deny_option_and_legacy_form_modes(self):
         markup = _path_grant_rows((
             PathGrant(str(self.sub), read_only=False),
@@ -163,6 +187,8 @@ class PathAccessTests(unittest.TestCase):
         ))
         self.assertIn('value="deny" selected', markup)
         self.assertIn('value="rw" selected', markup)
+        selected = _path_grant_rows((PathGrant(str(self.sub), access="protect"),))
+        self.assertIn('value="protect" selected', selected)
 
     def test_client_same_path_deny_overrides_rw_and_ancestor_deny(self):
         extra = self.base / "another"
@@ -182,10 +208,10 @@ class PathAccessTests(unittest.TestCase):
             spec = make_job_sandbox({
                 "job_sandbox": {"paths": [
                     {"path": str(child), "access": "rw"},
-                    {"path": str(extra), "access": "deny"},
+                    {"path": str(extra), "access": "protect"},
                 ]},
             }, files)
-            self.assertIn({"path": str(extra), "access": "deny"}, spec["allowed_paths"])
+            self.assertIn({"path": str(extra), "access": "protect"}, spec["allowed_paths"])
             self.assertIn({"path": str(child), "access": "rw"}, spec["allowed_paths"])
             self.assertNotIn(str(extra), spec["hidden_paths"])
             files.sandbox_path_rules = tuple(SimpleNamespace(**r) for r in spec["allowed_paths"])

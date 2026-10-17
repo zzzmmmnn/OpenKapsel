@@ -79,7 +79,8 @@ def credential_expiry(days: int = DEFAULT_CREDENTIAL_TTL_DAYS) -> str:
 class PathGrant:
     path: str
     # Server accepts legacy read_only construction and serialized records.
-    # New policy is access: rw, ro (alias r), deny. read_only remains a
+    # Modes: rw, ro (alias r), protect (approvable), deny (absolute).
+    # read_only remains a
     # compatibility attribute for older consumers and extension call sites.
     read_only: bool = True
     access: str = ""
@@ -88,8 +89,8 @@ class PathGrant:
         mode = self.access or ("ro" if self.read_only else "rw")
         if mode == "r":
             mode = "ro"
-        if mode not in {"rw", "ro", "deny"}:
-            raise ValueError("path access must be rw, ro/r or deny")
+        if mode not in {"rw", "ro", "protect", "deny"}:
+            raise ValueError("path access must be rw, ro/r, protect or deny")
         object.__setattr__(self, "access", mode)
         object.__setattr__(self, "read_only", mode != "rw")
 
@@ -737,7 +738,7 @@ class TokenStore:
             if resolved_path == Path("/"):
                 raise ValueError("the filesystem root cannot be a sandbox path")
             if not ((resolved_path.is_file() or resolved_path.is_dir())
-                    if grant.access == "deny" else resolved_path.is_dir()):
+                    if grant.access in {"protect", "deny"} else resolved_path.is_dir()):
                 raise ValueError(f"sandbox path type is invalid: {resolved_path}")
             # A permit must remain outside the shared Workspace Root, as
             # before. A deny or read-only overlay may be inside the workspace
@@ -749,7 +750,7 @@ class TokenStore:
                         (self.root in resolved_path.parents)):
                     raise ValueError("rw grants inside Workspace Root are implicit; use ro or deny overlays")
             normalized = str(resolved_path)
-            if grant.access != "deny":
+            if grant.access not in {"protect", "deny"}:
                 previous_permits.append(resolved_path)
             existing = next((item for item in allowed_paths if item.path == normalized), None)
             normalized_grant = PathGrant(path=normalized, access=grant.access)
@@ -757,22 +758,22 @@ class TokenStore:
                 allowed_paths.append(normalized_grant)
             elif existing.access != normalized_grant.access:
                 # Most restrictive mode wins when identical paths repeat.
-                order = {"rw": 0, "ro": 1, "deny": 2}
+                order = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
                 allowed_paths[allowed_paths.index(existing)] = (
                     max((existing, normalized_grant), key=lambda item: order[item.access])
                 )
-        permitted = [scoped, *(Path(p.path) for p in allowed_paths if p.access != "deny")]
+        permitted = [scoped, *(Path(p.path) for p in allowed_paths if p.access not in {"protect", "deny"})]
         for grant in allowed_paths:
             path = Path(grant.path)
-            if grant.access == "deny":
+            if grant.access in {"protect", "deny"}:
                 if not (any(path == base or base in path.parents for base in permitted)
                         or any(path in base.parents for base in permitted[1:])
                         or any(path == old or path in old.parents for old in previous_permits)):
                     raise ValueError("deny paths must lie within workspace or an allowed directory")
                 if path == scoped or path in scoped.parents:
                     raise ValueError("cannot deny the workspace root or its ancestors")
-        if record.shell_mode == "full" and any(g.access == "deny" for g in allowed_paths):
-            raise ValueError("deny paths require restricted Shell; full Shell can bypass sandbox rules")
+        if record.shell_mode == "full" and any(g.access in {"protect", "deny"} for g in allowed_paths):
+            raise ValueError("protect/deny paths require restricted Shell; full Shell can bypass sandbox rules")
         return replace(
             record,
             name=name,

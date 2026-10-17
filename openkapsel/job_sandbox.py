@@ -191,9 +191,9 @@ def prepare_job(
         access = item["access"]
         if access == "r":
             access = "ro"
-        if access not in {"rw", "ro", "deny"}:
-            raise ValueError("allowed_paths entries require rw, ro or deny access")
-        if access == "deny":
+        if access not in {"rw", "ro", "protect", "deny"}:
+            raise ValueError("allowed_paths entries require rw, ro, protect or deny access")
+        if access in {"protect", "deny"}:
             value = Path(item["path"])
             if not value.is_absolute():
                 raise ValueError("deny path must be absolute")
@@ -341,12 +341,11 @@ def prepare_job(
         # then deepest children. Restrictive modes win only at identical paths.
         entries = [(root, "rw" if writable else "ro"), *(
             (Path(grant.path), grant.access) for grant in grants)]
-        strength = {"rw": 0, "ro": 1, "deny": 2}
+        strength = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
         for directory, access in sorted(
                 entries, key=lambda entry: (len(entry[0].parts), strength[entry[1]])):
             scope = "subpath" if directory.is_dir() else "literal"
-            if access != "deny":
-                # Re-allow a child under a configured denied ancestor.
+            if access in {"rw", "ro"}:
                 profile.append(f"(allow file-read* ({scope} {_sb_quote(directory)}))")
             if access == "rw":
                 profile.append(f"(allow file-write* ({scope} {_sb_quote(directory)}))")
@@ -355,6 +354,14 @@ def prepare_job(
             else:
                 profile.append(f"(deny file-read* ({scope} {_sb_quote(directory)}))")
                 profile.append(f"(deny file-write* ({scope} {_sb_quote(directory)}))")
+        # Absolute deny must be applied AFTER narrower ordinary grants,
+        # independent of nesting depth or configuration order.
+        for grant in grants:
+            if grant.access == "deny":
+                directory = Path(grant.path)
+                operation = "subpath" if directory.is_dir() else "literal"
+                profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")
+                profile.append(f"(deny file-write* ({operation} {_sb_quote(directory)}))")
         for directory in excluded:
             operation = "subpath" if directory.is_dir() else "literal"
             profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")

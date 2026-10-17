@@ -107,7 +107,7 @@ class SandboxMixin:
                     f"extra accessible directory is unavailable: {grant.path}",
                 ) from None
             if resolved != configured or not (
-                    resolved.is_dir() or (grant.access == "deny" and resolved.is_file())):
+                    resolved.is_dir() or (grant.access in {"protect", "deny"} and resolved.is_file())):
                 raise ApiError(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     "extra_path_changed",
