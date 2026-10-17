@@ -36,6 +36,10 @@ class HttpSupportMixin:
         if not candidate.is_absolute():
             candidate = root / candidate
         candidate = Path(os.path.abspath(candidate))
+        policy = getattr(self, "_file_function_policy", None)
+        if policy is not None:
+            from openkapsel.client_runtime.file_approval import FileApproval
+            FileApproval.check(value, root, policy[0], write=write, rules=policy[1])
         # A permanently allowed extra path never substitutes for the separate
         # Conversation-scoped external File approval grant. In batch reads,
         # denied items are still reported individually instead of globally.

@@ -94,6 +94,8 @@ class RequestDispatchMixin:
         self._file_approval_external_scope = None
         self._file_approval_external_target = None
         self._file_approval_approved_directory = None
+        self._file_function_request = None
+        self._file_function_policy = None
         self.__dict__.pop("_file_approval_cached_body", None)
         self.oauth_connection_id = None
         self.static_mcp_connection_id = None
@@ -728,14 +730,16 @@ class RequestDispatchMixin:
         from openkapsel.files.file_handlers import FILE_APPROVAL_READ, FILE_APPROVAL_WRITE
         if endpoint.name in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
             if endpoint.invocation in {"query", "query_head"}:
-                self._authorize_file_approval(endpoint.name, query, query=True)
+                if self._authorize_file_approval(endpoint.name, query, query=True):
+                    return
             elif endpoint.name in {
                 "fs_manifest", "fs_read_files", "fs_read_large", "fs_mutate",
                 "fs_replace_large", "fs_mkdir", "fs_move",
             }:
                 body = self._read_json()
                 self._file_approval_cached_body = body
-                self._authorize_file_approval(endpoint.name, body)
+                if self._authorize_file_approval(endpoint.name, body):
+                    return
         handler = getattr(self, endpoint.handler)
         args: tuple[Any, ...] = ()
         kwargs: dict[str, Any] = {}

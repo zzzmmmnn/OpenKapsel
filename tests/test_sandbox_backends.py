@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -359,6 +361,32 @@ class PodmanBackendTests(unittest.TestCase):
                 assert launch.controller is not None
                 launch.controller.cleanup()
             self.assertFalse(proxy_directory.exists())
+
+
+@unittest.skipIf(os.name == "nt", "POSIX Shell descriptor handoff")
+class BubblewrapResolverTests(unittest.TestCase):
+    def test_resolver_survives_rootlesskit_closing_all_extra_descriptors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bwrap, rootlesskit = root / "bwrap", root / "rootlesskit"
+            bwrap.write_text("#!" + sys.executable + "\nimport os,sys\n"
+                "i=sys.argv.index('--file'); print(os.read(int(sys.argv[i+1]),256).decode(),end='')\n"
+                "print('stdin=' + sys.stdin.read())\n")
+            rootlesskit.write_text("#!" + sys.executable + "\nimport os,sys\n"
+                "os.closerange(3,1024)\n"
+                "args=sys.argv[sys.argv.index('--')+1:]; os.execv(args[0],args)\n")
+            for executable in (bwrap, rootlesskit):
+                executable.chmod(0o700)
+            spec = SandboxSpec(command="true", cwd=root, scope_root=root,
+                can_write=False, network_mode="full", allowed_domains=(),
+                proxy_root=root, allowed_paths=(), hidden_paths=(),
+                limits=SandboxLimits(64, 256*1024*1024, 100),
+                owner_token="test")
+            launch = BubblewrapBackend(bwrap, rootlesskit, aggregate_resources=False).build_shell(spec)
+            result = subprocess.run(launch.argv, input=b'caller input', capture_output=True, timeout=10)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn(b'nameserver 10.0.2.3\n', result.stdout)
+            self.assertIn(b'stdin=caller input', result.stdout)
 
 
 if __name__ == "__main__":

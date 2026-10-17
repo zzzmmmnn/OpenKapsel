@@ -78,6 +78,10 @@ class CapabilityHandlersMixin:
             path = request_path
         if grants.granted(workspace, conversation, target, capability, path):
             return path
+        if (capability == "shell.unsandboxed" and
+                self.server.function_grants.current(
+                    workspace, conversation, target, "shell.exec") is not None):
+            return path
         request_operation = ("shell.request_approval" if capability == "shell.unsandboxed"
                              else "files.request_approval")
         if not create_ticket:
@@ -155,6 +159,9 @@ class CapabilityHandlersMixin:
                 '<button name="confirm" value="actual_path">Confirm actual directory and approve</button></form>')
 
     def _handle_capability_approval(self, method, ticket, raw_query):
+        function_store = getattr(self.server, "function_grants", None)
+        if function_store is not None and function_store.pending(ticket) is not None:
+            return self._handle_function_approval(method, ticket)
         grants = self.server.capability_grants
         status, error = 200, ""
         try:
@@ -363,7 +370,17 @@ class CapabilityHandlersMixin:
                         grants.revoke(workspace, int(self._form_one(form, "conversation_id")),
                                       self._form_one(form, "target"), self._form_one(form, "capability"),
                                       self._form_one(form, "path"))
+                        if self._form_one(form, "capability") == "shell.unsandboxed":
+                            self.server.function_grants.revoke(
+                                workspace, int(self._form_one(form, "conversation_id")),
+                                self._form_one(form, "target"), "shell.exec")
                         message = "Grant revoked."
+                    elif action == "revoke_function":
+                        self.server.function_grants.revoke(
+                            workspace, int(self._form_one(form, "conversation_id")),
+                            self._form_one(form, "target"), self._form_one(form, "function"),
+                        )
+                        message = "Function grant revoked."
                     else:
                         raise ValueError("Unknown action")
                 LOGGER.info("admin capability action=%s workspace=%r", action, workspace)
@@ -386,4 +403,17 @@ class CapabilityHandlersMixin:
             for grant in grants.list_grants(workspace):
                 fields = "".join(f'<input type="hidden" name="{key}" value="{esc(str(grant[key]), quote=True)}">' for key in ("conversation_id", "target", "capability", "path"))
                 body += f'<p>Conversation {grant["conversation_id"]} · {esc(grant["target"])} · {esc(grant["capability"])} · {esc(grant["path"] or "workspace")} · {grant["remaining_seconds"]} seconds remaining</p><form method="post" action="{action_url}">{hidden}{fields}<button name="action" value="revoke">Revoke</button></form>'
+            for grant in self.server.function_grants.list_grants(workspace):
+                fields = "".join(
+                    f'<input type="hidden" name="{key}" value="{esc(str(grant[key]), quote=True)}">'
+                    for key in ("conversation_id", "target", "function")
+                )
+                body += (
+                    f'<p>Conversation {grant["conversation_id"]} · {esc(grant["target"])} '
+                    f'· function {esc(grant["function"])} '
+                    + ('(shell.unsandboxed) ' if grant["function"] == "shell.exec" else '') + '· '
+                    f'{grant["remaining_seconds"]} seconds remaining</p>'
+                    f'<form method="post" action="{action_url}">{hidden}{fields}'
+                    '<button name="action" value="revoke_function">Revoke</button></form>'
+                )
         self._send_html(status, page(body), script_src="'none'")

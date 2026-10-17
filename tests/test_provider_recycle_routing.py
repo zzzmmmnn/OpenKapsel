@@ -14,6 +14,7 @@ from openkapsel.files.mutation import MutationPlan, _relocation_verified, _rollb
 from openkapsel.files.recycle import RecycleBin
 from openkapsel.files.safe_paths import SafePathAccess
 from openkapsel.mapping.mapping_handlers import MappingHandlersMixin
+from openkapsel.client_runtime.local_client import LocalClient
 
 
 class ProviderManager:
@@ -38,6 +39,7 @@ class Handler(MappingHandlersMixin, FileHandlersMixin):
         self.provider_root = server_root / "nextcloud"
         self.provider_root.mkdir()
         self.server = SimpleNamespace(
+            local_client=LocalClient(None, {}),
             storage_providers=ProviderManager(self.provider_root),
             recycle_for=lambda root: RecycleBin(root),
             mappings=SimpleNamespace(at_path=lambda path: None,

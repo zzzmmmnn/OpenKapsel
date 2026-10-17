@@ -5,6 +5,7 @@ from __future__ import annotations
 from openkapsel.client_runtime.rpc_deadline import check_deadline
 
 import errno
+import base64
 import fnmatch
 import hashlib
 import io
@@ -48,7 +49,7 @@ FILE_APPROVAL_WRITE = frozenset({
 })
 
 
-class FileHandlersMixin(FileOperationSupportMixin):
+class FileExecutionMixin(FileOperationSupportMixin):
     """File-domain methods mixed into the main request handler."""
     @staticmethod
     def _external_directory(value: str) -> str:
@@ -88,259 +89,6 @@ class FileHandlersMixin(FileOperationSupportMixin):
         if not isinstance(real, str):
             raise ApiError(502, "mapping_realpath_failed", "Client returned an invalid resolved path")
         return self._external_directory(real)
-
-    def _handle_files_approval_request(self) -> None:
-        """Ask for a read/write grant without performing any file operation."""
-        body = self._read_json()
-        if set(body) - {"access", "target", "path", "scope_is_directory", "writer_nonce", "plan_id", "taskname", "message", "reason"}:
-            raise ApiError(400, "invalid_request", "unexpected file approval request field")
-        access = body.get("access")
-        if access not in ("read", "write"):
-            raise ApiError(400, "invalid_request", "access must be read or write")
-        target = body.get("target")
-        if not isinstance(target, str) or not target or target == "auto":
-            raise ApiError(400, "invalid_target", "target must be server or an explicit Mapping ID")
-        if target != "server":
-            row = self._mapping_for_caller(target)
-            if not row["enabled"] or (access == "write" and not row["writable"]):
-                raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
-            target = row["id"]
-        # Do not resolve any path (locally or through Mapping RPC) before
-        # the Workspace password is verified in the browser.
-        scope = self._external_directory(body["path"]) if "path" in body else ""
-        scope_is_directory = self._optional_bool(body, "scope_is_directory", True)
-        if not scope and not scope_is_directory:
-            raise ApiError(400, "invalid_request", "scope_is_directory=false requires path")
-        capability = "files." + access
-        if scope and target != "server":
-            self._require_mapping_realpath_support(target)
-        approved = None
-        if scope and self._has_scoped_file_grant(body, target, capability):
-            try:
-                real = (str(Path(scope).resolve(strict=True)) if target == "server"
-                        else self._resolve_mapping_external_path(target, scope, directory=True))
-                approved = self.server.capability_grants.granted_path(
-                    self.token_record.app_id, self._file_approval_conversation(body),
-                    target, capability, real)
-            except (OSError, ValueError, RuntimeError, ApiError):
-                # Do not disclose whether an unapproved path resolves. An
-                # unrelated grant must never turn this endpoint into an oracle.
-                approved = None
-        if approved is not None:
-            self._send_json(200, {"status": "granted", "target": target,
-                                  "capability": capability, "path": scope})
-            return
-        try:
-            self._require_capability(body, target, capability, path=scope,
-                                     create_ticket=True, original_path=scope,
-                                     scope_is_directory=scope_is_directory)
-        except ApiError as exc:
-            if exc.code != "capability_approval_required":
-                raise
-            self._send_json(200, {"status": "approval_required", **exc.details})
-            return
-        self._send_json(200, {"status": "granted", "target": target,
-                              "capability": capability,
-                              **({"path": scope} if scope else {})})
-
-    def _authorize_file_approval(self, operation: str, arguments: dict, *, query=False) -> None:
-        """A file approval may optionally authorize one explicit external subtree.
-
-        Outside paths require an independently approved directory-scoped grant;
-        the ordinary unscoped files.read/write grant never authorizes them.
-        """
-        if operation not in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
-            return
-        self._file_approval_operation = operation  # actionable hint on ordinary path failures
-        if query:
-            values = {key: value[0] if isinstance(value, list) and len(value) == 1 else value
-                      for key, value in arguments.items()}
-            raw_flag = values.get("approved", "false")
-            if isinstance(raw_flag, str):
-                if raw_flag.lower() not in {"true", "false"}:
-                    raise ApiError(400, "invalid_request", "approved must be true or false")
-                approved = raw_flag.lower() == "true"
-            else:
-                approved = raw_flag is True
-        else:
-            values = arguments
-            approved = self._optional_bool(values, "approved", False)
-        if not approved:
-            return
-        self._require_control_token()
-        target = values.get("target")
-        if not isinstance(target, str) or not target or target == "auto":
-            raise ApiError(400, "invalid_target", "approved File API requires server or Mapping ID target")
-        if target != "server":
-            row = self._mapping_for_caller(target)
-            if not row["enabled"] or (operation in FILE_APPROVAL_WRITE and not row["writable"]):
-                raise ApiError(403, "mapping_unavailable", "Mapping is disabled or read-only")
-            target = row["id"]
-        if operation == "fs_read_files":
-            paths = values.get("paths", [])
-        elif operation in {"fs_manifest", "fs_mutate"} and isinstance(values.get("items"), list):
-            paths = [item.get("path") for item in values["items"] if isinstance(item, dict)]
-            if operation == "fs_manifest" and values.get("recursive"):
-                paths = [values.get("path", ".")]
-        elif operation == "fs_move":
-            paths = [values.get("source"), values.get("destination")]
-        else:
-            paths = [values.get("path", ".")]
-        # Authenticate File capability before looking at symlink destinations;
-        # an existing scoped grant already proves password authorization.
-        capability = "files.write" if operation in FILE_APPROVAL_WRITE else "files.read"
-        scoped_grant = self._has_scoped_file_grant(values, target, capability)
-        if not scoped_grant:
-            self._require_capability(values, target, capability)
-        self._file_approval_active = True
-        requested = []
-        external = []
-        original_external = []
-        for value in paths:
-            if (not isinstance(value, str) or "\x00" in value
-                or ".." in value.split("/") or "\\" in value):
-                raise ApiError(400, "invalid_path",
-                               "file approval rejects traversal and ambiguous paths")
-            candidate = Path(value).expanduser() if value else self.token_scope_root
-            if not candidate.is_absolute():
-                candidate = self.token_scope_root / candidate
-            candidate = Path(os.path.abspath(candidate))
-            # Only lexical checks here: no client realpath request and no
-            # filesystem-based denial difference before password approval.
-            lexical_policy = effective_path_access(
-                candidate, self.token_scope_root, self.token_record.can_write,
-                self.token_record.allowed_paths, resolve_symlinks=False)
-            if lexical_policy is None:
-                if not value.startswith("/"):
-                    raise ApiError(403, "path_outside_root", "external paths must be absolute")
-                external.append(self._external_directory(value))
-                original_external.append(self._external_directory(value))
-            else:
-                # Only password-authenticated callers may trigger realpath
-                # lookup here. Internal symlinks use ordinary Workspace access;
-                # external ones require an independently approved real scope.
-                try:
-                    resolved = candidate.resolve(strict=False)
-                except (OSError, RuntimeError):
-                    raise ApiError(404, "path_unavailable",
-                                   "path does not exist or access is denied") from None
-                if (target == "server" and resolved != self.token_scope_root
-                        and self.token_scope_root not in resolved.parents):
-                    original_external.append(self._external_directory(str(candidate)))
-                    external.append(self._external_directory(str(candidate)))
-                    requested.append(candidate)
-                    continue
-                # Batch reads report per-item missing/denied results. Do not
-                # turn a protected path into a distinguishable top-level error.
-                if not (target == "server" and operation == "fs_read_files"):
-                    self._assert_inside_root(candidate)
-                    self._assert_inside_root(resolved)
-                mapping = self.server.mappings.at_path(candidate)
-                mapped_resolved = self.server.mappings.at_path(resolved)
-                if mapping and mapped_resolved and mapping["id"] != mapped_resolved["id"]:
-                    raise ApiError(403, "file_approval_target_mismatch", "file path spans two Mapping targets")
-                actual = (mapping or mapped_resolved or {}).get("id", "server")
-                if actual != target:
-                    raise ApiError(403, "file_approval_target_mismatch", "file path does not match approved target")
-            requested.append(candidate)
-        if external:
-            if len(external) != len(requested) or not scoped_grant:
-                # Ordinary operations do not distinguish unknown paths from
-                # unauthorized realpaths. Scope approval uses the explicit
-                # /files/approval/request endpoint instead.
-                if target == "server" and operation == "fs_read_files":
-                    self._file_approval_denied_paths = frozenset(external)
-                    self.token_record = replace(self.token_record, can_read=True)
-                    return  # batch handler normalizes inaccessible item errors
-                raise ApiError(404, "path_unavailable",
-                               "path does not exist or access is denied")
-            if target != "server":
-                self._require_mapping_realpath_support(target)
-            # A prior password-authorized scope exists: resolve for an exact
-            # grant lookup, but an unrelated/missing target always fails
-            # identically and never returns a canonical path or failure class.
-            real_paths = []
-            try:
-                for original in external:
-                    real = (str(Path(original).resolve(strict=False)) if target == "server"
-                            else self._resolve_mapping_external_path(target, original))
-                    real_paths.append(self._external_directory(real))
-                found = self.server.capability_grants.granted_path(
-                    self.token_record.app_id, self._file_approval_conversation(values),
-                    target, capability, real_paths[0])
-            except (OSError, ValueError, RuntimeError, ApiError):
-                found = None
-            if found is None:
-                if target == "server" and operation == "fs_read_files":
-                    self._file_approval_denied_paths = frozenset(external)
-                    self.token_record = replace(self.token_record, can_read=True)
-                    return
-                raise ApiError(404, "path_unavailable",
-                               "path does not exist or access is denied")
-            scope = found
-            root = Path(scope)
-            if any(Path(item) != root and root not in Path(item).parents for item in real_paths):
-                raise ApiError(403, "file_approval_path_mismatch", "paths exceed the approved directory")
-            external = real_paths
-            if target == "server":
-                self._file_approval_approved_directory = root
-            # Temporarily extend only this HTTP request's path policy. Explicit
-            # deny and read-only rules still win over the temporary grant.
-            # PathGrant lives in Server token storage, which imports the Unix
-            # network proxy; never load it during lightweight Client imports.
-            from openkapsel.auth.tokens import PathGrant
-            access = "rw" if capability == "files.write" else "ro"
-            self.token_record = replace(
-                self.token_record,
-                allowed_paths=(*self.token_record.allowed_paths, PathGrant(scope, access=access)),
-                # A symlink can resolve *inside* the Workspace. When this
-                # request holds approved files.write approval, the default
-                # Workspace read-only flag must no longer override the
-                # temporary grant. Explicit readonly/deny rules still win.
-                **({"can_write": True} if capability == "files.write" else {}),
-            )
-            for index, candidate in enumerate(requested):
-                if target == "server":
-                    if operation != "fs_read_files":
-                        self._assert_inside_root(candidate)
-                    resolved = candidate.resolve(strict=False)
-                    if ".openkapsel" in resolved.parts:
-                        raise ApiError(403, "reserved_path", "internal directories cannot be approved")
-                    if operation != "fs_read_files":
-                        self._assert_inside_root(resolved)
-                    if capability == "files.write":
-                        self._assert_path_writable(candidate)
-                else:
-                    # Never interpret a Client native path via Server
-                    # realpath: /var -> /private/var can differ by OS.
-                    actual = Path(external[index])
-                    policy = effective_path_access(
-                        actual, self.token_scope_root, self.token_record.can_write,
-                        self.token_record.allowed_paths, resolve_symlinks=False)
-                    alias_policy = effective_path_access(
-                        Path(original_external[index]), self.token_scope_root,
-                        self.token_record.can_write, self.token_record.allowed_paths,
-                        resolve_symlinks=False)
-                    if policy in {None, "deny"} or alias_policy == "deny":
-                        raise ApiError(403, "path_access_denied", "Client path or its alias is denied")
-                    if capability == "files.write":
-                        if policy != "rw" or alias_policy == "ro":
-                            raise ApiError(403, "read_only_path", "real Client path is read-only")
-                        for rule in self.token_record.allowed_paths:
-                            protected = Path(rule.path)
-                            if (rule.access in {"ro", "deny"}
-                                and protected != actual and actual in protected.parents):
-                                raise ApiError(403, "path_access_denied",
-                                               "directory contains protected paths")
-            if target != "server":
-                self._file_approval_external_scope = scope
-                self._file_approval_external_target = target
-        else:
-            self._require_capability(values, target, capability)
-        self.token_record = replace(
-            self.token_record,
-            **({"can_write": True} if capability == "files.write" else {"can_read": True}),
-        )
 
     def _transaction_recycle(self, source: Path, original: Path) -> dict[str, Any]:
         try:
@@ -1717,3 +1465,260 @@ class FileHandlersMixin(FileOperationSupportMixin):
     @staticmethod
     def _raise_upload_error(exc: UploadError) -> None:
         raise ApiError(exc.status, exc.code, exc.message, exc.details) from None
+
+    def _read_binary_chunk(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_permission(self.token_record.can_read, "read permission is not granted")
+        path = self._resolve_path(str(arguments["path"]))
+        offset = int(arguments.get("offset", 0))
+        length = int(arguments.get("length", self.server.config.mcp_binary_chunk_bytes))
+        if length > self.server.config.mcp_binary_chunk_bytes:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "chunk_too_large",
+                f"MCP binary chunks are limited to {self.server.config.mcp_binary_chunk_bytes} bytes",
+            )
+        with self._open_binary(path) as handle:
+            file_stat = self._stream_stat(handle)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
+            from openkapsel.files.mutation import require_standard_file_size
+            require_standard_file_size(file_stat, operation="fs_read_binary")
+            size = file_stat.st_size
+            if offset > size:
+                raise ApiError(
+                    HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                    "invalid_offset",
+                    "offset is beyond the end of the file",
+                    {"size": size},
+                )
+            handle.seek(offset)
+            data = handle.read(length)
+        next_offset = offset + len(data)
+        return {
+            "path": str(path),
+            "data_base64": base64.b64encode(data).decode("ascii"),
+            "offset": offset,
+            "bytes_read": len(data),
+            "next_offset": next_offset,
+            "size": size,
+            "eof": next_offset >= size,
+        }
+
+
+    def _handle_recycle_purge(self):
+        self._require_permission(self.token_record.can_write, "write permission is not granted")
+        body = self._read_json()
+        if body.get("confirm") is not True:
+            raise ApiError(400, "confirmation_required", "permanent purge requires confirm=true")
+        rid = self._required_string(body, "recycle_id")
+        row = self._mapped_recycle_root(body.get("root", "."))
+        if row:
+            result = self._mapping_rpc(row, "recycle_purge", {"recycle_id": rid})
+        else:
+            from openkapsel.files.recycle import RecycleBin, RecycleError
+            root = self._storage_recycle_named_root(body.get("root", "."), write=True)
+            try:
+                result = (RecycleBin(root, initialize_layout=False).purge(rid) if root is not None
+                          else self.server.recycle_for(self.token_scope_root).purge(rid))
+            except RecycleError as exc:
+                raise ApiError(exc.status, exc.code, exc.message) from None
+        self._send_json(200, result)
+
+
+
+class FileHandlersMixin(FileExecutionMixin):
+    """Control-plane routing; native execution is owned by Local Client."""
+    def _handle_files_approval_request(self):
+        body = self._read_json()
+        if set(body) - {"access", "target", "path", "scope_is_directory", "writer_nonce", "plan_id", "taskname", "message", "reason"}:
+            raise ApiError(400, "invalid_request", "unexpected file approval request field")
+        access = body.get("access")
+        if access not in {"read", "write"}:
+            raise ApiError(400, "invalid_request", "access must be read or write")
+        target = body.get("target")
+        if not isinstance(target, str) or not target or target == "auto":
+            raise ApiError(400, "invalid_target", "target must be server or an explicit Mapping ID")
+        row = self._function_target(target)
+        if row is not None:
+            target = row["id"]
+            if access == "write" and not row["writable"]:
+                raise ApiError(403, "mapping_unavailable", "Mapping is read-only")
+        function = "files." + access
+        if "approval.grant" not in self._function_methods(function, target, row):
+            raise ApiError(409, "mapping_client_upgrade_required", "Client must support function-owned File approval")
+        args = {key: body[key] for key in ("path", "scope_is_directory") if key in body}
+        current = self.server.function_grants.current(self.token_record.app_id,
+            self._file_approval_conversation(body), target, function)
+        if current is not None:
+            checked = self._function_internal(target, {"function": function, "method": "execute",
+                "args": {"operation": "approval_status", "arguments": args}, "internal": {"auth": current}})
+            if isinstance(checked, dict) and checked.get("granted") is True:
+                self._send_json(200, {"status": "granted", "capability": function, "target": target,
+                    **({"path": body["path"]} if "path" in body else {})})
+                return
+        forwarded = {key: value for key, value in body.items() if key not in {"access", "path", "scope_is_directory"}}
+        # Scope resolution and grant reuse are decisions of the Client. The
+        # control plane never checks filesystem paths to answer this request.
+        self._handle_function_approval_request(dict(forwarded, function=function, target=target, args=args),
+            response_fields={"capability": function, **({"path": body["path"]} if "path" in body else {})})
+
+    def _authorize_file_approval(self, operation, arguments, *, query=False):
+        if operation not in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
+            return False
+        self._file_approval_operation = operation
+        if {"auth", "internal", "external_root", "external_checks"} & arguments.keys():
+            raise ApiError(400, "invalid_request", "authorization is supplied only by the control layer")
+        values = {key: value[0] if query and isinstance(value, list) and len(value) == 1 else value
+                  for key, value in arguments.items()}
+        flag = values.get("approved", "false" if query else False)
+        if query:
+            if isinstance(flag, str):
+                flag = flag.lower()
+            if flag not in ("true", "false", True, False):
+                raise ApiError(400, "invalid_request", "approved must be true or false")
+            approved = flag == "true" or flag is True
+        else:
+            approved = self._optional_bool(values, "approved", False)
+        if not approved:
+            return False
+        self._require_control_token()
+        target = values.get("target")
+        if not isinstance(target, str) or not target or target == "auto":
+            raise ApiError(400, "invalid_target", "approved File API requires server or Mapping ID target")
+        row = self._function_target(target)
+        function = "files.write" if operation in FILE_APPROVAL_WRITE else "files.read"
+        if row is not None:
+            target = row["id"]
+            if function == "files.write" and not row["writable"]:
+                raise ApiError(403, "mapping_unavailable", "Mapping is read-only")
+        auth = self.server.function_grants.current(self.token_record.app_id,
+            self._file_approval_conversation(values), target, function)
+        if auth is None:
+            raise ApiError(403, "capability_approval_required", "No matching temporary File approval. Use files.request_approval.",
+                {"capability": function, "target": target, "request_operation": "files.request_approval"})
+        if "approval.grant" not in self._function_methods(function, target, row):
+            raise ApiError(409, "mapping_client_upgrade_required", "Client must support function-owned File approval")
+        if target == "server":
+            self._file_function_request = (operation, values, auth)
+            return False
+        self._file_approval_active = True
+        return self._execute_approved_mapping_file(row, operation, arguments, auth, query=query)
+
+    def _execute_approved_mapping_file(self, row, operation, arguments, auth, *, query):
+        import copy
+        from openkapsel.client_runtime.client_file_api import FILE_API_LIMITS
+        from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS
+        if operation in {"fs_content", "fs_content_put", "fs_read_binary"}:
+            from openkapsel.client_runtime.approved_file_stream import execute_approved_stream
+            return self._run_transfer(execute_approved_stream, self, row, operation, arguments, auth, query=query)
+        if operation not in FILE_API_OPERATIONS:
+            raise ApiError(409, "approved_stream_unavailable", "approved Mapping streams require the stream File function")
+        payload = copy.deepcopy(arguments)
+        for key in ("plan_id", "taskname", "message", "approved", "writer_nonce", "target", "auth", "internal"):
+            payload.pop(key, None)
+        mount = self.server.mappings.mount_path(row)
+        def route(value):
+            if not isinstance(value, str):
+                return value
+            # Translate only the explicit exported mount prefix. Never stat,
+            # resolve symlinks, or interpret a Client's external native path.
+            prefix = str(mount).rstrip("/") + "/"
+            relative = row["name"].rstrip("/") + "/"
+            if value == str(mount) or value == row["name"]:
+                return "."
+            if value.startswith(prefix):
+                return value[len(prefix):]
+            if value.startswith(relative):
+                return value[len(relative):]
+            return value
+        if query:
+            if "path" in payload:
+                payload["path"] = [route(v) for v in payload["path"]]
+        elif operation == "fs_read_files" and isinstance(payload.get("paths"), list):
+            payload["paths"] = [route(v) for v in payload["paths"]]
+        elif operation in {"fs_manifest", "fs_mutate"} and isinstance(payload.get("items"), list):
+            for item in payload["items"]:
+                if isinstance(item, dict) and "path" in item:
+                    item["path"] = route(item["path"])
+        else:
+            for key in ("path", "source", "destination"):
+                if key in payload:
+                    payload[key] = route(payload[key])
+        rules = [{"path": route(rule.path), "access": rule.access} for rule in self.token_record.allowed_paths]
+        result = self._function_internal(row["id"], {
+            "function": "files.write" if operation in FILE_APPROVAL_WRITE else "files.read",
+            "method": "execute", "internal": {"auth": auth},
+            "args": {"operation": operation, "arguments": {
+                "query" if query else "body": payload,
+                "display_root": str(mount), "rules": rules,
+                "limits": {name: getattr(self.server.config, name) for name in FILE_API_LIMITS}}}})
+        if not isinstance(result, dict) or type(result.get("status")) is not int:
+            raise ApiError(502, "invalid_mapping_response", "invalid Client File response")
+        if "error" in result:
+            error = result["error"]
+            raise ApiError(result["status"], error.get("code", "file_operation_failed"), error.get("message", "File operation failed"), error.get("details"))
+        self._send_json(result["status"], result["body"])
+        return True
+
+    def _handle_fs_list(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_list", *args, **kwargs)
+
+    def _handle_fs_stat(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_stat", *args, **kwargs)
+
+    def _handle_fs_manifest(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_manifest", *args, **kwargs)
+
+    def _handle_fs_find(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_find", *args, **kwargs)
+
+    def _handle_fs_grep(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_grep", *args, **kwargs)
+
+    def _handle_fs_tree(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_tree", *args, **kwargs)
+
+    def _handle_fs_content(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_content", *args, **kwargs)
+
+    def _handle_fs_content_put(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_content_put", *args, **kwargs)
+
+    def _handle_fs_read_files(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_read_files", *args, **kwargs)
+
+    def _handle_fs_read_large(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_read_large", *args, **kwargs)
+
+    def _handle_fs_replace_large(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_replace_large", *args, **kwargs)
+
+    def _handle_fs_mutate(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_mutate", *args, **kwargs)
+
+    def _handle_fs_mkdir(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_mkdir", *args, **kwargs)
+
+    def _handle_fs_move(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_fs_move", *args, **kwargs)
+
+    def _handle_recycle_list(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_recycle_list", *args, **kwargs)
+
+    def _handle_recycle_restore(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_recycle_restore", *args, **kwargs)
+
+    def _handle_upload_create(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_upload_create", *args, **kwargs)
+
+    def _handle_upload_status(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_upload_status", *args, **kwargs)
+
+    def _handle_upload_append(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_upload_append", *args, **kwargs)
+
+    def _handle_upload_commit(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_upload_commit", *args, **kwargs)
+
+    def _handle_upload_cancel(self, *args, **kwargs):
+        return self.server.local_client.execute_file(self, "_handle_upload_cancel", *args, **kwargs)

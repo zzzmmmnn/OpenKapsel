@@ -51,6 +51,7 @@ class ClientFiles:
         self.protected_paths = frozenset(protected)
         # Populated once the Client's job_sandbox policy is validated.
         self.sandbox_denied_paths = frozenset()
+        self.sandbox_path_rules = ()
         self.writable = writable
         if rpc_registry is None:
             from openkapsel.rpc_plugins import load_client_rpc_registry
@@ -84,6 +85,12 @@ class ClientFiles:
 
     def ensure_mutable_path(self, path):
         path = Path(path)
+        from openkapsel.auth.path_access import effective_path_access
+        if self.sandbox_path_rules and any(effective_path_access(
+                checked, self.root, self.writable, self.sandbox_path_rules,
+                resolve_symlinks=False) in {"ro", "deny"}
+                for checked in (path, path.resolve(strict=False))):
+            raise OSError(errno.EACCES, "sandbox path is read-only or denied")
         for protected in (*self.protected_paths, *self.sandbox_denied_paths):
             if (path == protected or protected in path.parents or
                     path in protected.parents):
@@ -216,6 +223,7 @@ class ClientFiles:
                     extra.close()
                     raise OSError(errno.EACCES, "external root changed during authorization")
                 extra.sandbox_denied_paths = self.sandbox_denied_paths
+                extra.sandbox_path_rules = self.sandbox_path_rules
                 # The standard filename index is tied to the normal export.
                 # Never let an external directory consult that stale index.
                 extra.rpc_capabilities["file_search"] = {"state": "disabled"}

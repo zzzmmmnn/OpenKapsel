@@ -9,6 +9,7 @@ from openkapsel.api.mcp_handlers import McpHandlersMixin
 from openkapsel.api.preview_handlers import PreviewHandlersMixin
 from openkapsel.api.skill_handlers import SkillHandlersMixin
 from openkapsel.auth.admin_handlers import AdminHandlersMixin
+from openkapsel.auth.function_handlers import FunctionApprovalHandlersMixin
 from openkapsel.auth.oauth_handlers import OAuthHandlersMixin
 from openkapsel.auth.static_mcp import StaticMcpHandlersMixin
 from openkapsel.context.context_handlers import ContextCreationMixin
@@ -38,6 +39,7 @@ class WorkspaceRequestHandler(
     MappingHandlersMixin,
     StorageHandlersMixin,
     AdminHandlersMixin,
+    FunctionApprovalHandlersMixin,
     OAuthHandlersMixin,
     StaticMcpHandlersMixin,
     DiscoveryMixin,

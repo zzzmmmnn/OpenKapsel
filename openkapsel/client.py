@@ -20,6 +20,8 @@ from . import __version__
 from openkapsel.client_runtime.client_config import ClientConfigError, ClientConfigLock
 from openkapsel.client_runtime.client_files import ClientFiles
 from openkapsel.client_runtime.client_rpc import ClientRpcSession
+from openkapsel.execution.function_registry import FunctionRegistry
+from openkapsel.execution.builtin_functions import register_client_shell
 from openkapsel.network.proxy import (
     connect_proxy_tunnel,
     parse_proxy_url,
@@ -117,6 +119,10 @@ class ClientRuntime:
             self.config, protected_paths=protected_paths
         )
         self.tasks: JobBackend
+        self.functions = FunctionRegistry()
+        register_client_shell(self.functions, self.tasks)
+        from openkapsel.client_runtime.file_approval import register_file_functions
+        register_file_functions(self.functions, self.files)
         self.client_fingerprint = running_fingerprint("client")
         self.pending_reload = False
         self.rpc_slots = threading.BoundedSemaphore(32)
@@ -228,10 +234,12 @@ def _create_resources(config, *, protected_paths=()):
     from openkapsel.client_runtime.job_sandbox_config import make_job_sandbox
     job_sandbox = make_job_sandbox(config, files, protected_paths=protected_paths)
     if job_sandbox is not None:
+        from types import SimpleNamespace
         files.sandbox_denied_paths = frozenset(
             Path(path) for path in job_sandbox["hidden_paths"]
-            if Path(path) == files.root or files.root in Path(path).parents
         )
+        files.sandbox_path_rules = tuple(SimpleNamespace(path=item["path"], access=item["access"])
+            for item in job_sandbox["allowed_paths"])
     is_mapping = urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]
     if job_sandbox is not None and not is_mapping:
         raise ValueError("job_sandbox requires a mapping-connect Client")
@@ -400,7 +408,7 @@ def _periodic_reload_check(config, runtime, reload_state, minimum_version):
     return True
 
 
-def _capabilities(files, tasks):
+def _capabilities(files, tasks, functions=None):
     capabilities = {
         "file_stream": {"version": 1, "descriptor_stat": True, "directory_details": True,
                         "search_prefix": True, "external_root_file_api": True,
@@ -410,6 +418,8 @@ def _capabilities(files, tasks):
         "rpc": files.rpc_capabilities,
         "execution": tasks.capabilities(),
     }
+    if functions is not None:
+        capabilities["functions"] = functions.describe()
     return capabilities
 
 
@@ -452,7 +462,7 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None, on_ready=Non
             "handshake_version": MAPPING_HANDSHAKE_VERSION,
             "client_version": __version__,
             "client_fingerprint": runtime.client_fingerprint,
-            "capabilities": _capabilities(files, tasks),
+            "capabilities": _capabilities(files, tasks, getattr(runtime, "functions", None)),
         }).decode())
         ready = _recv_message(sock)
         if ready != {"type": "ready", "handshake_version": MAPPING_HANDSHAKE_VERSION}:

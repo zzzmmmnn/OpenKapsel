@@ -13,7 +13,6 @@ from typing import Any
 
 from openkapsel.errors import ApiError
 from openkapsel.execution.cgroups import BUBBLEWRAP_PROCESS_OVERHEAD, SandboxLimits
-from openkapsel.execution.shell_execution import start_shell_task
 from openkapsel.execution.shell_routing import RemoteTask
 
 class TaskHttpMixin:
@@ -42,6 +41,27 @@ class TaskHttpMixin:
                 raise ApiError(409, "client_upgrade_required",
                                "update and reconnect client for approved Shell execution")
             target = row["id"]
+        # New Clients declare private function approval callbacks.  Reuse
+        # the public Shell request operation, but let the function issue and
+        # merge opaque auth rather than building scopes in the Server.
+        row_for_function = row if target != "server" else None
+        methods = self._function_methods("shell.exec", target, row_for_function)
+        if "approval.grant" in methods:
+            try:
+                self._require_capability(body, target, "shell.unsandboxed")
+            except ApiError as exc:
+                if exc.code != "capability_approval_required":
+                    raise
+            else:
+                self._send_json(200, {
+                    "status": "granted", "capability": "shell.unsandboxed",
+                    "target": target,
+                })
+                return
+            return self._handle_function_approval_request({
+                **body, "target": target, "function": "shell.exec",
+                "args": {"reason": body.get("reason", body.get("message", ""))},
+            })
         try:
             self._require_capability(body, target, "shell.unsandboxed", create_ticket=True)
         except ApiError as exc:
@@ -61,6 +81,8 @@ class TaskHttpMixin:
     def _handle_shell_exec(self) -> None:
         body = self._read_json()
         command = self._required_string(body, "command")
+        if {"auth", "internal", "unsandboxed"} & body.keys():
+            raise ApiError(400, "invalid_request", "authorization is supplied only by the control layer")
         approved = self._optional_bool(body, "approved", False)
         if self._start_client_shell(body):
             return
@@ -71,7 +93,13 @@ class TaskHttpMixin:
         interactive = self._optional_bool(body, "interactive", False)
         if approved:
             self._require_capability(body, "server", "shell.unsandboxed")
-        task = start_shell_task(
+        function_auth = (
+            self.server.function_grants.current(
+                self.token_record.app_id, self._file_approval_conversation(body),
+                "server", "shell.exec",
+            ) if approved else None
+        )
+        task = self.server.local_client.start_shell(
             self.server,
             self.token_record,
             self.token_scope_root,
@@ -81,6 +109,7 @@ class TaskHttpMixin:
             interactive=interactive,
             mount_mappings=body.get("mount_mappings", []),
             unsandboxed=approved,
+            auth=function_auth,
             authorize_launch=(lambda: self._require_capability(body, "server", "shell.unsandboxed")) if approved else None,
         )
         self._send_json(

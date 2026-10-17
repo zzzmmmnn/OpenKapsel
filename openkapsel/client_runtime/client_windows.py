@@ -50,17 +50,29 @@ def native_handle(path, *, access=0, create=False):
 
 
 class WindowsPaths:
-    def __init__(self, root):
+    def __init__(self, root, *, roots=None):
         self.root = root
+        self.roots = tuple(sorted(set(roots or (root,)), key=lambda p: len(p.parts), reverse=True))
+
+    def anchor(self, path):
+        for root in self.roots:
+            if path == root or root in path.parents:
+                return root, path.relative_to(root).parts
+        raise OSError(errno.EACCES, "path is outside authorized roots")
 
     @contextlib.contextmanager
     def guard(self, path, *, include_final=False):
-        parts = path.relative_to(self.root).parts
+        root, parts = self.anchor(path)
         check_windows_filename_parts(parts)
         handles = []
         try:
-            current = self.root
+            # Pin the canonical root's ancestors too: a junction swapped into
+            # an ancestor between authorization and I/O must not redirect it.
+            current = Path(root.anchor)
             handles.append(native_handle(current))
+            for part in root.parts[1:]:
+                current /= part
+                handles.append(native_handle(current))
             for part in parts if include_final else parts[:-1]:
                 current /= part
                 handles.append(native_handle(current))
@@ -85,7 +97,7 @@ class WindowsPaths:
             return fd
 
     def mkdir(self, path, *, parents, exist_ok):
-        if parents and path != self.root:
+        if parents and path != self.anchor(path)[0]:
             self.mkdir(path.parent, parents=True, exist_ok=True)
         with self.guard(path):
             try:

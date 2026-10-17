@@ -36,6 +36,11 @@ class ClientRpcSession:
         # Session copies must retain protections beyond the ordinary export:
         # an approved external File API root can contain the Client config.
         self.files.sandbox_denied_paths = base.sandbox_denied_paths
+        self.files.sandbox_path_rules = base.sandbox_path_rules
+        from openkapsel.execution.function_registry import FunctionRegistry
+        from openkapsel.client_runtime.file_approval import register_file_functions
+        self.file_functions = FunctionRegistry()
+        register_file_functions(self.file_functions, self.files)
         # Keep local mutations/seek-based handle I/O serialized even across
         # reconnects. Each session has its own handle table, never reused by a
         # late worker from a disconnected session.
@@ -112,7 +117,9 @@ class ClientRpcSession:
                 args.get("family"), args.get("operation")
             ) if isinstance(args.get("family"), str) and isinstance(args.get("operation"), str) else None
             is_rpc_read = spec is not None and not spec["write"]
-        if is_ssh or is_file_api_read or is_rpc_read or (
+        unlocked_function = op == "function" and not (isinstance(args, dict)
+            and args.get("function") == "files.write" and args.get("method") == "execute")
+        if unlocked_function or is_ssh or is_file_api_read or is_rpc_read or (
             isinstance(op, str) and op.startswith("task_")
         ):
             response = self._dispatch(request)
@@ -130,7 +137,13 @@ class ClientRpcSession:
             check_deadline()
             if not isinstance(op, str) or not isinstance(args, dict):
                 raise OSError(errno.EINVAL, "invalid operation")
-            if op.startswith("task_"):
+            if op == "function":
+                # Private server-to-client RPC. Never dispatch a function
+                # method through the public plugin/AI operation registry.
+                registry = (self.file_functions if args.get("function") in {"files.read", "files.write"}
+                            else self.runtime.functions)
+                result = registry.dispatch_internal(args)
+            elif op.startswith("task_"):
                 result = self.runtime.tasks.dispatch(op, args)
             else:
                 result = self.files.dispatch(op, args, cancelled=self.stopped.is_set)

@@ -241,6 +241,21 @@ class BubblewrapBackend:
                 proxy.close()
             raise
         if use_rootlesskit:
+            if resolver_data is not None:
+                # RootlessKit re-execs its child without inherited extra FDs.
+                # Create the resolver descriptor AFTER that boundary. A
+                # quoted here-document keeps stdin available for Shell input
+                # and adds no host path or private Manager state to the mount.
+                resolver_script = (
+                    "exec 4<<'OPENKAPSEL_RESOLVER'\n"
+                    + resolver_data.decode("ascii")
+                    + "OPENKAPSEL_RESOLVER\nexec \"$@\""
+                )
+                argv = [
+                    "/bin/sh", "-c", resolver_script, "openkapsel-resolver",
+                    *("4" if arg == RESOLVER_FD_MARKER else arg for arg in argv),
+                ]
+                resolver_data = None
             argv = [
                 str(self.rootlesskit), "--copy-up=/etc", "--net=slirp4netns",
                 "--disable-host-loopback", "--", *argv,

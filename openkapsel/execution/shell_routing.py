@@ -181,11 +181,32 @@ class ShellRoutingMixin:
         args = {"task_id": new_job_id(), "command": body["command"],
                 "cwd": candidate.relative_to(self.server.mappings.mount_path(row)).as_posix(),
                 "interactive": self._optional_bool(body, "interactive", False)}
-        if approved:
-            args["unsandboxed"] = True
         if body.get("timeout_seconds") is not None:
             args["timeout_seconds"] = body["timeout_seconds"]
-        result = client_summary(row["id"], self._mapping_rpc(row, "task_start", args, retry=not approved))
+        function_auth = (
+            self.server.function_grants.current(
+                self.token_record.app_id, self._file_approval_conversation(body),
+                row["id"], "shell.exec",
+            ) if approved else None
+        )
+        if function_auth is not None:
+            # Auth is injected as a private RPC field. The Client, not the
+            # Server, interprets it and decides whether to skip the sandbox.
+            operation = "function"
+            rpc_args = {
+                "function": "shell.exec", "method": "execute",
+                "args": args, "internal": {"auth": function_auth},
+            }
+        else:
+            # Compatibility with approvals issued through the legacy flow.
+            if approved:
+                args["unsandboxed"] = True
+            operation, rpc_args = "task_start", args
+        result = client_summary(
+            row["id"], self._mapping_rpc(
+                row, operation, rpc_args, retry=not approved
+            )
+        )
         result["status_url"] = f"{self._base_path()}/task/get/{result['task_id']}"
         self._send_json(202, result)
         return True

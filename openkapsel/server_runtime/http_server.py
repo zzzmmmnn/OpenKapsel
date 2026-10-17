@@ -18,6 +18,7 @@ from pathlib import Path
 from openkapsel.auth.oauth_consent import ConsentLimiter, ConsentProtector
 from openkapsel.auth.oauth_store import OAuthStore
 from openkapsel.auth.capability_grants import CapabilityGrants
+from openkapsel.auth.function_grants import FunctionGrants
 from openkapsel.auth.security import hash_password, password_hash_needs_upgrade, verify_password
 from openkapsel.auth.static_mcp import StaticMcpStore
 from openkapsel.auth.tokens import TokenStore
@@ -37,6 +38,7 @@ from openkapsel.files.uploads import UploadRegistry
 from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.mapping.mapping_transfers import FileTransferManager
 from openkapsel.rpc_plugins import load_server_rpc_registry
+from openkapsel.client_runtime.local_client import LocalClient
 from openkapsel.storage.storage_manager import StorageProviderManager
 from openkapsel.storage.storage_oauth import StorageOAuthFlows
 from openkapsel.workspace.workspace_images import WorkspaceImageClient
@@ -68,6 +70,8 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.oauth_consent = ConsentProtector()
         self.oauth_consent_limiter = ConsentLimiter()
         self.capability_grants = CapabilityGrants(config.upload_state_dir.parent / "workspace-passwords.sqlite3")
+        self.function_grants = FunctionGrants()
+        self.capability_grants.on_revoke_workspace = self.function_grants.revoke_workspace
         self.capability_limiter = ConsentLimiter()
         self.static_mcp = StaticMcpStore(config.upload_state_dir.parent / "static-mcp.sqlite3")
         self.workspace_images = WorkspaceImageClient(config.workspace_image_socket)
@@ -126,6 +130,10 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         self.tasks = TaskRegistry(config, self.cgroups)
         self.rpc_registry = load_server_rpc_registry()
         self.rpc_capabilities = self.rpc_registry.capability_map({})
+        self.local_client = LocalClient(
+            self.rpc_registry, self.rpc_capabilities,
+            filename_index=lambda: self.filename_index,
+        )
         self.uploads = UploadRegistry(
             config.upload_state_dir,
             ttl_seconds=config.upload_ttl_seconds,
