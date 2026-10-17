@@ -1971,7 +1971,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         status, task = self.approved(command="cat", interactive=True)
         self.assertEqual(202, status, task)
         key = (self.record.app_id, self.ownership()[0], "server", "shell.exec")
-        store.active[key] = replace(store.active[key], deadline=0)
+        store.active[key] = replace(store.active[key], deadlines=tuple(0 for _ in store.active[key].deadlines))
         self.assertEqual(403, self.approved()[0])
         self.assertEqual(200, self.api("/task/stdin/" + task["task_id"], {"data": "still-running\n", "close": True})[0])
         self.assertEqual("still-running\n", self.finished(task["task_id"])["stdout"])
@@ -2045,7 +2045,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         original = EnvironmentStore.shell_file
         def expired_file(store, *args):
             grant_store = self.server.function_grants
-            grant_store.active[key] = replace(grant_store.active[key], deadline=0)
+            grant_store.active[key] = replace(grant_store.active[key], deadlines=tuple(0 for _ in grant_store.active[key].deadlines))
             return original(store, *args)
         with patch.object(EnvironmentStore, "shell_file", expired_file), patch.object(self.server.tasks, "start") as launch:
             self.assertEqual(403, self.approved()[0])

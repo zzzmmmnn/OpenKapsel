@@ -100,8 +100,7 @@ class ClientJobSandboxTests(unittest.TestCase):
         finally:
             runtime.close()
 
-    def test_absolute_deny_refuses_approved_unsandboxed_shell(self):
-        import errno
+    def test_approved_unsandboxed_shell_ignores_unrelated_deny_rule(self):
         denied = self.root / "absolute-deny"
         denied.mkdir()
         secret = denied / "secret.txt"
@@ -114,14 +113,30 @@ class ClientJobSandboxTests(unittest.TestCase):
             },
         ))
         try:
-            job = {"task_id": "&De01&", "command": "echo LEAK > absolute-deny/secret.txt",
+            job = {"task_id": "&De01&", "command": "echo APPROVED",
                    "unsandboxed": True, "timeout_seconds": 5}
-            with self.assertRaises(OSError) as blocked:
-                runtime.tasks.dispatch("task_start", job)
-            self.assertEqual(errno.EACCES, blocked.exception.errno)
-            with self.assertRaises(OSError) as blocked:
-                runtime.tasks.legacy.dispatch("task_start", job)
-            self.assertEqual(errno.EACCES, blocked.exception.errno)
+            # Test dispatch without launching real unsandboxed commands.
+            with patch.object(runtime.tasks.legacy, "_start",
+                              return_value={"approved": True}) as launch:
+                self.assertEqual({"approved": True},
+                                 runtime.tasks.dispatch("task_start", job))
+                self.assertEqual({"approved": True},
+                                 runtime.tasks.legacy.dispatch("task_start", job))
+                self.assertEqual(2, launch.call_count)
+                self.assertTrue(all(call.args[1]["unsandboxed"]
+                                    for call in launch.call_args_list))
+            # Long approved Shell must reach the shared Job Manager too;
+            # unrelated deny must not abort before manager dispatch.
+            long_job = dict(job, task_id="&De02&", timeout_seconds=121)
+            with patch.object(runtime.tasks, "_prepare", side_effect=lambda args: args), \
+                    patch("openkapsel.client_runtime.shared_job_tasks.request",
+                          return_value={"approved": "manager"}) as manager:
+                self.assertEqual({"approved": "manager"},
+                                 runtime.tasks.dispatch("task_start", long_job))
+                self.assertTrue(manager.call_args.args[3]["unsandboxed"])
+            # The same deny is still enforced on Client File operations.
+            with self.assertRaises(OSError):
+                runtime.files.ensure_accessible_path(secret)
             self.assertEqual("PRIVATE", secret.read_text())
         finally:
             runtime.close()

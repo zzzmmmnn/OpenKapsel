@@ -1,5 +1,6 @@
 """Generic function request flow: optional prepare and opaque merged grants."""
 import types
+import time
 import unittest
 
 from openkapsel.auth.function_grants import FunctionGrants
@@ -51,10 +52,10 @@ class FunctionApprovalFlowTests(unittest.TestCase):
         prepared = []
         functions.register(
             "fs.write",
-            execute=lambda args, auth: args["path"] in auth["paths"],
-            approval_grant=lambda old, request: {
-                "paths": sorted(set([*(old or {}).get("paths", []), request["path"]]))
-            },
+            execute=lambda args, auth: args["path"] in [g["path"] for g in auth["grants"]],
+            approval_grant=lambda old, request, seconds: {"grants": [
+                *(old or {}).get("grants", []),
+                {"path": request["path"], "expires_at": time.time() + seconds}]},
         )
         handler = Handler(functions, {
             "function": "fs.write", "target": "server",
@@ -67,14 +68,14 @@ class FunctionApprovalFlowTests(unittest.TestCase):
                          handler.server.function_grants.pending(ticket).request)
         handler.server.function_grants.approve(
             ticket, seconds=600,
-            grant=lambda old, request: handler._function_internal("server", {
+            grant=lambda old, request, seconds: handler._function_internal("server", {
                 "function": "fs.write", "method": "approval.grant",
-                "old_auth": old, "request": request,
+                "old_auth": old, "request": request, "seconds": seconds,
             }),
         )
-        self.assertEqual({"paths": ["/home/user1"]},
+        self.assertEqual(["/home/user1"], [g["path"] for g in
                          handler.server.function_grants.current(
-                             "token", 7, "server", "fs.write"))
+                             "token", 7, "server", "fs.write")["grants"]])
 
     def test_prepare_callback_may_reject_approval(self):
         calls = []
@@ -86,7 +87,7 @@ class FunctionApprovalFlowTests(unittest.TestCase):
             "fs.write",
             execute=lambda args, auth: True,
             approval_prepare=prepare,
-            approval_grant=lambda old, request: request,
+            approval_grant=lambda old, request, seconds: request,
         )
         handler = Handler(functions, {
             "function": "fs.write", "target": "server",

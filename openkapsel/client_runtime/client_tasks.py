@@ -187,9 +187,6 @@ class ClientTasks:
                 unsandboxed = args.get("unsandboxed", False)
                 if type(unsandboxed) is not bool:
                     raise OSError(errno.EINVAL, "unsandboxed must be a boolean")
-                if unsandboxed and any(rule.access == "deny"
-                                       for rule in self.files.sandbox_path_rules):
-                    raise OSError(errno.EACCES, "absolute deny forbids unsandboxed Shell")
                 if isinstance(args.get("rpc"), dict):
                     if unsandboxed:
                         raise OSError(errno.EACCES, "Shell approval cannot authorize RPC")

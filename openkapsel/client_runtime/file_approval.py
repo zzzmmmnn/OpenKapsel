@@ -7,8 +7,10 @@ only in the grant callback after the browser has verified the password.
 from __future__ import annotations
 
 import errno
+import math
 import os
 import secrets
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,13 +54,17 @@ class FileApproval:
         return {"request": dict(args), "confirmation_required": bool(path),
                 "display": {"requested_path": path or "Workspace", "scope_is_directory": directory}}
 
-    def grant(self, old_auth, request, *, write=False):
+    def grant(self, old_auth, request, seconds, *, write=False):
         self.prepare(request)
-        updated = {"workspace": bool((old_auth or {}).get("workspace")),
-                   "paths": list((old_auth or {}).get("paths", []))}
+        if type(seconds) is not int or seconds <= 0:
+            raise ValueError("invalid File approval duration")
+        updated = dict(old_auth) if isinstance(old_auth, dict) else {}
+        grants = list(updated.get("grants", []))
         raw = request.get("path", "")
         if not raw:
-            updated["workspace"] = True
+            new_item = {"expires_at": time.time() + seconds, "workspace": True}
+            grants = [item for item in grants if item.get("workspace") is not True]
+            updated["grants"] = [*grants, new_item]
             return updated
         directory = request.get("scope_is_directory", True)
         try:
@@ -82,24 +88,31 @@ class FileApproval:
                         raise OSError(errno.EACCES, "absolute deny cannot be approved")
         except (OSError, RuntimeError, ValueError):
             raise ApiError(400, "approval_path_unavailable", "approval path is unavailable") from None
-        # Canonical scopes, not aliases. The execute path rechecks realpaths
-        # on every operation and pins descriptors to these approved roots.
-        # Never collapse child scopes into their parent: an independently
-        # approved protect exception must remain distinguishable from the
-        # earlier approval of a broad ancestor.
-        roots = {Path(p) for p in updated["paths"]}
-        roots.add(scope)
-        updated["paths"] = sorted(str(p) for p in roots)
+        # Canonical scopes, not aliases. Keep independent child protect grants,
+        # and renew only the specifically confirmed canonical directory.
+        new_item = {"expires_at": time.time() + seconds, "path": str(scope)}
+        grants = [item for item in grants if item.get("path") != str(scope)]
+        updated["grants"] = [*grants, new_item]
         return updated
 
     @staticmethod
     def paths(auth):
-        if (not isinstance(auth, dict) or set(auth) - {"workspace", "paths"}
-                or not isinstance(auth.get("workspace"), bool)
-                or not isinstance(auth.get("paths"), list)
-                or any(not isinstance(p, str) for p in auth["paths"])):
+        if not isinstance(auth, dict) or not isinstance(auth.get("grants"), list):
             raise ApiError(403, "invalid_file_authorization", "invalid File authorization")
-        return tuple(absolute_scope(p) for p in auth["paths"])
+        scopes = []
+        for item in auth["grants"]:
+            if (not isinstance(item, dict) or type(item.get("expires_at")) not in (int, float)
+                    or not 0 <= item["expires_at"] <= 10**13
+                    or not math.isfinite(item["expires_at"])
+                    or not (item.get("workspace") is True or isinstance(item.get("path"), str))):
+                raise ApiError(403, "invalid_file_authorization", "invalid File authorization")
+            if "path" in item:
+                scopes.append(absolute_scope(item["path"]))
+        return tuple(scopes)
+
+    @staticmethod
+    def workspace_granted(auth):
+        return any(item.get("workspace") is True for item in auth["grants"])
 
     @classmethod
     def check(cls, value, root, auth, *, write=False, rules=()):
@@ -124,7 +137,7 @@ class FileApproval:
             raise ApiError(404, "path_unavailable", "path does not exist or access is denied") from None
         scopes = cls.paths(auth)
         internal = resolved == root or root in resolved.parents
-        if not (internal and auth["workspace"] or
+        if not (internal and cls.workspace_granted(auth) or
                 any(resolved == p or p in resolved.parents for p in scopes)):
             raise ApiError(404, "path_unavailable", "path does not exist or access is denied")
         if any(p == ".openkapsel" or p.startswith(".openkapsel-")
@@ -245,7 +258,7 @@ class FileApproval:
         FileApproval().prepare(request)
         paths = cls.paths(auth)
         if not request.get("path"):
-            return auth["workspace"]
+            return cls.workspace_granted(auth)
         try:
             actual = absolute_scope(request["path"]).resolve(strict=False)
             # A broad ancestor may not cover an intervening protect rule.
@@ -265,4 +278,4 @@ def register_file_functions(functions, files=None, *, native_execute=None):
             return policy.execute(args["operation"], args["arguments"], auth, write=access == "write")
         functions.register("files." + access, execute=execute,
                            approval_prepare=policy.prepare,
-                           approval_grant=lambda old, request, access=access: policy.grant(old, request, write=access == "write"))
+                           approval_grant=lambda old, request, seconds, access=access: policy.grant(old, request, seconds, write=access == "write"))

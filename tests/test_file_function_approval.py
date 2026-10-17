@@ -28,9 +28,13 @@ class FileFunctionTests(unittest.TestCase):
         self.functions = FunctionRegistry()
         register_file_functions(self.functions, self.files)
 
-    def grant(self, path=None, old=None, access='read'):
+    def grant(self, path=None, old=None, access='read', seconds=600):
         return self.functions.grant('files.' + access, old_auth=old,
-            request={} if path is None else {'path': str(path)})
+            request={} if path is None else {'path': str(path)}, seconds=seconds)
+
+    @staticmethod
+    def scopes(auth):
+        return [grant['path'] for grant in auth['grants'] if 'path' in grant]
 
     def execute(self, auth, operation, body=None, query=None, access='read', **arguments):
         arguments.update(body=body or {}, query=query or {})
@@ -50,8 +54,8 @@ class FileFunctionTests(unittest.TestCase):
             directory.mkdir(); (directory / 'text.txt').write_text(content)
         one = self.grant(first)
         two = self.grant(second, old=one)
-        self.assertEqual([str(first)], one['paths'])
-        self.assertEqual([str(first), str(second)], two['paths'])
+        self.assertEqual([str(first)], self.scopes(one))
+        self.assertEqual([str(first), str(second)], self.scopes(two))
         for directory, text in ((first, 'ONE'), (second, 'TWO')):
             result = self.execute(two, 'fs_read_files', {'paths': [str(directory / 'text.txt')]})
             self.assertEqual(200, result['status'], result)
@@ -69,7 +73,7 @@ class FileFunctionTests(unittest.TestCase):
     def test_grant_to_parent_coalesces_child_without_expanding_to_host(self):
         parent = self.base / 'parent'; child = parent / 'child'; child.mkdir(parents=True)
         result = self.grant(parent, old=self.grant(child))
-        self.assertEqual([str(parent), str(child)], result['paths'])
+        self.assertEqual([str(child), str(parent)], self.scopes(result))
         with self.assertRaises(ApiError):
             self.grant(Path(self.base.anchor))
 
@@ -169,7 +173,7 @@ class FileFunctionTests(unittest.TestCase):
                               access="write")
         self.assertEqual(201, result["status"], result)
         self.assertEqual([str(path) for path in (outside, first, narrow)],
-                         deep["paths"])
+                         self.scopes(deep))
         result = self.execute(deep, "fs_mkdir", {"path": str(second / "sibling")},
                               access="write")
         self.assertEqual(403, result["status"], result)
@@ -197,7 +201,7 @@ class FileFunctionTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.files.ensure_accessible_path(restricted)
         grant = self.grant(restricted, access="write")
-        self.assertEqual([str(restricted)], grant["paths"])
+        self.assertEqual([str(restricted)], self.scopes(grant))
         result = self.execute(grant, "fs_mkdir",
                               {"path": str(restricted / "created")}, access="write")
         self.assertEqual(201, result["status"], result)
@@ -350,7 +354,7 @@ class FileFunctionTests(unittest.TestCase):
         alias = self.base / 'alias'; link(alias, one)
         auth = self.grant(alias)
         write = self.grant(alias, access='write')
-        self.assertEqual([str(one)], auth['paths'])
+        self.assertEqual([str(one)], self.scopes(auth))
         self.assertEqual(200, self.execute(auth, 'fs_read_files', {'paths': [str(alias / 'visible.txt')]})['status'])
         created = self.execute(write, 'fs_mutate', {'items': [
             {'op': 'file.create', 'path': str(alias / 'allowed.txt'), 'content': 'APPROVED'}]}, access='write')
@@ -421,6 +425,41 @@ class FileFunctionTests(unittest.TestCase):
         with self.assertRaises(OSError):
             descriptor = provider.paths.open(target)
             os.close(descriptor)
+
+    def test_server_prunes_only_expired_file_scopes_before_client_execution(self):
+        from openkapsel.auth.function_grants import FunctionGrants
+
+        directories = [self.base / 'scope_a', self.base / 'scope_b']
+        for i, directory in enumerate(directories):
+            directory.mkdir()
+            (directory / 'text.txt').write_text(f'SCOPE_{i}')
+        store = FunctionGrants()
+        now = [100.0]
+        with patch('openkapsel.auth.function_grants.time.monotonic',
+                   side_effect=lambda: now[0]), patch(
+                'openkapsel.client_runtime.file_approval.time.time',
+                side_effect=lambda: 200000 + now[0]):
+            for directory, duration, start in zip(directories, (60, 600), (100, 130)):
+                now[0] = start
+                ticket = store.request('t', 1, 'mapping', 'files.read',
+                                       {'path': str(directory)})
+                store.approve(ticket, seconds=duration,
+                    grant=lambda old, req, seconds: self.functions.grant(
+                        'files.read', old_auth=old, request=req, seconds=seconds))
+            both = store.current('t', 1, 'mapping', 'files.read')
+            self.assertEqual([str(p) for p in directories], self.scopes(both))
+            saved_expiry = both['grants'][1]['expires_at']
+            now[0] = 161
+            remaining = store.current('t', 1, 'mapping', 'files.read')
+            self.assertEqual([str(directories[1])], self.scopes(remaining))
+            self.assertEqual(saved_expiry, remaining['grants'][0]['expires_at'])
+            denied = self.execute(remaining, 'fs_read_files',
+                {'paths': [str(directories[0] / 'text.txt')]})
+            self.assertEqual(404, denied['status'], denied)
+            allowed = self.execute(remaining, 'fs_read_files',
+                {'paths': [str(directories[1] / 'text.txt')]})
+            self.assertEqual(200, allowed['status'], allowed)
+            self.assertIn('SCOPE_1', str(allowed))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows device and ADS paths')
     def test_windows_approved_paths_reject_devices_and_ads_before_resolution(self):

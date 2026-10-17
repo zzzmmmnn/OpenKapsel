@@ -219,8 +219,6 @@ def start_shell_task(server, record, scope_root, *, command, cwd_value,
     """Authorize dependencies and mount before cwd resolution or sandbox setup."""
     if record.shell_mode == "none":
         raise ApiError(403, "permission_denied", "shell permission is not granted")
-    if unsandboxed and any(rule.access == "deny" for rule in record.allowed_paths):
-        raise ApiError(403, "absolute_deny", "Unsandboxed Shell cannot bypass absolute deny paths")
     if not isinstance(cwd_value, str) or "\x00" in cwd_value:
         raise ApiError(400, "invalid_path", "cwd must be a NUL-free string")
     if not isinstance(command, str) or not command or len(command) > 100000:
@@ -279,9 +277,6 @@ def _start_shell_task(
             "permission_denied",
             "shell permission is not granted",
         )
-    if unsandboxed and any(rule.access == "deny" for rule in record.allowed_paths):
-        raise ApiError(HTTPStatus.FORBIDDEN, "absolute_deny",
-                       "Unsandboxed Shell cannot bypass absolute deny paths")
     if not command or len(command) > 100_000:
         raise ApiError(
             HTTPStatus.REQUEST_ENTITY_TOO_LARGE,

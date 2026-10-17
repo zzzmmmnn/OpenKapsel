@@ -61,9 +61,11 @@ class LocalClientTests(unittest.TestCase):
         self.assertEqual(("approval.grant",),
                          local.functions.approval_methods("shell.exec"))
         auth = local.functions.grant(
-            "shell.exec", old_auth={"other": 1}, request={"reason": "tests"},
+            "shell.exec", old_auth={"other": 1}, request={"reason": "tests"}, seconds=600,
         )
-        self.assertEqual({"other": 1, "unsandboxed": True}, auth)
+        self.assertEqual(1, len(auth["grants"]))
+        self.assertEqual(True, auth["grants"][0]["unsandboxed"])
+        self.assertEqual(1, auth["other"])
         server, record, scope_root = object(), object(), object()
         with patch("openkapsel.execution.shell_execution.start_shell_task",
                    return_value="task") as start:

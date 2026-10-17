@@ -1,12 +1,13 @@
-"""Opaque memory-only authorizations for function-owned approval.
+"""Volatile function-owned authorizations with independent Client-owned expiries.
 
-The control server does not parse, combine or evaluate the returned auth JSON.
-Only the corresponding execution function may interpret it.  Browser/password
-verification is performed by the HTTP control layer before commit().
+The Server validates only the generic grants/expires_at envelope. Each item's
+scope and other fields belong to the Client; expiry bookkeeping is kept apart
+from its JSON and the Server never rewrites Client timestamps.
 """
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import threading
 import time
@@ -22,6 +23,26 @@ def _json_copy(value):
     if len(data.encode("utf-8")) > 128 * 1024:
         raise ValueError("approval data exceeds 128 KiB")
     return json.loads(data)
+
+
+def _validated_auth(auth):
+    if not isinstance(auth, dict) or not isinstance(auth.get("grants"), list):
+        raise ValueError("function auth requires a grants list")
+    for item in auth["grants"]:
+        if (not isinstance(item, dict) or "expires_at" not in item
+                or type(item["expires_at"]) not in (int, float)
+                or not 0 <= item["expires_at"] <= 10**13
+                or not math.isfinite(item["expires_at"])):
+            raise ValueError("each grant requires a finite numeric expires_at")
+    return auth
+
+
+def _semantic_auth(auth):
+    """Compare Client proposals on confirmation without clock-dependent values."""
+    return {**auth, "grants": [
+        {key: value for key, value in item.items() if key != "expires_at"}
+        for item in auth["grants"]
+    ]}
 
 
 @dataclass(frozen=True)
@@ -40,12 +61,12 @@ class FunctionRequest:
 @dataclass(frozen=True)
 class FunctionAuth:
     auth: Any
-    deadline: float
+    deadlines: tuple[float, ...]
     revision: int
 
 
 class FunctionGrants:
-    """Store opaque auth by Workspace, Conversation, target and function."""
+    """Store Client auth scoped by Workspace, Conversation, target and function."""
 
     def __init__(self):
         self.lock = threading.RLock()
@@ -57,9 +78,21 @@ class FunctionGrants:
         now = time.monotonic()
         self.pending_requests = {k: v for k, v in self.pending_requests.items()
                                  if v.deadline > now}
-        self.active = {k: v for k, v in self.active.items()
-                       if v.deadline > now}
-        self.confirmations = {k: v for k, v in self.confirmations.items() if k in self.pending_requests}
+        active = {}
+        for key, entry in self.active.items():
+            keep = [i for i, deadline in enumerate(entry.deadlines) if deadline > now]
+            if len(keep) == len(entry.deadlines):
+                active[key] = entry
+            elif keep:
+                # Only remove expired list items. Preserve all other Client
+                # fields and every original expires_at exactly as returned.
+                auth = dict(entry.auth)
+                auth["grants"] = [entry.auth["grants"][i] for i in keep]
+                active[key] = replace(entry, auth=auth,
+                                      deadlines=tuple(entry.deadlines[i] for i in keep))
+        self.active = active
+        self.confirmations = {k: v for k, v in self.confirmations.items()
+                              if k in self.pending_requests}
         return now
 
     def request(self, workspace: str, conversation_id: int, target: str,
@@ -117,13 +150,47 @@ class FunctionGrants:
                 return False
             return True
 
-    def approve(self, ticket: str, *, seconds: int,
-                grant: Callable[[Any, Any], Any], browser: str | None = None) -> Any:
-        """Grant callback decides the full merged auth; save only on success.
+    @staticmethod
+    def _deadlines(previous, updated, started, seconds):
+        """Match unchanged opaque items; calibrate new ones without touching JSON.
 
-        Calling grant while locked keeps the old auth consistent.  The function
-        must be side-effect-free; a remote callback may fail without granting.
+        Newly returned expiry minus the approved duration yields an estimate
+        of the Client's clock at grant time. Server monotonic 'started' is an
+        earlier, conservative reference (RPC latency can only shorten TTL).
+        Keep old monotonic deadlines so a later Client clock change cannot
+        extend earlier approvals.
         """
+        old = list(zip(previous.auth["grants"], previous.deadlines)) if previous else []
+        deadlines = [None] * len(updated["grants"])
+        fresh = []
+        for i, item in enumerate(updated["grants"]):
+            match = next((j for j, (prior, _) in enumerate(old) if prior == item), None)
+            if match is None:
+                fresh.append(i)
+            else:
+                deadlines[i] = old.pop(match)[1]
+        if fresh:
+            client_now = max(updated["grants"][i]["expires_at"] for i in fresh) - seconds
+            for i in fresh:
+                deadlines[i] = started + updated["grants"][i]["expires_at"] - client_now
+        return tuple(deadlines)
+
+    def _candidate(self, pending, seconds, grant):
+        key = (pending.workspace, pending.conversation_id,
+               pending.target, pending.function)
+        previous = self.active.get(key)
+        started = time.monotonic()
+        old_auth = _json_copy(previous.auth) if previous else None
+        updated = _validated_auth(_json_copy(grant(old_auth, _json_copy(pending.request),
+                                                     seconds)))
+        deadlines = self._deadlines(previous, updated, started, seconds)
+        if not deadlines or all(deadline <= time.monotonic() for deadline in deadlines):
+            raise ValueError("function grant has no active authorization")
+        return key, previous, updated, deadlines
+
+    def approve(self, ticket: str, *, seconds: int,
+                grant: Callable[[Any, Any, int], Any], browser: str | None = None) -> Any:
+        """Revalidate Client grant at confirmation; publish only on success."""
         if type(seconds) is not int or not 60 <= seconds <= MAX_SECONDS:
             raise ValueError("invalid function approval duration")
         with self.lock:
@@ -131,29 +198,26 @@ class FunctionGrants:
             pending = self.pending_requests.get(ticket)
             if pending is None:
                 raise ValueError("function approval expired or used")
-            key = (pending.workspace, pending.conversation_id,
-                   pending.target, pending.function)
-            previous = self.active.get(key)
-            old_auth = _json_copy(previous.auth) if previous else None
-            updated = _json_copy(grant(old_auth, _json_copy(pending.request)))
-            if self.pending_requests.get(ticket) is not pending or pending.deadline <= time.monotonic():
+            key, previous, updated, deadlines = self._candidate(pending, seconds, grant)
+            now = self._prune()
+            if self.pending_requests.get(ticket) is not pending or pending.deadline <= now:
                 raise ValueError("function approval expired or revoked")
             if browser is not None:
                 prepared = self.confirmations.get(ticket)
                 if (prepared is None or prepared[0] != browser
-                        or prepared[1] != updated
-                        or prepared[3] != (previous.revision if previous else 0)):
+                        or prepared[2] != seconds
+                        or prepared[3] != (previous.revision if previous else 0)
+                        or _semantic_auth(prepared[1]) != _semantic_auth(updated)):
                     raise ValueError("approval changed; request a new confirmation")
             revision = previous.revision + 1 if previous else 1
-            self.active[key] = FunctionAuth(
-                updated, time.monotonic() + seconds, revision,
-            )
+            self.active[key] = FunctionAuth(updated, deadlines, revision)
             del self.pending_requests[ticket]
             self.confirmations.pop(ticket, None)
-            return _json_copy(updated)
+            self._prune()
+            return _json_copy(self.active[key].auth) if key in self.active else None
 
     def prepare_confirmation(self, ticket: str, *, browser: str, seconds: int,
-                             grant: Callable[[Any, Any], Any]) -> Any:
+                             grant: Callable[[Any, Any, int], Any]) -> Any:
         if type(seconds) is not int or not 60 <= seconds <= MAX_SECONDS:
             raise ValueError("invalid function approval duration")
         with self.lock:
@@ -161,13 +225,11 @@ class FunctionGrants:
             pending = self.pending_requests.get(ticket)
             if pending is None:
                 raise ValueError("function approval expired or used")
-            key = (pending.workspace, pending.conversation_id, pending.target, pending.function)
-            previous = self.active.get(key)
-            updated = _json_copy(grant(_json_copy(previous.auth) if previous else None,
-                                       _json_copy(pending.request)))
+            _, previous, updated, _ = self._candidate(pending, seconds, grant)
             if self.pending_requests.get(ticket) is not pending or pending.deadline <= time.monotonic():
                 raise ValueError("function approval expired or revoked")
-            self.confirmations[ticket] = (browser, updated, seconds, previous.revision if previous else 0)
+            self.confirmations[ticket] = (browser, updated, seconds,
+                                          previous.revision if previous else 0)
             return _json_copy(updated)
 
     def confirmation(self, ticket: str, browser: str):
@@ -179,10 +241,12 @@ class FunctionGrants:
     def revoke(self, workspace: str, conversation_id: int, target: str,
                function: str) -> None:
         with self.lock:
-            self.active.pop((workspace, conversation_id, target, function), None)
+            key = (workspace, conversation_id, target, function)
+            self.active.pop(key, None)
             self.pending_requests = {k: v for k, v in self.pending_requests.items()
-                if (v.workspace, v.conversation_id, v.target, v.function) !=
-                   (workspace, conversation_id, target, function)}
+                if (v.workspace, v.conversation_id, v.target, v.function) != key}
+            self.confirmations = {k: v for k, v in self.confirmations.items()
+                                  if k in self.pending_requests}
 
     def list_grants(self, workspace: str) -> list[dict]:
         with self.lock:
@@ -190,7 +254,8 @@ class FunctionGrants:
             return [
                 {
                     "conversation_id": conv, "target": target,
-                    "function": function, "remaining_seconds": max(0, int(value.deadline - now)),
+                    "function": function,
+                    "remaining_seconds": max(0, int(max(value.deadlines) - now)),
                 }
                 for (owner, conv, target, function), value in self.active.items()
                 if owner == workspace
@@ -200,8 +265,7 @@ class FunctionGrants:
         with self.lock:
             self.active = {key: value for key, value in self.active.items()
                            if key[0] != workspace}
-            self.pending_requests = {
-                key: value for key, value in self.pending_requests.items()
-                if value.workspace != workspace
-            }
-            self.confirmations = {k: v for k, v in self.confirmations.items() if k in self.pending_requests}
+            self.pending_requests = {key: value for key, value in self.pending_requests.items()
+                                     if value.workspace != workspace}
+            self.confirmations = {k: v for k, v in self.confirmations.items()
+                                  if k in self.pending_requests}

@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 import threading
 import unittest
 from dataclasses import replace
@@ -41,9 +42,11 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
     def test_no_prepare_callback_and_opaque_client_merge_over_real_http(self):
         self.configure()
         calls = []
-        def grant(old, request):
-            calls.append((old, request))
-            return {'opaque': [*(old or {}).get('opaque', []), request['resource']], 'client_only': 'SECRET_AUTH'}
+        def grant(old, request, seconds):
+            calls.append((old, request, seconds))
+            return {'grants': [*(old or {}).get('grants', []),
+                    {'resource': request['resource'], 'expires_at': time.time() + seconds}],
+                    'client_only': 'SECRET_AUTH'}
         functions = self.server.local_client.functions
         functions.register('demo.write', execute=lambda args, auth: auth, approval_grant=grant)
         for resource in ('first', 'second'):
@@ -59,10 +62,14 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
             self.assertEqual(200, self.form(location, form, headers)[0])
             self.assertEqual(400, self.form(location, form, headers)[0])
         self.assertIsNone(calls[0][0])
-        self.assertEqual({'opaque': ['first'], 'client_only': 'SECRET_AUTH'}, calls[1][0])
+        self.assertEqual(['first'], [g['resource'] for g in calls[1][0]['grants']])
+        self.assertEqual('SECRET_AUTH', calls[1][0]['client_only'])
         self.assertEqual({'resource': 'second'}, calls[1][1])
-        self.assertEqual({'opaque': ['first', 'second'], 'client_only': 'SECRET_AUTH'},
-            self.server.function_grants.current(self.record.app_id, self.ownership()[0], 'server', 'demo.write'))
+        self.assertEqual(600, calls[1][2])
+        latest = self.server.function_grants.current(
+            self.record.app_id, self.ownership()[0], 'server', 'demo.write')
+        self.assertEqual(['first', 'second'], [g['resource'] for g in latest['grants']])
+        self.assertEqual('SECRET_AUTH', latest['client_only'])
         status, denied = self.api('/rpc/function/approval_grant', {'args': {}})
         self.assertEqual(409, status, denied)
         self.assertEqual('server_rpc_unsupported', denied['error']['code'])
@@ -76,7 +83,7 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         def prepare(args):
             calls.append(('prepare', args))
             return {'request': {'canonical': args['input'].upper()}, 'display': 'Client explanation'}
-        def grant(old, request):
+        def grant(old, request, seconds):
             calls.append(('grant', request))
             raise ValueError('Client rejected scope')
         self.server.local_client.functions.register('demo.prepare', execute=lambda args, auth: None,
@@ -101,13 +108,13 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         self.server.local_client.functions.register(
             'demo.reject_prepare', execute=lambda args, auth: None,
             approval_prepare=reject_prepare,
-            approval_grant=lambda old, request: None)
+            approval_grant=lambda old, request, seconds: None)
         status, response = self.request_function('demo.reject_prepare', {'resource': 'secret'})
         self.assertEqual(400, status, response)
         self.assertEqual('mapping_operation_failed', response['error']['code'])
         self.assertEqual(22, response['error']['details']['errno'])
 
-        def reject_grant(old, request):
+        def reject_grant(old, request, seconds):
             raise ApiError(400, 'mapping_operation_failed', 'client operation failed',
                            {'errno': 22, 'client_message': 'private path must not leak'})
         self.server.local_client.functions.register(
@@ -139,7 +146,7 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         from openkapsel.errors import ApiError
 
         self.configure()
-        def reject_grant(old, request):
+        def reject_grant(old, request, seconds):
             raise ApiError(503, 'mapping_operation_failed', 'client operation failed',
                            {'errno': 113, 'client_message': 'internal network diagnostic'})
         self.server.local_client.functions.register(
@@ -219,7 +226,7 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                     self.approve({'error': {'details': pending}})
                 auth = self.server.function_grants.current(
                     self.record.app_id, self.ownership()[0], row['id'], 'files.read')
-                self.assertEqual([str(p) for p in directories], auth['paths'])
+                self.assertEqual([str(p) for p in directories], [g['path'] for g in auth['grants'] if 'path' in g])
                 for directory in directories:
                     status, read = self.api('/fs/read/files', {'paths': [str(directory / 'text.txt')],
                         'approved': True, 'target': row['id'], 'writer_nonce': self.ownership()[1]})

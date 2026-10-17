@@ -13,7 +13,7 @@ from typing import Any, Callable
 @dataclass(frozen=True)
 class FunctionImplementation:
     execute: Callable[[dict[str, Any], Any], Any]
-    approval_grant: Callable[[Any, Any], Any] | None = None
+    approval_grant: Callable[[Any, Any, int], Any] | None = None
     approval_prepare: Callable[[dict[str, Any]], Any] | None = None
 
     def __post_init__(self) -> None:
@@ -39,7 +39,7 @@ class FunctionRegistry:
         name: str,
         *,
         execute: Callable[[dict[str, Any], Any], Any],
-        approval_grant: Callable[[Any, Any], Any] | None = None,
+        approval_grant: Callable[[Any, Any, int], Any] | None = None,
         approval_prepare: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         if not isinstance(name, str) or not name or name.startswith("."):
@@ -81,12 +81,12 @@ class FunctionRegistry:
             raise TypeError("approval arguments must be a JSON object")
         return implementation.approval_prepare(args)
 
-    def grant(self, name: str, *, old_auth: Any, request: Any) -> Any:
+    def grant(self, name: str, *, old_auth: Any, request: Any, seconds: int) -> Any:
         implementation = self.get(name)
         if implementation.approval_grant is None:
             raise ValueError("function does not support approval")
         # The implementation decides how to merge old_auth and request.
-        return implementation.approval_grant(old_auth, request)
+        return implementation.approval_grant(old_auth, request, seconds)
 
     def describe(self) -> dict[str, dict[str, bool]]:
         """Internal capability metadata; not a public Discovery tool list."""
@@ -123,7 +123,7 @@ class FunctionRegistry:
                 raise ValueError("invalid prepare envelope")
             return self.prepare(name, envelope["args"])
         if method == "approval.grant":
-            if set(envelope) != {"function", "method", "old_auth", "request"}:
+            if set(envelope) != {"function", "method", "old_auth", "request", "seconds"}:
                 raise ValueError("invalid grant envelope")
-            return self.grant(name, old_auth=envelope["old_auth"], request=envelope["request"])
+            return self.grant(name, old_auth=envelope["old_auth"], request=envelope["request"], seconds=envelope["seconds"])
         raise ValueError("unknown internal function method")

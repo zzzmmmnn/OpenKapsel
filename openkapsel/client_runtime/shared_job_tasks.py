@@ -83,9 +83,6 @@ class SharedClientTasks:
             unsandboxed = args.get("unsandboxed", False)
             if type(unsandboxed) is not bool:
                 raise OSError(errno.EINVAL, "unsandboxed must be a boolean")
-            if unsandboxed and any(rule.access == "deny"
-                                   for rule in self.files.sandbox_path_rules):
-                raise OSError(errno.EACCES, "absolute deny forbids unsandboxed Shell")
             if not self.legacy.enabled and not unsandboxed:
                 raise OSError(errno.EACCES, "client execution is disabled")
             timeout = args.get("timeout_seconds")

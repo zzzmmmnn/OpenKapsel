@@ -1,60 +1,156 @@
-"""Opaque function approval storage and callback-merging behavior."""
-import tempfile
+"""Independent Client-owned function grant expiry, validation and browser safety."""
 import threading
-from unittest.mock import patch
 import unittest
+from unittest.mock import patch
 
 from openkapsel.auth.function_grants import FunctionGrants
+
+
+def add_path(old, request, seconds, *, client_clock=None):
+    """Generic function policy; Server must not interpret 'path'."""
+    grants = list((old or {}).get("grants", []))
+    grants.append({"path": request["path"], "expires_at": client_clock() + seconds,
+                   "client_metadata": {"untouched": ["yes"]}})
+    return {"grants": grants, "extension": {"owned": "client"}}
 
 
 class FunctionGrantsTests(unittest.TestCase):
     def setUp(self):
         self.store = FunctionGrants()
 
-    def test_function_controls_scope_merging(self):
-        first = self.store.request("token", 3, "mapping", "fs.write",
-                                   {"path": "/home/user1"})
-        self.assertEqual({"paths": ["/home/user1"]},
-                         self.store.approve(first, seconds=600, grant=lambda old, request: {
-                             "paths": [request["path"]]
-                         }))
-        second = self.store.request("token", 3, "mapping", "fs.write",
-                                    {"path": "/home/user2"})
-        def merge(old, request):
-            return {"paths": sorted([*old["paths"], request["path"]])}
-        merged = self.store.approve(second, seconds=600, grant=merge)
-        self.assertEqual({"paths": ["/home/user1", "/home/user2"]}, merged)
-        merged["paths"].clear()  # Returned JSON cannot mutate server storage.
-        self.assertEqual({"paths": ["/home/user1", "/home/user2"]},
-                         self.store.current("token", 3, "mapping", "fs.write"))
-        self.assertIsNone(self.store.current("token", 4, "mapping", "fs.write"))
-        self.assertIsNone(self.store.current("token", 3, "server", "fs.write"))
-        self.assertIsNone(self.store.current("token", 3, "mapping", "fs.read"))
+    def test_client_fields_immutable_and_grants_expire_independently(self):
+        now = [100.0]
+        client = lambda: 100000 + now[0]
+        callback = lambda old, req, sec: add_path(old, req, sec, client_clock=client)
+        with patch("openkapsel.auth.function_grants.time.monotonic", side_effect=lambda: now[0]):
+            first = self.store.request("token", 3, "mapping", "fs.write", {"path": "/a"})
+            original = self.store.approve(first, seconds=600, grant=callback)
+            old_stamp = original["grants"][0]["expires_at"]
+            now[0] = 400.0
+            second = self.store.request("token", 3, "mapping", "fs.write", {"path": "/b"})
+            combined = self.store.approve(second, seconds=1800, grant=callback)
+            self.assertEqual(old_stamp, combined["grants"][0]["expires_at"])
+            self.assertEqual(["/a", "/b"], [g["path"] for g in combined["grants"]])
+            combined["grants"].clear()
+            now[0] = 699.0
+            self.assertEqual(2, len(self.store.current("token", 3, "mapping", "fs.write")["grants"]))
+            now[0] = 701.0
+            active = self.store.current("token", 3, "mapping", "fs.write")
+            self.assertEqual(["/b"], [g["path"] for g in active["grants"]])
+            self.assertEqual({"owned": "client"}, active["extension"])
+            self.assertEqual({"untouched": ["yes"]}, active["grants"][0]["client_metadata"])
+            now[0] = 2201.0
+            self.assertIsNone(self.store.current("token", 3, "mapping", "fs.write"))
+            self.assertEqual([], self.store.list_grants("token"))
 
-    def test_failed_grant_does_not_mutate_or_consume_ticket(self):
-        first = self.store.request("token", 2, "server", "shell.exec", {"command": "id"})
-        def rejected(old, request):
-            raise PermissionError("not permitted")
-        with self.assertRaises(PermissionError):
-            self.store.approve(first, seconds=600, grant=rejected)
-        self.assertIsNotNone(self.store.pending(first))
-        self.assertIsNone(self.store.current("token", 2, "server", "shell.exec"))
-        auth = self.store.approve(first, seconds=600,
-                                  grant=lambda old, request: {"permitted": True})
-        self.assertEqual({"permitted": True}, auth)
-        self.assertIsNone(self.store.pending(first))
-        with self.assertRaises(ValueError):
-            self.store.approve(first, seconds=600, grant=lambda old, request: None)
+    def test_clock_jump_on_second_approval_does_not_extend_first(self):
+        now = [10.0]
+        offset = [10000]
+        client = lambda: now[0] + offset[0]
+        callback = lambda old, req, seconds: add_path(old, req, seconds, client_clock=client)
+        with patch("openkapsel.auth.function_grants.time.monotonic", side_effect=lambda: now[0]):
+            a = self.store.request("t", 1, "server", "demo.write", {"path": "one"})
+            self.store.approve(a, seconds=600, grant=callback)
+            now[0] = 30
+            offset[0] = 70000  # Client clock shifts backwards radically but stays valid Unix time.
+            b = self.store.request("t", 1, "server", "demo.write", {"path": "two"})
+            self.store.approve(b, seconds=1800, grant=callback)
+            now[0] = 611
+            auth = self.store.current("t", 1, "server", "demo.write")
+            self.assertEqual(["two"], [item["path"] for item in auth["grants"]])
+            now[0] = 1831
+            self.assertIsNone(self.store.current("t", 1, "server", "demo.write"))
 
-    def test_isolation_expiry_revoke_and_json_shape(self):
-        self.store.request("other", 2, "server", "x.y", {"test": 1})
-        ticket = self.store.request("token", 2, "server", "x.y", {"test": 2})
-        self.store.approve(ticket, seconds=60, grant=lambda old, req: {"ok": req["test"]})
-        self.store.revoke_workspace("token")
-        self.assertIsNone(self.store.current("token", 2, "server", "x.y"))
-        self.assertEqual(1, len(self.store.pending_requests))
-        with self.assertRaises((TypeError, ValueError)):
-            self.store.request("token", 2, "server", "x.y", {"bad": object()})
+    def test_explicit_renewal_does_not_extend_unrelated_grants(self):
+        now = [10]
+        def renewal(old, request, seconds):
+            grants = [g for g in (old or {}).get("grants", []) if g["path"] != request["path"]]
+            return {"grants": [*grants, {"path": request["path"], "expires_at": 80000 + now[0] + seconds}]}
+        with patch("openkapsel.auth.function_grants.time.monotonic", side_effect=lambda: now[0]):
+            for when, target, duration in ((10, "/a", 600), (50, "/b", 60), (70, "/a", 1800)):
+                now[0] = when
+                ticket = self.store.request("t", 0, "c", "f.g", {"path": target})
+                self.store.approve(ticket, seconds=duration, grant=renewal)
+            now[0] = 111
+            self.assertEqual(["/a"], [g["path"] for g in
+                self.store.current("t", 0, "c", "f.g")["grants"]])
+            now[0] = 1871
+            self.assertIsNone(self.store.current("t", 0, "c", "f.g"))
+
+    def test_invalid_schema_fails_closed_and_does_not_consume_ticket(self):
+        malformed = [
+            None, [], {"paths": ["legacy"]}, {"grants": None},
+            {"grants": [1]}, {"grants": [{}]},
+            {"grants": [{"expires_at": True}]},
+            {"grants": [{"expires_at": "tomorrow"}]},
+            {"grants": [{"expires_at": float("nan")}]},
+            {"grants": [{"expires_at": float("inf")}]},
+            {"grants": []},
+        ]
+        ticket = self.store.request("t", 0, "server", "demo.write", {})
+        for auth in malformed:
+            with self.subTest(auth=auth), self.assertRaises((ValueError, TypeError)):
+                self.store.approve(ticket, seconds=600, grant=lambda old, req, sec: auth)
+            self.assertIsNotNone(self.store.pending(ticket))
+            self.assertIsNone(self.store.current("t", 0, "server", "demo.write"))
+        good = {"grants": [{"expires_at": 123456, "opaque": True}]}
+        self.assertEqual(good, self.store.approve(
+            ticket, seconds=600, grant=lambda old, req, sec: good))
+        self.assertIsNone(self.store.pending(ticket))
+
+    def test_revoke_and_isolation(self):
+        callback = lambda old, req, sec: {"grants": [
+            {"expires_at": 88888, "allowed": req["value"]}]}
+        ticket = self.store.request("a", 2, "target", "demo.write", {"value": 1})
+        self.store.approve(ticket, seconds=60, grant=callback)
+        for binding in (("b", 2, "target", "demo.write"),
+                        ("a", 3, "target", "demo.write"),
+                        ("a", 2, "other", "demo.write"),
+                        ("a", 2, "target", "demo.read")):
+            self.assertIsNone(self.store.current(*binding))
+        self.store.revoke("a", 2, "target", "demo.write")
+        self.assertIsNone(self.store.current("a", 2, "target", "demo.write"))
+        other = self.store.request("a", 2, "target", "demo.write", {"value": 2})
+        self.store.revoke_workspace("a")
+        self.assertIsNone(self.store.pending(other))
+
+    def test_staged_confirmation_revalidates_scope_ignoring_time_only(self):
+        now = [100]
+        path = ["/canonical"]
+        def grant(old, request, seconds):
+            return {"grants": [{"expires_at": now[0] + 9999 + seconds,
+                                "path": path[0]}], "extra": ["unchanged"]}
+        with patch("openkapsel.auth.function_grants.time.monotonic", side_effect=lambda: now[0]):
+            ticket = self.store.request("t", 1, "server", "demo.write", {"path": "/alias"})
+            proposal = self.store.prepare_confirmation(ticket, browser="b", seconds=600, grant=grant)
+            now[0] += 5
+            self.assertNotEqual(proposal, grant(None, {}, 600))
+            self.assertEqual("/canonical", self.store.approve(
+                ticket, seconds=600, browser="b", grant=grant)["grants"][0]["path"])
+            ticket2 = self.store.request("t", 1, "server", "demo.write", {"path": "/alias"})
+            self.store.prepare_confirmation(ticket2, browser="b", seconds=600, grant=grant)
+            path[0] = "/swapped"
+            with self.assertRaises(ValueError):
+                self.store.approve(ticket2, seconds=600, browser="b", grant=grant)
+            self.assertIsNotNone(self.store.pending(ticket2))
+            self.assertEqual("/canonical", self.store.current(
+                "t", 1, "server", "demo.write")["grants"][0]["path"])
+
+    def test_staged_confirmation_cannot_overwrite_concurrent_grant(self):
+        now = [100]
+        callback = lambda old, req, sec: {"grants": [*(old or {}).get("grants", []),
+            {"expires_at": now[0] + sec, "path": req["path"]}]}
+        with patch("openkapsel.auth.function_grants.time.monotonic", side_effect=lambda: now[0]):
+            first = self.store.request("t", 1, "server", "demo.write", {"path": "one"})
+            self.store.approve(first, seconds=600, grant=callback)
+            second = self.store.request("t", 1, "server", "demo.write", {"path": "two"})
+            self.store.prepare_confirmation(second, browser="browser", seconds=600, grant=callback)
+            third = self.store.request("t", 1, "server", "demo.write", {"path": "three"})
+            self.store.approve(third, seconds=600, grant=callback)
+            with self.assertRaises(ValueError):
+                self.store.approve(second, seconds=600, browser="browser", grant=callback)
+            self.assertEqual(["one", "three"], [g["path"] for g in
+                self.store.current("t", 1, "server", "demo.write")["grants"]])
 
     def test_password_verification_does_not_block_revoke_or_resurrect_ticket(self):
         ticket = self.store.request("token", 1, "server", "x.y", {})
@@ -88,39 +184,15 @@ class FunctionGrantsTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(1, len(errors))
         self.assertIsInstance(errors[0], ValueError)
-        self.assertIsNone(self.store.pending(ticket))
-        self.assertIsNone(self.store.current("token", 1, "server", "x.y"))
 
-    def test_expiry_and_revoke_during_callback_cannot_publish_authorization(self):
-        with patch("openkapsel.auth.function_grants.time.monotonic", return_value=100):
-            ticket = self.store.request("token", 1, "server", "x.y", {})
-            self.store.approve(ticket, seconds=60, grant=lambda old, request: {"value": True})
-        with patch("openkapsel.auth.function_grants.time.monotonic", return_value=161):
-            self.assertIsNone(self.store.current("token", 1, "server", "x.y"))
+    def test_revoke_during_callback_never_publishes(self):
         ticket = self.store.request("token", 1, "server", "x.y", {})
-        def callback(old, request):
+        def callback(old, request, seconds):
             self.store.revoke_workspace("token")
-            return {"value": True}
+            return {"grants": [{"expires_at": 90000, "allowed": True}]}
         with self.assertRaises(ValueError):
-            self.store.approve(ticket, seconds=60, grant=callback)
+            self.store.approve(ticket, seconds=600, grant=callback)
         self.assertIsNone(self.store.current("token", 1, "server", "x.y"))
-
-    def test_staged_confirmation_cannot_overwrite_a_concurrent_grant(self):
-        def merge(old, request):
-            return [*(old or []), request]
-        first = self.store.request("token", 1, "server", "x.y", "one")
-        self.store.approve(first, seconds=600, grant=merge)
-        second = self.store.request("token", 1, "server", "x.y", "two")
-        self.assertEqual(["one", "two"], self.store.prepare_confirmation(
-            second, browser="verified-browser", seconds=600, grant=merge))
-        self.assertEqual(["one"], self.store.current("token", 1, "server", "x.y"))
-        self.assertIsNone(self.store.confirmation(second, "different-browser"))
-        third = self.store.request("token", 1, "server", "x.y", "three")
-        self.store.approve(third, seconds=600, grant=merge)
-        with self.assertRaises(ValueError):
-            self.store.approve(second, browser="verified-browser", seconds=600, grant=merge)
-        self.assertEqual(["one", "three"], self.store.current("token", 1, "server", "x.y"))
-        self.assertIsNotNone(self.store.pending(second))
 
 
 if __name__ == "__main__":

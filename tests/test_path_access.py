@@ -169,16 +169,30 @@ class PathAccessTests(unittest.TestCase):
             handler._assert_path_writable(self.sub)  # cannot rename/delete parent of deny
         handler._assert_path_writable(self.root / "normal.txt")
 
-    def test_absolute_deny_refuses_unsandboxed_server_shell(self):
+    def test_unrelated_absolute_deny_does_not_block_approved_server_shell(self):
         from openkapsel.execution.shell_execution import start_shell_task
         record = TokenRecord(
             token="z" * 40, name="absolute-deny", created_at=utc_now(),
             path_prefix=".", shell_mode="restricted",
             allowed_paths=(PathGrant(str(self.secret), access="deny"),),
         )
-        with self.assertRaises(ApiError):
-            start_shell_task(None, record, self.root, command="echo EXPOSED",
-                             cwd_value=".", timeout_seconds=5, unsandboxed=True)
+        # Explicit unsandboxed authorization is distinct from File API deny.
+        self.assertEqual("deny", effective_path_access(self.secret, self.root,
+                                                       True, record.allowed_paths))
+        with patch("openkapsel.execution.shell_execution._start_shell_task",
+                   return_value="approved-task") as launch:
+            self.assertEqual("approved-task",
+                             start_shell_task(None, record, self.root,
+                                              command="echo APPROVED", cwd_value=".",
+                                              timeout_seconds=5, unsandboxed=True))
+        self.assertTrue(launch.call_args.kwargs["unsandboxed"])
+        # The Shell's working directory must still pass the pre-launch
+        # path policy, even though approved host commands are unrestricted.
+        with self.assertRaises(ApiError) as denied_cwd:
+            start_shell_task(None, record, self.root,
+                             command="echo APPROVED", cwd_value=str(self.secret),
+                             timeout_seconds=5, unsandboxed=True)
+        self.assertEqual("path_outside_scope", denied_cwd.exception.code)
 
     def test_admin_deny_option_and_legacy_form_modes(self):
         markup = _path_grant_rows((

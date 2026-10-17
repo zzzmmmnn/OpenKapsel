@@ -156,8 +156,9 @@ class FunctionApprovalHandlersMixin:
         name = "__Host-openkapsel_capability" if self._request_is_https() else "openkapsel_capability"
         cookie = consent_cookie(self.headers, name)
         proof = grants.browser_proof(ticket, cookie) if cookie else ""
-        callback = lambda old, request: self._function_internal(entry.target, {
-            "function": entry.function, "method": "approval.grant", "old_auth": old, "request": request})
+        callback = lambda old, request, seconds: self._function_internal(entry.target, {
+            "function": entry.function, "method": "approval.grant",
+            "old_auth": old, "request": request, "seconds": seconds})
         if method == "POST":
             if self._request_content_length(required=True) > 8192:
                 raise ApiError(413, "approval_too_large", "form is too large")

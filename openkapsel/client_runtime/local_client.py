@@ -89,9 +89,11 @@ class LocalClient:
         # Legacy routes still pass a server-validated unsandboxed flag.
         # A new function auth overrides that flag with client-owned policy.
         if auth is not None:
-            if not isinstance(auth, dict):
+            if not isinstance(auth, dict) or not isinstance(auth.get("grants"), list):
                 raise ValueError("invalid Shell authorization")
-            options["unsandboxed"] = auth.get("unsandboxed") is True
+            options["unsandboxed"] = any(
+                isinstance(item, dict) and item.get("unsandboxed") is True
+                for item in auth["grants"])
         return start_shell_task(
             args["server"], args["record"], args["scope_root"], **options
         )
