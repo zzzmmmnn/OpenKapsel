@@ -339,7 +339,9 @@ Approved Windows Shell commands run with the Client's OS-user rights.
 
 The exported Mapping root is always included; its write permission follows
 `writable`. Extra `job_sandbox.paths` entries use `rw`, `ro` (alias `r`)
-or `deny`, with **deny > ro > rw** precedence. Up to 32 entries are
+or `deny`. **The most-specific matching path wins**, independent of
+configuration order; a child `rw` may override parent `ro` or `deny`.
+Only identical-path conflicts use `deny > ro > rw`. Up to 32 rules are
 supported, including nested grants. Invalid or nonexistent paths fail closed.
 Client configuration and existing `.openkapsel` directories are denied.
 File RPC cannot access outside the Mapping export even if an extra Shell path

@@ -281,6 +281,47 @@ class JobSandboxTests(unittest.TestCase):
         finally:
             prepared.cleanup()
 
+    @unittest.skipUnless(platform.system() == "Darwin", "needs macOS Seatbelt")
+    def test_real_seatbelt_nested_readonly_deny_then_child_writable(self):
+        parent = self.workspace / "parent"; parent.mkdir()
+        child = parent / "rw"; child.mkdir()
+        denied = child / "deny"; denied.mkdir()
+        reopened = denied / "reopen"; reopened.mkdir()
+        secret = reopened / ".openkapsel"; secret.mkdir()
+        (secret / "config").write_text("PRIVATE")
+        code = (
+            "from pathlib import Path; p=Path.cwd();"
+            "\nfor f in ('parent/nope','parent/rw/yes','parent/rw/deny/nope',"
+            "'parent/rw/deny/reopen/yes'):\n"
+            " try: (p/f).write_text('ok'); print(f, 'WRITTEN')\n"
+            " except OSError: print(f, 'DENIED')\n"
+            "\ntry: (p/'parent/rw/deny/reopen/.openkapsel/config').read_text();"
+            " print('CONFIG_READABLE')\n"
+            "except OSError: print('CONFIG_DENIED')\n"
+        )
+        launch = prepare_job({
+            "type": "seatbelt", "root": str(self.workspace), "writable": True,
+            "network_mode": "none", "allowed_paths": [
+                {"path":str(parent),"access":"ro"},
+                {"path":str(child),"access":"rw"},
+                {"path":str(denied),"access":"deny"},
+                {"path":str(reopened),"access":"rw"},
+            ], "hidden_paths": [str(secret)],
+        }, [sys.executable,"-c",code],str(self.workspace),dict(os.environ),self.state)
+        try:
+            result = subprocess.run(launch.argv,cwd=self.workspace,env=launch.environment,
+                                    capture_output=True,text=True,timeout=20)
+            self.assertEqual(0,result.returncode,result.stderr)
+            for expected in ("parent/nope DENIED","parent/rw/yes WRITTEN",
+                             "parent/rw/deny/nope DENIED",
+                             "parent/rw/deny/reopen/yes WRITTEN","CONFIG_DENIED"):
+                self.assertIn(expected,result.stdout,result.stderr)
+            self.assertFalse((denied/"nope").exists())
+            self.assertEqual("ok",(reopened/"yes").read_text())
+            self.assertEqual("PRIVATE",(secret/"config").read_text())
+        finally:
+            launch.cleanup()
+
     def test_seatbelt_parent_write_grant_keeps_readonly_mapping_and_denied_config(self):
         outer = self.base / "shared-mac"
         outer.mkdir()

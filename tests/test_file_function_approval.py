@@ -109,7 +109,52 @@ class FileFunctionTests(unittest.TestCase):
         self.assertIn(blocked['status'], (403, 404), blocked)
         self.assertEqual('SECRET_CONFIGURATION', secret.read_text())
 
-    def test_approved_write_elevates_readonly_but_never_explicit_deny(self):
+    def test_can_approve_a_denied_directory_itself_for_write(self):
+        from types import SimpleNamespace
+        outside = self.base / "outside"; outside.mkdir()
+        restricted = outside / "deny"; restricted.mkdir()
+        self.files.sandbox_path_rules = (
+            SimpleNamespace(path=str(outside), access="ro"),
+            SimpleNamespace(path=str(restricted), access="deny"),
+        )
+        with self.assertRaises(OSError):
+            self.files.ensure_accessible_path(restricted)
+        grant = self.grant(restricted, access="write")
+        self.assertEqual([str(restricted)], grant["paths"])
+        result = self.execute(grant, "fs_mkdir",
+                              {"path": str(restricted / "created")}, access="write")
+        self.assertEqual(201, result["status"], result)
+        self.assertTrue((restricted / "created").is_dir())
+        with self.assertRaises(ApiError):
+            FileApproval.check(str(outside / "other"), self.root, grant, write=True)
+
+    def test_approved_delete_cannot_remove_parent_of_auto_protected_metadata(self):
+        from types import SimpleNamespace
+        outside = self.base / 'outside'; outside.mkdir()
+        parent = outside / 'sub'; parent.mkdir()
+        internal = parent / '.openkapsel'; internal.mkdir()
+        secret = internal / 'client.json'; secret.write_text('PRIVATE')
+        self.files.sandbox_denied_paths = frozenset({internal})
+        self.files.sandbox_path_rules = (
+            SimpleNamespace(path=str(outside), access='ro'),
+            SimpleNamespace(path=str(parent), access='deny'),
+        )
+        write = self.grant(outside, access='write')
+        # More-specific normal deny is deliberately bypassed; automatically
+        # hidden internal metadata is not, including through an ancestor.
+        result = self.execute(write, 'fs_mkdir', {'path': str(parent / 'permitted')}, access='write')
+        self.assertEqual(201, result['status'], result)
+        from openkapsel.client_runtime.approved_file_api import ApprovedFiles
+        provider = ApprovedFiles(self.files, write, True, ())
+        with self.assertRaises(OSError):
+            provider.ensure_mutable_path(parent)
+        forbidden = self.execute(write, 'fs_mutate', {'items': [
+            {'op': 'path.delete', 'path': str(parent), 'expected_etag': '"stale"'}]}, access='write')
+        self.assertIn(forbidden['status'], (403, 404), forbidden)
+        self.assertEqual('PRIVATE', secret.read_text())
+        self.assertTrue(parent.exists())
+
+    def test_approved_write_overrides_nested_ro_and_deny(self):
         outside = self.base / 'outside'; outside.mkdir()
         auth = self.grant(outside, access='write')
         readonly = [{'path': str(outside), 'access': 'ro'}]
@@ -117,25 +162,40 @@ class FileFunctionTests(unittest.TestCase):
                                access='write', rules=readonly)
         self.assertEqual(201, allowed['status'], allowed)
         self.assertTrue((outside / 'created').is_dir())
-        denied = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'blocked')},
-                              access='write', rules=[{'path': str(outside), 'access': 'deny'}])
-        self.assertEqual(403, denied['status'], denied)
-        self.assertFalse((outside / 'blocked').exists())
-        # A denied descendant cannot be deleted by mutating its ancestor.
-        secret = outside / 'protected'; secret.mkdir()
-        denied_descendant = [{'path': str(secret), 'access': 'deny'}]
-        denied = self.execute(auth, 'fs_mutate', {'items': [
-            {'op': 'path.delete', 'path': str(outside), 'expected_etag': '"unknown"'},
-        ]}, access='write', rules=denied_descendant)
-        self.assertEqual(403, denied['status'], denied)
+        # Even same-path and deeper configured deny rules are subordinate
+        # to the human-confirmed write grant for this canonical subtree.
+        allowed = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'blocked')},
+                               access='write', rules=[{'path': str(outside), 'access': 'deny'}])
+        self.assertEqual(201, allowed['status'], allowed)
+        self.assertTrue((outside / 'blocked').exists())
+        nested = outside / 'nested'; nested.mkdir()
+        nested_rules = [
+            {'path': str(outside), 'access': 'ro'},
+            {'path': str(nested), 'access': 'deny'},
+        ]
+        allowed = self.execute(auth, 'fs_mkdir', {'path': str(nested / 'writable')},
+                               access='write', rules=nested_rules)
+        self.assertEqual(201, allowed['status'], allowed)
+        self.assertTrue((nested / 'writable').exists())
+        from types import SimpleNamespace
+        with self.assertRaises(ApiError):
+            FileApproval.check(str(nested / 'ordinary'), self.root, auth,
+                               write=False, rules=tuple(
+                                   SimpleNamespace(**rule) for rule in nested_rules))
 
-    def test_client_readonly_and_external_deny_policy_survives_approval(self):
+    def test_client_write_approval_overrides_configured_deny_but_not_private_config(self):
         from types import SimpleNamespace
         outside = self.base / 'outside'; outside.mkdir()
         protected = outside / 'private'; protected.mkdir()
         (protected / 'secret.txt').write_text('PRIVATE')
-        self.files.sandbox_path_rules = (SimpleNamespace(path=str(outside), access='ro'),)
-        self.files.sandbox_denied_paths = frozenset({protected})
+        self.files.sandbox_path_rules = (
+            SimpleNamespace(path=str(outside), access='ro'),
+            SimpleNamespace(path=str(protected), access='deny'),
+        )
+        self.files.sandbox_denied_paths = frozenset()
+        # Hard protected paths are independently tracked, not regular rules.
+        secret = protected / 'secret.txt'
+        self.files.global_protected_paths = (*self.files.global_protected_paths, secret)
         auth = self.grant(outside, access='write')
         # Without approved File API the original sandbox read-only policy
         # continues rejecting exactly the same path.
@@ -146,8 +206,13 @@ class FileFunctionTests(unittest.TestCase):
         self.assertEqual(201, result['status'], result)
         self.assertTrue((outside / 'created').exists())
         result = self.execute(auth, 'fs_mkdir', {'path': str(protected / 'blocked')}, access='write')
-        self.assertEqual(404, result['status'], result)
-        self.assertFalse((protected / 'blocked').exists())
+        self.assertEqual(201, result['status'], result)
+        self.assertTrue((protected / 'blocked').exists())
+        hidden_write = self.execute(auth, 'fs_mutate', {'items': [
+            {'op': 'file.replace', 'path': str(secret), 'content': 'BAD',
+             'expected_etag': '"invalid"'}]}, access='write')
+        self.assertIn(hidden_write['status'], (403, 404), hidden_write)
+        self.assertEqual('PRIVATE', secret.read_text())
         read = self.grant(outside)
         result = self.execute(read, 'fs_list', query={'path': [str(outside)]})
         self.assertEqual(200, result['status'], result)
@@ -200,13 +265,13 @@ class FileFunctionTests(unittest.TestCase):
             {'op': 'file.create', 'path': str(alias / 'allowed.txt'), 'content': 'APPROVED'}]}, access='write')
         self.assertEqual(200, created['status'], created)
         self.assertEqual('APPROVED', (one / 'allowed.txt').read_text())
-        # An explicit deny on the alias spelling cannot be bypassed by
-        # following the canonical symlink inside an approved scope.
-        denied = self.execute(write, 'fs_mutate', {'items': [
-            {'op': 'file.create', 'path': str(alias / 'denied.txt'), 'content': 'BLOCKED'}]},
+        # The approved canonical scope overrides a configured deny on a
+        # lexical alias too; retargeting that alias must still fail below.
+        allowed = self.execute(write, 'fs_mutate', {'items': [
+            {'op': 'file.create', 'path': str(alias / 'formerly-denied.txt'), 'content': 'APPROVED'}]},
             access='write', rules=[{'path': str(alias), 'access': 'deny'}])
-        self.assertEqual(403, denied['status'], denied)
-        self.assertFalse((one / 'denied.txt').exists())
+        self.assertEqual(200, allowed['status'], allowed)
+        self.assertEqual('APPROVED', (one / 'formerly-denied.txt').read_text())
         alias.rmdir() if os.name == 'nt' else alias.unlink()
         link(alias, two)
         failed = self.execute(auth, 'fs_read_files', {'paths': [str(alias / 'secret.txt')]})

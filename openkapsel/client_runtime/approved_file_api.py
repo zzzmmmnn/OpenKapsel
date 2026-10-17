@@ -41,29 +41,31 @@ class ApprovedFiles:
         path = FileApproval.check(value, self.root, self.auth, write=self.write, rules=self.rules)
         if self._protected(path):
             raise OSError(errno.ENOENT, "path does not exist")
-        self.base.ensure_accessible_path(path)
+        if not self.write:
+            self.base.ensure_accessible_path(path)
         return path
 
     def _protected(self, path):
-        return any(path == p or p in path.parents
-            for p in (*self.base.global_protected_paths, *self.base.sandbox_denied_paths))
+        # sandbox_denied_paths contains only auto-protected Client secrets
+        # and internal metadata; user configured deny is a normal rule.
+        protected = (*self.base.global_protected_paths, *self.base.sandbox_denied_paths)
+        return any(path == p or p in path.parents for p in protected)
 
     def ensure_mutable_path(self, path):
         if path in (self.root, *self.scopes):
             raise OSError(errno.EACCES, "approved root is protected")
         FileApproval.check(str(path), self.root, self.auth, write=True, rules=self.rules)
-        # The normal Client mutability check reapplies job_sandbox ro.
-        # FileApproval.check already enforced the scoped authorization and
-        # explicit deny, while protected configuration remains guarded below.
+        # A scoped write grant replaces ordinary ro/deny sandbox rules;
+        # only private Client configuration and metadata remain protected.
         if any(path == p or p in path.parents or path in p.parents
                for p in (*self.base.global_protected_paths, *self.base.sandbox_denied_paths)):
             raise OSError(errno.EACCES, "protected path")
 
     def is_protected_path(self, path):
-        if self.base.is_protected_path(path) or self._protected(path):
+        if self._protected(path):
             return True
         try:
-            FileApproval.check(str(path), self.root, self.auth, write=False, rules=self.rules)
+            FileApproval.check(str(path), self.root, self.auth, write=self.write, rules=self.rules)
             return False
         except ApiError:
             return True
@@ -78,11 +80,10 @@ class ApprovedFiles:
         files = type(self.base)(root, writable=self.writable,
             rpc_registry=self.base.rpc_registry, rpc_capabilities=self.base.rpc_capabilities,
             protected_paths=self.base.global_protected_paths, index_owned=False)
+        # The approved write scope supersedes user-configured rules, but
+        # retains the Client's automatic hard-deny private paths.
         files.sandbox_denied_paths = self.base.sandbox_denied_paths
-        # Recycle dispatches via ClientFiles directly; preserve deny
-        # without reapplying its unapproved read-only guard.
-        files.sandbox_path_rules = tuple(rule for rule in self.base.sandbox_path_rules
-                                         if rule.access == "deny")
+        files.sandbox_path_rules = ()
         args = {"path": path.relative_to(root).as_posix()}
         if original is not None:
             args["original_path"] = original.relative_to(root).as_posix()
