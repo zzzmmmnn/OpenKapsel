@@ -17,14 +17,17 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
     roots.extend((normalize(rule.path), rule.access) for rule in grants)
     matches = [(base, mode) for base, mode in roots
                if path == base or base in path.parents]
+    # A deny-only match outside the export root must still be a deny. This
+    # matters for aliases pointing into an approved canonical scope: the
+    # lexical spelling may match only an explicit deny rule.
+    modes = {mode for _, mode in matches}
+    if "deny" in modes:
+        return "deny"
     permitted = [base for base, mode in matches if mode != "deny"]
     if not permitted:
         return None
     # Paths named .openkapsel are not exported even under extra grants.
     if any(".openkapsel" in path.relative_to(base).parts for base in permitted):
-        return "deny"
-    modes = {mode for _, mode in matches}
-    if "deny" in modes:
         return "deny"
     if "ro" in modes:
         return "ro"
