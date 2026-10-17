@@ -59,6 +59,74 @@ class ContextStoreTests(unittest.TestCase):
                     plan_id=root,
                 )
 
+    def test_completed_plan_cannot_be_reopened_or_edited(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = ContextStore(Path(raw))
+            root = store.add("plan", "Completed root", taskname="immutable")
+            child = store.add("plan", "Completed child", taskname="immutable", plan_id=root)
+            debrief = {"items": [], "outcome": "succeeded", "memory_refs": []}
+            child_done = store.update_plan(child, expected_revision=1,
+                taskname="immutable", plan_status="completed", debrief=debrief)
+            root_done = store.update_plan(root, expected_revision=1,
+                taskname="immutable", plan_status="completed", debrief=debrief)
+            self.assertEqual("completed", child_done["status"])
+            self.assertEqual("completed", root_done["status"])
+
+            # No Plan attribute or status can change, including reopening to
+            # perform new writes, cancelling, or submitting a second debrief.
+            changes = (
+                {"content": "After closing"},
+                {"content": "After closing", "taskname": "renamed"},
+                {"plan_status": "in_progress"},
+                {"plan_status": "cancelled"},
+                {"plan_status": "completed", "debrief": debrief},
+            )
+            for plan in (root_done, child_done):
+                for change in changes:
+                    with self.subTest(plan=plan["id"], change=change), self.assertRaisesRegex(
+                        ValueError, "completed plan cannot be modified"
+                    ):
+                        store.update_plan(plan["id"], expected_revision=plan["revision"],
+                            taskname=change.get("taskname", "immutable"),
+                            **{k: v for k, v in change.items() if k != "taskname"})
+                unchanged = store.query(entry_id=plan["id"])[0][0]
+                for key in ("id", "taskname", "content", "status", "revision", "plan_id"):
+                    self.assertEqual(plan[key], unchanged[key])
+                self.assertEqual("succeeded", store.plan_debrief(plan["id"])["outcome"])
+
+            with self.assertRaisesRegex(ValueError, "in_progress plan"):
+                store.require_in_progress_plan(root)
+            # Work following completion must use a separate, new Plan.
+            next_plan = store.add("plan", "Next task", taskname="new-task")
+            self.assertEqual("in_progress", store.query(entry_id=next_plan)[0][0]["status"])
+
+    def test_legacy_reopened_plan_with_debrief_remains_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = ContextStore(Path(raw))
+            plan = store.add("plan", "Was completed", taskname="legacy")
+            store.update_plan(plan, expected_revision=1, taskname="legacy",
+                plan_status="completed",
+                debrief={"items": [], "outcome": "succeeded", "memory_refs": []})
+            # Simulate a previous buggy release reopening a Plan without
+            # removing its immutable completion debrief.
+            with sqlite3.connect(Path(raw) / ".openkapsel" / "context" / "context.sqlite3") as connection:
+                connection.execute("UPDATE context_entries SET plan_status='in_progress' WHERE id=?", (plan,))
+            historical = store.query(entry_id=plan)[0][0]
+            self.assertEqual("in_progress", historical["status"])
+            self.assertEqual(2, historical["revision"])
+            for changes in (
+                {"content": "Should not change"},
+                {"plan_status": "in_progress"},
+                {"plan_status": "completed", "debrief":
+                    {"items": [], "outcome": "succeeded", "memory_refs": []}},
+            ):
+                with self.subTest(changes=changes), self.assertRaisesRegex(
+                    ValueError, "completed plan cannot be modified"
+                ):
+                    store.update_plan(plan, expected_revision=2, taskname="legacy", **changes)
+            self.assertEqual(historical, store.query(entry_id=plan)[0][0])
+            self.assertEqual("succeeded", store.plan_debrief(plan)["outcome"])
+
     def test_closed_plan_cannot_own_mutations_notes_or_new_subplans(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = ContextStore(Path(raw))

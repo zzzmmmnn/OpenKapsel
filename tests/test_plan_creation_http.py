@@ -244,6 +244,53 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual([], singleton["subplans"])
         self.assertNotIn("replayed", singleton)
 
+    def test_completed_plan_is_immutable_over_rest_and_mcp(self):
+        # A terminal Plan cannot be reopened, edited, or cancelled through
+        # either public adapter. Its existing completion debrief is preserved.
+        status, created = self.rest("POST", "/context", dict(self.body, subplans=[]))
+        self.assertEqual(201, status, created)
+        finish = {
+            "taskname": "feature",
+            "expected_revision": created["revision"],
+            "status": "completed",
+            "conversation_id": self.conversation_id,
+            "writer_nonce": self.writer_nonce,
+            "conversation_entries": [{"role": "ai", "content": "This Plan is finished."}],
+            "debrief": {"items": [], "outcome": "succeeded",
+                        "memory_actions": [], "memory_feedback": [], "memory_conflicts": []},
+        }
+        status, done = self.rest("PATCH", f"/context/plans/{created['id']}", finish)
+        self.assertEqual(200, status, done)
+        self.assertEqual("completed", done["status"])
+        self.assertEqual(2, done["revision"])
+        before = self.store.query(entry_id=created["id"])[0][0]
+        for args in (
+            {"status": "in_progress"},
+            {"status": "cancelled"},
+            {"content": "Change completed content"},
+            {"status": "completed", "debrief": finish["debrief"]},
+        ):
+            request = {k: v for k, v in finish.items() if k != "status" and k != "debrief"}
+            request["expected_revision"] = done["revision"]
+            request.update(args)
+            expected_error = ("plan is already completed" if args.get("status") == "completed"
+                              else "completed plan cannot be modified")
+            with self.subTest(adapter="rest", args=args):
+                status, error = self.rest("PATCH", f"/context/plans/{created['id']}", request)
+                self.assertEqual(400, status, error)
+                self.assertEqual("invalid_context_entry", error["error"]["code"])
+                self.assertIn(expected_error, error["error"]["message"])
+            with self.subTest(adapter="mcp", args=args):
+                rpc = dict(request, id=created["id"])
+                status, reply = self.mcp_call("tools/call",
+                    {"name": "context_plan_update", "arguments": rpc})
+                self.assertEqual(200, status, reply)
+                self.assertTrue(reply["result"]["isError"], reply)
+                self.assertIn(expected_error,
+                    reply["result"]["structuredContent"]["error"]["message"])
+        self.assertEqual(before, self.store.query(entry_id=created["id"])[0][0])
+        self.assertEqual("succeeded", self.store.plan_debrief(created["id"])["outcome"])
+
     def test_discovery_and_mcp_publish_matching_extension_schemas(self):
         status, discovery = self.rest("GET", "/discovery/context")
         self.assertEqual(200, status, discovery)
