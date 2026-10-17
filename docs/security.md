@@ -108,8 +108,11 @@ responsibilities.
 
 
 Temporary `shell.unsandboxed` grants deliberately permit execution without a sandbox
-as the selected target's OS user. The approval page requires the workspace's
-password plus browser/request CSRF proof, has bounded attempts, and exposes the
+as the selected target's OS user. A `deny` path rule protects File API and ordinary
+sandboxed Shell access, but is not a host-level barrier: an explicitly approved
+unsandboxed Shell may access those paths when OS permissions allow. The Shell's
+initial working directory still passes normal checks. The approval
+page requires the workspace's password plus browser/request CSRF proof, has bounded attempts, and exposes the
 exact Conversation and target being approved. Grants cannot be transferred
 between conversations, workspaces, targets or capabilities. Only salted password
 hashes persist; pending URLs and grants are memory-only. Approval and OAuth

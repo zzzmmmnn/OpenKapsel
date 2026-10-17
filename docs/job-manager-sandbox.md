@@ -70,9 +70,20 @@ Token workspace or a separately granted extra directory. Under an existing
 read/write root, add a narrower rule such as
 `/data/project/.openkapsel` with **Deny access**; the other files remain
 readable/writable. **More-specific child paths override parent rules**;
-`deny` at any ancestor is absolute and cannot be overridden. Other rules use deepest matching path, with same-path priority `deny > protect > ro > rw`. `protect` blocks access except when its exact directory or a narrower child is independently approved. Broad File Approvals do not cross protect boundaries. Client configuration and Manager-private paths stay hard denied. A Token
-or Mapping with an absolute `deny` cannot run an unsandboxed Shell even
-with a temporary Shell approval, because that would bypass the deny.
+`deny` at any ancestor is absolute and cannot be overridden. Other rules
+use deepest matching path, with same-path priority
+`deny > protect > ro > rw`. `protect` blocks access except when its exact
+directory or a narrower child is independently approved. Broad File
+Approvals do not cross protect boundaries. Client configuration and
+Manager-private paths stay inaccessible through the File API and
+sandboxed Shell.
+
+A configured `deny` does **not** reject a separately approved unsandboxed
+Shell. After explicit Shell approval, the process runs as the target OS
+user outside the sandbox and can access denied paths if host OS
+permissions allow. The initial working directory still needs to pass
+normal path checks; File API and unapproved sandboxed Shell remain
+subject to `deny`.
 The short alias `r` is normalized to `ro` in programmatic rules.
 
 Server Token records retain backwards compatibility: persisted entries with

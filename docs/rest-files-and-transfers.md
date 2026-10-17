@@ -123,8 +123,10 @@ external File API approvals/operations with `mapping_client_upgrade_required` ra
 than silently accessing the normal export.
 
 **Security boundaries:** Four path modes are `rw`, `ro`, `protect`
-and `deny`. Absolute `deny` at any ancestor cannot be overridden by a
-child rule or any Approval. Other modes use deepest path priority with
+and `deny`. For File API and sandboxed Shell, absolute `deny` at any
+ancestor cannot be overridden by a child rule or File Approval.
+A separately approved unsandboxed Shell is outside these path restrictions.
+Other modes use deepest path priority with
 same-path `deny > protect > ro > rw`. A `protect` rule denies ordinary reads
 and writes but a separately confirmed `files.read`/`files.write` grant
 for the protected directory itself or a more precise canonical child may

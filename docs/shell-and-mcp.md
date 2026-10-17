@@ -241,7 +241,18 @@ Mapping `allow_exec=false` and Client execution-disabled flags can be overridden
 by this approved invocation; writable Mapping, caller write and Shell permissions
 remain required. Older Clients lacking the `unsandboxed` capability must upgrade
 and reconnect. Short jobs and long shared Job Manager jobs both support approval.
-The Client receives only `unsandboxed=true`, never the password, URL or grant.
+The Server injects Client-owned Shell authorization into the private
+function RPC (for example,
+`{"grants":[{"expires_at":<Client Unix time>,"unsandboxed":true}]}`).
+The password and approval URL are never passed to the execution function.
+The Client validates its own grant expiry before skipping the sandbox.
+A Client-first upgrade can also recognize the prior private
+`{"unsandboxed":true}` authorization format while the Server is on the old
+protocol.
+
+Configured sandbox path `deny` rules still apply to ordinary Shell, but
+cannot constrain an explicitly approved unsandboxed host process; File API
+`deny` is unaffected.
 
 `approved=false` preserves ordinary Shell policy, including permanent
 administrator-configured `shell_mode=full`. Explicit `approved=true` always checks
