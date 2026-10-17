@@ -1381,7 +1381,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             .joinpath("approved-mcp.txt").read_text(),
         )
 
-    def test_file_approval_respects_denied_and_readonly_paths(self):
+    def test_file_approval_elevates_readonly_but_preserves_denied_paths(self):
         from openkapsel.auth.tokens import PathGrant
         self.configure()
         root = self.server.tokens.scope_root(self.record)
@@ -1405,13 +1405,23 @@ class CapabilityHTTPTests(unittest.TestCase):
         })
         self.assertEqual(207, status)
         self.assertEqual("path_unavailable", denied["items"][0]["error"]["code"])
-        status, denied = self.api("/fs/write/mkdir", {
+        status, blocked = self.api("/fs/write/mkdir", {
+            "path": "readonly/plain",  # The normal path remains read-only.
+        })
+        self.assertNotIn(status, (200, 201), blocked)
+        status, allowed = self.api("/fs/write/mkdir", {
             "path": "readonly/newdir", "approved": True,
             "target": "server", "writer_nonce": nonce,
         })
-        self.assertEqual(404, status)
-        self.assertEqual("path_unavailable", denied["error"]["code"])
-        self.assertFalse((root / "readonly/newdir").exists())
+        self.assertEqual(201, status, allowed)
+        self.assertTrue((root / "readonly/newdir").exists())
+        self.assertFalse((root / "readonly/plain").exists())
+        # Explicitly denied paths are still inaccessible despite the grant.
+        status, denied = self.api("/fs/write/mkdir", {
+            "path": "secret.txt/blocked", "approved": True,
+            "target": "server", "writer_nonce": nonce,
+        })
+        self.assertNotIn(status, (200, 201), denied)
         # The same read/write approvals do not authorize Shell tasks.
         status, body = self.approved()
         self.assertEqual(403, status)

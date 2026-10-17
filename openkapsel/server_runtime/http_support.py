@@ -105,14 +105,21 @@ class HttpSupportMixin:
         # remove any protected descendant. Ordinary writes to its siblings
         # still pass because those targets are not ancestors.
         target = Path(path).resolve(strict=False)
+        approval = getattr(self, "_file_function_policy", None)
+        elevated = approval is not None and approval[2] is True
+        if elevated:
+            from openkapsel.client_runtime.file_approval import FileApproval
+            FileApproval.check(str(path), self.token_scope_root, approval[0],
+                               write=True, rules=approval[1])
         for rule in self.token_record.allowed_paths:
             protected = Path(rule.path)
-            if rule.access in {"ro", "deny"} and protected != target and target in protected.parents:
+            if (rule.access == "deny" or (not elevated and rule.access == "ro")) and protected != target and target in protected.parents:
                 raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied",
                                "directory contains protected sandbox paths")
         policy = effective_path_access(
             path, self.token_scope_root, self.token_record.can_write,
-            self.token_record.allowed_paths,
+            tuple(rule for rule in self.token_record.allowed_paths
+                  if not elevated or rule.access != "ro"),
         )
         if policy == "deny":
             raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is denied")

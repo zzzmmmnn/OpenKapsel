@@ -102,15 +102,32 @@ class FileFunctionTests(unittest.TestCase):
         result = self.execute(auth, 'fs_read_files', {'paths': [str(secret)]})
         self.assertEqual(404, result['status'])
         self.assertNotIn('SECRET_CONFIGURATION', str(result))
+        write = self.grant(outside, access='write')
+        blocked = self.execute(write, 'fs_mutate', {'items': [
+            {'op': 'file.replace', 'path': str(secret),
+             'content': 'OVERWRITE', 'expected_etag': '"stale"'}]}, access='write')
+        self.assertIn(blocked['status'], (403, 404), blocked)
+        self.assertEqual('SECRET_CONFIGURATION', secret.read_text())
 
-    def test_explicit_deny_and_readonly_rules_override_write_authorization(self):
+    def test_approved_write_elevates_readonly_but_never_explicit_deny(self):
         outside = self.base / 'outside'; outside.mkdir()
         auth = self.grant(outside, access='write')
-        for access in ('ro', 'deny'):
-            result = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'blocked')}, access='write',
-                rules=[{'path': str(outside), 'access': access}])
-            self.assertEqual(403, result['status'], result)
-            self.assertFalse((outside / 'blocked').exists())
+        readonly = [{'path': str(outside), 'access': 'ro'}]
+        allowed = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'created')},
+                               access='write', rules=readonly)
+        self.assertEqual(201, allowed['status'], allowed)
+        self.assertTrue((outside / 'created').is_dir())
+        denied = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'blocked')},
+                              access='write', rules=[{'path': str(outside), 'access': 'deny'}])
+        self.assertEqual(403, denied['status'], denied)
+        self.assertFalse((outside / 'blocked').exists())
+        # A denied descendant cannot be deleted by mutating its ancestor.
+        secret = outside / 'protected'; secret.mkdir()
+        denied_descendant = [{'path': str(secret), 'access': 'deny'}]
+        denied = self.execute(auth, 'fs_mutate', {'items': [
+            {'op': 'path.delete', 'path': str(outside), 'expected_etag': '"unknown"'},
+        ]}, access='write', rules=denied_descendant)
+        self.assertEqual(403, denied['status'], denied)
 
     def test_client_readonly_and_external_deny_policy_survives_approval(self):
         from types import SimpleNamespace
@@ -120,9 +137,17 @@ class FileFunctionTests(unittest.TestCase):
         self.files.sandbox_path_rules = (SimpleNamespace(path=str(outside), access='ro'),)
         self.files.sandbox_denied_paths = frozenset({protected})
         auth = self.grant(outside, access='write')
-        result = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'blocked')}, access='write')
-        self.assertEqual(403, result['status'], result)
-        self.assertFalse((outside / 'blocked').exists())
+        # Without approved File API the original sandbox read-only policy
+        # continues rejecting exactly the same path.
+        with self.assertRaises(OSError) as denial:
+            self.files.ensure_mutable_path(outside / 'created')
+        self.assertEqual(errno.EACCES, denial.exception.errno)
+        result = self.execute(auth, 'fs_mkdir', {'path': str(outside / 'created')}, access='write')
+        self.assertEqual(201, result['status'], result)
+        self.assertTrue((outside / 'created').exists())
+        result = self.execute(auth, 'fs_mkdir', {'path': str(protected / 'blocked')}, access='write')
+        self.assertEqual(404, result['status'], result)
+        self.assertFalse((protected / 'blocked').exists())
         read = self.grant(outside)
         result = self.execute(read, 'fs_list', query={'path': [str(outside)]})
         self.assertEqual(200, result['status'], result)
@@ -168,13 +193,30 @@ class FileFunctionTests(unittest.TestCase):
         (one / 'visible.txt').write_text('VISIBLE'); (two / 'secret.txt').write_text('PRIVATE')
         alias = self.base / 'alias'; link(alias, one)
         auth = self.grant(alias)
+        write = self.grant(alias, access='write')
         self.assertEqual([str(one)], auth['paths'])
         self.assertEqual(200, self.execute(auth, 'fs_read_files', {'paths': [str(alias / 'visible.txt')]})['status'])
+        created = self.execute(write, 'fs_mutate', {'items': [
+            {'op': 'file.create', 'path': str(alias / 'allowed.txt'), 'content': 'APPROVED'}]}, access='write')
+        self.assertEqual(200, created['status'], created)
+        self.assertEqual('APPROVED', (one / 'allowed.txt').read_text())
+        # An explicit deny on the alias spelling cannot be bypassed by
+        # following the canonical symlink inside an approved scope.
+        denied = self.execute(write, 'fs_mutate', {'items': [
+            {'op': 'file.create', 'path': str(alias / 'denied.txt'), 'content': 'BLOCKED'}]},
+            access='write', rules=[{'path': str(alias), 'access': 'deny'}])
+        self.assertEqual(403, denied['status'], denied)
+        self.assertFalse((one / 'denied.txt').exists())
         alias.rmdir() if os.name == 'nt' else alias.unlink()
         link(alias, two)
         failed = self.execute(auth, 'fs_read_files', {'paths': [str(alias / 'secret.txt')]})
         self.assertEqual(404, failed['status'])
         self.assertNotIn('PRIVATE', str(failed))
+        failed_write = self.execute(write, 'fs_mutate', {'items': [
+            {'op': 'file.create', 'path': str(alias / 'redirected.txt'), 'content': 'LEAK'}]},
+            access='write')
+        self.assertIn(failed_write['status'], (403, 404), failed_write)
+        self.assertFalse((two / 'redirected.txt').exists())
         with self.assertRaises(ApiError):
             self.execute(auth, 'fs_read_files', {'paths': [str(one) + '/../two/secret.txt']})
 
@@ -192,6 +234,12 @@ class FileFunctionTests(unittest.TestCase):
         target = self.root / 'recycle.txt'
         auth = self.grant(access='write')
         target.write_text('RECYCLE')
+        # Recycle enters ClientFiles._dispatch directly. Its sandbox ro
+        # must not undo an explicitly approved files.write grant.
+        from types import SimpleNamespace
+        self.files.sandbox_path_rules = (SimpleNamespace(path=str(self.root), access='ro'),)
+        with self.assertRaises(OSError):
+            self.files.ensure_mutable_path(target)
         details = self.execute(auth, 'fs_stat', query={'path': [str(target)], 'fields': ['etag']}, access='write')
         self.assertEqual(200, details['status'], details)
         result = self.execute(auth, 'fs_mutate', {'items': [

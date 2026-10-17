@@ -122,8 +122,14 @@ advertise `file_stream.external_root_file_api=true` and
 external File API approvals/operations with `mapping_client_upgrade_required` rather
 than silently accessing the normal export.
 
-**Security boundaries:** File approval never bypasses explicit denied/readonly
-paths, Mapping write-protection, protected client configuration, or OS user
+**Security boundaries:** A confirmed `files.write` grant temporarily
+**elevates Token and Client Sandbox read-only (`ro`/`r`) paths** within the
+approved workspace or canonical external directory scope. This is an explicit
+exception to the ordinary `deny > ro > rw` policy, applicable only to
+`approved=true` calls with the matching Token, Conversation, target and
+in-progress Plan. `deny` remains absolute: neither a direct write nor a
+parent-directory rename/delete can affect a denied subtree. Approval also
+never bypasses Mapping write-protection, protected client configuration, or OS user
 permissions. File API access does not authorize Git/Archive RPC, recycle
 management, resumable uploads, or sharing.
 File requests spanning multiple targets cannot borrow another target's grant.

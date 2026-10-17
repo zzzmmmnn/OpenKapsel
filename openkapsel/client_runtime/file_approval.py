@@ -116,17 +116,21 @@ class FileApproval:
             raise ApiError(404, "path_unavailable", "path does not exist or access is denied")
         if any(p == ".openkapsel" or p.startswith(".openkapsel-") for p in resolved.parts):
             raise ApiError(403, "reserved_path", "internal paths cannot be approved")
-        granted_rules = (*rules, *(SimpleNamespace(path=str(p), access="rw" if write else "ro") for p in scopes))
+        # Password-approved files.write elevates read-only Token and Client
+        # Sandbox rules inside the explicitly granted scope. An explicit deny
+        # is never elevated, and ordinary unapproved checks remain unchanged.
+        applicable_rules = tuple(rule for rule in rules if not (write and rule.access == "ro"))
+        granted_rules = (*applicable_rules, *(SimpleNamespace(path=str(p), access="rw" if write else "ro") for p in scopes))
         for checked in (candidate, resolved):
             policy = effective_path_access(checked, root, write, granted_rules, resolve_symlinks=False)
             # An alias outside all scopes may name an authorized canonical
-            # path. Explicit deny/ro entries still apply to that spelling.
+            # path. Explicit deny always applies to either spelling.
             if policy == "deny" or write and policy == "ro":
                 raise ApiError(403, "path_access_denied", "path is denied or read-only")
         if write:
             for rule in rules:
                 protected = Path(rule.path)
-                if rule.access in {"deny", "ro"} and (resolved == protected or resolved in protected.parents):
+                if rule.access == "deny" and (resolved == protected or resolved in protected.parents):
                     raise ApiError(403, "path_access_denied", "directory contains protected paths")
         return resolved
 

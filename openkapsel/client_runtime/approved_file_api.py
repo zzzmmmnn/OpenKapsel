@@ -52,7 +52,9 @@ class ApprovedFiles:
         if path in (self.root, *self.scopes):
             raise OSError(errno.EACCES, "approved root is protected")
         FileApproval.check(str(path), self.root, self.auth, write=True, rules=self.rules)
-        self.base.ensure_mutable_path(path)
+        # The normal Client mutability check reapplies job_sandbox ro.
+        # FileApproval.check already enforced the scoped authorization and
+        # explicit deny, while protected configuration remains guarded below.
         if any(path == p or p in path.parents or path in p.parents
                for p in (*self.base.global_protected_paths, *self.base.sandbox_denied_paths)):
             raise OSError(errno.EACCES, "protected path")
@@ -77,7 +79,10 @@ class ApprovedFiles:
             rpc_registry=self.base.rpc_registry, rpc_capabilities=self.base.rpc_capabilities,
             protected_paths=self.base.global_protected_paths, index_owned=False)
         files.sandbox_denied_paths = self.base.sandbox_denied_paths
-        files.sandbox_path_rules = self.base.sandbox_path_rules
+        # Recycle dispatches via ClientFiles directly; preserve deny
+        # without reapplying its unapproved read-only guard.
+        files.sandbox_path_rules = tuple(rule for rule in self.base.sandbox_path_rules
+                                         if rule.access == "deny")
         args = {"path": path.relative_to(root).as_posix()}
         if original is not None:
             args["original_path"] = original.relative_to(root).as_posix()

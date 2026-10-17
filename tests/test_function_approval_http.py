@@ -111,8 +111,23 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         self.server.config = replace(self.server.config, mappings_enabled=True)
         row, token = self.server.mappings.store.create(self.record.path_prefix, 'real-files', writable=True)
         self.server.mappings.mount_path(row).mkdir()
+        # A real Client job_sandbox.path rule must exist before READY because
+        # each WebSocket RPC session snapshots the Client's path restrictions.
+        external = tempfile.TemporaryDirectory(prefix='kapsel-file-ro-')
+        self.addCleanup(external.cleanup)
+        base = Path(external.name).resolve()
+        directories = [base / 'one', base / 'two']
+        for directory in directories:
+            directory.mkdir()
+            (directory / 'text.txt').write_text(directory.name)
+        hidden = directories[0] / 'private'
+        hidden.mkdir()
         config = {'url': f'ws://127.0.0.1:{self.server.server_port}/kapsel/mapping-connect/{row["id"]}',
-                  'token': token, 'root': str(self.export), 'writable': True, 'allow_exec': False}
+                  'token': token, 'root': str(self.export), 'writable': True, 'allow_exec': False,
+                  'job_sandbox': {'paths': [
+                      {'path': str(directories[0]), 'access': 'ro'},
+                      {'path': str(hidden), 'access': 'deny'},
+                  ]}}
         with patch.dict(os.environ, {'OPENKAPSEL_JOB_MANAGER_HOME': str(self.manager_home)}):
             runtime = ClientRuntime(config)
         ready, stop = threading.Event(), threading.Event()
@@ -122,9 +137,11 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         try:
             self.assertTrue(ready.wait(5))
             with tempfile.TemporaryDirectory() as raw:
-                base = Path(raw).resolve(); directories = [base / 'one', base / 'two']
+                unrelated = Path(raw).resolve()
+                # The unapproved File API is still bound by Client ro.
+                with self.assertRaises(OSError):
+                    runtime.files.ensure_mutable_path(directories[0] / 'created')
                 for directory in directories:
-                    directory.mkdir(); (directory / 'text.txt').write_text(directory.name)
                     status, pending = self.request_file_approval('read', row['id'], path=str(directory))
                     self.assertEqual(200, status, pending)
                     self.approve({'error': {'details': pending}})
@@ -147,6 +164,24 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                     'approved': True, 'target': row['id'], 'writer_nonce': self.ownership()[1]})
                 self.assertIn(status, (200, 201), written)
                 self.assertTrue((directories[0] / 'created').is_dir())
+                status, denied = self.api('/fs/write/mkdir', {
+                    'path': str(hidden / 'blocked'),
+                    'approved': True, 'target': row['id'],
+                    'writer_nonce': self.ownership()[1]})
+                self.assertIn(status, (403, 404), denied)
+                self.assertFalse((hidden / 'blocked').exists())
+                status, denied = self.api('/fs/write/mkdir', {
+                    'path': str(directories[1] / 'unapproved-write-scope'),
+                    'approved': True, 'target': row['id'],
+                    'writer_nonce': self.ownership()[1]})
+                self.assertIn(status, (403, 404), denied)
+                self.assertFalse((directories[1] / 'unapproved-write-scope').exists())
+                status, denied = self.api('/fs/write/mkdir', {
+                    'path': str(unrelated / 'outside-approved-scope'),
+                    'approved': True, 'target': row['id'],
+                    'writer_nonce': self.ownership()[1]})
+                self.assertIn(status, (403, 404), denied)
+                self.assertFalse((unrelated / 'outside-approved-scope').exists())
                 # Stream more than one RPC chunk through function-owned
                 # descriptors, including conditional range reads and no-overwrite.
                 from urllib.parse import urlencode

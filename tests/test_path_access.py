@@ -49,6 +49,13 @@ class PathAccessTests(unittest.TestCase):
         self.assertEqual("rw", effective_path_access(self.root / "other.txt", self.root, True, grants))
         self.assertEqual("deny", effective_path_access(self.metadata / "config.json", self.root, True, ()))
         self.assertIsNone(effective_path_access(self.base / "elsewhere", self.root, True, grants))
+        # A deny outside any normal permitted root still wins when checked
+        # as the lexical alias of a separately approved canonical directory.
+        external_alias = self.base / "external-alias"
+        self.assertEqual("deny", effective_path_access(
+            external_alias / "blocked", self.root, True,
+            (SimpleNamespace(path=str(external_alias), access="deny"),),
+            resolve_symlinks=False))
         self.assertEqual("ro", PathGrant(str(self.sub), access="r").access)
 
     def test_legacy_server_record_read_only_is_normalized(self):
