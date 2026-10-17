@@ -255,6 +255,13 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         "_handle_mcp_method_not_allowed", control_required=True, discovery_key="mcp",
     ),
     _exact(
+        "function_approval_request", ("POST",), "/function/approval/request",
+        "_handle_function_approval_request", control_required=True,
+        request_body=True, context_mode="deferred",
+        context_operations=(("POST", "function.approval.request"),),
+        discovery_key="shell",
+    ),
+    _exact(
         "shell_approval_request", ("POST",), "/shell/approval/request",
         "_handle_shell_approval_request", control_required=True,
         request_body=True, context_mode="deferred",

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 from openkapsel.client_runtime.rpc_deadline import check_deadline, deadline_scope
 from openkapsel.errors import ApiError
-from openkapsel.files.file_handlers import FileHandlersMixin
+from openkapsel.files.file_handlers import FileExecutionMixin
 from openkapsel.mapping.mapping_transport import FILE_API_OPERATIONS, FILE_API_WRITE_OPERATIONS, encode
 from openkapsel.files.safe_paths import SafePathError
 
@@ -35,7 +35,7 @@ FILE_API_LIMITS = {
 }
 
 
-class ClientFileAPI(FileHandlersMixin):
+class ClientFileAPI(FileExecutionMixin):
     def __init__(self, files, arguments):
         self.files = files
         self.token_scope_root = files.root

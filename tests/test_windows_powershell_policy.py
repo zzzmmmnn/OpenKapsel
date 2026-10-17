@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import errno
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -91,6 +92,16 @@ class PowerShellFilesystemTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         return execute_simple_powershell(self.files, self.root, parsed, rules=rules)
 
+    def file_alias(self, alias, target):
+        if os.name == "nt":
+            # Junctions exercise native reparse rejection without requiring
+            # SeCreateSymbolicLinkPrivilege or changing host security policy.
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(target.parent)],
+                           check=True, capture_output=True)
+            return alias / target.name
+        alias.symlink_to(target)
+        return alias
+
     def test_in_scope_reads_and_writes(self):
         self.assertIn("existing.txt", self.execute("Get-ChildItem"))
         self.assertEqual("OLD", self.execute("Get-Content -LiteralPath existing.txt"))
@@ -114,14 +125,14 @@ class PowerShellFilesystemTests(unittest.TestCase):
             with self.subTest(path=raw), self.assertRaises(OSError):
                 self.execute("Get-Content -LiteralPath '" + raw + "'")
         shortcut = self.root / "alias"
-        shortcut.symlink_to(self.outside)
+        shortcut = self.file_alias(shortcut, self.outside)
         with self.assertRaises(OSError):
-            self.execute("Get-Content -LiteralPath alias")
+            self.execute("Get-Content -LiteralPath '" + str(shortcut.relative_to(self.root)) + "'")
         nested = self.root / "nested"
         nested.mkdir()
-        (nested / "inside").symlink_to(self.root / "existing.txt")
+        inside = self.file_alias(nested / "inside", self.root / "existing.txt")
         with self.assertRaises(OSError):
-            self.execute("Get-Content -LiteralPath nested/inside")
+            self.execute("Get-Content -LiteralPath '" + str(inside.relative_to(self.root)) + "'")
 
     def test_denies_readonly_and_internal_paths(self):
         protected = self.root / ".openkapsel"
@@ -211,14 +222,13 @@ class WindowsApprovalTasksTests(PowerShellFilesystemTests):
         self.assertEqual("OLD", base64.b64decode(result["output"]).decode())
 
     def test_unknown_and_outside_commands_rejected_before_task(self):
+        alias = self.file_alias(self.root / "alias", self.outside)
         for command in ("whoami", "Get-Content ../outside.txt",
-                        "Get-Content -LiteralPath alias",
+                        "Get-Content -LiteralPath '" + str(alias.relative_to(self.root)) + "'",
                         "Get-Content -LiteralPath NUL",
                         "Get-Content -LiteralPath COM¹",
                         "Get-Content -LiteralPath existing.txt:stream",
                         "Set-Content -LiteralPath existing.txt:stream -Value unsafe"):
-            if command.endswith("alias") and not (self.root / "alias").exists():
-                (self.root / "alias").symlink_to(self.outside)
             with self.subTest(command=command):
                 with self.assertRaises(OSError) as ctx:
                     self.tasks.dispatch("task_start", {

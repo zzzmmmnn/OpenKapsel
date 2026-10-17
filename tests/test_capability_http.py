@@ -17,7 +17,25 @@ from tests import test_shell_routing, test_oauth_control_consent
 
 @unittest.skipIf(os.name == "nt", "HTTP server runs on POSIX")
 class CapabilityHTTPTests(unittest.TestCase):
-    setUp = test_shell_routing.UnifiedShellHTTPTests.setUp
+    def setUp(self):
+        test_shell_routing.UnifiedShellHTTPTests.setUp(self)
+        from openkapsel.execution.function_registry import FunctionRegistry
+        from openkapsel.client_runtime.file_approval import register_file_functions
+        self.file_functions = FunctionRegistry()
+        register_file_functions(self.file_functions, self.files)
+        self.session.capabilities["functions"] = self.file_functions.describe()
+        # The fixture's legacy session.call is reassigned by individual tests.
+        # Supply the new private protocol separately, retaining those legacy
+        # operation spies and the manager's normal capability checks.
+        self.file_grant_requests = []
+        original = self.server.mappings.call
+        def call(mid, operation, arguments, **kwargs):
+            if mid == self.row["id"] and operation == "function":
+                if arguments.get("method") == "approval.grant":
+                    self.file_grant_requests.append(arguments["request"].get("path"))
+                return self.file_functions.dispatch_internal(arguments)
+            return original(mid, operation, arguments, **kwargs)
+        self.server.mappings.call = call
     tearDown = test_shell_routing.UnifiedShellHTTPTests.tearDown
     request = test_shell_routing.UnifiedShellHTTPTests.request
     api = test_shell_routing.UnifiedShellHTTPTests.api
@@ -66,15 +84,14 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual("approval_required", pending["status"])
             result = {"error": {"details": pending}}
         location, headers, form, first_page = self.approval(result)
+        binding = (self.record.app_id, self.ownership()[0], result["error"]["details"]["target"],
+                   result["error"]["details"].get("function", result["error"]["details"].get("capability")))
+        previous = self.server.function_grants.current(*binding)
         status, _, raw = self.form(location, form, headers)
         self.assertEqual(200, status, raw)
         if b"Confirm actual File access directory" in raw:
             self.assertNotIn(b"Actual authorized directory", first_page)
-            self.assertFalse(self.server.capability_grants.granted(
-                self.record.app_id, self.ownership()[0],
-                result["error"]["details"]["target"],
-                result["error"]["details"]["capability"],
-                result["error"]["details"].get("path", "")))
+            self.assertEqual(previous, self.server.function_grants.current(*binding))
             status, _, raw = self.form(location, {
                 "csrf": form["csrf"], "confirm": "actual_path",
             }, headers)
@@ -184,7 +201,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, pending)
         self.assertEqual("approval_required", pending["status"])
         ticket = urlsplit(pending["approval_url"]).path.rsplit("/", 1)[-1]
-        self.assertEqual(reason, self.server.capability_grants.pending(ticket).reason)
+        self.assertEqual(reason, self.server.function_grants.pending(ticket).reason)
         location, headers, form, page = self.approval({"error": {"details": pending}})
         self.assertIn(b"AI request reason", page)
         self.assertIn(escape(reason).encode(), page)
@@ -202,7 +219,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual("approval_required", file_pending["status"])
             file_ticket = urlsplit(file_pending["approval_url"]).path.rsplit("/", 1)[-1]
             self.assertEqual("Inspect diagnostics for a support request",
-                             self.server.capability_grants.pending(file_ticket).reason)
+                             self.server.function_grants.pending(file_ticket).reason)
             location, headers, form, page = self.approval({"error": {"details": file_pending}})
             self.assertIn(b"Inspect diagnostics for a support request", page)
             status, _, confirmation = self.form(location, form, headers)
@@ -237,6 +254,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.configure()
         grants = self.server.capability_grants
         self.assertEqual({}, grants.pending_requests)
+        self.assertEqual({}, self.server.function_grants.pending_requests)
         status, prompt = self.approved(reason="Do not create a link while executing")
         self.assertEqual(403, status, prompt)
         self.assertEqual("capability_approval_required", prompt["error"]["code"])
@@ -244,6 +262,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual("shell.request_approval", prompt["error"]["details"]["request_operation"])
         self.assertIn("approval_hint", prompt["error"]["details"])
         self.assertEqual({}, grants.pending_requests)
+        self.assertEqual({}, self.server.function_grants.pending_requests)
         status, file_prompt = self.api("/fs/read/files", {
             "paths": ["example.txt"], "approved": True,
             "target": "server", "writer_nonce": self.ownership()[1],
@@ -255,6 +274,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual("files.request_approval", file_prompt["error"]["details"]["request_operation"])
         self.assertIn("approval_hint", file_prompt["error"]["details"])
         self.assertEqual({}, grants.pending_requests)
+        self.assertEqual({}, self.server.function_grants.pending_requests)
         # An ordinary File read denial also includes a conditional hint,
         # without turning the attempt into a pending approval request.
         self.server.tokens.update(self.record.token, can_read=False)
@@ -262,6 +282,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertEqual(403, status, denial)
         self.assertIn("approval_hint", denial["error"]["details"])
         self.assertEqual({}, grants.pending_requests)
+        self.assertEqual({}, self.server.function_grants.pending_requests)
         # The Windows fallback for an unrecognized command must also return
         # advice rather than silently creating a browser ticket.
         self.session.capabilities["execution"].update(
@@ -276,6 +297,7 @@ class CapabilityHTTPTests(unittest.TestCase):
                          unknown["error"]["details"]["request_operation"])
         self.assertNotIn("approval_url", str(unknown))
         self.assertEqual({}, grants.pending_requests)
+        self.assertEqual({}, self.server.function_grants.pending_requests)
 
     def test_approval_duration_choices_are_validated_server_side(self):
         self.configure()
@@ -300,11 +322,11 @@ class CapabilityHTTPTests(unittest.TestCase):
                 if minutes == 10:
                     # A crafted POST cannot choose an unadvertised duration.
                     self.assertEqual(400, self.form(location, dict(form, minutes="11"), headers)[0])
-                    self.assertIsNotNone(grants.pending(location.rsplit("/", 1)[-1]))
+                    self.assertIsNotNone(self.server.function_grants.pending(location.rsplit("/", 1)[-1]))
                 status, _, confirmed = self.form(location, dict(form, minutes=str(minutes)), headers)
                 self.assertEqual(200, status, confirmed)
                 self.assertIn(b"Capability approved", confirmed)
-                entries = grants.list_grants(self.record.app_id)
+                entries = self.server.function_grants.list_grants(self.record.app_id)
                 self.assertEqual(1, len(entries))
                 self.assertGreaterEqual(entries[0]["remaining_seconds"], minutes * 60 - 4)
                 self.assertLessEqual(entries[0]["remaining_seconds"], minutes * 60)
@@ -321,7 +343,7 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertIn(b"Confirm actual File access directory", page)
             self.assertEqual(200, self.form(location, {
                 "csrf": form["csrf"], "confirm": "actual_path"}, headers)[0])
-            entry = grants.list_grants(self.record.app_id)[0]
+            entry = self.server.function_grants.list_grants(self.record.app_id)[0]
             self.assertGreaterEqual(entry["remaining_seconds"], 120 * 60 - 4)
 
     def test_approval_reason_validation(self):
@@ -496,7 +518,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         mapping = self.row["id"]
         self.session.capabilities.setdefault("file_stream", {}).update(
             external_root_file_api=True, external_realpath=True)
-        observed = []
+        observed = self.file_grant_requests
         def client_call(operation, args):
             if operation == "resolve_path":
                 observed.append(args["path"])
@@ -1164,17 +1186,16 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(200, status, raw_reply)
             listing = json.loads(raw_reply)
             self.assertIn("visible.txt", [x["name"] for x in listing["entries"]])
-            self.session.capabilities["file_stream"].pop("external_root_file_api")
+            saved_function = self.session.capabilities["functions"].pop("files.read")
             status, _, old_client = self.request(
                 "GET", self.base + "/fs/query/list?" + query, headers=self.headers)
             self.assertEqual(409, status, old_client)
             self.assertIn(b"mapping_client_upgrade_required", old_client)
-            self.session.capabilities["file_stream"]["external_root_file_api"] = True
-            self.session.capabilities["file_stream"].pop("external_realpath")
+            self.session.capabilities["functions"]["files.read"] = dict(saved_function, approval=False)
             status, unsupported = self.request_file_approval("read", mapping, path=raw)
             self.assertEqual(409, status, unsupported)
             self.assertEqual("mapping_client_upgrade_required", unsupported["error"]["code"])
-            self.session.capabilities["file_stream"]["external_realpath"] = True
+            self.session.capabilities["functions"]["files.read"] = saved_function
             self.assertNotIn("protected.txt", [x["name"] for x in listing["entries"]])
             status, result = self.api("/fs/read/files", {
                 "paths": [str(outside / "visible.txt")], "approved": True,
@@ -1715,8 +1736,8 @@ class CapabilityHTTPTests(unittest.TestCase):
         form["password"] = "abc123"
         status, _, response = self.form(location, form, approval_headers)
         self.assertEqual(200, status, response)
-        self.assertTrue(grants.granted(
-            self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed"
+        self.assertIsNotNone(self.server.function_grants.current(
+            self.record.app_id, self.ownership()[0], "server", "shell.exec"
         ))
 
     def test_admin_token_tabs_option_a_underline_and_mobile_scrolling(self):
@@ -1893,12 +1914,15 @@ class CapabilityHTTPTests(unittest.TestCase):
         _, second = self.request_approval()
         self.assertNotEqual(first["approval_url"], second["approval_url"])
         location = urlsplit(second["approval_url"]).path
-        self.server.capability_grants.pending_requests[location.rsplit("/", 1)[1]].deadline = 0
+        store = self.server.function_grants
+        ticket = location.rsplit("/", 1)[1]
+        store.pending_requests[ticket] = replace(store.pending_requests[ticket], deadline=0)
         self.assertEqual(400, self.request("GET", location)[0])
         self.approve({"error": {"details": first}})
         status, task = self.approved(command="cat", interactive=True)
         self.assertEqual(202, status, task)
-        self.server.capability_grants.active[(self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed", "")] = 0
+        key = (self.record.app_id, self.ownership()[0], "server", "shell.exec")
+        store.active[key] = replace(store.active[key], deadline=0)
         self.assertEqual(403, self.approved()[0])
         self.assertEqual(200, self.api("/task/stdin/" + task["task_id"], {"data": "still-running\n", "close": True})[0])
         self.assertEqual("still-running\n", self.finished(task["task_id"])["stdout"])
@@ -1966,12 +1990,13 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.configure()
         _, result = self.approved()
         self.approve(result)
-        key = (self.record.app_id, self.ownership()[0], "server", "shell.unsandboxed", "")
+        key = (self.record.app_id, self.ownership()[0], "server", "shell.exec")
         # Environment configuration is loaded before the final authorization.
         from openkapsel.execution.environment_store import EnvironmentStore
         original = EnvironmentStore.shell_file
         def expired_file(store, *args):
-            self.server.capability_grants.active[key] = 0
+            grant_store = self.server.function_grants
+            grant_store.active[key] = replace(grant_store.active[key], deadline=0)
             return original(store, *args)
         with patch.object(EnvironmentStore, "shell_file", expired_file), patch.object(self.server.tasks, "start") as launch:
             self.assertEqual(403, self.approved()[0])

@@ -19,6 +19,8 @@ from openkapsel.client_runtime.client_config import (
     ClientConfigLockedError,
 )
 from openkapsel.client_runtime.client_files import ClientFiles
+if os.name == "nt":
+    from openkapsel.client_runtime.client_windows import WindowsClientFiles as ClientFiles
 from openkapsel.rpc_plugins.archive import archive_create_task
 
 

@@ -308,15 +308,8 @@ class MappingHandlersMixin:
                 plan_required=True,
             )
 
-        from openkapsel.client_runtime.client_files import ClientFiles
-
-        files = ClientFiles(
-            self.token_scope_root,
-            writable=self.token_record.can_write,
-            rpc_registry=self.server.rpc_registry,
-            rpc_capabilities=self.server.rpc_capabilities,
-            filename_index=getattr(self.server, "filename_index", None),
-            index_owned=False,
+        local_rpc = self.server.local_client.rpc_session(
+            self.token_scope_root, writable=self.token_record.can_write,
         )
         rpc_args = self._rpc_args_with_policy(family, operation, body.get("args", {}))
         if execution == "task":
@@ -328,8 +321,8 @@ class MappingHandlersMixin:
                 owner_token=self.token_record.token,
                 write=write,
                 network_access=(family == "git" and operation in {"fetch", "pull", "push", "clone"}),
-                runner=lambda context: self.server.rpc_registry.dispatch_task(
-                    files, family, operation, rpc_args, context
+                runner=lambda context: local_rpc.dispatch_task(
+                    family, operation, rpc_args, context
                 ),
             )
             self._send_json(202, {
@@ -343,7 +336,7 @@ class MappingHandlersMixin:
             })
             return
 
-        response = self.server.rpc_registry.dispatch_sync(files, family, operation, rpc_args)
+        response = local_rpc.dispatch_sync(family, operation, rpc_args)
         if not isinstance(response, dict) or type(response.get("status")) is not int:
             raise ApiError(502, "invalid_server_rpc_response", "server RPC plugin returned an invalid response")
         if "error" in response:
@@ -664,23 +657,7 @@ class MappingHandlersMixin:
         return row
 
     def _handle_recycle_purge(self):
-        self._require_permission(self.token_record.can_write, "write permission is not granted")
-        body = self._read_json()
-        if body.get("confirm") is not True:
-            raise ApiError(400, "confirmation_required", "permanent purge requires confirm=true")
-        rid = self._required_string(body, "recycle_id")
-        row = self._mapped_recycle_root(body.get("root", "."))
-        if row:
-            result = self._mapping_rpc(row, "recycle_purge", {"recycle_id": rid})
-        else:
-            from openkapsel.files.recycle import RecycleBin, RecycleError
-            root = self._storage_recycle_named_root(body.get("root", "."), write=True)
-            try:
-                result = (RecycleBin(root, initialize_layout=False).purge(rid) if root is not None
-                          else self.server.recycle_for(self.token_scope_root).purge(rid))
-            except RecycleError as exc:
-                raise ApiError(exc.status, exc.code, exc.message) from None
-        self._send_json(200, result)
+        return self.server.local_client.execute_file(self, "_handle_recycle_purge")
 
     @staticmethod
     def _missing_mapping():

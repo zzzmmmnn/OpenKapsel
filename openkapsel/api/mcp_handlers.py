@@ -305,12 +305,6 @@ class McpHandlersMixin:
                     ),
                 )
             self._mcp_context_status = HTTPStatus.OK
-            from openkapsel.files.file_handlers import FILE_APPROVAL_READ, FILE_APPROVAL_WRITE
-            if effective_name in FILE_APPROVAL_READ | FILE_APPROVAL_WRITE:
-                self._authorize_file_approval(
-                    effective_name, effective_arguments,
-                    query=effective_name in {"fs_list", "fs_stat", "fs_find", "fs_grep", "fs_tree"},
-                )
             payload = self._execute_mcp_tool(effective_name, effective_arguments)
         except ApiError as exc:
             error: dict[str, Any] = {"code": exc.code, "message": exc.message, "timestamp": int(time.time())}
@@ -825,11 +819,12 @@ class McpHandlersMixin:
                     self._handle_server_rpc(target)
             elif name in query_tools:
                 query = {key: [str(item) for item in value] if isinstance(value, list) else [str(value)] for key, value in arguments.items()}
-                query_tools[name](query)
+                if not self._authorize_file_approval(name, query, query=True):
+                    query_tools[name](query)
             elif name in {"fs_write", "fs_edit_text", "fs_delete"}:
                 context = {
                     key: arguments[key]
-                    for key in ("plan_id", "taskname", "message")
+                    for key in ("plan_id", "taskname", "message", "approved", "target", "writer_nonce", "reason")
                     if key in arguments
                 }
                 if name == "fs_write":
@@ -881,12 +876,15 @@ class McpHandlersMixin:
                         "expected_etag": arguments["expected_etag"],
                     }
                 self._mcp_tool_arguments = {**context, "items": [item]}
-                self._handle_fs_mutate()
+                if not self._authorize_file_approval("fs_mutate", self._mcp_tool_arguments):
+                    self._handle_fs_mutate()
             elif name in body_tools:
                 self._mcp_tool_arguments = arguments
-                body_tools[name]()
+                if not self._authorize_file_approval(name, arguments):
+                    body_tools[name]()
             elif name == "fs_read_binary":
-                return self._mcp_read_binary_chunk(arguments)
+                if not self._authorize_file_approval(name, arguments):
+                    return self._mcp_read_binary_chunk(arguments)
             elif name == "fs_download":
                 return self._mcp_prepare_download(arguments)
             elif name == "web_preview_url":
@@ -991,43 +989,8 @@ class McpHandlersMixin:
             if hasattr(self, "_mcp_tool_arguments"):
                 del self._mcp_tool_arguments
 
-    def _mcp_read_binary_chunk(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._require_permission(self.token_record.can_read, "read permission is not granted")
-        path = self._resolve_path(str(arguments["path"]))
-        offset = int(arguments.get("offset", 0))
-        length = int(arguments.get("length", self.server.config.mcp_binary_chunk_bytes))
-        if length > self.server.config.mcp_binary_chunk_bytes:
-            raise ApiError(
-                HTTPStatus.BAD_REQUEST,
-                "chunk_too_large",
-                f"MCP binary chunks are limited to {self.server.config.mcp_binary_chunk_bytes} bytes",
-            )
-        with self._open_binary(path) as handle:
-            file_stat = self._stream_stat(handle)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "not_a_file", "path is not a regular file")
-            from openkapsel.files.mutation import require_standard_file_size
-            require_standard_file_size(file_stat, operation="fs_read_binary")
-            size = file_stat.st_size
-            if offset > size:
-                raise ApiError(
-                    HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
-                    "invalid_offset",
-                    "offset is beyond the end of the file",
-                    {"size": size},
-                )
-            handle.seek(offset)
-            data = handle.read(length)
-        next_offset = offset + len(data)
-        return {
-            "path": str(path),
-            "data_base64": base64.b64encode(data).decode("ascii"),
-            "offset": offset,
-            "bytes_read": len(data),
-            "next_offset": next_offset,
-            "size": size,
-            "eof": next_offset >= size,
-        }
+    def _mcp_read_binary_chunk(self, arguments):
+        return self.server.local_client.execute_file(self, "_read_binary_chunk", arguments)
 
     def _mcp_prepare_download(self, arguments: dict[str, Any]) -> dict[str, Any]:
         self._require_permission(self.token_record.can_read, "read permission is not granted")

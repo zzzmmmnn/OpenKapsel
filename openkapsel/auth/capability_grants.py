@@ -54,6 +54,7 @@ class CapabilityGrants:
         self.password_setup_links: dict[str, tuple[str, float]] = {}
         self.pending_requests: dict[str, Pending] = {}
         self.active: dict[tuple[str, int, str, str, str], float] = {}
+        self.on_revoke_workspace = None
         with closing(sqlite3.connect(self.path)) as db:
             # Token app_id is the stable Workspace identity. Never reuse the
             # legacy path_prefix-keyed workspace_passwords table: a directory
@@ -310,6 +311,8 @@ class CapabilityGrants:
     def revoke_workspace(self, workspace: str) -> None:
         with self.lock:
             self.active = {key: end for key, end in self.active.items() if key[0] != workspace}
+            if callable(self.on_revoke_workspace):
+                self.on_revoke_workspace(workspace)
             self.pending_requests = {ticket: item for ticket, item in self.pending_requests.items()
                                      if item.workspace != workspace}
             # Rotating, disabling or reassigning the Token must also revoke

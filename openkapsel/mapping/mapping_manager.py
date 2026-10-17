@@ -456,6 +456,23 @@ class MappingManager:
                 pass
             elif not row["allow_exec"] and not (op == "task_start" and args.get("unsandboxed") is True):
                 raise OSError(errno.EACCES, "mapping execution is disabled")
+        elif op == "function":
+            # Function method dispatch is a private Server->Client protocol.
+            # Callback availability is advertised by the Client and neither
+            # public RPC plugins nor the AI can select these methods.
+            function, method = args.get("function"), args.get("method")
+            functions = session.capabilities.get("functions", {})
+            spec = functions.get(function) if isinstance(functions, dict) else None
+            if not isinstance(spec, dict) or method not in {
+                "execute", "approval.prepare", "approval.grant"
+            }:
+                raise OSError(errno.ENOSYS, "function method is unavailable")
+            if method == "approval.prepare" and spec.get("approval_prepare") is not True:
+                raise OSError(errno.ENOSYS, "function has no prepare callback")
+            if method == "approval.grant" and spec.get("approval") is not True:
+                raise OSError(errno.ENOSYS, "function has no grant callback")
+            if method == "execute" and function in {"shell.exec", "files.write"} and not row["writable"]:
+                raise OSError(errno.EROFS, "mapping Shell is read-only")
         elif op == "rpc":
             family = args.get("family")
             operation = args.get("operation")

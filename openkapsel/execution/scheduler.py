@@ -191,7 +191,7 @@ class SchedulerManager:
             )
             return
         try:
-            task = start_shell_task(
+            task = self.server.local_client.start_shell(
                 self.server,
                 record,
                 scope,
