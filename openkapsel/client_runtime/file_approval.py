@@ -59,7 +59,7 @@ class FileApproval:
         if type(seconds) is not int or seconds <= 0:
             raise ValueError("invalid File approval duration")
         updated = dict(old_auth) if isinstance(old_auth, dict) else {}
-        grants = list(updated.get("grants", []))
+        grants = self._active_grants(updated) if old_auth is not None else []
         raw = request.get("path", "")
         if not raw:
             new_item = {"expires_at": time.time() + seconds, "workspace": True}
@@ -96,23 +96,30 @@ class FileApproval:
         return updated
 
     @staticmethod
-    def paths(auth):
+    def _active_grants(auth):
+        """Client clock is authoritative; the Server's grace never grants access."""
         if not isinstance(auth, dict) or not isinstance(auth.get("grants"), list):
             raise ApiError(403, "invalid_file_authorization", "invalid File authorization")
-        scopes = []
+        now = time.time()
+        active = []
         for item in auth["grants"]:
             if (not isinstance(item, dict) or type(item.get("expires_at")) not in (int, float)
                     or not 0 <= item["expires_at"] <= 10**13
                     or not math.isfinite(item["expires_at"])
                     or not (item.get("workspace") is True or isinstance(item.get("path"), str))):
                 raise ApiError(403, "invalid_file_authorization", "invalid File authorization")
-            if "path" in item:
-                scopes.append(absolute_scope(item["path"]))
-        return tuple(scopes)
+            if item["expires_at"] > now:
+                active.append(item)
+        return active
 
-    @staticmethod
-    def workspace_granted(auth):
-        return any(item.get("workspace") is True for item in auth["grants"])
+    @classmethod
+    def paths(cls, auth):
+        return tuple(absolute_scope(item["path"]) for item in cls._active_grants(auth)
+                     if "path" in item)
+
+    @classmethod
+    def workspace_granted(cls, auth):
+        return any(item.get("workspace") is True for item in cls._active_grants(auth))
 
     @classmethod
     def check(cls, value, root, auth, *, write=False, rules=()):

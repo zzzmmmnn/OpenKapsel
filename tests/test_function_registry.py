@@ -128,6 +128,38 @@ class FunctionRegistryTests(unittest.TestCase):
             })
         self.assertEqual(errno.EINVAL, rejected.exception.errno)
 
+    def test_shell_client_expiry_overrides_server_grace(self):
+        from unittest.mock import patch
+        from openkapsel.execution.builtin_functions import (
+            shell_auth_unsandboxed, shell_grant,
+        )
+
+        with patch("openkapsel.execution.builtin_functions.time.time",
+                   return_value=1000.0):
+            valid = {"grants": [{"expires_at": 1001.0, "unsandboxed": True}]}
+            expired = {"grants": [{"expires_at": 1000.0, "unsandboxed": True}]}
+            self.assertTrue(shell_auth_unsandboxed(valid))
+            self.assertFalse(shell_auth_unsandboxed(expired))
+            self.assertFalse(shell_auth_unsandboxed({"grants": []}))
+            # Old Server-signed authorizations do not carry Client expiries.
+            self.assertTrue(shell_auth_unsandboxed({"unsandboxed": True}))
+            # Renewal retains unrelated live Client data without extending it,
+            # while expired Client entries are dropped from the returned JSON.
+            old = {"grants": [
+                {"expires_at": 999.0, "other": "expired"},
+                {"expires_at": 1005.0, "other": "live"},
+            ], "extension": {"owned": "client"}}
+            renewed = shell_grant(old, {"reason": "test"}, 60)
+            self.assertEqual(2, len(renewed["grants"]))
+            self.assertEqual({"expires_at": 1005.0, "other": "live"},
+                             renewed["grants"][0])
+            self.assertEqual(1060.0, renewed["grants"][1]["expires_at"])
+            self.assertEqual({"owned": "client"}, renewed["extension"])
+            for invalid in ({"grants": [{"expires_at": True, "unsandboxed": True}]},
+                            {"grants": [{"unsandboxed": True}]}):
+                with self.subTest(invalid=invalid), self.assertRaises(OSError):
+                    shell_auth_unsandboxed(invalid)
+
 
 if __name__ == "__main__":
     unittest.main()

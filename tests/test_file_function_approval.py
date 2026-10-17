@@ -449,7 +449,15 @@ class FileFunctionTests(unittest.TestCase):
             both = store.current('t', 1, 'mapping', 'files.read')
             self.assertEqual([str(p) for p in directories], self.scopes(both))
             saved_expiry = both['grants'][1]['expires_at']
-            now[0] = 161
+            now[0] = 160
+            retained = store.current('t', 1, 'mapping', 'files.read')
+            self.assertEqual(2, len(retained['grants']))
+            # Server intentionally retains the expired item for 60 seconds,
+            # but the Client must not authorize it during that grace.
+            denied_in_grace = self.execute(retained, 'fs_read_files',
+                {'paths': [str(directories[0] / 'text.txt')]})
+            self.assertEqual(404, denied_in_grace['status'], denied_in_grace)
+            now[0] = 220
             remaining = store.current('t', 1, 'mapping', 'files.read')
             self.assertEqual([str(directories[1])], self.scopes(remaining))
             self.assertEqual(saved_expiry, remaining['grants'][0]['expires_at'])

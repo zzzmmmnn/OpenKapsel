@@ -7,9 +7,25 @@ Shell approval; a future implementation can narrow this without server changes.
 from __future__ import annotations
 
 import errno
+import math
 import time
 
 from openkapsel.execution.function_registry import FunctionRegistry
+
+
+def _active_shell_grants(grants):
+    """Only Client-clock-valid entries can authorize unsandboxed execution."""
+    now = time.time()
+    active = []
+    for item in grants:
+        if (not isinstance(item, dict)
+                or type(item.get("expires_at")) not in (int, float)
+                or not 0 <= item["expires_at"] <= 10**13
+                or not math.isfinite(item["expires_at"])):
+            raise OSError(errno.EACCES, "invalid Shell grant expiry")
+        if item["expires_at"] > now:
+            active.append(item)
+    return active
 
 
 def shell_grant(old_auth, request, seconds):
@@ -17,7 +33,7 @@ def shell_grant(old_auth, request, seconds):
     if not isinstance(request, dict) or type(seconds) is not int or seconds <= 0:
         raise ValueError("invalid Shell approval request")
     existing = dict(old_auth) if isinstance(old_auth, dict) else {}
-    grants = [item for item in existing.get("grants", [])
+    grants = [item for item in _active_shell_grants(existing.get("grants", []))
               if item.get("unsandboxed") is not True]
     return dict(existing, grants=[*grants,
                 {"expires_at": time.time() + seconds, "unsandboxed": True}])
@@ -35,8 +51,8 @@ def shell_auth_unsandboxed(auth) -> bool:
     if not isinstance(auth, dict):
         raise OSError(errno.EACCES, "invalid Shell authorization")
     if isinstance(auth.get("grants"), list):
-        return any(isinstance(item, dict) and item.get("unsandboxed") is True
-                   for item in auth["grants"])
+        return any(item.get("unsandboxed") is True
+                   for item in _active_shell_grants(auth["grants"]))
     if auth == {"unsandboxed": True}:
         return True
     raise OSError(errno.EACCES, "unrecognized Shell authorization")

@@ -328,9 +328,12 @@ class CapabilityHTTPTests(unittest.TestCase):
                 self.assertIn(b"Capability approved", confirmed)
                 entries = self.server.function_grants.list_grants(self.record.app_id)
                 self.assertEqual(1, len(entries))
-                self.assertGreaterEqual(entries[0]["remaining_seconds"], minutes * 60 - 4)
-                self.assertLessEqual(entries[0]["remaining_seconds"], minutes * 60)
+                # This listing reports Server retention, not Client authority:
+                # the Server retains each Client-expired grant for 60 seconds.
+                self.assertGreaterEqual(entries[0]["remaining_seconds"], minutes * 60 + 60 - 4)
+                self.assertLessEqual(entries[0]["remaining_seconds"], minutes * 60 + 60)
                 grants.revoke_workspace(self.record.app_id)
+                self.server.function_grants.revoke_workspace(self.record.app_id)
 
         with tempfile.TemporaryDirectory(prefix="approval-duration-") as raw:
             status, pending = self.request_file_approval(
@@ -344,7 +347,8 @@ class CapabilityHTTPTests(unittest.TestCase):
             self.assertEqual(200, self.form(location, {
                 "csrf": form["csrf"], "confirm": "actual_path"}, headers)[0])
             entry = self.server.function_grants.list_grants(self.record.app_id)[0]
-            self.assertGreaterEqual(entry["remaining_seconds"], 120 * 60 - 4)
+            self.assertGreaterEqual(entry["remaining_seconds"], 120 * 60 + 60 - 4)
+            self.assertLessEqual(entry["remaining_seconds"], 120 * 60 + 60)
 
     def test_approval_reason_validation(self):
         self.configure()

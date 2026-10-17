@@ -16,6 +16,10 @@ from typing import Any, Callable
 
 from openkapsel.auth.capability_grants import PENDING_SECONDS, MAX_SECONDS
 
+# Server-only allowance for clock offset and RPC scheduling uncertainty.
+# Clients always enforce their own expires_at without this extra minute.
+SERVER_EXPIRY_GRACE_SECONDS = 60
+
 
 def _json_copy(value):
     """Bounded JSON round-trip avoids mutable references escaping the store."""
@@ -172,7 +176,8 @@ class FunctionGrants:
         if fresh:
             client_now = max(updated["grants"][i]["expires_at"] for i in fresh) - seconds
             for i in fresh:
-                deadlines[i] = started + updated["grants"][i]["expires_at"] - client_now
+                deadlines[i] = (started + updated["grants"][i]["expires_at"]
+                                - client_now + SERVER_EXPIRY_GRACE_SECONDS)
         return tuple(deadlines)
 
     def _candidate(self, pending, seconds, grant):

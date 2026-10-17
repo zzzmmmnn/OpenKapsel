@@ -32,14 +32,14 @@ class FunctionGrantsTests(unittest.TestCase):
             self.assertEqual(old_stamp, combined["grants"][0]["expires_at"])
             self.assertEqual(["/a", "/b"], [g["path"] for g in combined["grants"]])
             combined["grants"].clear()
-            now[0] = 699.0
+            now[0] = 700.0  # Client A expired, Server retains it for 60s.
             self.assertEqual(2, len(self.store.current("token", 3, "mapping", "fs.write")["grants"]))
-            now[0] = 701.0
+            now[0] = 760.0  # Exactly 60s later, Server prunes A.
             active = self.store.current("token", 3, "mapping", "fs.write")
             self.assertEqual(["/b"], [g["path"] for g in active["grants"]])
             self.assertEqual({"owned": "client"}, active["extension"])
             self.assertEqual({"untouched": ["yes"]}, active["grants"][0]["client_metadata"])
-            now[0] = 2201.0
+            now[0] = 2260.0
             self.assertIsNone(self.store.current("token", 3, "mapping", "fs.write"))
             self.assertEqual([], self.store.list_grants("token"))
 
@@ -57,8 +57,11 @@ class FunctionGrantsTests(unittest.TestCase):
             self.store.approve(b, seconds=1800, grant=callback)
             now[0] = 611
             auth = self.store.current("t", 1, "server", "demo.write")
+            self.assertEqual(["one", "two"], [item["path"] for item in auth["grants"]])
+            now[0] = 670
+            auth = self.store.current("t", 1, "server", "demo.write")
             self.assertEqual(["two"], [item["path"] for item in auth["grants"]])
-            now[0] = 1831
+            now[0] = 1890
             self.assertIsNone(self.store.current("t", 1, "server", "demo.write"))
 
     def test_explicit_renewal_does_not_extend_unrelated_grants(self):
@@ -71,10 +74,13 @@ class FunctionGrantsTests(unittest.TestCase):
                 now[0] = when
                 ticket = self.store.request("t", 0, "c", "f.g", {"path": target})
                 self.store.approve(ticket, seconds=duration, grant=renewal)
-            now[0] = 111
+            now[0] = 111  # B has expired on the Client, but not the Server.
+            self.assertEqual(["/b", "/a"], [g["path"] for g in
+                self.store.current("t", 0, "c", "f.g")["grants"]])
+            now[0] = 170
             self.assertEqual(["/a"], [g["path"] for g in
                 self.store.current("t", 0, "c", "f.g")["grants"]])
-            now[0] = 1871
+            now[0] = 1930
             self.assertIsNone(self.store.current("t", 0, "c", "f.g"))
 
     def test_invalid_schema_fails_closed_and_does_not_consume_ticket(self):

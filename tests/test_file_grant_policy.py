@@ -65,15 +65,40 @@ class FileGrantPolicyTests(unittest.TestCase):
             both = store.current("owner", 8, "mapping", "files.read")
             self.assertEqual((self.a, self.b), FileApproval.paths(both))
             preserved = both["grants"][1]["expires_at"]
-            now[0] = 161
+            now[0] = 160  # Client A expires before Server's grace elapses.
             current = store.current("owner", 8, "mapping", "files.read")
+            self.assertEqual(2, len(current["grants"]))
             self.assertEqual((self.b,), FileApproval.paths(current))
-            self.assertEqual(preserved, current["grants"][0]["expires_at"])
             self.assertEqual(self.b, self.policy.check(str(self.b), self.root, current))
             with self.assertRaises(ApiError):
                 self.policy.check(str(self.a), self.root, current)
-            now[0] = 721
+            now[0] = 220  # Server may now remove A, leaving B unchanged.
+            current = store.current("owner", 8, "mapping", "files.read")
+            self.assertEqual((self.b,), FileApproval.paths(current))
+            self.assertEqual(preserved, current["grants"][0]["expires_at"])
+            now[0] = 780
             self.assertIsNone(store.current("owner", 8, "mapping", "files.read"))
+
+    def test_workspace_client_expiry_without_server_pruning(self):
+        now = [1000.0]
+        with patch("openkapsel.client_runtime.file_approval.time.time",
+                   side_effect=lambda: now[0]):
+            workspace = self.policy.grant(None, {"path": ""}, 60)
+            self.assertTrue(FileApproval.workspace_granted(workspace))
+            self.assertEqual(self.root, self.policy.check(str(self.root), self.root, workspace))
+            now[0] = 1060.0
+            self.assertFalse(FileApproval.workspace_granted(workspace))
+            self.assertFalse(self.policy.status({"path": ""}, workspace))
+            with self.assertRaises(ApiError):
+                self.policy.check(str(self.root), self.root, workspace)
+            renewed = self.policy.grant(workspace, {"path": str(self.a)}, 120)
+            self.assertEqual(1, len(renewed["grants"]))
+            self.assertEqual(self.a, FileApproval.paths(renewed)[0])
+            self.assertFalse(FileApproval.workspace_granted(renewed))
+            now[0] = 1180.0
+            self.assertEqual((), FileApproval.paths(renewed))
+            with self.assertRaises(ApiError):
+                self.policy.check(str(self.a), self.root, renewed)
 
     def test_protect_requires_independent_nested_scope_and_deny_never_approvable(self):
         protected = self.a / "protected"
