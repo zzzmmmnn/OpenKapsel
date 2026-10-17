@@ -25,6 +25,58 @@ def page(body):
 
 
 class CapabilityHandlersMixin:
+    def _send_approval_error_page(self, exc: ApiError) -> None:
+        """Render browser-only approval errors without exposing Client diagnostics.
+
+        REST/MCP endpoints continue using structured JSON errors. An approval
+        failure never grants new capabilities, even if a Workspace password
+        was correct.
+        """
+        if exc.code == "mapping_operation_failed":
+            errno_value = exc.details.get("errno") if isinstance(exc.details, dict) else None
+            if errno_value in {13, 22, 30}:
+                title = "Client declined this approval"
+                detail = (
+                    "The requested path cannot be authorized by this Client. "
+                    "It may be blocked by an absolute deny rule, be reserved "
+                    "for system configuration, or be invalid."
+                )
+            else:
+                title = "Client could not complete the approval"
+                detail = (
+                    "The target Client could not process the authorization. "
+                    "Check its connection and configuration before requesting "
+                    "a new approval."
+                )
+        elif exc.code in {"mapping_unavailable", "approval_target_unavailable", "mapping_offline"}:
+            title = "Approval target unavailable"
+            detail = "The linked Workspace or Mapping is unavailable. Check the target and request a new link."
+        elif exc.code in {"approval_unavailable", "invalid_approval_request"}:
+            title = "Approval link unavailable"
+            detail = "The approval may have expired, changed, or already been used. Request a new link."
+        elif exc.code in {"password_incorrect", "csrf_failed"}:
+            title = "Approval verification failed"
+            detail = "The password or browser verification was not accepted. Reopen the link and try again if it is still valid."
+        elif exc.code in {"path_access_denied", "function_approval_rejected"}:
+            title = "Approval not permitted"
+            detail = "This target does not permit the requested authorization. Select another permitted scope."
+        else:
+            title = "Approval could not be completed"
+            detail = "The request could not be authorized. Return to the conversation and request a new approval."
+        self._send_html(
+            exc.status,
+            page(
+                f"<h1>{html.escape(title)}</h1>"
+                f'<p class="error">{html.escape(detail)}</p>'
+                "<p><strong>No new access was granted by this request.</strong></p>"
+                "<p>Return to the conversation and ask the AI to check the "
+                "target or request a new approval link.</p>"
+            ),
+            # _send_html already sets Cache-Control: no-store.
+            headers={"Referrer-Policy": "no-referrer", **exc.headers},
+            script_src="'none'",
+        )
+
     def _require_password_transport(self):
         if self._request_is_https():
             return

@@ -91,6 +91,72 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         self.assertIsNone(self.server.function_grants.current(
             self.record.app_id, self.ownership()[0], 'server', 'demo.prepare'))
 
+    def test_browser_client_rejection_is_html_and_api_errors_remain_json(self):
+        from openkapsel.errors import ApiError
+
+        self.configure()
+        def reject_prepare(_):
+            raise ApiError(400, 'mapping_operation_failed', 'client operation failed',
+                           {'errno': 22, 'client_message': 'private path must not leak'})
+        self.server.local_client.functions.register(
+            'demo.reject_prepare', execute=lambda args, auth: None,
+            approval_prepare=reject_prepare,
+            approval_grant=lambda old, request: None)
+        status, response = self.request_function('demo.reject_prepare', {'resource': 'secret'})
+        self.assertEqual(400, status, response)
+        self.assertEqual('mapping_operation_failed', response['error']['code'])
+        self.assertEqual(22, response['error']['details']['errno'])
+
+        def reject_grant(old, request):
+            raise ApiError(400, 'mapping_operation_failed', 'client operation failed',
+                           {'errno': 22, 'client_message': 'private path must not leak'})
+        self.server.local_client.functions.register(
+            'demo.reject_grant', execute=lambda args, auth: None,
+            approval_grant=reject_grant)
+        status, pending = self.request_function('demo.reject_grant', {'resource': 'private'})
+        self.assertEqual(200, status, pending)
+        location, headers, form, _ = self.approval({'error': {'details': pending}})
+        status, response_headers, body = self.form(location, form, headers)
+        self.assertEqual(400, status, body)
+        self.assertIn('text/html', response_headers['Content-Type'])
+        self.assertIn(b'Client declined this approval', body)
+        self.assertIn(b'No new access was granted', body)
+        self.assertNotIn(b'mapping_operation_failed', body)
+        self.assertNotIn(b'private path must not leak', body)
+        self.assertNotIn(b'"errno"', body)
+        self.assertEqual('no-store', response_headers['Cache-Control'])
+        self.assertIsNone(self.server.function_grants.current(
+            self.record.app_id, self.ownership()[0], 'server', 'demo.reject_grant'))
+
+        # Legacy approval URLs route to the same safe HTML renderer.
+        legacy = location.replace('/capability/', '/admin/capability/')
+        status, legacy_headers, legacy_page = self.form(legacy, form, headers)
+        self.assertEqual(400, status, legacy_page)
+        self.assertIn('text/html', legacy_headers['Content-Type'])
+        self.assertIn(b'Client declined this approval', legacy_page)
+
+    def test_browser_offline_client_error_has_safe_recovery_message(self):
+        from openkapsel.errors import ApiError
+
+        self.configure()
+        def reject_grant(old, request):
+            raise ApiError(503, 'mapping_operation_failed', 'client operation failed',
+                           {'errno': 113, 'client_message': 'internal network diagnostic'})
+        self.server.local_client.functions.register(
+            'demo.offline_grant', execute=lambda args, auth: None,
+            approval_grant=reject_grant)
+        status, pending = self.request_function('demo.offline_grant', {'resource': 'private'})
+        self.assertEqual(200, status, pending)
+        location, headers, form, _ = self.approval({'error': {'details': pending}})
+        status, response_headers, body = self.form(location, form, headers)
+        self.assertEqual(503, status, body)
+        self.assertIn('text/html', response_headers['Content-Type'])
+        self.assertIn(b'Client could not complete the approval', body)
+        self.assertIn(b'Check its connection', body)
+        self.assertNotIn(b'internal network diagnostic', body)
+        self.assertIsNone(self.server.function_grants.current(
+            self.record.app_id, self.ownership()[0], 'server', 'demo.offline_grant'))
+
     def test_native_files_enter_local_client_and_preserve_binary_transfer(self):
         root = self.server.tokens.scope_root(self.record)
         (root / 'text.txt').write_text('LOCAL FILE')
