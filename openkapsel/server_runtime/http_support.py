@@ -440,7 +440,11 @@ class HttpSupportMixin:
     def log_message(self, fmt: str, *args: Any) -> None:
         message = fmt % args
         request_path = self.path.split("?", 1)[0]
-        for approval_path in ("/admin/capability/", "/capability/"):
+        # Browser bearer URLs must never enter verbose access/error logs.
+        # Password-setup links authorize replacing a Workspace password and
+        # therefore need the same protection as capability approval tickets.
+        for approval_path in ("/admin/capability/", "/capability/",
+                              "/admin/password-setup/"):
             if approval_path in request_path:
                 message = message.replace(
                     self.path,
