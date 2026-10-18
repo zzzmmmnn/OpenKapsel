@@ -126,7 +126,7 @@ than silently accessing the normal export.
 and `deny`. For File API and sandboxed Shell, absolute `deny` at any
 ancestor cannot be overridden by a child rule or File Approval.
 A separately approved unsandboxed Shell is outside these path restrictions.
-Reserved `.openkapsel` and `.openkapsel-*` components are rejected regardless of letter case, including through mixed-case path aliases and File Approval. Other modes use deepest path priority with
+User-facing File API and File Approval reject reserved `.openkapsel` and `.openkapsel-*` components regardless of letter case, including mixed-case aliases. Mapping share and cross-root transfers use narrowly validated, random temporary stage names through the internal low-level transport only; those stages remain hidden from public File APIs and directory listings. Other modes use deepest path priority with
 same-path `deny > protect > ro > rw`. A `protect` rule denies ordinary reads
 and writes but a separately confirmed `files.read`/`files.write` grant
 for the protected directory itself or a more precise canonical child may

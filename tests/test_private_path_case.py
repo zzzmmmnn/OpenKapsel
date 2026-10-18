@@ -98,6 +98,46 @@ class PrivatePathCaseTests(unittest.TestCase):
                 self.assertEqual("deny", effective_path_access(
                     alias / "secret.txt", self.root, True, ()))
 
+    def test_internal_transfer_stages_remain_private_to_public_file_api(self):
+        from types import SimpleNamespace
+        from openkapsel.auth.path_access import is_internal_transfer_stage
+
+        for name in (".openkapsel-share-" + "a" * 24,
+                     ".openkapsel-transfer-" + "B" * 24):
+            with self.subTest(stage=name):
+                stage = self.root / name
+                self.assertTrue(is_internal_transfer_stage(stage, self.root))
+                # Internal low-level Mapping transport may stage files before
+                # an atomic rename, without exposing them in public listings.
+                self.files.dispatch("mkdir", {"path": name})
+                self.assertTrue(stage.is_dir())
+                self.assertNotIn(name, self.files.dispatch("list", {"path": "."})["names"])
+                self.assertEqual("deny", effective_path_access(
+                    stage, self.root, True, (), resolve_symlinks=False))
+                self.assertTrue(self.files.is_protected_path(stage))
+                with self.assertRaises(OSError):
+                    self.files.path(name)
+                with self.assertRaises(OSError):
+                    self.files.dispatch("api_list", {"path": name})
+                with self.assertRaises(ApiError):
+                    absolute_scope(str(stage))
+                with self.assertRaises(OSError):
+                    self.files.dispatch("stat", {
+                        "path": name.replace(".openkapsel", ".OpenKapsel", 1),
+                    })
+                # Explicit deny still takes priority for trusted transport.
+                self.files.sandbox_path_rules = (
+                    SimpleNamespace(path=str(self.root), access="deny"),)
+                with self.assertRaises(OSError):
+                    self.files.dispatch("stat", {"path": name})
+                self.files.sandbox_path_rules = ()
+
+        self.assertFalse(is_internal_transfer_stage(
+            self.root / ".openkapsel" / (".openkapsel-share-" + "a" * 24),
+            self.root))
+        self.assertFalse(is_internal_transfer_stage(
+            self.root / (".OPENKAPSEL-share-" + "a" * 24), self.root))
+
     def test_enumeration_git_share_and_transfer_filters(self):
         self.assertTrue(FilenameIndex._ignored(".OPENKAPSEL"))
         self.assertTrue(FilenameIndex._ignored(".OpenKapsel-state"))

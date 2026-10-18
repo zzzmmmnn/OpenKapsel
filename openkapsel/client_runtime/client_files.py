@@ -7,9 +7,12 @@ import errno
 import os
 import stat
 import threading
+from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 
-from openkapsel.auth.path_access import has_private_component, is_private_name
+from openkapsel.auth.path_access import (
+    has_private_component, is_internal_transfer_stage, is_private_name,
+)
 from openkapsel.client_runtime.rpc_deadline import check_deadline, deadline_scope
 from openkapsel.files.safe_paths import SafePathAccess
 from openkapsel.mapping.mapping_transport import (
@@ -63,20 +66,28 @@ class ClientFiles:
         self.lock = threading.RLock()
         self.handles = {}
         self.next_handle = 1
+        # Internal Mapping transport may operate on tightly validated staging
+        # paths. Context-local scope prevents File API and plugin RPC from
+        # inheriting this exception, including during parallel reads.
+        self._transport_stage = ContextVar("openkapsel_mapping_transport_stage", default=False)
+
+    def _is_transport_stage(self, path):
+        return self._transport_stage.get() and is_internal_transfer_stage(path, self.root)
 
     def path(self, value):
         if not isinstance(value, str) or "\x00" in value or "\\" in value or ":" in value:
             raise OSError(errno.EINVAL, "invalid relative path")
         parts = PurePosixPath(value).parts
-        if value.startswith("/") or any(p == ".." or is_private_name(p) for p in parts):
-            raise OSError(errno.EACCES, "path is outside exported files")
         path = self.root.joinpath(*parts)
+        if (value.startswith("/") or ".." in parts or
+                any(is_private_name(p) for p in parts) and not self._is_transport_stage(path)):
+            raise OSError(errno.EACCES, "path is outside exported files")
         self.ensure_accessible_path(path)
         return path
 
     def is_protected_path(self, path):
         path = Path(path)
-        if has_private_component(path):
+        if has_private_component(path) and not self._is_transport_stage(path):
             return True
         if any(path == entry or entry in path.parents
                for entry in (*self.protected_paths, *self.sandbox_denied_paths)):
@@ -85,7 +96,8 @@ class ClientFiles:
             from openkapsel.auth.path_access import effective_path_access
             return any(effective_path_access(
                 checked, self.root, self.writable, self.sandbox_path_rules,
-                resolve_symlinks=False) in {"protect", "deny"}
+                resolve_symlinks=False,
+                internal_transfer=self._is_transport_stage(checked)) in {"protect", "deny"}
                 for checked in (path, path.resolve(strict=False)))
         return False
 
@@ -101,7 +113,8 @@ class ClientFiles:
         from openkapsel.auth.path_access import effective_path_access
         if self.sandbox_path_rules and any(effective_path_access(
                 checked, self.root, self.writable, self.sandbox_path_rules,
-                resolve_symlinks=False) in {"ro", "protect", "deny"}
+                resolve_symlinks=False,
+                internal_transfer=self._is_transport_stage(checked)) in {"ro", "protect", "deny"}
                 for checked in (path, path.resolve(strict=False))):
             raise OSError(errno.EACCES, "sandbox path is read-only or denied")
         # Do not allow deleting/renaming an ancestor of a restricted
@@ -168,7 +181,7 @@ class ClientFiles:
         if operation in COARSE_READ_OPERATIONS:
             if cancelled is not None:
                 args = dict(args, _rpc_cancelled=cancelled)
-            return self._dispatch(operation, args)
+            return self._dispatch_with_transport_scope(operation, args)
         # Ordinary handle seek/read/write and all mutations stay serialized.
         # FUSE's low-level directory enumeration may also walk 100k entries.
         # Constrain that one read without injecting a timeout into mutations.
@@ -177,8 +190,15 @@ class ClientFiles:
                 args = dict(args, _rpc_cancelled=cancelled)
             if operation == "list":
                 with deadline_scope(60.0, cancelled):
-                    return self._dispatch(operation, args)
-            return self._dispatch(operation, args)
+                    return self._dispatch_with_transport_scope(operation, args)
+            return self._dispatch_with_transport_scope(operation, args)
+
+    def _dispatch_with_transport_scope(self, op, args):
+        token = self._transport_stage.set(not op.startswith("api_") and op != "resolve_path")
+        try:
+            return self._dispatch(op, args)
+        finally:
+            self._transport_stage.reset(token)
 
     def _dispatch(self, op, args):
         if op == "resolve_path":
