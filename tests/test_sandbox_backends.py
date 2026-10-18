@@ -330,7 +330,8 @@ class PodmanBackendTests(unittest.TestCase):
 
 
     def test_controller_uses_stop_kill_and_forced_cleanup(self) -> None:
-        controller = PodmanController(Path("/usr/bin/podman"), "openkapsel-test")
+        name = "openkapsel-a0b1c2d3-0123456789ab"
+        controller = PodmanController(Path("/usr/bin/podman"), name)
         completed = subprocess.CompletedProcess([], 0, "", "")
         with patch("openkapsel.execution.sandbox_backends.subprocess.run", return_value=completed) as run:
             controller.terminate()
@@ -339,9 +340,9 @@ class PodmanBackendTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(
             [
-                ("/usr/bin/podman", "stop", "--time", "2", "openkapsel-test"),
-                ("/usr/bin/podman", "kill", "openkapsel-test"),
-                ("/usr/bin/podman", "rm", "--force", "openkapsel-test"),
+                ("/usr/bin/podman", "stop", "--time", "2", "--", name),
+                ("/usr/bin/podman", "kill", "--", name),
+                ("/usr/bin/podman", "rm", "--force", "--", name),
             ],
             commands,
         )

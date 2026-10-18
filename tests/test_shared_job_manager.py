@@ -735,6 +735,29 @@ time.sleep(30)
         # Starting a new request creates the singleton again.
         self.assertFalse(self._get(self.MAPPING_A, "&St0p&")["running"])
 
+    def test_unowned_podman_name_rejected_before_job_process_spawns(self):
+        # Even authenticated manager IPC must not let a caller choose an
+        # unrelated container to kill later through task_kill/timeout.
+        base = {
+            "task_id": "&N4me&",
+            "argv": [sys.executable, "-c", "print('container-check')"],
+            "cwd": str(self.root),
+            "env": {}, "interactive": False, "timeout_seconds": 3,
+        }
+        for forged in ("--all", "-l", "other-container",
+                       "openkapsel-client-" + self.MAPPING_B + "-N4me",
+                       "openkapsel-client-" + self.MAPPING_A + "-Bad1"):
+            with self.subTest(forged=forged):
+                with self.assertRaises(OSError):
+                    request(self.home, self.MAPPING_A, "task_start",
+                            {**base, "container": forged})
+                self.assertEqual([], request(self.home, self.MAPPING_A, "task_list"))
+        generated = "openkapsel-client-" + self.MAPPING_A + "-N4me"
+        accepted = request(self.home, self.MAPPING_A, "task_start",
+                           {**base, "container": generated})
+        self.assertEqual("&N4me&", accepted["task_id"])
+        self.assertEqual(0, self._wait(self.MAPPING_A, "&N4me&")["exit_code"])
+
     def test_stdin_is_managed_and_timeout_is_enforced(self):
         tid = "&Yz92&"
         self._start(self.MAPPING_A, tid,

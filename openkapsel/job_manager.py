@@ -31,6 +31,8 @@ from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Listener
 from pathlib import Path
 
+from openkapsel.podman_identifiers import is_mapping_job_container
+
 MAPPING_RE = re.compile(r"[A-Za-z0-9_-]{24}\Z")
 JOB_RE = re.compile(r"&[A-Za-z0-9]{4}&\Z")
 CHARS = string.ascii_letters + string.digits
@@ -572,6 +574,8 @@ class Manager:
         if executable is not None and not isinstance(executable, str):
             raise ValueError("invalid executable")
         name = args.get("container")
+        if name is not None and not is_mapping_job_container(name, mid, public_id):
+            raise ValueError("invalid or non-owned Podman container name")
         prepared = None
         if specification["type"] != "current_user":
             if not isinstance(argv, list):
@@ -636,11 +640,12 @@ class Manager:
             container = self.db.execute(
                 "SELECT container FROM jobs WHERE id=?", (tid,)
             ).fetchone()
-            if container and container[0]:
+            mid, task_id = tid.split(".", 1)
+            if container and is_mapping_job_container(container[0], mid, task_id):
                 try:
                     subprocess.run(
                         ["podman", "kill", "--signal", "KILL" if force else "INT",
-                         container[0]],
+                         "--", container[0]],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         timeout=8,
                     )

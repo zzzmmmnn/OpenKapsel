@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from openkapsel.errors import ApiError
+from openkapsel.podman_identifiers import is_client_container
 
 
 class RpcTaskContext:
@@ -607,8 +608,9 @@ class ClientTasks:
             task["rpc_context"].cancel(force=force)
             return
         process = task["process"]
-        if task["container"]:
-            subprocess.run(["podman", "kill", "--signal", "KILL" if force else "INT", task["container"]],
+        if is_client_container(task.get("container")):
+            subprocess.run(["podman", "kill", "--signal", "KILL" if force else "INT",
+                            "--", task["container"]],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         try:
             if os.name == "nt":

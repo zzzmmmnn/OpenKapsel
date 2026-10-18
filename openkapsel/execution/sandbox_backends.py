@@ -16,6 +16,7 @@ from openkapsel.execution.cgroups import SandboxLimits
 from openkapsel.execution.network_proxy import DomainProxy, PROXY_MOUNT, PROXY_PORT
 from openkapsel.execution.tasks import RESOLVER_FD_MARKER
 from openkapsel.auth.tokens import PathGrant
+from openkapsel.podman_identifiers import is_server_container
 
 
 ENVIRONMENT_MOUNT = "/run/openkapsel-environment.rc"
@@ -297,13 +298,15 @@ class BubblewrapBackend:
 
 class PodmanController:
     def __init__(self, executable: Path, container_name: str):
+        if not is_server_container(container_name):
+            raise ValueError("invalid OpenKapsel Podman container name")
         self.executable = executable
         self.container_name = container_name
 
     def _run(self, *arguments: str) -> None:
         try:
             subprocess.run(
-                (str(self.executable), *arguments, self.container_name),
+                (str(self.executable), *arguments, "--", self.container_name),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=10, check=False,
             )
