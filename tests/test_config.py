@@ -300,8 +300,15 @@ class ConfigurationTests(unittest.TestCase):
             config_data = json.loads(config_path.read_text(encoding="utf-8"))
             config_data["admin"] = {"username": "operator", "password_sha256": legacy_hash}
             config_path.write_text(json.dumps(config_data), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "reset a legacy SHA-256 hash"):
+            with self.assertRaisesRegex(ValueError, "admin.password_hash must be set"):
                 load_config(args)
+            # A strong hash stored under the obsolete key is no longer read.
+            # Migration by fallback would accidentally re-enable the old format.
+            config_data["admin"] = {"username": "operator", "password_sha256": encoded}
+            config_path.write_text(json.dumps(config_data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "admin.password_hash must be set"):
+                load_config(args)
+
 
     def test_password_script_generates_and_saves_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

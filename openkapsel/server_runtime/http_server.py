@@ -316,6 +316,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         if not isinstance(admin, dict):
             raise ValueError("configuration file is missing the admin object")
         admin["password_hash"] = new_hash
+        # Retire stale credentials rather than retaining unused weak hashes.
         admin.pop("password_sha256", None)
         mode = config_path.stat().st_mode & 0o777
         temp_name: str | None = None

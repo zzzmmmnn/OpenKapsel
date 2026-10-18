@@ -6977,7 +6977,7 @@ class WorkspaceServerTests(unittest.TestCase):
             b"openkapsel_1.0\0correct-horse-battery"
         ).hexdigest()
         original = json.loads(self.config_path.read_text(encoding="utf-8"))
-        original["admin"] = {"username": "admin", "password_sha256": legacy_hash}
+        original["admin"] = {"username": "admin", "password_hash": legacy_hash}
         self.config_path.write_text(json.dumps(original), encoding="utf-8")
         self.server.admin_password_hash = legacy_hash
         form = urlencode({"username": "admin", "password": "correct-horse-battery"}).encode()
@@ -6988,7 +6988,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(401, status, body)
         self.assertIn("Invalid username or password", body.decode("utf-8"))
         admin = json.loads(self.config_path.read_text(encoding="utf-8"))["admin"]
-        self.assertEqual({"username": "admin", "password_sha256": legacy_hash}, admin)
+        self.assertEqual({"username": "admin", "password_hash": legacy_hash}, admin)
 
     def test_admin_can_change_password_online(self) -> None:
         strong_hash = hash_password("correct-horse-battery")
@@ -7089,8 +7089,8 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotIn("new-password-12345", saved)
         saved_admin = json.loads(saved)["admin"]
         saved_hash = saved_admin["password_hash"]
-        self.assertNotIn("password_sha256", saved_admin)
         self.assertTrue(verify_password("new-password-12345", saved_hash))
+        self.assertNotIn("password_sha256", saved_admin)
         self.assertEqual(0o600, self.config_path.stat().st_mode & 0o777)
 
         old_login = urlencode(

@@ -298,8 +298,8 @@ allocate_subids() {
 allocate_subids /etc/subuid --add-subuids
 allocate_subids /etc/subgid --add-subgids
 
-# Reject an unsupported legacy administrator hash before stopping a live service.
-# Do not silently replace existing credentials during an upgrade.
+# Validate existing administrator credentials before stopping live services.
+# Only PBKDF2 admin.password_hash is supported; never rotate invalid credentials during upgrades.
 /usr/bin/python3 - "$SOURCE_DIR" "$CONFIG_FILE" "$MIGRATE_FROM" <<'PY'
 import json
 import sys
@@ -317,12 +317,12 @@ for path in candidates:
         continue
     payload = json.loads(path.read_text(encoding="utf-8"))
     admin = payload.get("admin", {})
-    value = admin.get("password_hash", admin.get("password_sha256", ""))
-    if value and not is_password_hash_supported(value):
+    value = admin.get("password_hash")
+    if not is_password_hash_supported(value):
         raise SystemExit(
-            f"Unsupported legacy administrator password hash in {path}. "
-            "Before upgrading, run set_password.py --config <config-path> "
-            "to set a new PBKDF2 password. Existing credentials will not be replaced automatically."
+            f"Unsupported administrator password hash in {path}. "
+            "Set admin.password_hash to PBKDF2 using set_password.py --config <config-path> "
+            "before upgrading. Existing credentials will not be replaced automatically."
         )
     break
 PY
@@ -507,7 +507,7 @@ import json, sys
 sys.path.insert(0, "/opt/openkapsel")
 from openkapsel.auth.security import is_password_hash_supported
 admin = json.load(open(sys.argv[1], encoding="utf-8")).get("admin", {})
-value = admin.get("password_hash", admin.get("password_sha256", ""))
+value = admin.get("password_hash")
 raise SystemExit(0 if isinstance(value, str) and is_password_hash_supported(value) else 1)
 PY
 then

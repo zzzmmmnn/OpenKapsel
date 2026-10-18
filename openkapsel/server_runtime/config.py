@@ -407,7 +407,7 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise ValueError("config field listen_port must be an integer between 0 and 65535")
     username = admin.get("username")
-    password_hash = admin.get("password_hash", admin.get("password_sha256"))
+    password_hash = admin.get("password_hash")
     if not isinstance(username, str) or not username:
         raise ValueError("config field admin.username must be a non-empty string")
     if not isinstance(password_hash, str):

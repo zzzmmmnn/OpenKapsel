@@ -100,6 +100,7 @@ def main() -> None:
     if not admin.get("username"):
         parser.error("admin.username is missing; pass --username")
     admin["password_hash"] = password_hash
+    # A reset must not leave any previous weak digest behind.
     admin.pop("password_sha256", None)
     atomic_write(config_path, payload)
     print(
