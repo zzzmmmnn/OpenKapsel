@@ -248,19 +248,13 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
             peer_address = ipaddress.ip_address(peer)
         except ValueError:
             return peer
-        if not peer_address.is_loopback:
-            return peer_address.compressed
-        forwarded = self.headers.get("X-Forwarded-For", "")
-        if not forwarded:
-            return peer_address.compressed
-        # Caddy appends the directly connected client to the end of the chain.
-        # Taking the last valid address prevents a caller-supplied leading value
-        # from selecting somebody else's limiter bucket.
-        candidate = forwarded.rsplit(",", 1)[-1].strip()
-        try:
-            return ipaddress.ip_address(candidate).compressed
-        except ValueError:
-            return peer_address.compressed
+        # Request headers (including X-Forwarded-For) are attacker-controlled
+        # on a directly reachable loopback HTTP listener. No header can prove
+        # that its sender is the reverse proxy. All authentication-related
+        # limiters must charge the real socket peer, including proxy traffic.
+        # A verified proxy identity would require a separate authenticated
+        # channel, not a loopback-address heuristic.
+        return peer_address.compressed
 
     def _handle_admin_logout(self) -> None:
         session = self._require_admin_session()

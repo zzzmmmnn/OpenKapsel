@@ -51,6 +51,18 @@ class ControlConsentHTTPTests(unittest.TestCase):
         self.assertEqual(pending["rid"], self.server.oauth.request(pending["rid"])["id"])
         self.assertIsNone(self.server.oauth.get(self.cid)["client_id"])
 
+    def test_consent_rate_limit_cannot_rotate_bucket_with_forwarded_for(self):
+        pending = self.pending()
+        for forged in ("192.0.2.11", "192.0.2.99, 203.0.113.27"):
+            with self.subTest(forged=forged), patch.object(
+                self.server.oauth_consent_limiter, "take", return_value=30
+            ) as take:
+                status, headers, response = self.submit(
+                    pending, headers={"X-Forwarded-For": forged}
+                )
+                self.assertEqual(429, status, response)
+                take.assert_called_once_with("127.0.0.1", pending["rid"])
+
     def test_browser_oauth_links_ignore_tracking_but_require_protocol_fields(self):
         pending = self.pending()
         rid = pending["rid"]

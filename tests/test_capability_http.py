@@ -107,6 +107,21 @@ class CapabilityHTTPTests(unittest.TestCase):
         body.update(values)
         return self.api("/shell/approval/request", body)
 
+    def test_capability_password_limit_ignores_forged_forwarded_for(self):
+        self.configure()
+        status, pending = self.request_approval(reason="Test peer rate limiter")
+        self.assertEqual(200, status, pending)
+        location, headers, fields, _ = self.approval({"error": {"details": pending}})
+        for forged in ("192.0.2.41", "192.0.2.77, 203.0.113.19"):
+            with self.subTest(forged=forged), patch.object(
+                self.server.capability_limiter, "take", return_value=30
+            ) as take:
+                status, _, response = self.form(
+                    location, fields, dict(headers, **{"X-Forwarded-For": forged}))
+                self.assertEqual(429, status, response)
+                take.assert_called_once_with(
+                    "127.0.0.1", "workspace:" + self.record.app_id)
+
     def test_short_approval_url_routes_and_browser_post_actions(self):
         self.configure()
         status, pending = self.request_approval(

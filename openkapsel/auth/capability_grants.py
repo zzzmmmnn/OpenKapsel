@@ -1,6 +1,8 @@
 """Workspace passwords and memory-only time-bound capability approvals."""
 from __future__ import annotations
 
+import os
+import stat
 import secrets
 import hashlib
 import hmac
@@ -41,12 +43,44 @@ class Pending:
     attempts: int = 0
 
 
+def _secure_password_database_file(path: Path, *, create: bool = False) -> None:
+    """Set a private mode on the DB or existing SQLite journal/WAL sidecars."""
+    if path.is_symlink():
+        raise ValueError("Workspace password database must not be a symlink")
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        flags |= os.O_CREAT
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileNotFoundError:
+        if not create:
+            return
+        raise
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            raise ValueError("Workspace password database must be an unlinked regular file")
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(path, 0o600)
+    finally:
+        os.close(descriptor)
+
+
 class CapabilityGrants:
     """Token-scoped grant store, keyed by stable app_id; only hashes persist."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Password hashes authorize privileged Shell/File capabilities.
+        # Secure the database *before* SQLite can use it, repair pre-upgrade
+        # world-readable files, and cover persistent SQLite journal/WAL files
+        # that could also contain plaintext password-hash records.
+        _secure_password_database_file(self.path, create=True)
+        for suffix in ("-journal", "-wal", "-shm"):
+            _secure_password_database_file(Path(str(self.path) + suffix))
         self.lock = threading.RLock()
         self._browser_key = secrets.token_bytes(32)
         # Password setup links are volatile, one at a time per Token. They

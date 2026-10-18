@@ -6452,7 +6452,7 @@ class WorkspaceServerTests(unittest.TestCase):
             dashboard.decode("utf-8"),
         )
 
-    def test_admin_login_limiter_uses_last_forwarded_address_from_loopback_proxy(self) -> None:
+    def test_admin_login_limiter_ignores_forwarded_for_even_from_loopback(self) -> None:
         body = urlencode({"username": "admin", "password": "wrong"}).encode("utf-8")
         with patch.object(
             self.server.admin_login_limiter,
@@ -6470,7 +6470,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 authorize=False,
             )
         self.assertEqual(429, status)
-        retry_after.assert_called_once_with("198.51.100.27")
+        retry_after.assert_called_once_with("127.0.0.1")
 
     def test_admin_login_limiter_escalates_windows_and_success_clears(self) -> None:
         limiter = AdminLoginLimiter()
@@ -6514,11 +6514,15 @@ class WorkspaceServerTests(unittest.TestCase):
             "Content-Type": "application/x-www-form-urlencoded",
             "X-Forwarded-For": "198.51.100.41",
         }
-        for _ in range(3):
+        # Each request forges a different XFF. It must not allocate a fresh
+        # limiter bucket when the socket peer remains loopback.
+        for index in range(3):
+            headers["X-Forwarded-For"] = f"198.51.100.{index + 41}"
             status, _, _ = self.raw_request(
                 "POST", "/kapsel/admin/login", body, headers, authorize=False
             )
             self.assertEqual(401, status)
+        headers["X-Forwarded-For"] = "203.0.113.250"
         status, _, response_headers = self.raw_request(
             "POST", "/kapsel/admin/login", body, headers, authorize=False
         )
