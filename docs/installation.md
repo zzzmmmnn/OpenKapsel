@@ -147,7 +147,7 @@ preview.example.com {
 }
 ```
 
-OpenKapsel listens on HTTP only. In production, `public_base_url` and `preview_base_url` must use HTTPS. Caddy terminates TLS, supplies HSTS, and forwards the original request information.
+OpenKapsel listens on HTTP only. In production, `public_base_url` and `preview_base_url` must use HTTPS. Caddy terminates TLS, supplies HSTS, and forwards the original request information. Keep `listen_host` on a loopback address (for example `127.0.0.1`) when the proxy is on the same machine. Binding to `0.0.0.0`, `::`, or another non-loopback address produces a startup WARNING: direct HTTP access to that port can expose administrator passwords and Bearer tokens in plaintext. A public HTTPS proxy does not encrypt direct connections to the underlying HTTP listener; firewall or otherwise restrict it if non-loopback binding is required.
 
 The two `/.well-known/` matchers in the example are mandatory when remote MCP OAuth connections are used. They are outside the configured API prefix by OAuth convention: forwarding only `/kapsel/*` leaves REST and static MCP working while OAuth discovery fails. The same routes and endpoint details are documented in [OAuth connections](oauth-connections.md#installation-and-proxy).
 

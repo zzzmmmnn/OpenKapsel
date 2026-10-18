@@ -79,7 +79,7 @@ Full Shell is the explicit exception. It has all filesystem and network privileg
 - Administration uses rate-limited login, a secure session cookie, and CSRF tokens.
 - OAuth consent is separate: exact configuration control-token or Workspace Password verification, a signed browser/request/permission proof, Origin checks, bounded POST budgets, script-free pages and a 303 callback. Admin sessions do not authorize this flow; controls never enter its cookie or callback.
 - A stolen control token can delegate OAuth access for its own configuration. Routine control rotation does not revoke grants; revoke affected OAuth connections as part of compromise recovery.
-- Production requires HTTPS.
+- Production requires HTTPS. OpenKapsel itself serves plain HTTP: bind it to a loopback address and terminate TLS at an HTTPS reverse proxy. A non-loopback HTTP listener emits a startup security warning; directly accessing its port can expose admin passwords and Bearer tokens even if a public reverse proxy uses HTTPS. Restrict direct listener access with network controls if loopback binding is not possible.
 - Responses include HSTS behind HTTPS, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and restrictive CSP where applicable.
 - Preview does not send permissive CORS headers.
 - FastAPI default documentation and schema routes return `404`.
