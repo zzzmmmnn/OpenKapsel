@@ -689,7 +689,14 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
                 continue
             if mode not in {"ro", "r", "rw", "protect", "deny"}:
                 raise ValueError("path access mode must be rw, ro/r, protect or deny")
-            grants.append(PathGrant(path=cleaned, access=mode))
+            # Older administrator forms predate explicit file/directory
+            # spelling. Preserve their existing directory semantics while
+            # current forms use a versioned, strict trailing-slash grammar.
+            typed = self._form_one(form, "path_rule_format") == "2"
+            grants.append(PathGrant(
+                path=cleaned, access=mode,
+                strict_file=typed and not cleaned.endswith('/'),
+                legacy_directory=not typed))
         return tuple(grants)
 
     def _read_form(self) -> dict[str, list[str]]:

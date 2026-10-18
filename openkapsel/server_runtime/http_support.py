@@ -68,12 +68,25 @@ class HttpSupportMixin:
                 relative_to_workspace = checked.relative_to(self.token_scope_root)
             except ValueError:
                 continue
-            if INTERNAL_DIRECTORY in relative_to_workspace.parts:
+            if any(part.startswith(".openkapsel-") for part in relative_to_workspace.parts):
                 raise ApiError(
                     HTTPStatus.FORBIDDEN,
                     "reserved_path",
-                    "workspace internal directories are not available through file endpoints",
+                    "workspace transport staging paths are not available through file endpoints",
                 )
+            if any(part.casefold() == INTERNAL_DIRECTORY.casefold()
+                   for part in relative_to_workspace.parts):
+                # Keep legacy reserved_path and preview-404 behavior for
+                # default-denied workspace metadata. Explicit admin rules
+                # permitting it are not blocked by this check.
+                mode = effective_path_access(
+                    checked, self.token_scope_root, self.token_record.can_write,
+                    self.token_record.allowed_paths, resolve_symlinks=False)
+                if mode == "deny":
+                    raise ApiError(
+                        HTTPStatus.FORBIDDEN, "reserved_path",
+                        "workspace internal directories are not available",
+                    )
         # Examine both spellings: symlinks or mapping-root translations must
         # never bypass a deny/readonly entry.
         self._assert_inside_root(candidate)
@@ -94,8 +107,9 @@ class HttpSupportMixin:
         return SafePathAccess(
             (
                 self.token_scope_root,
-                *(Path(item.path).resolve(strict=False) for item in self.token_record.allowed_paths
-                  if item.access != "deny"),
+                *(Path(item.path.rstrip("/")).resolve(strict=False)
+                  for item in self.token_record.allowed_paths
+                  if item.access in {"ro", "rw"} and not item.path.startswith("*/")),
             )
         )
 
@@ -105,6 +119,9 @@ class HttpSupportMixin:
         # remove any protected descendant. Ordinary writes to its siblings
         # still pass because those targets are not ancestors.
         target = Path(path).resolve(strict=False)
+        # Root mutation has a dedicated root_protected response downstream.
+        if target == self.token_scope_root:
+            return
         approval = getattr(self, "_file_function_policy", None)
         elevated = approval is not None and approval[2] is True
         if elevated:
@@ -112,8 +129,16 @@ class HttpSupportMixin:
             FileApproval.check(str(path), self.token_scope_root, approval[0],
                                write=True, rules=approval[1])
         rules = approval[1] if elevated else self.token_record.allowed_paths
+        if target.is_dir() and not target.is_symlink():
+            from openkapsel.auth.path_access import existing_pattern_masks
+            masks = existing_pattern_masks(target, self.token_record.can_write, rules)
+            if masks:
+                raise ApiError(403, "path_access_denied",
+                               "directory contains protected named paths")
         for rule in rules:
-            protected = Path(rule.path)
+            if rule.path.startswith("*/"):
+                continue  # Pattern descendants are checked by effective_path_access below.
+            protected = Path(rule.path.rstrip("/"))
             if protected != target and target in protected.parents:
                 if rule.access == "deny" or (not elevated and rule.access in {"ro", "protect"}):
                     raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied",

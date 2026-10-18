@@ -316,6 +316,36 @@ class FileFunctionTests(unittest.TestCase):
         self.assertEqual(404, hidden['status'], hidden)
         self.assertNotIn('PRIVATE', str(hidden))
 
+    def test_file_stream_preserves_prefix_ignored_protection_rules(self):
+        outside = self.base / "outside"
+        meta = outside / "meta"
+        meta.mkdir(parents=True)
+        secret = meta / "secret.txt"
+        secret.write_text("STREAM-SCOPED-PRIVATE")
+        parent = self.grant(outside)
+        def open_with(rules, auth=parent):
+            return self.functions.execute("files.read", {
+                "operation": "file_stream",
+                "arguments": {"operation": "open",
+                              "args": {"path": str(secret), "mode": "r"},
+                              "rules": rules},
+            }, auth=auth)
+        # An explicit Client policy must not be silently translated into
+        # the nonsensical literal <workspace>/*/meta directory.
+        with self.assertRaises(ApiError):
+            open_with([{"path": "*/meta/", "access": "deny"}])
+        with self.assertRaises(ApiError):
+            open_with([{"path": "*/meta/", "access": "protect"}])
+        scoped = self.grant(meta, old=parent)
+        handle = open_with([{"path": "*/meta/", "access": "protect"}], scoped)
+        self.assertIsInstance(handle, str)
+        self.functions.execute("files.read", {
+            "operation": "file_stream",
+            "arguments": {"operation": "close",
+                          "args": {"handle": handle},
+                          "rules": [{"path": "*/meta/", "access": "protect"}]},
+        }, auth=scoped)
+
     def test_descriptor_stream_rechecks_scope_and_read_function_cannot_write(self):
         outside, other = self.base / 'outside', self.base / 'other'
         outside.mkdir(); other.mkdir()

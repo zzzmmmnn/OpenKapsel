@@ -27,9 +27,9 @@ class FileOperationSupportMixin(MappingQueryMixin):
         if manager is None or not hasattr(manager, "store"):
             return None  # ClientFileAPI and standalone local handlers.
         from openkapsel.mapping.mapping_io import WorkspaceFiles
-        roots = (self.token_scope_root, *(Path(p.path).resolve(strict=False)
+        roots = (self.token_scope_root, *(Path(p.path.rstrip("/")).resolve(strict=False)
                                          for p in getattr(self.token_record, "allowed_paths", ())
-                                         if p.access != "deny"))
+                                         if p.access in {"rw", "ro"} and not p.path.startswith("*/")))
         return WorkspaceFiles(manager, roots)
 
     def _open_binary(self, path):

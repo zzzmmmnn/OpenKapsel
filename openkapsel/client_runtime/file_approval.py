@@ -22,7 +22,7 @@ from openkapsel.auth.path_access import effective_path_access, has_private_compo
 def absolute_scope(value):
     if (not isinstance(value, str) or not value or len(value) > 4096
             or "\x00" in value or ".." in Path(value).parts
-            or has_private_component(value)
+            or any(part.casefold().startswith(".openkapsel-") for part in Path(value).parts)
             or os.name != "nt" and "\\" in value):
         raise ApiError(400, "invalid_path", "approval requires an absolute path without traversal")
     path = Path(value)
@@ -147,28 +147,60 @@ class FileApproval:
         if not (internal and cls.workspace_granted(auth) or
                 any(resolved == p or p in resolved.parents for p in scopes)):
             raise ApiError(404, "path_unavailable", "path does not exist or access is denied")
-        if has_private_component(candidate) or has_private_component(resolved):
-            raise ApiError(403, "reserved_path", "internal paths cannot be approved")
+        if any(part.casefold().startswith(".openkapsel-")
+               for part in (*candidate.parts, *resolved.parts)):
+            raise ApiError(403, "reserved_path", "internal transport paths cannot be approved")
         # For each spelling, absolute deny always wins. A configured
         # protect can only be unlocked by an independent approval whose
         # canonical scope is at or below the effective protected directory;
         # broad parent/workspace approval does not cross this boundary.
         for checked in (candidate, resolved):
-            policy = effective_path_access(checked, root, False, rules,
+            # Approval may designate an external Client directory. Its
+            # canonical scope provides the fallback root for evaluating
+            # default */name/ rules, but NEVER grants wider access: the
+            # independent approval scope check above remains authoritative.
+            matching_scopes = [
+                scope for scope in scopes
+                if checked == scope or scope in checked.parents
+            ]
+            evaluation_root = (max(matching_scopes, key=lambda p: len(p.parts))
+                               if matching_scopes else root)
+            policy = effective_path_access(checked, evaluation_root, False, rules,
                                            resolve_symlinks=False)
             if policy == "deny":
                 raise ApiError(403, "path_access_denied", "path is denied")
             if policy == "protect":
-                protect_paths = [
-                    Path(rule.path) for rule in rules if rule.access == "protect"
-                    and (checked == Path(rule.path) or Path(rule.path) in checked.parents)
-                ]
-                boundary = max(protect_paths, key=lambda p: len(p.parts))
-                if not any((scope == boundary or boundary in scope.parents)
-                           and (resolved == scope or scope in resolved.parents)
-                           for scope in scopes):
-                    raise ApiError(403, "path_access_denied",
-                                   "protected directory needs its own File approval")
+                # Each independently configured protection boundary requires
+                # its own approval (or a narrower approved scope below it).
+                # An outer protection does not unlock a nested protection.
+                # Do not treat inherited "protect" on every path component
+                # as a new boundary: only anchors of actual rules count.
+                from openkapsel.auth.path_access import (
+                    DEFAULT_ACCESS_RULES, _matching_anchor,
+                    normalized_explicit_rule,
+                )
+                candidates = (
+                    *((raw, mode) for raw, mode in DEFAULT_ACCESS_RULES),
+                    *((normalized_explicit_rule(rule), rule.access)
+                      for rule in rules),
+                )
+                protect_anchors = set()
+                for raw, mode in candidates:
+                    if mode != "protect":
+                        continue
+                    match = _matching_anchor(checked, raw)
+                    if match is None:
+                        continue
+                    anchor, _ = match
+                    if effective_path_access(anchor, evaluation_root, False, rules,
+                                             resolve_symlinks=False) == "protect":
+                        protect_anchors.add(anchor)
+                for boundary in protect_anchors:
+                    if not any((scope == boundary or boundary in scope.parents)
+                               and (resolved == scope or scope in resolved.parents)
+                               for scope in scopes):
+                        raise ApiError(403, "path_access_denied",
+                                       "protected path needs its own File approval")
         return resolved
 
     @classmethod
@@ -235,9 +267,28 @@ class FileApproval:
         if operation not in allowed or not write and operation == "open" and (
                 args.get("mode", "r") != "r" or args.get("truncate")):
             raise OSError(errno.EACCES, "File stream access denied")
-        rules = tuple(SimpleNamespace(path=str(Path(r["path"]) if Path(r["path"]).is_absolute()
-            else self.files.root / r["path"]), access=r["access"]) for r in arguments["rules"])
-        provider = ApprovedFiles(self.files, auth, write, rules)
+        raw_rules = arguments["rules"]
+        if not isinstance(raw_rules, list) or any(
+                not isinstance(r, dict) or set(r) != {"path", "access"}
+                or not isinstance(r["path"], str)
+                or r["access"] not in {"ro", "rw", "protect", "deny"}
+                for r in raw_rules):
+            raise OSError(errno.EINVAL, "invalid approved File stream rules")
+        # Preserve */name/ patterns and typed trailing slash; Path(...) alone
+        # would turn a suffix rule into an unrelated literal root/* path.
+        from openkapsel.auth.path_access import _rule_parts
+        rules = []
+        for row in raw_rules:
+            raw = row["path"]
+            suffix, directory, _name = _rule_parts(
+                raw if raw.startswith("*/") or Path(raw).is_absolute()
+                else str(self.files.root / raw) + ("/" if raw.endswith("/") else ""))
+            normalized = (raw if suffix else
+                          str(Path(raw) if Path(raw).is_absolute()
+                              else self.files.root / raw.rstrip("/")) +
+                          ("/" if directory else ""))
+            rules.append(SimpleNamespace(path=normalized, access=row["access"]))
+        provider = ApprovedFiles(self.files, auth, write, tuple(rules))
         handle = args.get("handle")
         if handle is not None:
             record = self.streams.get(handle)

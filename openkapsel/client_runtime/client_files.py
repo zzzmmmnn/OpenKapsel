@@ -80,26 +80,25 @@ class ClientFiles:
         parts = PurePosixPath(value).parts
         path = self.root.joinpath(*parts)
         if (value.startswith("/") or ".." in parts or
-                any(is_private_name(p) for p in parts) and not self._is_transport_stage(path)):
+                any(p.casefold().startswith(".openkapsel-") for p in parts)
+                and not self._is_transport_stage(path)):
             raise OSError(errno.EACCES, "path is outside exported files")
         self.ensure_accessible_path(path)
         return path
 
     def is_protected_path(self, path):
         path = Path(path)
-        if has_private_component(path) and not self._is_transport_stage(path):
+        if any(part.casefold().startswith(".openkapsel-") for part in path.parts) and not self._is_transport_stage(path):
             return True
         if any(path == entry or entry in path.parents
                for entry in (*self.protected_paths, *self.sandbox_denied_paths)):
             return True
-        if self.sandbox_path_rules:
-            from openkapsel.auth.path_access import effective_path_access
-            return any(effective_path_access(
-                checked, self.root, self.writable, self.sandbox_path_rules,
-                resolve_symlinks=False,
-                internal_transfer=self._is_transport_stage(checked)) in {"protect", "deny"}
-                for checked in (path, path.resolve(strict=False)))
-        return False
+        from openkapsel.auth.path_access import effective_path_access
+        return any(effective_path_access(
+            checked, self.root, self.writable, self.sandbox_path_rules,
+            resolve_symlinks=False,
+            internal_transfer=self._is_transport_stage(checked)) in {"protect", "deny"}
+            for checked in (path, path.resolve(strict=False)))
 
     def ensure_accessible_path(self, path):
         if self.is_protected_path(path):
@@ -111,12 +110,18 @@ class ClientFiles:
         if self.is_protected_path(path):
             raise OSError(errno.EACCES, "internal or protected path cannot be modified")
         from openkapsel.auth.path_access import effective_path_access
-        if self.sandbox_path_rules and any(effective_path_access(
+        if any(effective_path_access(
                 checked, self.root, self.writable, self.sandbox_path_rules,
                 resolve_symlinks=False,
                 internal_transfer=self._is_transport_stage(checked)) in {"ro", "protect", "deny"}
                 for checked in (path, path.resolve(strict=False))):
             raise OSError(errno.EACCES, "sandbox path is read-only or denied")
+        # Directory rename/delete must not sidestep an implicit named
+        # protect/deny by moving its writable parent.
+        if path.is_dir() and not path.is_symlink():
+            from openkapsel.auth.path_access import existing_pattern_masks
+            if existing_pattern_masks(path, self.writable, self.sandbox_path_rules):
+                raise OSError(errno.EACCES, "directory contains protected named paths")
         # Do not allow deleting/renaming an ancestor of a restricted
         # subtree. This never interferes with writing inside nested rw.
         for rule in self.sandbox_path_rules:
@@ -350,7 +355,7 @@ class ClientFiles:
                     for item in entries:
                         check_deadline()
                         if (
-                            not is_private_name(item.name)
+                            not item.name.casefold().startswith(".openkapsel-")
                             and not self.is_protected_path(path / item.name)
                             and (item.is_file(follow_symlinks=False) or item.is_dir(follow_symlinks=False))
                         ):

@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import platform
 from pathlib import Path
+from types import SimpleNamespace
 
 from openkapsel.execution.network_proxy import normalize_domain_rules
+from openkapsel.auth.path_access import _rule_parts, effective_path_access
 
 
 def make_job_sandbox(config, files, *, protected_paths=()):
@@ -37,6 +39,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     protected = [Path(value).expanduser().resolve(strict=False)
                  for value in protected_paths]
     grants = []
+    pattern_rules = []
     denied = []
     used = {}
     raw_permits = []
@@ -51,14 +54,19 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         value = item["path"]
         if not isinstance(value, str) or not value or "\x00" in value:
             raise ValueError("job_sandbox path must be an absolute path")
-        path = Path(value).expanduser()
+        suffix, directory, target = _rule_parts(value)
+        if suffix:
+            pattern_rules.append({"path": value, "access": access})
+            continue
+        path = Path(target).expanduser()
         if not path.is_absolute():
             raise ValueError("job_sandbox path must be absolute")
         resolved = path.resolve(strict=True)
         if resolved == Path(resolved.anchor):
             raise ValueError("job_sandbox cannot authorize filesystem root")
-        if access not in {"protect", "deny"} and not resolved.is_dir():
-            raise ValueError("rw/ro sandbox paths must be directories")
+        if access not in {"protect", "deny"} and not (
+                resolved.is_dir() or (not directory and resolved.is_file())):
+            raise ValueError("rw/ro sandbox path type does not match file/directory rule")
         if access in {"protect", "deny"} and not (resolved.is_dir() or resolved.is_file()):
             raise ValueError("protect/deny sandbox path must be a file or directory")
         if access in {"rw", "ro"}:
@@ -78,7 +86,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         for secret in protected:
             if secret == resolved or secret in resolved.parents:
                 raise ValueError("job_sandbox path would expose protected Client configuration")
-        grants.append({"path": str(resolved), "access": access})
+        grants.append({"path": str(resolved) + ("/" if directory else ""), "access": access})
     permitted = [root, *(Path(g["path"]) for g in grants)]
     all_denied = tuple(denied)
     for denied_path in all_denied:
@@ -103,7 +111,10 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     hard_denied = []
     for base in permitted:
         internal = base / ".openkapsel"
-        if internal.exists():
+        if internal.exists() and effective_path_access(
+                internal, root, bool(files.writable),
+                [SimpleNamespace(**row) for row in (*grants, *pattern_rules)],
+                resolve_symlinks=False) == "deny":
             hard_denied.append(internal.resolve(strict=True))
     for secret in protected:
         if secret.exists() and any(secret == base or base in secret.parents for base in permitted):
@@ -137,6 +148,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
         "root": str(root),
         "writable": bool(files.writable),
         "allowed_paths": grants,
+        "pattern_rules": pattern_rules,
         "hidden_paths": hidden,
         "network_mode": mode,
         "allowed_domains": domains,

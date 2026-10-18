@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openkapsel.random_ids import token_urlsafe_alnum
+from openkapsel.auth.path_access import _rule_parts
 from openkapsel.execution.environment_store import EnvironmentStore
 from openkapsel.execution.network_proxy import NETWORK_MODES, normalize_domain_rules
 from openkapsel.workspace.workspace_layout import ensure_workspace_layout, remove_empty_workspace_layout
@@ -84,6 +85,10 @@ class PathGrant:
     # compatibility attribute for older consumers and extension call sites.
     read_only: bool = True
     access: str = ""
+    # Existing stored Token paths were implicitly directory grants. New
+    # administrator file rules use strict_file=True, retaining that choice.
+    strict_file: bool = False
+    legacy_directory: bool = True
 
     def __post_init__(self) -> None:
         mode = self.access or ("ro" if self.read_only else "rw")
@@ -101,7 +106,9 @@ class PathGrant:
         if not isinstance(value, dict):
             raise ValueError("allowed path entries must be objects")
         if "access" in value:
-            return cls(path=str(value.get("path", "")), access=value["access"])
+            return cls(path=str(value.get("path", "")), access=value["access"],
+                       strict_file=bool(value.get("strict_file", False)),
+                       legacy_directory=not bool(value.get("strict_file", False)))
         return cls(
             path=str(value.get("path", "")),
             read_only=bool(value.get("read_only", True)),
@@ -162,7 +169,9 @@ class TokenRecord:
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["allowed_paths"] = [
-            {"path": item.path, "access": item.access} for item in self.allowed_paths
+            {"path": item.path, "access": item.access,
+             **({"strict_file": True} if item.strict_file else {})}
+            for item in self.allowed_paths
         ]
         return result
 
@@ -732,40 +741,48 @@ class TokenStore:
             cleaned = grant.path.strip()
             if not cleaned:
                 continue
-            candidate = Path(cleaned).expanduser()
-            if not candidate.is_absolute():
-                raise ValueError("sandbox paths must be absolute")
-            resolved_path = candidate.resolve(strict=True)
-            if resolved_path == Path("/"):
-                raise ValueError("the filesystem root cannot be a sandbox path")
-            if not ((resolved_path.is_file() or resolved_path.is_dir())
-                    if grant.access in {"protect", "deny"} else resolved_path.is_dir()):
-                raise ValueError(f"sandbox path type is invalid: {resolved_path}")
-            # A permit must remain outside the shared Workspace Root, as
-            # before. A deny or read-only overlay may be inside the workspace
-            # or any separately permitted directory.
-            if grant.access == "rw" or grant.access == "ro":
-                if resolved_path == self.root or resolved_path in self.root.parents:
-                    raise ValueError("extra accessible paths cannot contain Workspace Root")
-                if (grant.access == "rw" and
-                        (self.root in resolved_path.parents)):
-                    raise ValueError("rw grants inside Workspace Root are implicit; use ro or deny overlays")
-            normalized = str(resolved_path)
-            if grant.access not in {"protect", "deny"}:
-                previous_permits.append(resolved_path)
+            suffix, directory, target = _rule_parts(cleaned)
+            if suffix:
+                # Prefix-ignored rule never expands filesystem authority.
+                normalized = cleaned
+            else:
+                candidate = Path(target).expanduser()
+                resolved_path = candidate.resolve(strict=False)
+                if resolved_path == Path(resolved_path.anchor):
+                    raise ValueError("the filesystem root cannot be a sandbox path")
+                legacy_dir = (not directory and not grant.strict_file
+                              and grant.legacy_directory
+                              and candidate.is_dir())
+                if directory or legacy_dir:
+                    if resolved_path.exists() and not resolved_path.is_dir():
+                        raise ValueError(f"sandbox directory rule is a file: {resolved_path}")
+                elif resolved_path.exists() and not resolved_path.is_file():
+                    raise ValueError(f"sandbox file rule is a directory: {resolved_path}")
+                if grant.access in {"rw", "ro"}:
+                    if resolved_path == self.root or resolved_path in self.root.parents:
+                        raise ValueError("extra accessible paths cannot contain Workspace Root")
+                    previous_permits.append(resolved_path)
+                normalized = str(resolved_path) + ("/" if directory else "")
+            normalized_grant = PathGrant(
+                path=normalized, access=grant.access,
+                strict_file=grant.strict_file,
+                legacy_directory=grant.legacy_directory,
+            )
             existing = next((item for item in allowed_paths if item.path == normalized), None)
-            normalized_grant = PathGrant(path=normalized, access=grant.access)
             if existing is None:
                 allowed_paths.append(normalized_grant)
             elif existing.access != normalized_grant.access:
-                # Most restrictive mode wins when identical paths repeat.
                 order = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
                 allowed_paths[allowed_paths.index(existing)] = (
                     max((existing, normalized_grant), key=lambda item: order[item.access])
                 )
-        permitted = [scoped, *(Path(p.path) for p in allowed_paths if p.access not in {"protect", "deny"})]
+        permitted = [scoped, *(Path(p.path.rstrip("/")) for p in allowed_paths
+                                if p.access in {"ro", "rw"}
+                                and not p.path.startswith("*/"))]
         for grant in allowed_paths:
-            path = Path(grant.path)
+            if grant.path.startswith("*/"):
+                continue
+            path = Path(grant.path.rstrip("/"))
             if grant.access in {"protect", "deny"}:
                 if not (any(path == base or base in path.parents for base in permitted)
                         or any(path in base.parents for base in permitted[1:])

@@ -96,27 +96,5 @@ class SandboxMixin:
                                     grants=self.token_record.allowed_paths)
 
     def _validated_path_grants(self) -> tuple[PathGrant, ...]:
-        for grant in self.token_record.allowed_paths:
-            configured = Path(grant.path)
-            try:
-                resolved = configured.resolve(strict=True)
-            except OSError:
-                raise ApiError(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "extra_path_unavailable",
-                    f"extra accessible directory is unavailable: {grant.path}",
-                ) from None
-            if resolved != configured or not (
-                    resolved.is_dir() or (grant.access in {"protect", "deny"} and resolved.is_file())):
-                raise ApiError(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "extra_path_changed",
-                    f"extra accessible directory changed after authorization: {grant.path}",
-                )
-        denied = [Path(g.path) for g in self.token_record.allowed_paths if g.access == "deny"]
-        return tuple(
-            g for g in self.token_record.allowed_paths
-            if g.access != "deny" and not any(
-                p == Path(g.path) or p in Path(g.path).parents for p in denied
-            )
-        )
+        from openkapsel.execution.shell_execution import validated_path_grants
+        return validated_path_grants(self.token_record, self.token_scope_root)

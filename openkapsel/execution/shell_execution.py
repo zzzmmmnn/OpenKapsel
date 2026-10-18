@@ -33,38 +33,69 @@ def full_shell_process_environment(scope_root: Path) -> dict[str, str]:
     return environment
 
 
-def validated_path_grants(record: TokenRecord) -> tuple[PathGrant, ...]:
+def validated_path_grants(record: TokenRecord, scope_root: Path | None = None) -> tuple[PathGrant, ...]:
+    from openkapsel.auth.path_access import existing_pattern_masks
+    literal = []
     for grant in record.allowed_paths:
-        configured = Path(grant.path)
+        if grant.path.startswith("*/"):
+            continue
+        configured = Path(grant.path.rstrip("/"))
         try:
             resolved = configured.resolve(strict=True)
         except OSError:
             raise ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "extra_path_unavailable",
-                f"extra accessible directory is unavailable: {grant.path}",
+                f"extra accessible path is unavailable: {grant.path}",
             ) from None
         if resolved != configured or not (
-                resolved.is_dir() or (grant.access in {"protect", "deny"} and resolved.is_file())):
+            resolved.is_dir() or (grant.access in {"protect", "deny"} and resolved.is_file())
+            or (grant.strict_file and resolved.is_file())
+        ):
             raise ApiError(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "extra_path_changed",
-                f"extra accessible directory changed after authorization: {grant.path}",
+                HTTPStatus.SERVICE_UNAVAILABLE, "extra_path_changed",
+                f"extra accessible path changed after authorization: {grant.path}",
             )
-    # Preserve protect barriers for native backends: more-specific explicit
-    # grants may reopen them. Drop any permit below an absolute deny.
-    denied = [Path(grant.path) for grant in record.allowed_paths if grant.access == "deny"]
-    return tuple(
-        grant for grant in record.allowed_paths
-        if grant.access != "deny" and not any(
-            parent == Path(grant.path) or parent in Path(grant.path).parents
-            for parent in denied
-        )
-    )
+        literal.append(grant)
+    denied = [Path(g.path.rstrip("/")) for g in literal if g.access == "deny"]
+    normal = tuple(g for g in literal if g.access != "deny" and not any(
+        parent == Path(g.path.rstrip("/"))
+        or parent in Path(g.path.rstrip("/")).parents
+        for parent in denied))
+    if scope_root is None:
+        return normal
+    try:
+        scan_roots = [scope_root, *(
+            Path(grant.path.rstrip("/")) for grant in normal
+            if grant.access in {"ro", "rw"}
+            and Path(grant.path.rstrip("/")).is_dir()
+        )]
+        matches = tuple(
+            item for base in dict.fromkeys(scan_roots)
+            for item in existing_pattern_masks(
+                base, record.can_write, record.allowed_paths))
+    except (OSError, ValueError) as exc:
+        raise ApiError(503, "sandbox_unavailable",
+                       "cannot apply default named-file protections") from exc
+    return normal + tuple(grant for grant in matches if grant.access != "deny")
+
+
 
 
 def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tuple[Path, ...]:
-    hidden: list[Path] = [ensure_workspace_layout(scope_root).root]
+    from openkapsel.auth.path_access import existing_pattern_masks
+    # All protected names are masked at launch; explicit same-target rw
+    # overrides the default .openkapsel deny.
+    scan_roots = [scope_root, *(
+        Path(g.path.rstrip("/")) for g in grants
+        if not g.path.startswith("*/") and g.access in {"ro", "rw"}
+        and Path(g.path.rstrip("/")).is_dir()
+    )]
+    masks = tuple(item for base in dict.fromkeys(scan_roots)
+                  for item in existing_pattern_masks(base, True, grants))
+    hidden: list[Path] = [grant_path for grant in masks
+                          if grant.access == "deny"
+                          for grant_path in (Path(grant.path),)]
     mapped = set(mapping_roots)
     for current, directories, _files in os.walk(scope_root, followlinks=False):
         parent = Path(current)
@@ -75,15 +106,18 @@ def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tu
             if path in mapped:
                 directories.remove(name)
                 continue
-            if path.is_symlink() or name == INTERNAL_DIRECTORY:
+            if path.is_symlink() or name.casefold().startswith(".openkapsel-"):
                 directories.remove(name)
-            if name == INTERNAL_DIRECTORY and path.is_dir() and not path.is_symlink():
+            if name.casefold().startswith(".openkapsel-") and path.is_dir() and not path.is_symlink():
                 hidden.append(path)
     active_grants = [scope_root, *(
-        Path(grant.path) for grant in grants if grant.access != "deny"
+        Path(grant.path.rstrip("/")) for grant in grants
+        if grant.access != "deny" and not grant.path.startswith("*/")
     )]
     for grant in grants:
-        path = Path(grant.path)
+        if grant.path.startswith("*/"):
+            continue
+        path = Path(grant.path.rstrip("/"))
         if grant.access == "deny":
             # Only absolute deny is a hard overlay. Protect is represented
             # as an ordinary sandbox mask so a deeper explicit rw can reopen
@@ -92,7 +126,10 @@ def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tu
                 hidden.append(path)
         else:
             internal = path / ".openkapsel"
-            if internal.is_dir() and not internal.is_symlink():
+            if (internal.is_dir() and not internal.is_symlink()
+                    and effective_path_access(
+                        internal, scope_root, True, grants,
+                        resolve_symlinks=False) == "deny"):
                 hidden.append(internal)
     reduced = []
     for path in sorted(set(hidden), key=lambda p: (len(p.parts), str(p))):
@@ -189,7 +226,7 @@ def sandbox_launch(
         network_mode=record.network_mode,
         allowed_domains=record.allowed_domains,
         proxy_root=server.config.network_proxy_dir,
-        allowed_paths=validated_path_grants(record),
+        allowed_paths=validated_path_grants(record, scope_root),
         hidden_paths=sandbox_hidden_paths(scope_root, mapping_roots=(
             tuple(server.mappings.mount_path(row) for row in server.mappings.store.list(record.path_prefix))
             if hasattr(server, "mappings") else ()

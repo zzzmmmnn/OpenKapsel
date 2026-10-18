@@ -239,7 +239,7 @@ def _create_resources(config, *, protected_paths=()):
             Path(path) for path in job_sandbox["hidden_paths"]
         )
         files.sandbox_path_rules = tuple(SimpleNamespace(path=item["path"], access=item["access"])
-            for item in job_sandbox["allowed_paths"])
+            for item in (*job_sandbox["allowed_paths"], *job_sandbox["pattern_rules"]))
     is_mapping = urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]
     if job_sandbox is not None and not is_mapping:
         raise ValueError("job_sandbox requires a mapping-connect Client")
@@ -248,7 +248,7 @@ def _create_resources(config, *, protected_paths=()):
     from types import SimpleNamespace
     powershell_rules = (
         tuple(SimpleNamespace(path=item["path"], access=item["access"])
-              for item in job_sandbox["allowed_paths"])
+              for item in (*job_sandbox["allowed_paths"], *job_sandbox["pattern_rules"]))
         + tuple(SimpleNamespace(path=path, access="deny")
                 for path in job_sandbox["hidden_paths"])
         if os.name == "nt" and job_sandbox is not None else ()

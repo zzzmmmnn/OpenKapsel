@@ -56,7 +56,9 @@ service where configured limits apply.
 - Paths are normalized and constrained to the token workspace or explicit grants.
 - Each additional path independently selects read-only or writable access.
 - Symlink escapes are rejected.
-- `.openkapsel` is the single private reserved directory for recycle, databases, Context, Memory, and Shell environments.
+- Named path rules are literal, not regular expressions: `/scope/data/` covers that directory and descendants, `/scope/config` covers exactly one file; `*/.git/` covers any directory component named `.git`, regardless of its parent, and `*/.gitconfig` matches that filename. The only wildcard syntax is the initial `*/`. When absolute and prefix-ignored rules match the **same directory**, the more restrictive `deny > protect > ro > rw` applies to that directory and all descendants. Deeper explicit rules may control their own subtree, except under an explicit absolute deny.
+- Defaults protect `.git` directories and metadata pointer files, `.config/`, `.ssh/`, `.gitconfig`, `.gitattributes`, and `.gitmodules`; `*/.openkapsel/` is denied by default. Administrators may explicitly override a default at the matching path, including `.openkapsel/` (which risks exposing service metadata). The separate transport-staging paths and Client configuration secrets remain restricted.
+- Existing restricted-Shell profiles mask named protected paths discovered at launch. Static mount masks **cannot** guarantee protection against new hidden directories or atomically renamed/symlinked object-store paths after launch; writable native Git object storage may still suffer the documented `alternates`/fanout TOCTOU cross-Workspace disclosure until Git subprocesses receive a complete filesystem isolation boundary. Do not rely on pattern rules alone to prevent this attack.
 - Deleting through the API moves data to workspace-local recycle storage.
 - Application workers cannot read raw databases, Context, Memory, tokens, configuration, or another workspace.
 - Workspace image capacity is enforced by its mounted ext4 filesystem.

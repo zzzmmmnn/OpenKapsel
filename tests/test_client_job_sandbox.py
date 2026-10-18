@@ -215,10 +215,19 @@ class ClientJobSandboxTests(unittest.TestCase):
         internal = self.root / ".openkapsel"
         internal.mkdir()
         runtime = ClientRuntime(self._config(job_sandbox={
-            "paths": [{"path": str(internal), "access": "rw"}],
+            "paths": [],  # Default .openkapsel deny applies automatically.
         }))
         try:
             self.assertIn(str(internal), runtime.tasks.job_sandbox["hidden_paths"])
+        finally:
+            runtime.close()
+        runtime = ClientRuntime(self._config(job_sandbox={
+            "paths": [{"path": str(internal) + "/", "access": "rw"}],
+        }))
+        try:
+            # A deliberate administrator rule now overrides a default deny,
+            # unlike a protected Client config file, which stays hard-denied.
+            self.assertNotIn(str(internal), runtime.tasks.job_sandbox["hidden_paths"])
         finally:
             runtime.close()
         # Overlapping rules are valid; read-only takes precedence over writable.

@@ -141,7 +141,7 @@ def prepare_job(
 ) -> PreparedJob:
     if not isinstance(specification, dict) or set(specification) - {
         "type", "root", "writable", "network_mode", "allowed_domains",
-        "allowed_paths", "hidden_paths",
+        "allowed_paths", "hidden_paths", "pattern_rules",
     }:
         raise ValueError("unknown sandbox environment options")
     kind = specification.get("type")
@@ -181,9 +181,21 @@ def prepare_job(
         raise ValueError("allowed_domains requires domain_allowlist mode")
     extras = specification.get("allowed_paths", [])
     hidden = specification.get("hidden_paths", [])
+    patterns = specification.get("pattern_rules", [])
     if (not isinstance(extras, list) or len(extras) > MAX_PATHS
-            or not isinstance(hidden, list) or len(hidden) > MAX_PATHS):
+            or not isinstance(hidden, list) or len(hidden) > MAX_PATHS
+            or not isinstance(patterns, list) or len(patterns) > MAX_PATHS):
         raise ValueError("invalid sandbox path grants")
+    from openkapsel.auth.path_access import _rule_parts, existing_pattern_masks
+    pattern_grants = []
+    for item in patterns:
+        if (not isinstance(item, dict) or set(item) != {"path", "access"}
+                or item["access"] not in {"rw", "ro", "r", "protect", "deny"}):
+            raise ValueError("invalid name-pattern sandbox rule")
+        suffix, _directory, _name = _rule_parts(item["path"])
+        if not suffix:
+            raise ValueError("pattern rules must start with */")
+        pattern_grants.append(PathGrant(item["path"], access=item["access"]))
     grants: list[PathGrant] = []
     for item in extras:
         if not isinstance(item, dict) or set(item) != {"path", "access"}:
@@ -193,15 +205,21 @@ def prepare_job(
             access = "ro"
         if access not in {"rw", "ro", "protect", "deny"}:
             raise ValueError("allowed_paths entries require rw, ro, protect or deny access")
+        # Only concrete mount paths belong in allowed_paths. Prefix-ignored
+        # rules were checked above and will expand from the *actual* root.
         if access in {"protect", "deny"}:
-            value = Path(item["path"])
+            value = Path(item["path"].rstrip("/"))
             if not value.is_absolute():
                 raise ValueError("deny path must be absolute")
             directory = value.resolve(strict=True)
             if not (directory.is_file() or directory.is_dir()):
                 raise ValueError("deny sandbox path must exist")
         else:
-            directory = _real_dir(item["path"])
+            literal = Path(item["path"].rstrip("/"))
+            if (not item["path"].endswith("/") and literal.is_file()):
+                directory = literal.resolve(strict=True)
+            else:
+                directory = _real_dir(item["path"].rstrip("/"))
         # Parent grants are valid for Shell, provided the backend reapplies
         # the exported root's stricter access after the broader grant.
         # Parent grants are fine: the Manager state subtree is excluded below.
@@ -210,6 +228,24 @@ def prepare_job(
             raise ValueError("sandbox grant is inside Manager state")
         grants.append(PathGrant(str(directory), access=access))
     excluded: list[Path] = []
+    # Filesystem sandbox backends require concrete mount paths. Discover
+    # current named sensitive paths at launch, not merely at Client startup.
+    # New paths created AFTER launch still require process isolation.
+    try:
+        roots = [root, *(
+            Path(grant.path) for grant in grants
+            if grant.access in {"ro", "rw"} and Path(grant.path).is_dir())]
+        named_masks = tuple(
+            item for base in dict.fromkeys(roots)
+            for item in existing_pattern_masks(
+                base, writable, (*grants, *pattern_grants)))
+    except (OSError, ValueError) as exc:
+        raise ValueError("cannot apply named sandbox path protections") from exc
+    for item in named_masks:
+        if item.access == "deny":
+            excluded.append(Path(item.path))
+        else:
+            grants.append(item)
     for item in hidden:
         if not isinstance(item, str) or not item or "\x00" in item:
             raise ValueError("invalid hidden path")

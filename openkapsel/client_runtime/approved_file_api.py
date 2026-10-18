@@ -56,10 +56,24 @@ class ApprovedFiles:
         if path in (self.root, *self.scopes):
             raise OSError(errno.EACCES, "approved root is protected")
         FileApproval.check(str(path), self.root, self.auth, write=True, rules=self.rules)
+        # A broad File approval cannot delete a parent of default protected
+        # Git metadata without an independent approval for that child.
+        if path.is_dir() and not path.is_symlink():
+            from openkapsel.auth.path_access import existing_pattern_masks
+            for mask in existing_pattern_masks(path, self.base.writable, self.rules):
+                if mask.access == "deny":
+                    raise OSError(errno.EACCES, "directory contains denied metadata")
+                try:
+                    FileApproval.check(mask.path, self.root, self.auth,
+                                       write=True, rules=self.rules)
+                except ApiError:
+                    raise OSError(errno.EACCES, "directory contains protected paths") from None
         # An approved parent must not be removed when doing so would
         # destroy absolute denied or still-protected descendant content.
         for rule in self.rules:
-            restricted = Path(rule.path)
+            if rule.path.startswith("*/"):
+                continue
+            restricted = Path(rule.path.rstrip("/"))
             if path != restricted and path in restricted.parents:
                 if rule.access == "deny":
                     raise OSError(errno.EACCES, "directory contains absolute deny")
@@ -117,8 +131,12 @@ class ApprovedFileAPI(ClientFileAPI):
             or not isinstance(r["path"], str) or r["access"] not in {"ro", "rw", "protect", "deny"}
             for r in raw_rules):
             raise OSError(errno.EINVAL, "invalid File policy")
-        rules = tuple(SimpleNamespace(path=str(Path(r["path"]) if Path(r["path"]).is_absolute()
-            else files.root / r["path"]), access=r["access"]) for r in raw_rules)
+        rules = tuple(SimpleNamespace(
+            path=(r["path"] if r["path"].startswith("*/")
+                  else str(Path(r["path"]) if Path(r["path"]).is_absolute()
+                           else files.root / r["path"]) +
+                  ("/" if r["path"].endswith("/") else "")),
+            access=r["access"]) for r in raw_rules)
         provider = ApprovedFiles(files, auth, write, rules)
         if operation == "fs_read_files":
             paths = arguments.get("body", {}).get("paths", [])

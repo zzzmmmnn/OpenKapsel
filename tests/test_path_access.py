@@ -54,7 +54,7 @@ class PathAccessTests(unittest.TestCase):
         external_alias = self.base / "external-alias"
         self.assertEqual("deny", effective_path_access(
             external_alias / "blocked", self.root, True,
-            (SimpleNamespace(path=str(external_alias), access="deny"),),
+            (SimpleNamespace(path=str(external_alias) + "/", access="deny"),),
             resolve_symlinks=False))
         # Child rw overrides parent protect, but never absolute deny.
         # Same-depth ties follow deny > protect > ro > rw. Configuration ordering is irrelevant.
