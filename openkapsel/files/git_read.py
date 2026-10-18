@@ -18,7 +18,8 @@ from types import SimpleNamespace
 
 from openkapsel.errors import ApiError
 from openkapsel.files.git_operations import git_arguments
-from openkapsel.files.git_write import _git_env, _validate_git_metadata
+from openkapsel.files.git_write import (_git_env, _snapshot_git_common_dir,
+                                        _validate_git_metadata)
 
 MAX_OUTPUT_BYTES = 65536
 _SLOTS = threading.BoundedSemaphore(4)
@@ -87,7 +88,12 @@ def inspect_git(access, root, operation, options, timeout=15):
         with tempfile.TemporaryDirectory(prefix="openkapsel-git-read-") as temporary:
             home = Path(temporary)
             env = _git_env(Path(root), gitdir, home, {})
+            # Read-only Git RPC also loads local Git config when launched;
+            # pin its validated snapshot against a post-check config swap.
+            safe_common = home / "common"
+            _snapshot_git_common_dir(gitdir, config, safe_common)
             env.update(
+                GIT_COMMON_DIR=str(safe_common),
                 GIT_OPTIONAL_LOCKS="0",
                 GIT_ALLOW_PROTOCOL="",
             )

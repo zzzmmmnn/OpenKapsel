@@ -397,6 +397,62 @@ def _common(executable: str, hooks: Path):
     ]
 
 
+def _link_git_shared_store(origin: Path, destination: Path, *, directory: bool) -> None:
+    try:
+        os.symlink(origin, destination, target_is_directory=directory)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            raise ApiError(503, "git_safety_unavailable",
+                           "cannot isolate the Git repository configuration") from exc
+    # Windows usually forbids symlinks for unprivileged users. Directory
+    # junctions and file hardlinks work without developer-mode privileges.
+    # Never interpolate arbitrary paths into cmd.exe: metacharacters,
+    # environment expansions, and quotes are rejected before invoking mklink.
+    try:
+        if not directory:
+            os.link(origin, destination)
+            return
+        unsafe = set('"%!^&|<>\r\n')
+        if any(char in unsafe for char in str(origin) + str(destination)):
+            raise OSError("unsafe Windows junction path")
+        cmd = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
+        outcome = subprocess.run(
+            [str(cmd), "/d", "/c", f'mklink /J "{destination}" "{origin}"'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=8, check=False,
+        )
+        if outcome.returncode:
+            raise OSError("Git common store junction could not be created")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ApiError(503, "git_safety_unavailable",
+                       "cannot isolate the Git repository configuration") from exc
+
+
+def _snapshot_git_common_dir(gitdir: Path, config: str, destination: Path) -> None:
+    """Pin Git's local config to validated bytes for an entire subprocess.
+
+    -c overrides cannot shadow filter names added AFTER validation. Git
+    normally rereads .git/config on startup, so swapping that inode just
+    before run_process is exploitable. GIT_COMMON_DIR changes where Git loads
+    the local config, while GIT_DIR keeps worktree-specific HEAD and index.
+    Symlink only the real shared stores needed for mutations; the validated
+    config is a PRIVATE REGULAR FILE, never a link into the worktree.
+    """
+    destination.mkdir(mode=0o700)
+    config_fd = os.open(destination / "config", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(config_fd, "wb") as stream:
+        stream.write(config.encode("utf-8"))
+    for name in ("objects", "refs", "logs", "info", "rr-cache", "modules", "worktrees"):
+        origin = gitdir / name
+        if origin.is_dir() and not origin.is_symlink():
+            _link_git_shared_store(origin, destination / name, directory=True)
+    for name in ("packed-refs", "shallow"):
+        origin = gitdir / name
+        if origin.is_file() and not origin.is_symlink():
+            _link_git_shared_store(origin, destination / name, directory=False)
+
+
 def _run_git(files, root: Path, args, task):
     executable = shutil.which("git")
     if not executable:
@@ -426,7 +482,14 @@ def _run_git(files, root: Path, args, task):
             cwd = root.parent
         else:
             gitdir, config_text = _validate_git_metadata(files, root)
+            # Do not let Git reread an attacker-swappable .git/config after
+            # validation: its clean/process filters can execute on the host.
+            # Keep shared object/ref stores on the real repository, but pin
+            # the local config to a private immutable-for-the-token snapshot.
+            safe_common = base / "common"
+            _snapshot_git_common_dir(gitdir, config_text, safe_common)
             env = _git_env(root, gitdir, home, args)
+            env["GIT_COMMON_DIR"] = str(safe_common)
             cwd = root
             if operation == "add":
                 paths = _paths(args.get("paths"), required=True)
