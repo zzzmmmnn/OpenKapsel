@@ -8,6 +8,17 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def is_private_name(name: str) -> bool:
+    """Reserved metadata names, regardless of host filesystem case rules."""
+    folded = name.casefold()
+    return folded == ".openkapsel" or folded.startswith(".openkapsel-")
+
+
+def has_private_component(path) -> bool:
+    """Check lexical path components before and after filesystem resolution."""
+    return any(is_private_name(part) for part in Path(path).parts)
+
+
 def effective_path_access(path: Path, root: Path, writable: bool, grants,
                           *, resolve_symlinks: bool = True) -> str | None:
     # Server paths resolve on this host; Mapping external paths have already
@@ -21,8 +32,7 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
     if not matches:
         return None
     # Metadata hiding is a system boundary, not a configured path rule.
-    if any(part == ".openkapsel" or part.startswith(".openkapsel-")
-           for part in path.parts):
+    if has_private_component(path):
         return "deny"
     # Absolute deny cannot be escaped through child grants or Approval.
     if any(mode == "deny" for _, mode in matches):

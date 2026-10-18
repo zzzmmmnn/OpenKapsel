@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from openkapsel.auth.path_access import has_private_component, is_private_name
 from openkapsel.client_runtime.rpc_deadline import check_deadline
 from openkapsel.errors import ApiError
 
@@ -374,7 +375,7 @@ def _walk_sources(files, source_values, *, skip_path: Path | None, task):
     for source_value in source_values:
         source = files.path(source_value)
         relative = source.relative_to(files.root)
-        if ".openkapsel" in relative.parts:
+        if has_private_component(relative):
             raise ApiError(403, "reserved_path", "workspace internal paths cannot be archived")
         if skip_path is not None and source == skip_path:
             raise ApiError(400, "invalid_archive_sources", "destination cannot also be an archive source")
@@ -400,7 +401,7 @@ def _walk_sources(files, source_values, *, skip_path: Path | None, task):
                     yield arcname, path, details
                 children = _directory_entries(files, path)
                 for name, child in reversed(children):
-                    if name == ".openkapsel":
+                    if is_private_name(name):
                         continue
                     child_path = path / name
                     child_arc = name if not arcname else arcname + "/" + name
@@ -510,7 +511,7 @@ def _create_format(destination: Path, requested):
 
 def archive_create_task(files, args, task):
     destination = files.path(args.get("destination", ""))
-    if destination == files.root or ".openkapsel" in destination.relative_to(files.root).parts:
+    if destination == files.root or has_private_component(destination.relative_to(files.root)):
         raise ApiError(400, "invalid_archive_destination", "destination must be an exported file path")
     if _path_lstat(files, destination.parent) is None:
         raise ApiError(404, "archive_destination_parent_missing", "destination parent directory does not exist")
@@ -641,7 +642,7 @@ def _write_extracted_stream(files, target: Path, source, task):
 def archive_extract_task(files, args, task):
     archive_path = files.path(args.get("path", ""))
     destination = files.path(args.get("destination", ""))
-    if destination == files.root or ".openkapsel" in destination.relative_to(files.root).parts:
+    if destination == files.root or has_private_component(destination.relative_to(files.root)):
         raise ApiError(400, "invalid_archive_destination", "destination must be a new exported directory")
     if _path_lstat(files, destination.parent) is None:
         raise ApiError(404, "archive_destination_parent_missing", "destination parent directory does not exist")

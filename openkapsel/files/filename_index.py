@@ -5,6 +5,8 @@ continue to check access and lstat results when presenting a candidate.
 """
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import ctypes
 from functools import lru_cache
 import fnmatch
@@ -361,8 +363,8 @@ class FilenameIndex:
 
     @staticmethod
     def _ignored(name: str) -> bool:
-        protected_name = name.casefold() if os.name == "nt" else name
-        return (protected_name in {".openkapsel", ".recycle"}
+        protected_name = name.casefold()
+        return (protected_name == ".recycle" or is_private_name(name)
                 or FileOperationSupportMixin._is_internal_transfer_name(name))
 
     def _entries(self, path: Path):

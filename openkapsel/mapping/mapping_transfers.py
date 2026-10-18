@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import hashlib
 import errno
 import json
@@ -113,7 +115,7 @@ class FileTransferManager:
             if is_dir:
                 for name, _ in sorted(paths.entries(path), key=lambda item: item[0]):
                     from openkapsel.files.file_support import FileOperationSupportMixin
-                    if name == ".openkapsel" or FileOperationSupportMixin._is_internal_transfer_name(name):
+                    if is_private_name(name) or FileOperationSupportMixin._is_internal_transfer_name(name):
                         raise ValueError("transfer source contains private storage or another transfer")
                     walk(path / name, (Path(relative) / name).as_posix(), depth + 1)
         walk(source, ".", 0)

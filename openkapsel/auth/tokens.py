@@ -603,7 +603,8 @@ class TokenStore:
         candidate = Path(name)
         if (
             not name
-            or name in {".", "..", ".recycle", ".sql", ".context", ".openkapsel"}
+            or name.casefold() in {".", "..", ".recycle", ".sql", ".context", ".openkapsel"}
+            or name.casefold().startswith(".openkapsel-")
             or candidate.is_absolute()
             or len(candidate.parts) != 1
             or "/" in name

@@ -6,6 +6,8 @@ directory handles remain open while pathname-based operations execute.
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import base64
 import contextlib
 import ctypes
@@ -169,7 +171,7 @@ class WindowsClientFiles(ClientFiles):
                         check_deadline()
                         details = item.stat(follow_symlinks=False)
                         if (
-                            item.name != ".openkapsel"
+                            not is_private_name(item.name)
                             and not self.is_protected_path(path / item.name)
                             and not getattr(details, "st_file_attributes", 0) & 0x400
                         ):

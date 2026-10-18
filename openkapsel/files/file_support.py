@@ -164,6 +164,7 @@ class FileOperationSupportMixin(MappingQueryMixin):
 
     @staticmethod
     def _is_internal_transfer_name(name: str) -> bool:
+        name = name.casefold()
         return (
             name.startswith(".")
             and (

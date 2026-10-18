@@ -7,6 +7,8 @@ lookup. Server paths are only presentation; providers receive relative paths.
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import base64
 import errno
 import io
@@ -228,7 +230,7 @@ class WorkspaceFiles:
                 if not isinstance(metadata, dict):
                     raise OSError(errno.EIO, "invalid mapping directory metadata")
                 for name in names:
-                    if not isinstance(name, str) or name in {"", ".", "..", ".openkapsel"} or any(c in name for c in "/\\\x00"):
+                    if not isinstance(name, str) or (name in {"", ".", ".."} or is_private_name(name)) or any(c in name for c in "/\\\x00"):
                         raise OSError(errno.EIO, "invalid mapping directory name")
                     details = metadata.get(name)
                     if details is None:

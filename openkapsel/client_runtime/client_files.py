@@ -9,6 +9,7 @@ import stat
 import threading
 from pathlib import Path, PurePosixPath
 
+from openkapsel.auth.path_access import has_private_component, is_private_name
 from openkapsel.client_runtime.rpc_deadline import check_deadline, deadline_scope
 from openkapsel.files.safe_paths import SafePathAccess
 from openkapsel.mapping.mapping_transport import (
@@ -67,7 +68,7 @@ class ClientFiles:
         if not isinstance(value, str) or "\x00" in value or "\\" in value or ":" in value:
             raise OSError(errno.EINVAL, "invalid relative path")
         parts = PurePosixPath(value).parts
-        if value.startswith("/") or any(p in {"..", ".openkapsel"} for p in parts):
+        if value.startswith("/") or any(p == ".." or is_private_name(p) for p in parts):
             raise OSError(errno.EACCES, "path is outside exported files")
         path = self.root.joinpath(*parts)
         self.ensure_accessible_path(path)
@@ -75,6 +76,8 @@ class ClientFiles:
 
     def is_protected_path(self, path):
         path = Path(path)
+        if has_private_component(path):
+            return True
         if any(path == entry or entry in path.parents
                for entry in (*self.protected_paths, *self.sandbox_denied_paths)):
             return True
@@ -93,6 +96,8 @@ class ClientFiles:
 
     def ensure_mutable_path(self, path):
         path = Path(path)
+        if self.is_protected_path(path):
+            raise OSError(errno.EACCES, "internal or protected path cannot be modified")
         from openkapsel.auth.path_access import effective_path_access
         if self.sandbox_path_rules and any(effective_path_access(
                 checked, self.root, self.writable, self.sandbox_path_rules,
@@ -184,16 +189,14 @@ class ClientFiles:
             if (not isinstance(raw, str) or not raw.startswith("/")
                 or not isinstance(directory, bool) or len(raw) > 4096
                 or "\\x00" in raw or "\\\\" in raw
-                or any(part in {"..", ".openkapsel"} or part.startswith(".openkapsel-")
-                       for part in raw.split("/"))):
+                or any(part == ".." or is_private_name(part) for part in raw.split("/"))):
                 raise OSError(errno.EACCES, "invalid client absolute path")
             try:
                 resolved = Path(raw).resolve(strict=directory)
             except (OSError, RuntimeError):
                 raise OSError(errno.EACCES, "client path could not be resolved") from None
             if (not resolved.is_absolute() or str(resolved) == "/"
-                or ".openkapsel" in resolved.parts
-                or any(part.startswith(".openkapsel-") for part in resolved.parts)):
+                or has_private_component(resolved)):
                 raise OSError(errno.EACCES, "client path cannot be approved")
             if directory and not resolved.is_dir():
                 raise OSError(errno.ENOTDIR, "approval scope is not a directory")
@@ -206,7 +209,7 @@ class ClientFiles:
                 # FUSE, ordinary file RPC, and plugin RPC keep their export root.
                 if (not isinstance(external_root, str) or not external_root.startswith("/")
                     or "\x00" in external_root or "\\" in external_root
-                    or any(p in {"..", ".openkapsel"} for p in external_root.split("/"))
+                    or any(p == ".." or is_private_name(p) for p in external_root.split("/"))
                     or os.path.normpath(external_root) == "/"):
                     raise OSError(errno.EACCES, "invalid external File API root")
                 candidate = Path(os.path.abspath(external_root))
@@ -220,7 +223,7 @@ class ClientFiles:
                 if canonical != candidate or not candidate.is_dir():
                     raise OSError(errno.EACCES,
                                   "external root must be a canonical real directory without symlinks")
-                if ".openkapsel" in canonical.parts:
+                if has_private_component(canonical):
                     raise OSError(errno.EACCES, "client runtime directories cannot be exported")
                 extra = ClientFiles(
                     candidate, writable=self.writable,
@@ -254,7 +257,9 @@ class ClientFiles:
                     if (not isinstance(original, str) or not isinstance(expected, str)
                         or not original.startswith("/") or len(original) > 4096
                         or "\x00" in original or "\\" in original
-                        or ".." in original.split("/")):
+                        or ".." in original.split("/")
+                        or has_private_component(original)
+                        or has_private_component(expected)):
                         raise OSError(errno.EACCES, "invalid external path check")
                     if str(Path(original).resolve(strict=False)) != expected:
                         raise OSError(errno.EACCES, "external path changed after approval")
@@ -325,7 +330,7 @@ class ClientFiles:
                     for item in entries:
                         check_deadline()
                         if (
-                            item.name != ".openkapsel"
+                            not is_private_name(item.name)
                             and not self.is_protected_path(path / item.name)
                             and (item.is_file(follow_symlinks=False) or item.is_dir(follow_symlinks=False))
                         ):

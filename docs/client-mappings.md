@@ -353,7 +353,7 @@ unsandboxed Shell. The approved host process uses the Client OS account's
 permissions and can access paths blocked by sandbox `deny`; its starting
 `cwd` and the Mapping/caller authorization still require validation.
 Up to 32 rules are supported. Invalid or nonexistent paths fail closed.
-Client configuration and existing `.openkapsel` directories are denied.
+Client configuration and `.openkapsel` / `.openkapsel-*` private metadata are denied, including mixed-case spellings such as `.OpenKapsel` on case-insensitive filesystems. The check rejects these spellings on every platform before filesystem traversal.
 File RPC cannot access outside the Mapping export even if an extra Shell path
 is granted.
 

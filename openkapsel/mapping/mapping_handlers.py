@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import errno
 import copy
 import json
@@ -123,7 +125,7 @@ class MappingHandlersMixin:
                                "mapping_unavailable", "mapping is protected or read-only") from None
             mount = self.server.mappings.mount_path(row)
             relative = candidate.relative_to(mount)
-            if ".openkapsel" in relative.parts or any(self._is_internal_transfer_name(p) for p in relative.parts):
+            if any(is_private_name(part) for part in relative.parts) or any(self._is_internal_transfer_name(p) for p in relative.parts):
                 raise ApiError(403, "reserved_path", "workspace internal paths are not available")
             container[key] = [relative.as_posix()] if is_query else relative.as_posix()
             selected = row

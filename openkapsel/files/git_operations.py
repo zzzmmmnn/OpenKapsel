@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from openkapsel.auth.path_access import has_private_component
 from openkapsel.errors import ApiError
 
 
@@ -89,7 +90,7 @@ def git_arguments(operation, options):
         return argv + ["stash", "list", "--format=%gd%x09%gs"]
     if operation == "blame":
         path = options.get("path")
-        if not isinstance(path, str) or not path or len(path) > 4096 or path.startswith("/") or chr(92) in path or chr(0) in path or ":" in path or ".." in path.split("/") or ".openkapsel" in path.split("/"):
+        if not isinstance(path, str) or not path or len(path) > 4096 or path.startswith("/") or chr(92) in path or chr(0) in path or ":" in path or ".." in path.split("/") or has_private_component(path):
             raise ApiError(400, "invalid_request", "path must be a literal repository-relative file")
         return argv + ["blame", "--porcelain", "--no-textconv", revision("revision", "HEAD"), "--", path]
     if operation == "status":

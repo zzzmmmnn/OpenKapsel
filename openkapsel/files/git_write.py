@@ -8,6 +8,8 @@ under the selected token's network policy.
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import has_private_component
+
 import configparser
 import errno
 import os
@@ -164,7 +166,7 @@ def _paths(value, *, required=False):
             or ":" in path
             or path.startswith("/")
             or ".." in path.split("/")
-            or ".openkapsel" in path.split("/")
+            or has_private_component(path)
             for path in value
         )
         or sum(map(len, value)) > 16_000
@@ -409,7 +411,7 @@ def _run_git(files, root: Path, args, task):
         common = _common(executable, hooks)
         if operation == "clone":
             source = _validate_https_url(args.get("source"), args)
-            if root == files.root or ".openkapsel" in root.relative_to(files.root).parts:
+            if root == files.root or has_private_component(root.relative_to(files.root)):
                 raise ApiError(403, "reserved_path", "clone destination is protected")
             if _path_exists(files, root):
                 raise ApiError(409, "path_exists", "clone destination already exists")

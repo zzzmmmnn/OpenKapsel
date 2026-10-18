@@ -6,6 +6,8 @@ caller-supplied executable, unit property, absolute path or mount option is used
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import os
 import re
 import subprocess
@@ -43,7 +45,7 @@ class HostMappingMounts:
         if not isinstance(mid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{24}", mid):
             raise WorkspaceImageError("invalid mapping id")
         workspace = request.get("workspace")
-        if (not isinstance(workspace, str) or not workspace or workspace in {".", "..", ".openkapsel"}
+        if (not isinstance(workspace, str) or not workspace or (workspace in {".", ".."} or is_private_name(workspace))
                 or len(workspace) > 255 or any(c in workspace for c in "/\\\x00\n\r\t")):
             raise WorkspaceImageError("invalid workspace name")
         name = validate_image_name(str(request.get("name", "")))

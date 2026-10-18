@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import fnmatch
 from contextlib import nullcontext
 import os
@@ -281,7 +283,7 @@ def _candidate(files, scope: Path, raw: str, query: str, case_sensitive: bool, m
     right = query if case_sensitive else query.casefold()
     if not (fnmatch.fnmatchcase(left, right) if mode == "glob" else right in left):
         return None
-    if any((part.casefold() if os.name == "nt" else part) == ".openkapsel"
+    if any(is_private_name(part)
            for part in relative_root.parts):
         return None
     if any(
@@ -341,8 +343,8 @@ def _search_recursive(
                             timed_out = True
                             break
                         name = entry.name
-                        hidden = name.casefold() if os.name == "nt" else name
-                        if (hidden in {".openkapsel", ".recycle"} or
+                        hidden = name.casefold()
+                        if (hidden == ".recycle" or is_private_name(name) or
                                 FileOperationSupportMixin._is_internal_transfer_name(name)):
                             continue
                         child = Path(entry.path)

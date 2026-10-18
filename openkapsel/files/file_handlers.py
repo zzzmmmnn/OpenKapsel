@@ -36,7 +36,7 @@ from openkapsel.files.recycle import RecycleError
 from openkapsel.files.safe_paths import SafePathError
 from openkapsel.files.uploads import UploadError, UploadRecord
 from dataclasses import replace
-from openkapsel.auth.path_access import effective_path_access
+from openkapsel.auth.path_access import effective_path_access, is_private_name
 
 # Core File APIs supported by temporary Token-scoped read/write approval.
 FILE_APPROVAL_READ = frozenset({
@@ -56,11 +56,11 @@ class FileExecutionMixin(FileOperationSupportMixin):
         """A lexical POSIX directory scope; never infer a host root from '/'."""
         if (not isinstance(value, str) or not value.startswith("/") or
             "\x00" in value or "\\" in value or any(
-                part in {"..", ".openkapsel"} for part in value.split("/")
+                part == ".." or is_private_name(part) for part in value.split("/")
             )):
             raise ApiError(400, "invalid_path", "external path must be an absolute directory without traversal")
         normalized = os.path.normpath(value)
-        if normalized == "/" or any(part.startswith(".openkapsel-") for part in value.split("/")):
+        if normalized == "/":
             raise ApiError(400, "invalid_path", "the host root and internal directories cannot be approved")
         return normalized
 

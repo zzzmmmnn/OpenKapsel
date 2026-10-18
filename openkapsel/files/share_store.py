@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openkapsel.auth.path_access import is_private_name
+
 import errno
 import ctypes
 import os
@@ -105,7 +107,7 @@ class ShareStore:
     def create(self, source_fd: int | None, name: str, owner_id: str, *, copier=None) -> tuple[ShareRecord, str | None]:
         if not name or name in {".", ".."} or "/" in name or "\x00" in name:
             raise ShareError(HTTPStatus.BAD_REQUEST, "invalid_share_source", "source name is invalid")
-        if name in RESERVED_NAMES or name.startswith(".openkapsel-"):
+        if is_private_name(name):
             raise ShareError(
                 HTTPStatus.FORBIDDEN,
                 "reserved_path",
@@ -549,7 +551,7 @@ class ShareStore:
 
     @staticmethod
     def _validate_child_name(name: str) -> None:
-        if name in RESERVED_NAMES or name.startswith(".openkapsel-"):
+        if is_private_name(name):
             raise ShareError(HTTPStatus.FORBIDDEN, "reserved_path", "workspace internal paths cannot be shared")
 
     @staticmethod

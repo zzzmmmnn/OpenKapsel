@@ -16,13 +16,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from openkapsel.errors import ApiError
-from openkapsel.auth.path_access import effective_path_access
+from openkapsel.auth.path_access import effective_path_access, has_private_component
 
 
 def absolute_scope(value):
     if (not isinstance(value, str) or not value or len(value) > 4096
             or "\x00" in value or ".." in Path(value).parts
-            or any(p == ".openkapsel" or p.startswith(".openkapsel-") for p in Path(value).parts)
+            or has_private_component(value)
             or os.name != "nt" and "\\" in value):
         raise ApiError(400, "invalid_path", "approval requires an absolute path without traversal")
     path = Path(value)
@@ -147,8 +147,7 @@ class FileApproval:
         if not (internal and cls.workspace_granted(auth) or
                 any(resolved == p or p in resolved.parents for p in scopes)):
             raise ApiError(404, "path_unavailable", "path does not exist or access is denied")
-        if any(p == ".openkapsel" or p.startswith(".openkapsel-")
-               for part in (candidate, resolved) for p in part.parts):
+        if has_private_component(candidate) or has_private_component(resolved):
             raise ApiError(403, "reserved_path", "internal paths cannot be approved")
         # For each spelling, absolute deny always wins. A configured
         # protect can only be unlocked by an independent approval whose
