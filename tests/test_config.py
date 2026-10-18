@@ -12,8 +12,8 @@ from pathlib import Path
 
 from openkapsel.execution.cgroups import SandboxLimits, TokenCgroupManager
 from openkapsel.auth.security import (
-    LEGACY_PASSWORD_SALT,
     PASSWORD_HASH_ITERATIONS,
+    is_password_hash_supported,
     hash_password,
     password_hash_needs_upgrade,
     verify_password,
@@ -132,7 +132,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual("podman", result["sandbox_backend"])
             registry.close()
 
-    def test_pbkdf2_hash_legacy_compatibility_and_config_loading(self) -> None:
+    def test_pbkdf2_rejects_legacy_hash_and_config_loading(self) -> None:
         encoded = hash_password("correct-horse-battery")
         self.assertTrue(encoded.startswith(f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}$"))
         self.assertTrue(verify_password("correct-horse-battery", encoded))
@@ -140,9 +140,10 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotEqual(encoded, hash_password("correct-horse-battery"))
         self.assertFalse(password_hash_needs_upgrade(encoded))
         legacy_hash = hashlib.sha256(
-            f"{LEGACY_PASSWORD_SALT}\0correct-horse-battery".encode("utf-8")
+            "openkapsel_1.0\0correct-horse-battery".encode("utf-8")
         ).hexdigest()
-        self.assertTrue(verify_password("correct-horse-battery", legacy_hash))
+        self.assertFalse(verify_password("correct-horse-battery", legacy_hash))
+        self.assertFalse(is_password_hash_supported(legacy_hash))
         self.assertTrue(password_hash_needs_upgrade(legacy_hash))
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -232,7 +233,7 @@ class ConfigurationTests(unittest.TestCase):
                         "max_recursion_depth": 12,
                         "admin": {
                             "username": "operator",
-                            "password_sha256": legacy_hash,
+                            "password_hash": encoded,
                         },
                     }
                 ),
@@ -296,6 +297,11 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(192 * 1024 * 1024, config.max_share_bytes)
             self.assertEqual(12, config.max_recursion_depth)
             self.assertEqual("operator", config.admin_username)
+            config_data = json.loads(config_path.read_text(encoding="utf-8"))
+            config_data["admin"] = {"username": "operator", "password_sha256": legacy_hash}
+            config_path.write_text(json.dumps(config_data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "reset a legacy SHA-256 hash"):
+                load_config(args)
 
     def test_password_script_generates_and_saves_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

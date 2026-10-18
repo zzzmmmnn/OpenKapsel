@@ -24,7 +24,6 @@ from urllib.parse import urlencode
 
 from openkapsel.api.mcp import PUBLIC_SERVER_VERSION
 from openkapsel.auth.security import (
-    LEGACY_PASSWORD_SALT,
     hash_password,
     password_hash_needs_upgrade,
     verify_password,
@@ -6973,18 +6972,34 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(403, status)
         self.assertIsNotNone(self.server.tokens.authenticate("test-token"))
 
-    def test_admin_can_change_password_online(self) -> None:
+    def test_legacy_admin_sha256_login_is_rejected_and_not_upgraded(self) -> None:
         legacy_hash = hashlib.sha256(
-            f"{LEGACY_PASSWORD_SALT}\0correct-horse-battery".encode("utf-8")
+            b"openkapsel_1.0\0correct-horse-battery"
         ).hexdigest()
+        original = json.loads(self.config_path.read_text(encoding="utf-8"))
+        original["admin"] = {"username": "admin", "password_sha256": legacy_hash}
+        self.config_path.write_text(json.dumps(original), encoding="utf-8")
+        self.server.admin_password_hash = legacy_hash
+        form = urlencode({"username": "admin", "password": "correct-horse-battery"}).encode()
+        status, body, _headers = self.raw_request(
+            "POST", "/kapsel/admin/login", form,
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(401, status, body)
+        self.assertIn("Invalid username or password", body.decode("utf-8"))
+        admin = json.loads(self.config_path.read_text(encoding="utf-8"))["admin"]
+        self.assertEqual({"username": "admin", "password_sha256": legacy_hash}, admin)
+
+    def test_admin_can_change_password_online(self) -> None:
+        strong_hash = hash_password("correct-horse-battery")
         config_payload = json.loads(self.config_path.read_text(encoding="utf-8"))
         config_payload["admin"] = {
             "username": "admin",
-            "password_sha256": legacy_hash,
+            "password_hash": strong_hash,
         }
         self.config_path.write_text(json.dumps(config_payload), encoding="utf-8")
         self.config_path.chmod(0o600)
-        self.server.admin_password_hash = legacy_hash
+        self.server.admin_password_hash = strong_hash
         login_form = urlencode(
             {"username": "admin", "password": "correct-horse-battery"}
         ).encode()
@@ -6995,10 +7010,9 @@ class WorkspaceServerTests(unittest.TestCase):
             {"Content-Type": "application/x-www-form-urlencoded"},
         )
         self.assertEqual(303, status)
-        migrated_admin = json.loads(self.config_path.read_text(encoding="utf-8"))["admin"]
-        self.assertIn("password_hash", migrated_admin)
-        self.assertNotIn("password_sha256", migrated_admin)
-        self.assertFalse(password_hash_needs_upgrade(migrated_admin["password_hash"]))
+        saved_admin = json.loads(self.config_path.read_text(encoding="utf-8"))["admin"]
+        self.assertEqual(strong_hash, saved_admin["password_hash"])
+        self.assertFalse(password_hash_needs_upgrade(saved_admin["password_hash"]))
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         status, dashboard, _ = self.raw_request(
             "GET", "/kapsel/admin", headers={"Cookie": cookie}

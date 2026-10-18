@@ -227,7 +227,7 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
             try:
                 self.server.upgrade_admin_password_hash(password)
             except ValueError as exc:
-                LOGGER.warning("could not upgrade legacy admin password hash: %s", exc)
+                LOGGER.warning("could not upgrade admin password hash: %s", exc)
         self.server.admin_login_limiter.succeeded(address)
         session = self.server.admin_sessions.create()
         secure = self._request_is_https()

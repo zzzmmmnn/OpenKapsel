@@ -39,6 +39,26 @@ sudo ./install.sh
 
 The installer creates an eight-character random administrator name and a sixteen-character random password on first installation. They are printed once. Existing credentials are preserved during upgrades.
 
+**Legacy administrator SHA-256 passwords are no longer accepted.** Before upgrading an
+installation whose `admin.password_sha256` or `admin.password_hash` contains a
+64-character SHA-256 digest, set a new administrator password using the old
+installation's `set_password.py` (or the new script from the release source):
+
+```bash
+sudo /opt/openkapsel/venv/bin/python /opt/openkapsel/set_password.py \\
+  --config /var/lib/openkapsel/config.json
+```
+
+The command prompts for a new password, retains the existing administrator
+username, writes a per-password-salted PBKDF2 hash, and deletes the old
+`password_sha256` field. Back up the configuration before changing it.
+`install.sh` checks for unsupported existing hashes **before** stopping the
+service, and aborts with reset instructions rather than replacing existing
+credentials. If you manage older workspace passwords, reset them using the
+workspace password setup procedure; a legacy hash cannot be used to approve
+operations.
+
+
 The default Debian/Ubuntu installation provides Python, venv, Bubblewrap, RootlessKit, slirp4netns, uidmap, ACL tools, Git, curl, rclone, FUSE, e2fsprogs, util-linux, CA certificates, Fontconfig, DejaVu and Noto fonts, and all declared Python dependencies. Storage Providers require rclone 1.60.0 or newer; an older or missing rclone leaves the core service usable but the Storage Provider capability unavailable. Hosts using `--no-package-install` must provide optional Storage Provider dependencies themselves when that feature is needed. Install and enable Podman with:
 
 ```bash

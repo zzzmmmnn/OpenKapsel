@@ -21,6 +21,9 @@ from openkapsel.errors import ApiError
 
 
 MAX_ARCHIVE_ENTRIES = 100_000
+# Extraction limits apply to uncompressed bytes, not compressed archive size.
+MAX_ARCHIVE_EXTRACT_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_READ_BYTES = 256 * 1024
 MAX_ARCHIVE_OFFSET = 16 * 1024 * 1024
 
@@ -620,14 +623,52 @@ def _safe_extract_target(temp_root: Path, member: str):
     return target
 
 
-def _write_extracted_stream(files, target: Path, source, task):
+class _ExtractionBudget:
+    """Charge actual decompressed bytes before writing; metadata is untrusted."""
+
+    def __init__(self):
+        self.written = 0
+
+    def check_declared(self, size: int) -> None:
+        if (size < 0 or size > MAX_ARCHIVE_MEMBER_BYTES
+                or size > MAX_ARCHIVE_EXTRACT_BYTES - self.written):
+            raise ApiError(413, "archive_extracted_size_limit",
+                           "archive exceeds the uncompressed extraction byte limit")
+
+    def account(self, size: int, member_written: int) -> None:
+        if (size > MAX_ARCHIVE_MEMBER_BYTES - member_written
+                or size > MAX_ARCHIVE_EXTRACT_BYTES - self.written):
+            raise ApiError(413, "archive_extracted_size_limit",
+                           "archive exceeds the uncompressed extraction byte limit")
+        self.written += size
+
+
+def _write_extracted_stream(files, target: Path, source, task, budget: _ExtractionBudget, declared_size: int):
+    budget.check_declared(declared_size)
     files.paths.mkdir(target.parent, parents=True, exist_ok=True)
     fd = files.paths.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
         with os.fdopen(fd, "wb") as output:
-            while chunk := source.read(1024 * 1024):
+            member_written = 0
+            while True:
                 task.check_cancelled()
+                # Read at most one byte beyond the remaining allowance, so
+                # even an incorrect member size cannot trigger huge inflation.
+                read_limit = min(1024 * 1024,
+                                 MAX_ARCHIVE_MEMBER_BYTES - member_written + 1,
+                                 MAX_ARCHIVE_EXTRACT_BYTES - budget.written + 1)
+                chunk = source.read(read_limit)
+                if not chunk:
+                    break
+                if len(chunk) > declared_size - member_written:
+                    raise ApiError(422, "archive_invalid",
+                                   "archive member contains more bytes than declared")
+                budget.account(len(chunk), member_written)
                 output.write(chunk)
+                member_written += len(chunk)
+            if member_written != declared_size:
+                raise ApiError(422, "archive_invalid",
+                               "archive member contains fewer bytes than declared")
             output.flush()
             os.fsync(output.fileno())
     except Exception:
@@ -652,12 +693,28 @@ def archive_extract_task(files, args, task):
     temporary = _task_internal_root(files) / (secrets.token_hex(12) + ".extract")
     files.paths.mkdir(temporary, parents=False, exist_ok=False)
     entries = 0
-    handle = _open_guarded(files.paths, archive_path)
+    budget = _ExtractionBudget()
+    handle = None
     try:
+        handle = _open_guarded(files.paths, archive_path)
         if kind == "zip":
             try:
                 with zipfile.ZipFile(handle) as archive:
-                    for info in archive.infolist():
+                    infos = archive.infolist()
+                    if len(infos) > MAX_ARCHIVE_ENTRIES:
+                        raise ApiError(413, "archive_entry_limit", "archive contains too many entries")
+                    # ZIP central directory knows all declared lengths.
+                    # Reject aggregate bombs before creating any entry.
+                    declared_total = 0
+                    for info in infos:
+                        task.check_cancelled()
+                        if _zip_entry_type(info) == "file":
+                            budget.check_declared(info.file_size)
+                            declared_total += info.file_size
+                            if declared_total > MAX_ARCHIVE_EXTRACT_BYTES:
+                                raise ApiError(413, "archive_extracted_size_limit",
+                                               "archive exceeds the uncompressed extraction byte limit")
+                    for info in infos:
                         task.check_cancelled()
                         if entries >= MAX_ARCHIVE_ENTRIES:
                             raise ApiError(413, "archive_entry_limit", "archive contains too many entries")
@@ -671,8 +728,10 @@ def archive_extract_task(files, args, task):
                         if entry_type == "directory":
                             files.paths.mkdir(target, parents=True, exist_ok=True)
                         elif entry_type == "file":
+                            budget.check_declared(info.file_size)
                             with archive.open(info, "r") as source:
-                                _write_extracted_stream(files, target, source, task)
+                                _write_extracted_stream(files, target, source, task,
+                                                        budget, info.file_size)
                         else:
                             raise ApiError(409, "archive_member_unsafe", "archive links and special members are not extracted")
                         entries += 1
@@ -696,11 +755,13 @@ def archive_extract_task(files, args, task):
                         if info.isdir():
                             files.paths.mkdir(target, parents=True, exist_ok=True)
                         elif info.isfile():
+                            budget.check_declared(info.size)
                             source = archive.extractfile(info)
                             if source is None:
                                 raise ApiError(422, "archive_member_unreadable", "archive member could not be opened")
                             with source:
-                                _write_extracted_stream(files, target, source, task)
+                                _write_extracted_stream(files, target, source, task,
+                                                        budget, info.size)
                         else:
                             raise ApiError(409, "archive_member_unsafe", "archive links and special members are not extracted")
                         entries += 1
@@ -710,17 +771,19 @@ def archive_extract_task(files, args, task):
                 raise ApiError(422, "archive_invalid", "archive could not be read") from exc
         task.check_cancelled()
         files.paths.rename(temporary, destination, overwrite=False, create_parents=False)
-        task.write(f"extract complete: {entries} entries\n")
+        task.write(f"extract complete: {entries} entries, {budget.written} bytes\n")
         return {
             "archive": archive_path.relative_to(files.root).as_posix(),
             "destination": destination.relative_to(files.root).as_posix(),
             "entries": entries,
+            "extracted_bytes": budget.written,
         }
     except Exception:
         _remove_internal(files, temporary)
         raise
     finally:
-        handle.close()
+        if handle is not None:
+            handle.close()
 
 
 class ArchiveRpcPlugin:
@@ -788,7 +851,7 @@ class ArchiveRpcPlugin:
             },
         },
         "extract": {
-            "description": "Extract an archive atomically into a new directory. Links/special members are rejected. Runs as an RPC task on the selected execution host.",
+            "description": "Extract an archive atomically into a new directory. Limit: 256 MiB per file and 512 MiB total uncompressed bytes (413 on excess). Links/special members are rejected. Runs as an RPC task on the selected execution host.",
             "write": True,
             "execution": "task",
             "input_schema": {

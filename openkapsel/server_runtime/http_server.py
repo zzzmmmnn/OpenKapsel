@@ -296,7 +296,7 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             self._store_admin_password_hash_locked(hash_password(new_password))
 
     def upgrade_admin_password_hash(self, password: str) -> None:
-        """Upgrade a successfully verified legacy password hash in place."""
+        """Upgrade a successfully verified older PBKDF2 iteration count."""
         with self.admin_password_lock:
             if not password_hash_needs_upgrade(self.admin_password_hash):
                 return

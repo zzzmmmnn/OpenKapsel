@@ -6,7 +6,6 @@ import base64
 import binascii
 import hashlib
 import hmac
-import re
 import secrets
 
 
@@ -14,9 +13,6 @@ PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 600_000
 PASSWORD_SALT_BYTES = 16
 PASSWORD_DIGEST_BYTES = 32
-LEGACY_PASSWORD_SALT = "openkapsel_1.0"
-# Kept as an import-compatible alias for older integrations.
-PASSWORD_SALT = LEGACY_PASSWORD_SALT
 
 
 def _encode(value: bytes) -> str:
@@ -46,10 +42,8 @@ def _parse_pbkdf2(encoded: str) -> tuple[int, bytes, bytes] | None:
 
 
 def is_password_hash_supported(encoded: str) -> bool:
-    """Return whether an encoded PBKDF2 hash or legacy SHA-256 hash is valid."""
-    return _parse_pbkdf2(encoded) is not None or re.fullmatch(
-        r"[0-9a-fA-F]{64}", encoded
-    ) is not None
+    """Only explicitly encoded, per-password-salted PBKDF2 is accepted."""
+    return isinstance(encoded, str) and _parse_pbkdf2(encoded) is not None
 
 
 def password_hash_needs_upgrade(encoded: str) -> bool:
@@ -91,11 +85,6 @@ def verify_password(password: str, expected_hash: str) -> bool:
             dklen=len(expected),
         )
         return hmac.compare_digest(actual, expected)
-
-    if re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
-        material = f"{LEGACY_PASSWORD_SALT}\0{password}".encode("utf-8")
-        actual_legacy = hashlib.sha256(material).hexdigest()
-        return hmac.compare_digest(actual_legacy, expected_hash.lower())
 
     # Keep invalid configuration checks expensive enough not to become a
     # distinct, cheap timing path at the login endpoint.

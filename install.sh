@@ -298,6 +298,35 @@ allocate_subids() {
 allocate_subids /etc/subuid --add-subuids
 allocate_subids /etc/subgid --add-subgids
 
+# Reject an unsupported legacy administrator hash before stopping a live service.
+# Do not silently replace existing credentials during an upgrade.
+/usr/bin/python3 - "$SOURCE_DIR" "$CONFIG_FILE" "$MIGRATE_FROM" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from openkapsel.auth.security import is_password_hash_supported
+
+candidates = [Path(sys.argv[2])]
+if sys.argv[3]:
+    migrated = Path(sys.argv[3])
+    candidates += [migrated / "state/config.json", migrated / "config.json"]
+for path in candidates:
+    if not path.is_file():
+        continue
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    admin = payload.get("admin", {})
+    value = admin.get("password_hash", admin.get("password_sha256", ""))
+    if value and not is_password_hash_supported(value):
+        raise SystemExit(
+            f"Unsupported legacy administrator password hash in {path}. "
+            "Before upgrading, run set_password.py --config <config-path> "
+            "to set a new PBKDF2 password. Existing credentials will not be replaced automatically."
+        )
+    break
+PY
+
 # Stop the existing service through the storage-aware upgrade path before
 # replacing code or the virtual environment. This drains writable rclone VFS
 # queues, unbinds workspace mappings, stops provider FUSE units, then stops the

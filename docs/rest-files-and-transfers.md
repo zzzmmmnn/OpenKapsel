@@ -126,7 +126,15 @@ than silently accessing the normal export.
 and `deny`. For File API and sandboxed Shell, absolute `deny` at any
 ancestor cannot be overridden by a child rule or File Approval.
 A separately approved unsandboxed Shell is outside these path restrictions.
-User-facing File API and File Approval reject reserved `.openkapsel` and `.openkapsel-*` components regardless of letter case, including mixed-case aliases. Mapping share and cross-root transfers use narrowly validated, random temporary stage names through the internal low-level transport only; those stages remain hidden from public File APIs and directory listings. Other modes use deepest path priority with
+User-facing File API and File Approval reject reserved `.openkapsel` and `.openkapsel-*` components regardless of letter case, including mixed-case aliases. Mapping share and cross-root transfers use narrowly validated, random temporary stage names through the internal low-level transport only; those stages remain hidden from public File APIs and directory listings.
+
+Archive RPC `extract` applies an uncompressed output quota of **512 MiB per
+operation** and **256 MiB per individual member**, in addition to the 100,000
+entry limit. ZIP members are checked using their declared sizes before any
+member is extracted; ZIP and TAR streaming writes also count actual output
+bytes. Exceeding either size limit returns `413 archive_extracted_size_limit`
+and removes the incomplete temporary extraction directory.
+ Other modes use deepest path priority with
 same-path `deny > protect > ro > rw`. A `protect` rule denies ordinary reads
 and writes but a separately confirmed `files.read`/`files.write` grant
 for the protected directory itself or a more precise canonical child may

@@ -104,7 +104,7 @@ class ServerConfig:
         if self.admin_password_hash is not None and not is_password_hash_supported(
             self.admin_password_hash
         ):
-            raise ValueError("admin password hash is not a supported encoded password hash")
+            raise ValueError("admin password hash must use PBKDF2; reset a legacy SHA-256 hash with set_password.py before upgrading")
         base_path = self.url_base_path.strip()
         if base_path in {"", "/"}:
             base_path = ""
