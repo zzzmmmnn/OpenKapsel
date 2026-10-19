@@ -42,6 +42,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     pattern_rules = []
     denied = []
     used = {}
+    directory_rules = {}
     raw_permits = []
     for item in paths:
         if not isinstance(item, dict) or set(item) != {"path", "access"}:
@@ -75,18 +76,19 @@ def make_job_sandbox(config, files, *, protected_paths=()):
             priority = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
             access = max((access, used[resolved]), key=lambda x: priority[x])
         used[resolved] = access
+        directory_rules[resolved] = directory
     # An explicit permit cannot grant a protected secret path itself. A
     # writable parent is fine because its protected contents are auto-denied.
     for resolved, access in used.items():
         if access in {"protect", "deny"}:
             denied.append(resolved)
             continue
-        # Extra paths are Shell-only grants. A parent of the exported root is
+        # Extra paths are shared Shell/File policy. A parent of the exported root is
         # allowed; the Manager must preserve the root's stricter write policy.
         for secret in protected:
             if secret == resolved or secret in resolved.parents:
                 raise ValueError("job_sandbox path would expose protected Client configuration")
-        grants.append({"path": str(resolved) + ("/" if directory else ""), "access": access})
+        grants.append({"path": str(resolved) + ("/" if directory_rules[resolved] else ""), "access": access})
     permitted = [root, *(Path(g["path"]) for g in grants)]
     all_denied = tuple(denied)
     for denied_path in all_denied:
@@ -103,7 +105,7 @@ def make_job_sandbox(config, files, *, protected_paths=()):
     # Deny is absolute; protect is a configurable barrier for which a
     # more-specific ordinary grant (or independent File approval) can open
     # a narrow exception.
-    grants.extend({"path": str(path), "access": used[path]} for path in denied)
+    grants.extend({"path": str(path) + ("/" if directory_rules[path] else ""), "access": used[path]} for path in denied)
     permitted = [root, *(Path(g["path"]) for g in grants if g["access"] != "deny")]
     # Automatic deny applies to the workspace metadata and direct .openkapsel
     # subdirectory of each extra grant; also hide any Client config under a

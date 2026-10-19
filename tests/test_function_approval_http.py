@@ -184,8 +184,9 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         self.server.config = replace(self.server.config, mappings_enabled=True)
         row, token = self.server.mappings.store.create(self.record.path_prefix, 'real-files', writable=True)
         self.server.mappings.mount_path(row).mkdir()
-        # A real Client job_sandbox.path rule must exist before READY because
-        # each WebSocket RPC session snapshots the Client's path restrictions.
+        # Start the first scope as protect so this test still exercises two
+        # real browser grants: ordinary configured ro no longer needs approval.
+        # Later restore ro to verify independent write approval overrides it.
         external = tempfile.TemporaryDirectory(prefix='kapsel-file-ro-')
         self.addCleanup(external.cleanup)
         base = Path(external.name).resolve()
@@ -200,7 +201,9 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
         config = {'url': f'ws://127.0.0.1:{self.server.server_port}/kapsel/mapping-connect/{row["id"]}',
                   'token': token, 'root': str(self.export), 'writable': True, 'allow_exec': False,
                   'job_sandbox': {'paths': [
-                      {'path': str(directories[0]), 'access': 'ro'},
+                      {'path': str(base) + '/', 'access': 'ro'},
+                      {'path': str(directories[0]) + '/', 'access': 'protect'},
+                      {'path': str(directories[1]) + '/', 'access': 'protect'},
                       {'path': str(hidden), 'access': 'protect'},
                   ]}}
         with patch.dict(os.environ, {'OPENKAPSEL_JOB_MANAGER_HOME': str(self.manager_home)}):
@@ -213,7 +216,7 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
             self.assertTrue(ready.wait(5))
             with tempfile.TemporaryDirectory() as raw:
                 unrelated = Path(raw).resolve()
-                # The unapproved File API is still bound by Client ro.
+                # The unapproved File API cannot cross Client protect.
                 with self.assertRaises(OSError):
                     runtime.files.ensure_mutable_path(directories[0] / 'created')
                 with self.assertRaises(OSError):
@@ -233,6 +236,10 @@ class FunctionApprovalHTTPTests(unittest.TestCase):
                     self.assertEqual(200, status, read)
                     self.assertEqual(directory.name, read['items'][0]['content'])
                     self.assertNotIn('auth', read)
+                next(rule for rule in runtime.files.sandbox_path_rules
+                     if Path(rule.path) == directories[0]).access = 'ro'
+                with self.assertRaises(OSError):
+                    runtime.files.ensure_mutable_path(directories[0] / 'created')
                 status, denied = self.api('/fs/write/mkdir', {'path': str(directories[0] / 'blocked'),
                     'approved': True, 'target': row['id'], 'writer_nonce': self.ownership()[1]})
                 self.assertEqual(403, status, denied)

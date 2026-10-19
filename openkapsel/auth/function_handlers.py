@@ -97,6 +97,17 @@ class FunctionApprovalHandlersMixin:
                 "function": function, "target": target,
                 **({"capability": "shell.unsandboxed"} if function == "shell.exec" else {})})
             return
+        if (row is not None and function in {"files.read", "files.write"}
+                and self.server.mappings.supports_configured_file_paths(target)):
+            permitted = self.token_record.can_write if function == "files.write" else self.token_record.can_read
+            if permitted:
+                checked = self._function_internal(target, {"function": function, "method": "execute",
+                    "args": {"operation": "approval_status", "arguments": args},
+                    "internal": {"auth": {"configured_client_paths": True}}})
+                if isinstance(checked, dict) and checked.get("granted") is True:
+                    self._send_json(200, {**(response_fields or {}), "status": "granted",
+                                          "function": function, "target": target})
+                    return
         self._require_password_transport()
         if not self.server.config.admin_enabled:
             raise ApiError(409, "capability_unavailable", "Capability approval requires administration to be enabled")

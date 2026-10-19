@@ -245,6 +245,13 @@ class FileApproval:
         from openkapsel.client_runtime.approved_file_api import ApprovedFileAPI
         if auth == {"full_client_approval": True} and not self.files.full_approval_active():
             raise OSError(errno.EACCES, "temporary full Client approval is inactive")
+        if operation == "approval_status" and auth == {"configured_client_paths": True}:
+            from openkapsel.client_runtime.approved_file_api import ConfiguredFiles
+            try:
+                ConfiguredFiles(self.files, auth, write, ()).path(arguments.get("path", "."))
+                return {"granted": True}
+            except (OSError, ApiError, ValueError):
+                return {"granted": False}
         if operation == "approval_status":
             return {"granted": (self.files.full_approval_active()
                                if auth == {"full_client_approval": True}
@@ -265,7 +272,7 @@ class FileApproval:
             raise OSError(errno.EINVAL, "invalid File stream")
         operation, args = arguments["operation"], dict(arguments["args"])
         allowed = {"stat", "open", "fstat", "read", "close"}
-        if write and self.files.writable:
+        if write and (self.files.writable or auth == {"configured_client_paths": True}):
             allowed |= {"create", "write", "flush", "mkdir", "rename", "unlink", "truncate_handle"}
         if operation not in allowed or not write and operation == "open" and (
                 args.get("mode", "r") != "r" or args.get("truncate")):

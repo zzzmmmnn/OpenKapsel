@@ -500,6 +500,7 @@ def _capabilities(files, tasks, functions=None):
                         "external_realpath": True},
         "protocol": 1,
         "temporary_full_approval": True,
+        "configured_file_paths": True,
         "writable": files.writable,
         "rpc": files.rpc_capabilities,
         "execution": tasks.capabilities(),

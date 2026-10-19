@@ -1,7 +1,7 @@
 """Conservative Windows PowerShell *file-command* interpreter.
 
 A recognized command is NEVER passed to a command shell.  Unknown syntax
-requires normal Shell approval.  An identified path outside the export or an
+requires normal Shell approval.  An identified path outside configured readable scopes or an
 access-mode violation is denied, not reinterpreted as an unrestricted command.
 """
 from __future__ import annotations
@@ -130,6 +130,14 @@ def _checked_path(files, cwd: Path, value: str, *, write: bool,
     ):
         raise OSError(errno.EACCES, "path is not permitted")
     target = candidate if candidate.is_absolute() else cwd / candidate
+    if getattr(files, "configured_native_paths", False):
+        check_windows_filename_parts(target.parts[1:])
+        resolved = files.path(str(target))
+        if resolved != target:
+            raise OSError(errno.EACCES, "reparse or symbolic-link path is not allowed")
+        if write:
+            files.ensure_mutable_path(resolved)
+        return resolved, str(resolved)
     try:
         relative = target.relative_to(files.root).as_posix()
     except ValueError:

@@ -31,7 +31,7 @@ jobs:
       - name: Test client bootstrap and Windows PowerShell policy on this OS
         run: python -m unittest tests.test_dependency_groups tests.test_setup_client_venv tests.test_windows_powershell_policy tests.test_client_job_sandbox tests.test_path_access -v
       - name: Test client transport and filesystem operations
-        run: python -m unittest tests.test_client_imports tests.test_client_config_lock tests.test_client_full_approval tests.test_client_reconnect tests.test_client_shell tests.test_mappings tests.test_client_windows tests.test_client_file_api tests.test_git_operations tests.test_structured_rpc tests.test_tabular_rpc -v
+        run: python -m unittest tests.test_client_imports tests.test_client_config_lock tests.test_client_full_approval tests.test_configured_client_files tests.test_client_reconnect tests.test_client_shell tests.test_mappings tests.test_client_windows tests.test_client_file_api tests.test_git_operations tests.test_structured_rpc tests.test_tabular_rpc -v
       - name: Test function approvals and Local Client contracts
         run: python -m unittest tests.test_function_registry tests.test_function_grants tests.test_file_function_approval tests.test_local_client -v
       - name: Repeat macOS Git failure regression

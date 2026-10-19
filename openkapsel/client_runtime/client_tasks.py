@@ -351,8 +351,11 @@ class ClientTasks:
         else:
             descriptor = self.files.paths.open(cwd, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             os.close(descriptor)
+        from openkapsel.client_runtime.approved_file_api import ConfiguredFiles
+        file_view = ConfiguredFiles(self.files, {"configured_client_paths": True},
+                                    parsed.write, (), client_rules=self.powershell_rules)
         if parsed.operation != "pwd":
-            _checked_path(self.files, cwd, parsed.path, write=parsed.write,
+            _checked_path(file_view, cwd, parsed.path, write=parsed.write,
                           rules=self.powershell_rules)
         if len(self.tasks) >= self.max_tasks + 4:
             raise OSError(errno.EBUSY, "client retained task limit reached")
@@ -373,7 +376,7 @@ class ClientTasks:
                 if task["cancel"].is_set():
                     raise OSError(errno.ECANCELED, "task cancelled")
                 output = execute_simple_powershell(
-                    self.files, cwd, parsed, rules=self.powershell_rules,
+                    file_view, cwd, parsed, rules=self.powershell_rules,
                 ).encode("utf-8", errors="replace")
                 with task["output_lock"]:
                     if not task["cancel"].is_set():

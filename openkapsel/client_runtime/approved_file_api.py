@@ -176,6 +176,10 @@ class FullApprovedFiles(ApprovedFiles):
             from openkapsel.client_runtime.windows_filename_policy import check_windows_filename_parts
             check_windows_filename_parts(path.parts[1:])
         actual = path.resolve(strict=False)
+        self._check_server_rules(path, actual)
+        return actual
+
+    def _check_server_rules(self, path, actual):
         # Preserve explicit Server Token restrictions; the admin grant
         # removes only Client-configured policy.
         from openkapsel.auth.path_access import _matching_anchor, normalized_explicit_rule
@@ -192,7 +196,6 @@ class FullApprovedFiles(ApprovedFiles):
                 modes = {mode for n, mode in matches if n == depth}
                 if modes & {"deny", "protect"} or self.write and "ro" in modes:
                     raise OSError(errno.EACCES, "Server Token path restriction")
-        return actual
 
     def ensure_mutable_path(self, path):
         self.path(str(path))
@@ -236,7 +239,85 @@ class FullApprovedFiles(ApprovedFiles):
         return files._dispatch("recycle_restore", {"recycle_id": recycle_id})
 
 
+class ConfiguredFiles(FullApprovedFiles):
+    """Ordinary Client-configured scopes, without temporary elevation."""
+    configured_native_paths = True
+
+    def __init__(self, base, auth, write, rules, *, client_rules=None):
+        from openkapsel.auth.path_access import normalized_explicit_rule, _rule_parts
+        self.base, self.auth, self.write = base, auth, write
+        self.root = base.root
+        self.rules = tuple(rules)
+        self.client_rules = tuple(base.sandbox_path_rules if client_rules is None else client_rules)
+        roots = {self.root}
+        for rule in self.client_rules:
+            raw = normalized_explicit_rule(rule)
+            suffix, directory, target = _rule_parts(raw)
+            if not suffix and rule.access in {"ro", "rw"}:
+                path = Path(target).resolve(strict=False)
+                roots.add(path if directory else path.parent)
+        self.scopes = tuple(root for root in roots if root != self.root)
+        self.paths = SafePathAccess(roots)
+        if os.name == "nt":
+            from openkapsel.client_runtime.client_windows import WindowsPaths
+            self.paths = WindowsPaths(self.root, roots=roots)
+        self.writable = write  # Every path independently enforces ro/rw.
+        self.filename_index = None
+        self._recycle_roots = {}
+
+    def path(self, value):
+        from openkapsel.auth.path_access import effective_path_access
+        if (not isinstance(value, str) or "\x00" in value
+                or ".." in Path(value).parts
+                or os.name != "nt" and "\\" in value):
+            raise ApiError(400, "invalid_path", "invalid File path")
+        path = Path(value) if value else self.root
+        if not path.is_absolute():
+            if path.drive:
+                raise ApiError(400, "invalid_path", "ambiguous File path")
+            path = self.root / path
+        if os.name == "nt":
+            from openkapsel.client_runtime.windows_filename_policy import check_windows_filename_parts
+            check_windows_filename_parts(path.parts[1:])
+        actual = path.resolve(strict=False)
+        for checked in (path, actual):
+            access = effective_path_access(checked, self.root, self.base.configured_writable,
+                                          self.client_rules, resolve_symlinks=False)
+            # Config rules are canonicalized at startup. An alias spelling
+            # may have no lexical grant; its canonical destination must still
+            # be permitted. Explicit lexical restrictions remain binding.
+            if checked == path and checked != actual and access is None:
+                continue
+            if access not in {"ro", "rw"} or self.write and access != "rw":
+                raise OSError(errno.EACCES, "path is outside configured Client access")
+        if self._protected(actual):
+            raise OSError(errno.EACCES, "protected Client path")
+        self._check_server_rules(path, actual)
+        return actual
+
+    def _protected(self, path):
+        return ApprovedFiles._protected(self, path)
+
+    def ensure_mutable_path(self, path):
+        super().ensure_mutable_path(path)
+        if path in self.scopes:
+            raise OSError(errno.EACCES, "configured root is protected")
+        if any(path == secret or path in secret.parents for secret in
+               (*self.base.global_protected_paths, *self.base.sandbox_denied_paths)):
+            raise OSError(errno.EACCES, "directory contains protected Client paths")
+        self.base.ensure_mutable_path(path)
+
+    def _dispatch(self, op, args):
+        dispatch = ClientFiles._dispatch
+        if os.name == "nt":
+            from openkapsel.client_runtime.client_windows import WindowsClientFiles
+            dispatch = WindowsClientFiles._dispatch
+        return dispatch(self, op, args)
+
+
 def approved_provider(files, auth, write, rules):
+    if auth == {"configured_client_paths": True}:
+        return ConfiguredFiles(files, auth, write, rules)
     factory = FullApprovedFiles if auth == {"full_client_approval": True} else ApprovedFiles
     return factory(files, auth, write, rules)
 

@@ -643,6 +643,12 @@ class MappingManager:
                     self._full_approvals.pop(row["id"], None)
                     self.sessions.pop(row["id"], None)
 
+    def supports_configured_file_paths(self, mid):
+        with self.lock:
+            session = self.sessions.get(mid)
+            return bool(session and session.ready and not session.closed
+                        and session.capabilities.get("configured_file_paths") is True)
+
     FULL_APPROVAL_SECONDS = frozenset({1800, 7200, 28800, 86400})
 
     def full_approval_status(self, mid):
