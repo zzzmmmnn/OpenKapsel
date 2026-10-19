@@ -1063,7 +1063,7 @@ class InstallerStorageProviderTests(unittest.TestCase):
             "    umask 0022\n"
             "    /usr/bin/python3 -m venv \"$INSTALL_DIR/venv\"\n"
             "    \"$INSTALL_DIR/venv/bin/pip\" install --disable-pip-version-check "
-            "--no-cache-dir \"$INSTALL_DIR\"\n"
+            "--no-cache-dir \"$INSTALL_DIR[server]\"\n"
             ")"
         )
         self.assertIn(block, install)
