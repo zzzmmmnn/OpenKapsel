@@ -56,6 +56,7 @@ class SshProfile:
     host_key_policy: str = "strict"
     host_key_sha256: str | None = None
     known_hosts: str | None = None
+    allow_legacy_ssh_rsa_host_key: bool = False
     proxy: ProxyConfig | None = None
 
 
@@ -260,7 +261,7 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
         permitted = {
             "host", "port", "username", "password", "key_filename", "passphrase",
             "allow_agent", "look_for_keys", "host_key_policy", "host_key_sha256",
-            "known_hosts", "proxy",
+            "known_hosts", "proxy", "allow_legacy_ssh_rsa_host_key",
         }
         extra = set(value) - permitted
         if extra:
@@ -294,6 +295,9 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
         known_hosts = value.get("known_hosts", global_known_hosts)
         if known_hosts is not None:
             known_hosts = _text(known_hosts, label=f"ssh.profiles.{name}.known_hosts", maximum=4096)
+        legacy_rsa = value.get("allow_legacy_ssh_rsa_host_key", False)
+        if not isinstance(legacy_rsa, bool):
+            raise ValueError(f"ssh.profiles.{name}.allow_legacy_ssh_rsa_host_key must be boolean")
         proxy = _parse_proxy(value.get("proxy"), name=name)
         if password is None and key_filename is None and not allow_agent and not look_for_keys:
             raise ValueError(
@@ -303,7 +307,8 @@ def _parse_config(config: dict[str, Any]) -> tuple[dict[str, SshProfile], dict[s
             name=name, host=host, port=port, username=username, password=password,
             key_filename=key_filename, passphrase=passphrase, allow_agent=allow_agent,
             look_for_keys=look_for_keys, host_key_policy=policy,
-            host_key_sha256=fingerprint, known_hosts=known_hosts, proxy=proxy,
+            host_key_sha256=fingerprint, known_hosts=known_hosts,
+            allow_legacy_ssh_rsa_host_key=legacy_rsa, proxy=proxy,
         )
 
     return profiles, {
@@ -337,6 +342,27 @@ def _open_proxy_socket(profile: SshProfile, timeout: float):
 def _fingerprint(key: Any) -> str:
     digest = hashlib.sha256(key.asbytes()).digest()
     return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _legacy_rsa_transport_factory(paramiko: Any):
+    """Opt in to SHA-1 RSA host-key verification for one SSH connection only.
+
+    Paramiko 5 removed ssh-rsa from both host-key offers and RSA signature
+    verification. Per-connection subclasses leave defaults and other profiles
+    unchanged, without disabling known_hosts or host-key fingerprint checks.
+    """
+    from cryptography.hazmat.primitives import hashes
+
+    class LegacyRSAKey(paramiko.RSAKey):
+        HASHES = {**paramiko.RSAKey.HASHES, "ssh-rsa": hashes.SHA1}
+
+    class LegacyRSATransport(paramiko.Transport):
+        _preferred_keys = tuple(
+            key for key in paramiko.Transport._preferred_keys if key != "ssh-rsa"
+        ) + ("ssh-rsa",)
+        _key_info = {**paramiko.Transport._key_info, "ssh-rsa": LegacyRSAKey}
+
+    return LegacyRSATransport
 
 
 def _remote_path(value: Any, *, label: str = "path") -> str:
@@ -552,6 +578,8 @@ class _ConnectionPool:
             }
             if proxy_sock is not None:
                 kwargs["sock"] = proxy_sock
+            if profile.allow_legacy_ssh_rsa_host_key:
+                kwargs["transport_factory"] = _legacy_rsa_transport_factory(paramiko)
             connected = False
             try:
                 client.connect(**kwargs)
@@ -888,6 +916,7 @@ class SshRpcPlugin:
                         "username": profile.username, "authentication": auth,
                         "host_key_policy": profile.host_key_policy,
                         "host_key_pinned": profile.host_key_sha256 is not None,
+                        "allow_legacy_ssh_rsa_host_key": profile.allow_legacy_ssh_rsa_host_key,
                     }
                     if profile.proxy is not None:
                         proxy_meta = {

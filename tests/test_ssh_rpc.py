@@ -205,6 +205,9 @@ class FakeChannel:
 
 
 class FakeTransport:
+    _preferred_keys = ("rsa-sha2-256",)
+    _key_info = {"rsa-sha2-256": object}
+
     def __init__(self):
         self.active = True
         self.channels = []
@@ -295,7 +298,13 @@ class FakeProxySocket:
         self.closed = True
 
 
+class FakeRSAKey:
+    HASHES = {"rsa-sha2-256": object}
+
+
 class FakeParamiko:
+    RSAKey = FakeRSAKey
+    Transport = FakeTransport
     MissingHostKeyPolicy = FakeMissingHostKeyPolicy
     AuthenticationException = FakeAuthenticationException
     BadHostKeyException = FakeBadHostKeyException
@@ -447,6 +456,57 @@ class SshRpcTests(unittest.TestCase):
                 "username": "user",
                 "password": "secret",
             }}}})
+
+    def test_legacy_ssh_rsa_opt_in_per_profile(self):
+        data = config()
+        data["ssh"]["profiles"]["box"]["allow_legacy_ssh_rsa_host_key"] = True
+        plugin = SshRpcPlugin(data, paramiko_module=self.fake)
+        try:
+            meta = plugin.dispatch(self.files, "profiles", {})
+            self.assertTrue(meta["body"]["profiles"][0]["allow_legacy_ssh_rsa_host_key"])
+            reply = plugin.dispatch(self.files, "stat",
+                                    {"profile": "box", "path": "/"})
+            self.assertEqual(200, reply["status"], reply)
+            factory = self.fake.connect_calls[-1]["transport_factory"]
+            self.assertIn("ssh-rsa", factory._preferred_keys)
+            self.assertIn("ssh-rsa", factory._key_info)
+            self.assertIn("ssh-rsa", factory._key_info["ssh-rsa"].HASHES)
+            self.assertNotIn("ssh-rsa", FakeTransport._preferred_keys)
+            self.assertNotIn("ssh-rsa", FakeTransport._key_info)
+            self.assertNotIn("ssh-rsa", FakeRSAKey.HASHES)
+        finally:
+            plugin.close()
+
+    def test_legacy_ssh_rsa_disabled_by_default_and_bad_value_rejected(self):
+        self.call("stat", {"profile": "box", "path": "/"})
+        self.assertNotIn("transport_factory", self.fake.connect_calls[-1])
+        self.assertFalse(self.call("profiles", {})["profiles"][0]["allow_legacy_ssh_rsa_host_key"])
+        for invalid in ("true", 1, None, []):
+            with self.subTest(value=invalid):
+                data = config()
+                data["ssh"]["profiles"]["box"]["allow_legacy_ssh_rsa_host_key"] = invalid
+                with self.assertRaisesRegex(ValueError, "must be boolean"):
+                    _parse_config(data)
+
+    def test_legacy_ssh_rsa_signature_verification_with_real_paramiko(self):
+        try:
+            import paramiko
+            from paramiko.message import Message
+        except ImportError:
+            self.skipTest("paramiko optional dependency not installed")
+        from openkapsel.rpc_plugins.ssh import _legacy_rsa_transport_factory
+        transport = _legacy_rsa_transport_factory(paramiko)
+        self.assertIn("ssh-rsa", transport._preferred_keys)
+        self.assertNotIn("ssh-rsa", paramiko.Transport._preferred_keys)
+        self.assertNotIn("ssh-rsa", paramiko.Transport._key_info)
+        self.assertNotIn("ssh-rsa", paramiko.RSAKey.HASHES)
+        key = transport._key_info["ssh-rsa"](key=paramiko.RSAKey.generate(2048).key)
+        payload = b"ssh host key signature test"
+        signature = key.sign_ssh_data(payload, algorithm="ssh-rsa")
+        self.assertTrue(key.verify_ssh_sig(payload, Message(signature.asbytes())))
+        self.assertFalse(key.verify_ssh_sig(payload + b"tampered", Message(signature.asbytes())))
+        default_key = paramiko.RSAKey(key=key.key)
+        self.assertFalse(default_key.verify_ssh_sig(payload, Message(signature.asbytes())))
 
     def test_profiles_never_return_credentials(self):
         body = self.call("profiles", {})

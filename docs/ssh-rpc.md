@@ -134,6 +134,35 @@ If a strict connection sees an unknown key, the RPC fails with `ssh_host_key_unk
 
 `host_key_policy: "accept-new"` is available only when the operator explicitly wants first-use trust. It accepts an unknown key for that client process; it does not silently rewrite the configured `known_hosts` file.
 
+### Legacy RSA-only SSH servers
+
+Older devices may advertise only the `ssh-rsa` **host-key signature** algorithm.
+Modern Paramiko rejects this SHA-1 signature by default (`IncompatiblePeer`),
+similarly to OpenSSH reporting `no matching host key type found. Their offer: ssh-rsa`.
+For a trusted legacy device, opt in for that profile only:
+
+```json
+{
+  "profiles": {
+    "wrt2": {
+      "host": "192.168.2.1",
+      "username": "root",
+      "password": "<LOCAL-ONLY-PASSWORD>",
+      "allow_legacy_ssh_rsa_host_key": true,
+      "host_key_policy": "strict"
+    }
+  }
+}
+```
+
+The snippet is the `rpc.ssh.config` profile section, not a complete client
+configuration. This option enables SHA-1 RSA **host-key signature verification**,
+which is weaker than SHA-2; it is `false` by default. It does **not** relax
+host-key trust: `strict`, pinned `host_key_sha256`, and `known_hosts` remain
+enforced. Verify the device fingerprint through a trusted channel before trusting it.
+It does not enable old key-exchange groups, ciphers, or SHA-1 client public-key
+authentication. Other profiles are unchanged.
+
 ## Connection lifecycle
 
 An operation can select SSH in exactly one of two ways:
