@@ -131,6 +131,35 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         handler._handle_web_preview("/web/laptop/", "/web/laptop/", "", head_only=False)
         self.assertEqual(b"<h1>RPC preview</h1>", handler.wfile.getvalue())
 
+    def test_rpc_writes_never_resolve_or_stat_native_mapping_mount(self):
+        # The native export is chmod(0) in this fixture. A Linux Mapping
+        # mount may be FUSE, offline or permission denied: writing over RPC
+        # must not touch native path metadata, including via local aliases.
+        original_resolve, original_is_dir = Path.resolve, Path.is_dir
+        mount = self.mount
+
+        def guarded_resolve(path, *args, **kwargs):
+            if path == mount or mount in path.parents:
+                raise AssertionError("RPC write resolved native Mapping path")
+            return original_resolve(path, *args, **kwargs)
+
+        def guarded_is_dir(path):
+            if path == mount or mount in path.parents:
+                raise AssertionError("RPC write statted native Mapping path")
+            return original_is_dir(path)
+
+        (self.scope / "alias").symlink_to("laptop")
+        with (patch.object(Path, "resolve", guarded_resolve),
+              patch.object(Path, "is_dir", guarded_is_dir)):
+            status, result = self.api("/fs/write/mkdir",
+                                      {"path": "laptop/direct-folder"})
+            self.assertIn(status, (200, 201), result)
+            status, result = self.api("/fs/write/mkdir",
+                                      {"path": "alias/linked-folder"})
+            self.assertIn(status, (200, 201), result)
+        self.assertTrue((self.export / "direct-folder").is_dir())
+        self.assertTrue((self.export / "linked-folder").is_dir())
+
     def test_direct_upload_and_resumable_commit(self):
         data = bytes(range(256)) * 1100
         digest = hashlib.sha256(data).hexdigest()

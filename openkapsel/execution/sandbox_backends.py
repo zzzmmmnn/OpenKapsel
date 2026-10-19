@@ -193,8 +193,15 @@ class BubblewrapBackend:
             path = Path(grant.path)
             if path == spec.scope_root or path in spec.scope_root.parents:
                 bind_grant(grant)
+        # The Mapping workspace's declared writability is independent of
+        # broader Shell grants. Re-bind it after the enclosing directories,
+        # considering only rules explicitly anchored at the workspace root.
+        # A parent-only ro grant must not downgrade a writable Mapping; a
+        # parent rw grant must not upgrade a read-only one.
+        root_rules = tuple(grant for grant in spec.allowed_paths
+                           if Path(grant.path.rstrip("/")) == spec.scope_root)
         root_mode = effective_path_access(spec.scope_root, spec.scope_root,
-            spec.can_write, spec.allowed_paths, resolve_symlinks=False)
+            spec.can_write, root_rules, resolve_symlinks=False)
         argv.extend(["--bind" if root_mode == "rw" else "--ro-bind", scope, scope])
         if spec.environment_file is not None:
             argv.extend(

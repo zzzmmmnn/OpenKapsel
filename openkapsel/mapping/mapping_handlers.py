@@ -102,7 +102,7 @@ class MappingHandlersMixin:
             candidate = Path(os.path.abspath(candidate))
             row = self.server.mappings.at_path(candidate)
             if row is None:
-                candidate = candidate.resolve(strict=False)
+                candidate = self._resolve_mapping_alias(candidate)
                 row = self.server.mappings.at_path(candidate)
             if row is None or (selected and selected["id"] != row["id"]):
                 return False

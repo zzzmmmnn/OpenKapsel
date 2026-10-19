@@ -24,6 +24,26 @@ OAUTH_DISCOVERY_LOGGER = logging.getLogger("openkapsel.oauth.discovery")
 OAUTH_DISCOVERY_LOGGER.setLevel(logging.INFO)
 
 class HttpSupportMixin:
+    def _resolve_mapping_alias(self, candidate: Path) -> Path:
+        """Resolve aliases without traversing a native Mapping mount.
+
+        Only local prefix symlinks are resolved. Once a Mapping root is found,
+        its descendants remain lexical paths for the remote RPC provider.
+        """
+        mappings = self.server.mappings
+        if mappings.at_path(candidate) is not None:
+            return candidate
+        current = Path(candidate.anchor)
+        for index, part in enumerate(candidate.parts[1:], 1):
+            current /= part
+            if mappings.at_path(current) is not None:
+                return current.joinpath(*candidate.parts[index + 1:])
+            if current.is_symlink():
+                current = current.resolve(strict=False)
+                if mappings.at_path(current) is not None:
+                    return current.joinpath(*candidate.parts[index + 1:])
+        return candidate.resolve(strict=False)
+
     def _resolve_path(self, value: str, *, write: bool = False) -> Path:
         root = self.token_scope_root
         if "\x00" in value:
@@ -58,7 +78,7 @@ class HttpSupportMixin:
                 "storage_provider_unavailable",
                 "Storage Provider mapping is protected, read-only, or offline",
             ) from None
-        resolved = candidate if self.server.mappings.at_path(candidate) else candidate.resolve(strict=False)
+        resolved = self._resolve_mapping_alias(candidate)
         approved = getattr(self, "_file_approval_approved_directory", None)
         if approved is not None and resolved != approved and approved not in resolved.parents:
             raise ApiError(403, "file_approval_path_mismatch",
@@ -118,7 +138,11 @@ class HttpSupportMixin:
         # Mutating a parent directory (rename/delete) must not indirectly
         # remove any protected descendant. Ordinary writes to its siblings
         # still pass because those targets are not ancestors.
-        target = Path(path).resolve(strict=False)
+        # The native FUSE mount may be inaccessible; this Mapping is RPC-only.
+        mappings = getattr(getattr(self, "server", None), "mappings", None)
+        mapped = mappings is not None and mappings.at_path(Path(path)) is not None
+        target = (Path(os.path.abspath(path)) if mapped
+                  else Path(path).resolve(strict=False))
         # Root mutation has a dedicated root_protected response downstream.
         if target == self.token_scope_root:
             return
@@ -129,7 +153,7 @@ class HttpSupportMixin:
             FileApproval.check(str(path), self.token_scope_root, approval[0],
                                write=True, rules=approval[1])
         rules = approval[1] if elevated else self.token_record.allowed_paths
-        if target.is_dir() and not target.is_symlink():
+        if not mapped and target.is_dir() and not target.is_symlink():
             from openkapsel.auth.path_access import existing_pattern_masks
             masks = existing_pattern_masks(target, self.token_record.can_write, rules)
             if masks:
@@ -158,7 +182,7 @@ class HttpSupportMixin:
             return
         policy = effective_path_access(
             path, self.token_scope_root, self.token_record.can_write,
-            self.token_record.allowed_paths,
+            self.token_record.allowed_paths, resolve_symlinks=not mapped,
         )
         if policy in {"protect", "deny"}:
             raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is protected or denied")
@@ -167,6 +191,8 @@ class HttpSupportMixin:
                            "path is read-only or outside authorized directories")
 
     def _assert_inside_root(self, path: Path) -> None:
+        mappings = getattr(getattr(self, "server", None), "mappings", None)
+        mapped = mappings is not None and mappings.at_path(Path(path)) is not None
         approval = getattr(self, "_file_function_policy", None)
         if approval is not None:
             # Verify scoped approval and immutable absolute deny before
@@ -177,7 +203,7 @@ class HttpSupportMixin:
             return
         policy = effective_path_access(
             path, self.token_scope_root, self.token_record.can_write,
-            self.token_record.allowed_paths,
+            self.token_record.allowed_paths, resolve_symlinks=not mapped,
         )
         if policy in {"protect", "deny"}:
             raise ApiError(HTTPStatus.FORBIDDEN, "path_access_denied", "path is protected or denied")

@@ -163,8 +163,16 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
         for raw, _mode in explicit
     ):
         return None
-    if internal_transfer and is_internal_transfer_stage(path, root):
-        return "rw" if writable else "ro"
+    # Runtime transport / Client state names are never part of the
+    # configurable .openkapsel/ directory rule. These exact reserved
+    # prefixes are hard-denied to public file and approval paths, while
+    # the internal Mapping transport keeps its narrowly scoped staging
+    # exception (subject to explicit absolute deny below).
+    private_state = any(
+        part.casefold().startswith(".openkapsel-") for part in path.parts)
+    transport_stage = internal_transfer and is_internal_transfer_stage(path, root)
+    if private_state and not transport_stage:
+        return "deny"
 
     matches: list[tuple[int, bool, bool, str, Path]] = []
     for raw, access, configured in rules:
@@ -178,6 +186,10 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
             return "deny"
         matches.append((len(anchor.parts), not suffix, configured,
                         access, anchor))
+    if transport_stage:
+        # Only the trusted internal Mapping transport may bypass default
+        # private staging masks. Explicit deny was checked above.
+        return "rw" if writable else "ro"
     if not matches:
         return ("rw" if writable else "ro") if within else None
     deepest = max(item[0] for item in matches)
