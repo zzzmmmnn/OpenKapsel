@@ -92,6 +92,61 @@ class PathAccessTests(unittest.TestCase):
                 PathGrant(str(child), access="deny"))))
         self.assertEqual("ro", PathGrant(str(self.sub), access="r").access)
 
+
+    def test_export_root_implicit_rw_overrides_ancestor_ro_not_nested_rules(self):
+        # Reproduce Client root=/Users/mac/Documents/dev/bot under an
+        # otherwise read-only home; only the export itself is implicitly rw.
+        parent = self.base / "home"
+        parent.mkdir()
+        export = parent / "Documents" / "dev" / "bot"
+        export.mkdir(parents=True)
+        project = export / "openkapsel"
+        project.mkdir()
+        config = export / ".openkapsel"
+        config.mkdir()
+        downloads = parent / "Downloads"
+        downloads.mkdir()
+        denied = parent / "Documents" / "dev" / "openkapsel"
+        denied.mkdir()
+        rules = (
+            SimpleNamespace(path=str(downloads) + "/", access="rw"),
+            SimpleNamespace(path=str(parent) + "/", access="ro"),
+            SimpleNamespace(path=str(config) + "/", access="protect"),
+            SimpleNamespace(path=str(denied) + "/", access="deny"),
+        )
+        for writable in (True, False):
+            with self.subTest(writable=writable):
+                self.assertEqual("rw" if writable else "ro",
+                                 effective_path_access(project / "tests" / "test.py",
+                                                       export, writable, rules))
+                self.assertEqual("ro", effective_path_access(parent / "other.txt",
+                                                            export, writable, rules))
+                self.assertEqual("rw", effective_path_access(downloads / "file",
+                                                            export, writable, rules))
+                self.assertEqual("protect", effective_path_access(config / "secrets.json",
+                                                                 export, writable, rules))
+                self.assertEqual("deny", effective_path_access(denied / "file",
+                                                              export, writable, rules))
+        files = ClientFiles(export, writable=True)
+        try:
+            spec = make_job_sandbox({"job_sandbox": {"paths": [
+                {"path": raw.path, "access": raw.access} for raw in rules
+            ]}}, files)
+            files.sandbox_path_rules = tuple(
+                SimpleNamespace(**item) for item in
+                (*spec["allowed_paths"], *spec["pattern_rules"])
+            )
+            files.sandbox_denied_paths = frozenset(
+                Path(raw) for raw in spec["hidden_paths"]
+            )
+            files.ensure_mutable_path(project / "tests" / "new.py")
+            with self.assertRaises(OSError):
+                files.ensure_mutable_path(config / "secrets.json")
+            with self.assertRaises(OSError):
+                files.ensure_mutable_path(export)
+        finally:
+            files.close()
+
     def test_legacy_server_record_read_only_is_normalized(self):
         legacy = PathGrant.from_data({"path": str(self.sub), "read_only": True})
         self.assertEqual("ro", legacy.access)

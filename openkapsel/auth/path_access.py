@@ -190,8 +190,14 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
         # Only the trusted internal Mapping transport may bypass default
         # private staging masks. Explicit deny was checked above.
         return "rw" if writable else "ro"
+    if within:
+        # The exported root is an implicit grant, not just a last-resort
+        # fallback. It overrides less-specific ancestor ro/protect rules,
+        # while explicit rules at this root or below remain authoritative.
+        matches.append((len(root.parts), True, False,
+                        "rw" if writable else "ro", root))
     if not matches:
-        return ("rw" if writable else "ro") if within else None
+        return None
     deepest = max(item[0] for item in matches)
     matches = [item for item in matches if item[0] == deepest]
     weight = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
