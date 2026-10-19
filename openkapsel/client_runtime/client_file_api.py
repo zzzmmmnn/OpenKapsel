@@ -290,10 +290,16 @@ class ClientFileAPI(FileExecutionMixin):
                 self.files.ensure_mutable_path(path)
             except OSError as exc:
                 if exc.errno == errno.EACCES:
+                    config_paths = getattr(self.files, "protected_paths", ())
+                    config_protected = any(
+                        path == protected or path in protected.parents
+                        or protected in path.parents for protected in config_paths
+                    )
                     raise ApiError(
                         403,
-                        "client_config_protected",
-                        "active client configuration is protected",
+                        "client_config_protected" if config_protected else "path_access_denied",
+                        ("active client configuration is protected" if config_protected
+                         else "client path is protected or read-only"),
                     ) from None
                 raise
         return path

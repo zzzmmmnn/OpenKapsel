@@ -160,6 +160,39 @@ class ClientFileAPITests(unittest.TestCase):
             with self.assertRaises(SafePathError):
                 access.open(scoped / "ok.txt")
 
+
+    def test_write_denial_reports_client_config_only_for_config_paths(self):
+        from types import SimpleNamespace
+
+        readonly = self.root / "ordinary"
+        readonly.mkdir()
+        note = readonly / "note.txt"
+        note.write_text("unchanged", encoding="utf-8")
+        self.files.sandbox_path_rules = (
+            SimpleNamespace(path=str(readonly) + "/", access="ro"),
+        )
+        result = self.call("fs_mutate", {"dry_run": True, "items": [{
+            "op": "file.replace", "path": "ordinary/note.txt",
+            "expected_etag": self.etag("ordinary/note.txt"), "content": "new",
+        }]})
+        self.assertEqual(403, result["status"], result)
+        self.assertEqual("path_access_denied", result["error"]["code"])
+        self.assertEqual("unchanged", note.read_text(encoding="utf-8"))
+
+        self.files.sandbox_path_rules = ()
+        config_parent = self.root / "settings"
+        config_parent.mkdir()
+        config_file = config_parent / "client.json"
+        config_file.write_text("{}", encoding="utf-8")
+        self.files.protected_paths = frozenset({config_file})
+        result = self.call("fs_mutate", {"dry_run": True, "items": [{
+            "op": "path.delete", "path": "settings",
+            "expected_etag": self.etag("settings"),
+        }]})
+        self.assertEqual(403, result["status"], result)
+        self.assertEqual("client_config_protected", result["error"]["code"])
+        self.assertTrue(config_file.exists())
+
     def test_write_read_conditional_replace_and_native_paths_stay_private(self):
         content = "héllo " + str(self.root)
         self.assertEqual(201, self.call("fs_mkdir", {"path": "sub"})["status"])
