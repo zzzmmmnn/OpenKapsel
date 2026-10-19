@@ -299,6 +299,7 @@ def render_dashboard(
     oauth_connections: list[dict] | None = None,
     static_mcp_connections: list[dict] | None = None,
     mappings: list[dict] | None = None,
+    mapping_approvals: dict | None = None,
     mappings_enabled: bool = False,
     mapping_message: str = "",
     storage_providers: list[dict] | None = None,
@@ -416,7 +417,8 @@ def render_dashboard(
     body = body.replace("['tokens','images','password']", "['tokens','images','password','connections','static-mcp']")
     from openkapsel.mapping.mapping_ui import render_mappings
     body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="mappings" aria-controls="panel-mappings" title="Client mappings"><span class="nav-icon" aria-hidden="true">🗂️</span><span class="nav-label">Client mappings</span></button></nav>', 1)
-    body = body.replace('</main>', render_mappings(mappings or [], records, csrf, admin_path, mapping_message, mappings_enabled) + '</main>', 1)
+    body = body.replace('</main>', render_mappings(mappings or [], records, csrf, admin_path, mapping_message, mappings_enabled,
+                                                     approvals=mapping_approvals) + '</main>', 1)
     body = body.replace("['tokens','images','password','connections','static-mcp']", "['tokens','images','password','connections','static-mcp','mappings']")
     from openkapsel.storage.storage_ui import render_storage_providers
     body = body.replace('</nav>', '<button type="button" class="nav-item" data-admin-tab="storage" aria-controls="panel-storage" title="Storage Providers"><span class="nav-icon" aria-hidden="true">☁️</span><span class="nav-label">Storage Providers</span></button></nav>', 1)

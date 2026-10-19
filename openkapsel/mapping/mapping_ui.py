@@ -3,10 +3,11 @@
 import html
 
 
-def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
+def render_mappings(rows, records, csrf, admin_path, message="", enabled=False, approvals=None):
     esc = html.escape
     action = esc(admin_path + "/mappings", quote=True)
     hidden = f'<input type="hidden" name="csrf" value="{esc(csrf, quote=True)}">'
+    approvals = approvals or {}
     workspace_records = {}
     for record in records:
         if record.valid and record.path_prefix not in workspace_records:
@@ -23,6 +24,28 @@ def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
             f'<option value="{esc(path, quote=True)}" {"selected" if path == row["workspace"] else ""}>{esc(record.name)} — {esc(path)}</option>'
             for path, record in workspace_records.items()
         )
+        approval = approvals.get(row["id"], {})
+        remaining = int(approval.get("remaining_seconds", 0))
+        active = approval.get("active") is True and remaining > 0
+        supported = approval.get("supported") is True
+        duration_options = "".join(
+            f'<option value="{seconds}">{label}</option>'
+            for seconds, label in ((1800, "30 minutes"), (7200, "2 hours"),
+                                   (28800, "8 hours"), (86400, "24 hours"))
+        )
+        approval_status = (
+            f'Active · {remaining // 3600}h {(remaining % 3600) // 60}m left'
+            if active else "Inactive" if supported else "Unavailable (Client upgrade required)"
+        )
+        approval_controls = f"""<section class="card"><h3>Temporary full Client approval</h3>
+<p class="muted">Status: <strong>{approval_status}</strong>. An active grant bypasses Client
+sandbox and configured path/network restrictions for commands permitted by the Server.
+Expires automatically; disconnect or restart also revokes it. Running jobs continue;
+revocation blocks new unrestricted operations.</p>
+<form method="post" action="{action}">{fields}
+<div class="actions"><select name="duration_seconds" aria-label="Approval duration">{duration_options}</select>
+<button name="action" value="full_approval"{" disabled" if not online or not supported else ""} onclick="return confirm('Allow unrestricted Client operations for the selected duration?')">Enable approval</button>
+<button class="danger" name="action" value="full_revoke">Revoke now</button></div></form></section>"""
         cards.append(f'''<details class="card token-card"><summary class="token-summary">
 <div class="token-summary-title"><span>{esc(row["name"])}</span><span class="badge{'' if online else ' off'}">{status}</span></div>
 <div class="token-summary-meta"><strong>Workspace</strong><span>{esc(row["workspace"])}</span></div>
@@ -32,7 +55,7 @@ def render_mappings(rows, records, csrf, admin_path, message="", enabled=False):
 <form method="post" action="{action}">{fields}<div class="grid"><div><label>Workspace</label><select name="workspace" required>{workspace_options}</select></div><div><label>Directory name</label><input name="name" value="{esc(row['name'], quote=True)}" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}"></div><div><label>Comment</label><input name="comment" maxlength="200" value="{esc(row['comment'], quote=True)}"></div>
 <div class="span2 checks">{checks}</div><div class="span4 actions"><button name="action" value="update">Save changes</button>
 <button class="secondary" name="action" value="rotate" onclick="return confirm('Replace the provider credential and disconnect the client?')">Rotate credential</button>
-<button class="danger" name="action" value="delete" onclick="return confirm('Detach this mapping? Client files are not deleted.')">Delete mapping</button></div></div></form></div></details>''')
+<button class="danger" name="action" value="delete" onclick="return confirm('Detach this mapping? Client files are not deleted.')">Delete mapping</button></div></div></form>{approval_controls}</div></details>''')
     options = "".join(f'<option value="{esc(r.app_id, quote=True)}">{esc(r.name)} — {esc(r.path_prefix)}</option>' for r in records if r.valid)
     notice = '<div class="notice">Client mappings are disabled. Enable mappings_enabled in the server configuration first.</div>' if not enabled else ''
     if message:

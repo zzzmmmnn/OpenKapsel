@@ -56,6 +56,7 @@ class ClientFiles:
         # Populated once the Client's job_sandbox policy is validated.
         self.sandbox_denied_paths = frozenset()
         self.sandbox_path_rules = ()
+        self.full_approval_active = lambda: False
         self.writable = writable
         if rpc_registry is None:
             from openkapsel.rpc_plugins import load_client_rpc_registry
@@ -71,6 +72,18 @@ class ClientFiles:
         # inheriting this exception, including during parallel reads.
         self._transport_stage = ContextVar("openkapsel_mapping_transport_stage", default=False)
 
+    @property
+    def configured_writable(self):
+        return self._writable
+
+    @property
+    def writable(self):
+        return self._writable or self.full_approval_active()
+
+    @writable.setter
+    def writable(self, value):
+        self._writable = value
+
     def _is_transport_stage(self, path):
         return self._transport_stage.get() and is_internal_transfer_stage(path, self.root)
 
@@ -80,13 +93,16 @@ class ClientFiles:
         parts = PurePosixPath(value).parts
         path = self.root.joinpath(*parts)
         if (value.startswith("/") or ".." in parts or
-                any(p.casefold().startswith(".openkapsel-") for p in parts)
-                and not self._is_transport_stage(path)):
+                (any(p.casefold().startswith(".openkapsel-") for p in parts)
+                 and not self._is_transport_stage(path)
+                 and not self.full_approval_active())):
             raise OSError(errno.EACCES, "path is outside exported files")
         self.ensure_accessible_path(path)
         return path
 
     def is_protected_path(self, path):
+        if self.full_approval_active():
+            return False
         path = Path(path)
         if any(part.casefold().startswith(".openkapsel-") for part in path.parts) and not self._is_transport_stage(path):
             return True
@@ -106,6 +122,8 @@ class ClientFiles:
             raise OSError(errno.ENOENT, "path does not exist")
 
     def ensure_mutable_path(self, path):
+        if self.full_approval_active():
+            return
         path = Path(path)
         if self.is_protected_path(path):
             raise OSError(errno.EACCES, "internal or protected path cannot be modified")
@@ -251,7 +269,7 @@ class ClientFiles:
                 if has_private_component(canonical):
                     raise OSError(errno.EACCES, "client runtime directories cannot be exported")
                 extra = ClientFiles(
-                    candidate, writable=self.writable,
+                    candidate, writable=self.configured_writable,
                     rpc_capabilities={key: val for key, val in self.rpc_capabilities.items()
                                       if key != "file_search"},
                     rpc_registry=self.rpc_registry,
@@ -266,6 +284,7 @@ class ClientFiles:
                     raise OSError(errno.EACCES, "external root changed during authorization")
                 extra.sandbox_denied_paths = self.sandbox_denied_paths
                 extra.sandbox_path_rules = self.sandbox_path_rules
+                extra.full_approval_active = self.full_approval_active
                 # The standard filename index is tied to the normal export.
                 # Never let an external directory consult that stale index.
                 extra.rpc_capabilities["file_search"] = {"state": "disabled"}

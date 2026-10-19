@@ -712,6 +712,16 @@ class MappingHandlersMixin:
                         manager.store.delete(row["id"])
                         raise
                     message = self._mapping_client_config(row, secret)
+                elif action in {"full_approval", "full_revoke"}:
+                    mid = self._form_one(form, "id")
+                    manager.store.get(mid)
+                    if action == "full_revoke":
+                        manager.set_full_approval(mid, 0)
+                    else:
+                        duration = self._form_one(form, "duration_seconds")
+                        if duration not in {"1800", "7200", "28800", "86400"}:
+                            raise ValueError("select a valid temporary approval duration")
+                        manager.set_full_approval(mid, int(duration))
                 else:
                     mid = self._form_one(form, "id")
                     row = manager.store.get(mid)

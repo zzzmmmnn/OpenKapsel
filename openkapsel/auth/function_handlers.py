@@ -86,6 +86,17 @@ class FunctionApprovalHandlersMixin:
         self._require_control_token()
         # Identical Conversation/Plan validation to the legacy approvals.
         conversation = self._file_approval_conversation(body)
+        if (row is not None and function in {"shell.exec", "files.read", "files.write"}
+                and self.server.mappings.full_approval_status(target)["active"]):
+            permission = (self.token_record.can_read if function == "files.read"
+                          else self.token_record.can_write)
+            self._require_permission(permission, "permission is not granted")
+            if function == "shell.exec" and not row["allow_exec"]:
+                raise ApiError(403, "client_execution_disabled", "Mapping execution is disabled")
+            self._send_json(200, {**(response_fields or {}), "status": "granted",
+                "function": function, "target": target,
+                **({"capability": "shell.unsandboxed"} if function == "shell.exec" else {})})
+            return
         self._require_password_transport()
         if not self.server.config.admin_enabled:
             raise ApiError(409, "capability_unavailable", "Capability approval requires administration to be enabled")

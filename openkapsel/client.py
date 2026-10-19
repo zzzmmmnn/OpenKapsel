@@ -133,6 +133,24 @@ class ClientRuntime:
         self.rpc_slots = threading.BoundedSemaphore(32)
         self.rpc_lock = threading.Lock()
         self.rpc_active = 0
+        self.files.full_approval_active = self.full_approval_active
+        self.tasks.full_approval_active = self.full_approval_active
+        if hasattr(self.tasks, "legacy"):
+            self.tasks.legacy.full_approval_active = self.full_approval_active
+
+    def set_full_approval(self, seconds):
+        """Server-admin-granted, volatile scope; monotonic expiry."""
+        if type(seconds) is not int or seconds not in {0, 1800, 7200, 28800, 86400}:
+            raise ValueError("invalid approval duration")
+        with self.rpc_lock:
+            self._full_approval_deadline = (
+                time.monotonic() + seconds if seconds else 0.0
+            )
+        return {"active": bool(seconds), "duration_seconds": seconds}
+
+    def full_approval_active(self):
+        with self.rpc_lock:
+            return time.monotonic() < getattr(self, "_full_approval_deadline", 0.0)
 
     def has_active_tasks(self):
         with self.rpc_lock:
@@ -141,6 +159,7 @@ class ClientRuntime:
         return self.tasks.has_active_jobs()
 
     def close(self):
+        self.set_full_approval(0)
         if self.git_pull is not None:
             self.git_pull.close()
         try:
@@ -480,6 +499,7 @@ def _capabilities(files, tasks, functions=None):
                         "search_prefix": True, "external_root_file_api": True,
                         "external_realpath": True},
         "protocol": 1,
+        "temporary_full_approval": True,
         "writable": files.writable,
         "rpc": files.rpc_capabilities,
         "execution": tasks.capabilities(),
@@ -596,6 +616,8 @@ def run_once(config, stop=None, *, runtime=None, reload_state=None, on_ready=Non
         stopped.set()
         if session is not None:
             session.close()
+        # Never retain an administrative grant across transport generations.
+        runtime.set_full_approval(0)
         if owned:
             runtime.close()
         if sock:

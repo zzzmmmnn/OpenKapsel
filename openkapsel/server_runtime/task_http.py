@@ -47,6 +47,11 @@ class TaskHttpMixin:
         row_for_function = row if target != "server" else None
         methods = self._function_methods("shell.exec", target, row_for_function)
         if "approval.grant" in methods:
+            if target != "server" and self.server.mappings.full_approval_status(target)["active"]:
+                return self._handle_function_approval_request({
+                    **body, "target": target, "function": "shell.exec",
+                    "args": {"reason": body.get("reason", body.get("message", ""))},
+                })
             try:
                 self._require_capability(body, target, "shell.unsandboxed")
             except ApiError as exc:

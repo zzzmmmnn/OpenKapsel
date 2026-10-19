@@ -150,9 +150,10 @@ class ShellRoutingMixin:
             raise ApiError(503, "mapping_unavailable", "mapping client is offline")
         if not execution.get("shell_command"):
             raise ApiError(409, "client_upgrade_required", "update and reconnect client for unified Shell execution")
+        full = self.server.mappings.full_approval_status(row["id"])["active"]
         safe = None
         windows = execution.get("platform") == "win32"
-        if windows and execution.get("safe_powershell") and not approved:
+        if windows and execution.get("safe_powershell") and not approved and not full:
             if not self._optional_bool(body, "interactive", False):
                 from openkapsel.client_runtime.windows_powershell_policy import parse_simple_powershell
                 safe = parse_simple_powershell(body.get("command"))
@@ -161,20 +162,22 @@ class ShellRoutingMixin:
         elif not row["writable"] or not self.token_record.can_write:
             raise ApiError(403, "client_execution_requires_write",
                            "client execution requires a writable mapping and caller")
-        if not approved and (not row["allow_exec"] or not execution.get("enabled")):
+        if not approved and (not row["allow_exec"] or not full and not execution.get("enabled")):
             raise ApiError(403, "client_execution_disabled",
                            "Mapping or Client execution is disabled. If temporary unsandboxed "
                            "execution is appropriate, use shell.request_approval with a reason "
                            "for this target, then retry with approved=true.",
                            {"request_operation": "shell.request_approval", "target": row["id"]})
-        if windows and not approved and safe is None:
+        if full and not row["allow_exec"]:
+            raise ApiError(403, "client_execution_disabled", "Mapping execution is disabled")
+        if windows and not approved and not full and safe is None:
             raise ApiError(403, "capability_approval_required",
                            "Windows Shell requires temporary approval for unrecognized commands. "
                            "Call shell.request_approval with an explicit target and reason; "
                            "retry with approved=true after the user approves.",
                            {"capability": "shell.unsandboxed", "target": row["id"],
                             "request_operation": "shell.request_approval"})
-        if approved:
+        if approved and not full:
             if not execution.get("unsandboxed"):
                 raise ApiError(409, "client_upgrade_required", "update and reconnect client for approved Shell execution")
             self._require_capability(body, row["id"], "shell.unsandboxed")
@@ -187,7 +190,7 @@ class ShellRoutingMixin:
             self.server.function_grants.current(
                 self.token_record.app_id, self._file_approval_conversation(body),
                 row["id"], "shell.exec",
-            ) if approved else None
+            ) if approved and not full else None
         )
         if function_auth is not None:
             # Auth is injected as a private RPC field. The Client, not the
@@ -199,7 +202,7 @@ class ShellRoutingMixin:
             }
         else:
             # Compatibility with approvals issued through the legacy flow.
-            if approved:
+            if approved and not full:
                 args["unsandboxed"] = True
             operation, rpc_args = "task_start", args
         result = client_summary(

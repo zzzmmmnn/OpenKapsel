@@ -1588,6 +1588,24 @@ class FileHandlersMixin(FileExecutionMixin):
             approved = flag == "true" or flag is True
         else:
             approved = self._optional_bool(values, "approved", False)
+        target = values.get("target")
+        # An explicit Mapping target disambiguates native Client paths from
+        # Server paths. The memory-only admin grant is rechecked on Client.
+        full_row = None
+        if isinstance(target, str) and target and target not in {"auto", "server"}:
+            full_row = self._function_target(target)
+            if not self.server.mappings.full_approval_status(full_row["id"])["active"]:
+                full_row = None
+        if full_row is not None:
+            self._require_control_token()
+            write = operation in FILE_APPROVAL_WRITE
+            self._require_permission(self.token_record.can_write if write else self.token_record.can_read,
+                                     "File permission is not granted")
+            if write and not full_row["writable"]:
+                raise ApiError(403, "mapping_unavailable", "Mapping is read-only")
+            self._file_approval_active = True
+            return self._execute_approved_mapping_file(full_row, operation, arguments,
+                {"full_client_approval": True}, query=query)
         if not approved:
             return False
         self._require_control_token()

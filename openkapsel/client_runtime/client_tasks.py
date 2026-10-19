@@ -183,6 +183,8 @@ class ClientTasks:
                     op == "task_start" and isinstance(args.get("rpc"), dict)))):
                 raise OSError(errno.EINVAL, "invalid task id")
             if op == "task_start":
+                if not isinstance(args.get("rpc"), dict) and getattr(self, "full_approval_active", lambda: False)():
+                    args = dict(args, unsandboxed=True)
                 if tid in self.tasks:
                     return self._public(self.tasks[tid])
                 unsandboxed = args.get("unsandboxed", False)
@@ -403,8 +405,9 @@ class ClientTasks:
             # Overwrite all untrusted network hints, including any supplied
             # by a compromised Server or a direct Mapping RPC caller.
             rpc_args = dict(rpc_args)
-            rpc_args["_network_mode"] = self.git_network_mode
-            rpc_args["_allowed_domains"] = list(self.git_allowed_domains)
+            unrestricted = getattr(self, "full_approval_active", lambda: False)()
+            rpc_args["_network_mode"] = "full" if unrestricted else self.git_network_mode
+            rpc_args["_allowed_domains"] = [] if unrestricted else list(self.git_allowed_domains)
         if spec is None or spec.get("execution") != "task":
             raise OSError(errno.EINVAL, "RPC operation is not task-based")
         if spec.get("write") and not self.files.writable:

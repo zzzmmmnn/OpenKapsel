@@ -43,6 +43,8 @@ class MappingManager:
         self.host_mounts = set()
         self.workspace_available = lambda workspace: True
         self.sessions, self.workers = {}, {}
+        self._full_approvals = {}  # (transport, monotonic deadline), never persisted.
+        self._full_approval_locks = {}
         self.lock = threading.RLock()
         self.ipc = None
         self.socket_path = self.run_dir / "broker.sock"
@@ -638,10 +640,79 @@ class MappingManager:
             session.close()
             with self.lock:
                 if self.sessions.get(row["id"]) is session:
+                    self._full_approvals.pop(row["id"], None)
                     self.sessions.pop(row["id"], None)
+
+    FULL_APPROVAL_SECONDS = frozenset({1800, 7200, 28800, 86400})
+
+    def full_approval_status(self, mid):
+        with self.lock:
+            session = self.sessions.get(mid)
+            supported = bool(session and session.ready and not session.closed
+                             and session.capabilities.get("temporary_full_approval") is True)
+            grant = self._full_approvals.get(mid)
+            remaining = (max(0, int(grant[1] - time.monotonic() + .999))
+                         if grant and grant[0] is session else 0)
+            if not supported or not remaining:
+                self._full_approvals.pop(mid, None)
+                remaining = 0
+            return {"supported": supported, "active": bool(remaining),
+                    "remaining_seconds": remaining}
+
+    def set_full_approval(self, mid, seconds):
+        if type(seconds) is not int or seconds not in (0, *self.FULL_APPROVAL_SECONDS):
+            raise ValueError("invalid Client full-approval duration")
+        with self.lock:
+            control_lock = self._full_approval_locks.setdefault(mid, threading.Lock())
+        # Keep concurrent admin POSTs in the same order on both peers without
+        # holding the Manager lock while a network acknowledgement is pending.
+        with control_lock:
+            row = self.store.get(mid)
+            if seconds and not row["enabled"]:
+                raise ValueError("mapping must be enabled")
+            with self.lock:
+                session = self.sessions.get(mid)
+                if session is None or session.closed or not session.ready:
+                    if not seconds:
+                        self._full_approvals.pop(mid, None)
+                        return self.full_approval_status(mid)
+                    raise ValueError("mapping Client must be online")
+                if session.capabilities.get("temporary_full_approval") is not True:
+                    if not seconds:
+                        self._full_approvals.pop(mid, None)
+                        return self.full_approval_status(mid)
+                    raise ValueError("upgrade Client to support temporary full approval")
+            # Start the display deadline before sending, so it never outlives
+            # the Client's own independently enforced monotonic deadline.
+            deadline = time.monotonic() + seconds
+            try:
+                ack = session.call("approval_mode", {"duration_seconds": seconds})
+                if (not isinstance(ack, dict) or type(ack.get("active")) is not bool
+                        or ack["active"] != bool(seconds)
+                        or type(ack.get("duration_seconds")) is not int
+                        or ack["duration_seconds"] != seconds):
+                    raise ValueError("invalid Client approval acknowledgement")
+            except (OSError, ValueError):
+                # Fence only the failed generation, never a replacement peer.
+                with self.lock:
+                    if self.sessions.get(mid) is session:
+                        self._full_approvals.pop(mid, None)
+                        self.sessions.pop(mid, None)
+                session.close()
+                raise
+            with self.lock:
+                if self.sessions.get(mid) is not session or session.closed:
+                    session.close()
+                    raise ValueError("mapping Client disconnected during approval")
+                if seconds:
+                    self._full_approvals[mid] = (session, deadline)
+                else:
+                    self._full_approvals.pop(mid, None)
+            return self.full_approval_status(mid)
 
     def disconnect(self, mid):
         with self.lock:
+            self._full_approvals.pop(mid, None)
             session = self.sessions.pop(mid, None)
         if session:
             session.close()
@@ -710,6 +781,8 @@ class MappingManager:
 
     def close(self):
         self._closing.set()
+        with self.lock:
+            self._full_approvals.clear()
         if self._mount_janitor is not None:
             self._mount_janitor.join(timeout=2)
         for row in self.store.list():

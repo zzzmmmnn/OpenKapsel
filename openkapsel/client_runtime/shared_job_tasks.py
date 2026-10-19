@@ -80,6 +80,8 @@ class SharedClientTasks:
         if op == "task_start":
             if not JOB_RE.fullmatch(tid):
                 raise OSError(errno.EINVAL, "Shell Job ID must be & followed by 4 alphanumeric chars and &")
+            if getattr(self, "full_approval_active", lambda: False)():
+                args = dict(args, unsandboxed=True)
             unsandboxed = args.get("unsandboxed", False)
             if type(unsandboxed) is not bool:
                 raise OSError(errno.EINVAL, "unsandboxed must be a boolean")

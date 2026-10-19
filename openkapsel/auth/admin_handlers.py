@@ -569,7 +569,9 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
                 default_network_domains=self.server.config.default_network_domains,
                 oauth_connections=self.server.oauth.list(),
                 static_mcp_connections=self.server.static_mcp.list(),
-                mappings=self.server.mappings.list(),
+                mappings=(mapping_rows := self.server.mappings.list()),
+                mapping_approvals={row["id"]: self.server.mappings.full_approval_status(row["id"])
+                                   for row in mapping_rows},
                 mappings_enabled=self.server.config.mappings_enabled,
                 mapping_message=mapping_message,
                 storage_providers=self.server.storage_providers.list(),

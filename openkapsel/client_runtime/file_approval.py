@@ -243,8 +243,12 @@ class FileApproval:
     def execute(self, operation, arguments, auth, *, write):
         """Mapping execution: native path checks stay entirely on this Client."""
         from openkapsel.client_runtime.approved_file_api import ApprovedFileAPI
+        if auth == {"full_client_approval": True} and not self.files.full_approval_active():
+            raise OSError(errno.EACCES, "temporary full Client approval is inactive")
         if operation == "approval_status":
-            return {"granted": self.status(arguments, auth)}
+            return {"granted": (self.files.full_approval_active()
+                               if auth == {"full_client_approval": True}
+                               else self.status(arguments, auth))}
         if operation == "file_stream":
             with self.files.lock:
                 return self.stream(arguments, auth, write=write)
@@ -254,7 +258,7 @@ class FileApproval:
         return ApprovedFileAPI.dispatch_approved(self.files, operation, arguments, auth, write=write)
 
     def stream(self, arguments, auth, *, write):
-        from openkapsel.client_runtime.approved_file_api import ApprovedFiles
+        from openkapsel.client_runtime.approved_file_api import approved_provider
         from openkapsel.client_runtime.client_files import ClientFiles
         if (not isinstance(arguments, dict) or set(arguments) != {"operation", "args", "rules"}
                 or not isinstance(arguments["args"], dict)):
@@ -287,7 +291,7 @@ class FileApproval:
                               else self.files.root / raw.rstrip("/")) +
                           ("/" if directory else ""))
             rules.append(SimpleNamespace(path=normalized, access=row["access"]))
-        provider = ApprovedFiles(self.files, auth, write, tuple(rules))
+        provider = approved_provider(self.files, auth, write, tuple(rules))
         handle = args.get("handle")
         if handle is not None:
             record = self.streams.get(handle)

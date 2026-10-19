@@ -118,6 +118,129 @@ class ApprovedFiles:
         return files._dispatch("recycle", args)
 
 
+class FullApprovalPaths:
+    def __init__(self, files):
+        self.files = files
+
+    def __getattr__(self, name):
+        def guarded(path, *args, **kwargs):
+            actual = self.files.path(str(path))
+            root = Path(actual.anchor)
+            paths = SafePathAccess((root,))
+            if os.name == "nt":
+                from openkapsel.client_runtime.client_windows import WindowsPaths
+                paths = WindowsPaths(root)
+            if name == "rename":
+                destination = self.files.path(str(args[0]))
+                if Path(destination.anchor) != root:
+                    raise OSError(errno.EXDEV, "cross-device rename")
+                args = (destination, *args[1:])
+            return getattr(paths, name)(actual, *args, **kwargs)
+        return guarded
+
+
+class FullApprovedFiles(ApprovedFiles):
+    """Host-wide File API, enabled only by the live administrator grant.
+
+    The marker arrives in the private authorization envelope. It is never a
+    grant by itself: every path and stream use checks the Client deadline.
+    """
+    def __init__(self, base, auth, write, rules):
+        if not base.full_approval_active():
+            raise OSError(errno.EACCES, "temporary full Client approval is inactive")
+        self.base, self.auth, self.write = base, auth, write
+        self.rules = tuple(rules)  # Server Token rules, never Client rules.
+        self.root = base.root
+        self.scopes = ()
+        # The normal index may omit paths hidden before this grant.
+        self.filename_index = None
+        self._recycle_roots = {}
+        # Authorize the host root dynamically, including Windows drive/UNC
+        # roots, after validating a requested path. Descriptor guards remain.
+        self.paths = FullApprovalPaths(self)
+        self.writable = base.writable and write
+
+    def path(self, value):
+        if not self.base.full_approval_active():
+            raise OSError(errno.EACCES, "temporary full Client approval is inactive")
+        if (not isinstance(value, str) or "\x00" in value
+                or ".." in Path(value).parts
+                or os.name != "nt" and "\\" in value):
+            raise ApiError(400, "invalid_path", "invalid File path")
+        path = Path(value) if value else self.root
+        if not path.is_absolute():
+            if path.drive:
+                raise ApiError(400, "invalid_path", "ambiguous File path")
+            path = self.root / path
+        if os.name == "nt":
+            from openkapsel.client_runtime.windows_filename_policy import check_windows_filename_parts
+            check_windows_filename_parts(path.parts[1:])
+        actual = path.resolve(strict=False)
+        # Preserve explicit Server Token restrictions; the admin grant
+        # removes only Client-configured policy.
+        from openkapsel.auth.path_access import _matching_anchor, normalized_explicit_rule
+        for checked in (path, actual):
+            matches = []
+            for rule in self.rules:
+                match = _matching_anchor(checked, normalized_explicit_rule(rule))
+                if match is not None:
+                    if rule.access == "deny" and not match[1]:
+                        raise OSError(errno.EACCES, "Server Token path restriction")
+                    matches.append((len(match[0].parts), rule.access))
+            if matches:
+                depth = max(item[0] for item in matches)
+                modes = {mode for n, mode in matches if n == depth}
+                if modes & {"deny", "protect"} or self.write and "ro" in modes:
+                    raise OSError(errno.EACCES, "Server Token path restriction")
+        return actual
+
+    def ensure_mutable_path(self, path):
+        self.path(str(path))
+        if path == self.root or path == Path(path.anchor):
+            raise OSError(errno.EACCES, "root is protected")
+        for rule in self.rules:
+            if not rule.path.startswith("*/") and rule.access != "rw":
+                restricted = Path(rule.path.rstrip("/"))
+                if path in restricted.parents:
+                    raise OSError(errno.EACCES, "directory contains Server Token restrictions")
+
+    def _protected(self, path):
+        return False
+
+    def is_protected_path(self, path):
+        try:
+            self.path(str(path))
+            return False
+        except (OSError, ApiError):
+            return True
+
+    def recycle(self, path, original=None):
+        self.ensure_mutable_path(path)
+        # Use a directory on the same filesystem, not an OS-root recycle bin.
+        root = path.parent
+        files = type(self.base)(root, writable=self.writable,
+            rpc_registry=self.base.rpc_registry, rpc_capabilities=self.base.rpc_capabilities,
+            index_owned=False)
+        files.full_approval_active = self.base.full_approval_active
+        args = {"path": path.name}
+        if original is not None:
+            args["original_path"] = original.relative_to(root).as_posix()
+        result = files._dispatch("recycle", args)
+        self._recycle_roots[result["recycle_id"]] = files
+        return dict(result, root=str(root))
+
+    def restore_recycle(self, recycle_id):
+        # Rollback uses only bins created by this very transaction, even if
+        # the grant expires between publication and recovery.
+        files = self._recycle_roots[recycle_id]
+        return files._dispatch("recycle_restore", {"recycle_id": recycle_id})
+
+
+def approved_provider(files, auth, write, rules):
+    factory = FullApprovedFiles if auth == {"full_client_approval": True} else ApprovedFiles
+    return factory(files, auth, write, rules)
+
+
 class ApprovedFileAPI(ClientFileAPI):
     @classmethod
     def dispatch_approved(cls, files, operation, arguments, auth, *, write):
@@ -137,7 +260,7 @@ class ApprovedFileAPI(ClientFileAPI):
                            else files.root / r["path"]) +
                   ("/" if r["path"].endswith("/") else "")),
             access=r["access"]) for r in raw_rules)
-        provider = ApprovedFiles(files, auth, write, rules)
+        provider = approved_provider(files, auth, write, rules)
         if operation == "fs_read_files":
             paths = arguments.get("body", {}).get("paths", [])
             allowed = False
@@ -170,8 +293,19 @@ class ApprovedFileAPI(ClientFileAPI):
             return None
         return super()._try_indexed_find(**kwargs)
 
+    def _authorize_external_recycle(self, path):
+        if not isinstance(self.files, FullApprovedFiles):
+            return False
+        self.files.ensure_mutable_path(path)
+        return True
+
     def _recycle_path(self, path):
         return self.files.recycle(path)
 
     def _transaction_recycle(self, source, original):
         return self.files.recycle(source, original)
+
+    def _transaction_restore_recycle(self, recycle_id, *, root=None):
+        if isinstance(self.files, FullApprovedFiles):
+            return self.files.restore_recycle(recycle_id)
+        return super()._transaction_restore_recycle(recycle_id)

@@ -612,11 +612,13 @@ def _plan_item(handler, item: Any, index: int) -> MutationPlan:
         try:
             path.relative_to(handler.token_scope_root)
         except ValueError:
-            raise ApiError(
-                403,
-                "outside_delete_not_supported",
-                "recoverable delete is only available inside the token workspace",
-            ) from None
+            authorize = getattr(handler, "_authorize_external_recycle", None)
+            if authorize is None or not authorize(path):
+                raise ApiError(
+                    403,
+                    "outside_delete_not_supported",
+                    "recoverable delete is only available inside the token workspace",
+                ) from None
         if path == handler.token_scope_root:
             raise ApiError(403, "root_protected", "the workspace root cannot be deleted")
         storage_providers = getattr(handler.server, "storage_providers", None)

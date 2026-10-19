@@ -29,7 +29,7 @@ class ClientRpcSession:
         self.closed = False
         base = runtime.files
         self.files = type(base)(
-            base.root, writable=base.writable, rpc_registry=base.rpc_registry,
+            base.root, writable=base.configured_writable, rpc_registry=base.rpc_registry,
             rpc_capabilities=base.rpc_capabilities, protected_paths=base.global_protected_paths,
             filename_index=base.filename_index, index_owned=False,
         )
@@ -37,6 +37,7 @@ class ClientRpcSession:
         # an approved external File API root can contain the Client config.
         self.files.sandbox_denied_paths = base.sandbox_denied_paths
         self.files.sandbox_path_rules = base.sandbox_path_rules
+        self.files.full_approval_active = base.full_approval_active
         from openkapsel.execution.function_registry import FunctionRegistry
         from openkapsel.client_runtime.file_approval import register_file_functions
         self.file_functions = FunctionRegistry()
@@ -137,7 +138,15 @@ class ClientRpcSession:
             check_deadline()
             if not isinstance(op, str) or not isinstance(args, dict):
                 raise OSError(errno.EINVAL, "invalid operation")
-            if op == "function":
+            if op == "approval_mode":
+                if set(args) != {"duration_seconds"}:
+                    raise OSError(errno.EINVAL, "invalid approval control arguments")
+                # Serialize grant application against transport shutdown.
+                with self.lock:
+                    if self.closed or self.stopped.is_set():
+                        raise OSError(errno.ECANCELED, "transport closed")
+                    result = self.runtime.set_full_approval(args["duration_seconds"])
+            elif op == "function":
                 # Private server-to-client RPC. Never dispatch a function
                 # method through the public plugin/AI operation registry.
                 registry = (self.file_functions if args.get("function") in {"files.read", "files.write"}
@@ -177,6 +186,8 @@ class ClientRpcSession:
         self.stopped.set()
         with self.lock:
             self.closed = True
+            if hasattr(self.runtime, "set_full_approval"):
+                self.runtime.set_full_approval(0)
             cleanup = True
         # Running workers clean up their own old handle table when they finish;
         # reconnect does not join a worker blocked on remote I/O.
