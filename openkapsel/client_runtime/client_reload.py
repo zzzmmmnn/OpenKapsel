@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +23,8 @@ from openkapsel.source_fingerprint import (
 STATE_VERSION = 1
 LOCAL_REFRESH_SECONDS = 24 * 60 * 60
 REQUIRED_RELOAD_DELAYS = (0, 60, 120, 300)
+GIT_PULL_RETRY_SECONDS = 30
+GIT_PULL_TIMEOUT_SECONDS = 90
 
 
 class ClientReloadState:
@@ -125,6 +130,87 @@ class ClientReloadState:
         self.data["required_reload_attempts"] = attempt + 1
         self.save()
         return delay
+
+
+def pull_trusted_source(root: Path) -> None:
+    """Fast-forward the selected checkout as the Client operator, not an RPC.
+
+    Only an opt-in trusted Git root may be updated. No interactive credential
+    prompt, shell interpolation, submodule recursion or unbounded Git command.
+    """
+    git = shutil.which("git")
+    if not git:
+        raise OSError("git executable is unavailable")
+    root = root.resolve()
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    def run(*args, capture=False):
+        result = subprocess.run(
+            [git, "-C", str(root), *args], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env=env,
+            timeout=GIT_PULL_TIMEOUT_SECONDS, check=False,
+        )
+        if result.returncode:
+            raise OSError(f"git {args[0]} exited {result.returncode}")
+        if capture:
+            if len(result.stdout) > 4096:
+                raise OSError("unexpectedly long Git repository path")
+            return result.stdout.decode("utf-8", errors="replace").strip()
+        return ""
+    # Never accidentally pull an enclosing checkout via Git's upward search.
+    top = Path(run("rev-parse", "--show-toplevel", capture=True)).resolve()
+    if os.path.normcase(str(top)) != os.path.normcase(str(root)):
+        raise OSError("source_root must be the Git worktree root")
+    run("-c", "submodule.recurse=false", "pull", "--ff-only", "--no-recurse-submodules")
+
+
+class GitPullGate:
+    """Retry Git while the current Client connection stays alive.
+
+    A successful pull is only a *permission to inspect/reload*; the caller
+    still checks the source fingerprint, protocol, and active jobs.
+    """
+    def __init__(self, root: Path):
+        self.root = root.resolve()
+        self.ready = threading.Event()
+        self.stop = threading.Event()
+        self.thread = None
+
+    def start(self):
+        if self.thread is None:
+            self.thread = threading.Thread(
+                target=self._run, name="openkapsel-git-pull", daemon=True)
+            self.thread.start()
+        return self.ready.is_set()
+
+    def reset(self):
+        # Called after a successful pull that did not need a reload.
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.thread = None
+        self.ready.clear()
+
+    def close(self):
+        self.stop.set()
+
+    def _run(self):
+        import logging
+        log = logging.getLogger("openkapsel.client")
+        while not self.stop.is_set():
+            try:
+                pull_trusted_source(self.root)
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                log.warning(
+                    "Client Git pull failed (%s); retrying in %ss without disconnecting",
+                    type(exc).__name__, GIT_PULL_RETRY_SECONDS,
+                )
+                if self.stop.wait(GIT_PULL_RETRY_SECONDS):
+                    return
+            else:
+                if not self.stop.is_set():
+                    log.info("Client Git pull succeeded; checking source for reload")
+                    self.ready.set()
+                return
 
 
 class LocalSource:

@@ -99,6 +99,7 @@ The client opens the selected configuration once and holds an exclusive process-
   "writable": true,
   "allow_exec": false,
   "auto_reload": true,
+  "auto_git_pull": false,
   "transport_timeout_seconds": 60,
   "rpc": {
     "git": true,
@@ -138,6 +139,29 @@ Mapping client 1.62.0+ keeps provider authentication in the HTTP WebSocket Upgra
 Server and client fingerprints are separate deterministic change detectors. Shared protocol files affect both fingerprints; side-specific files affect only their corresponding fingerprint. Fingerprints hash an ordered, explicit source manifest using raw file bytes and the manifest itself. Fingerprint equality is not a compatibility requirement: compatibility is governed by the mapping handshake version, `minimum_client_version`, and the existing RPC/capability versions.
 
 `auto_reload` is optional. When `auto_reload=true` and `source_root` is omitted, the client uses the OpenKapsel project root that contains the currently running source modules; it does not use the process working directory. `source_root` remains an optional absolute-path override for advanced setups that want to reload into a different trusted checkout. The client never scans arbitrary directories and never imports candidate source just to inspect it; it reads the release version, mapping handshake version, and fingerprint as data. When a reload is selected, the process is replaced and the selected source root is inserted ahead of the current working directory/import path.
+
+Optional `auto_git_pull=true` requires `auto_reload=true` and a trusted local
+Git **worktree root** (the running project checkout by default, or explicit
+`source_root`). The Client itself runs `git pull --ff-only` with submodule
+recursion disabled before any automatic source re-exec. It uses the Client OS
+user's Git credentials, Git configuration and network access; it does not
+reuse the Mapping Server's network or credential policies. Git needs an
+upstream tracking branch and a clean, fast-forwardable checkout. The option
+is disabled by default.
+
+Git runs on a background thread. On failure (including offline, dirty or
+diverged checkout, missing Git, or an authentication error), it **retries
+every 30 seconds without closing or interrupting a compatible, already READY
+Mapping connection**. RPC, tasks and heartbeats continue normally. After
+the first successful pull the Client rechecks the source fingerprint and
+handshake/release compatibility. If compatible updated source exists, normal
+reload starts, after waiting for active tasks to drain. Successful pulls
+without a change to Client source do not cause pointless restarts. With
+`auto_git_pull=true`, the normal once-per-24-hour source refresh can also
+discover updates from Git even when files have not been manually changed.
+When a new Server requires an incompatible protocol/version, the old Client
+cannot become READY while waiting for Git, but Git still retries in the
+background until a usable source becomes available.
 
 Before the first READY session, a client whose mapping handshake version differs from the server requirement, or whose release is below the server minimum, checks that local source. If a changed local source satisfies both the required handshake version and minimum release it reloads; otherwise required-upgrade retries use delays of 0, 60, 120, then 300 seconds for the fourth and later attempts. Ordinary network reconnect failures do not advance this backoff. Ordinary provider reconnects use a separate consecutive-disconnect backoff of 1, 3, 5, 10, then 20 seconds for the fifth and later disconnects. Receiving a valid READY resets that disconnect counter, so the next disconnect again retries after one second.
 

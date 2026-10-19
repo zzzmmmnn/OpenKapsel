@@ -38,6 +38,7 @@ from openkapsel.source_fingerprint import running_fingerprint, version_at_least
 from openkapsel.client_runtime.client_reload import (
     LOCAL_REFRESH_SECONDS,
     ClientReloadState,
+    GitPullGate,
     exec_local_source,
     inspect_local_source,
     local_source_can_satisfy,
@@ -125,6 +126,10 @@ class ClientRuntime:
         register_file_functions(self.functions, self.files)
         self.client_fingerprint = running_fingerprint("client")
         self.pending_reload = False
+        self.git_pull = (
+            GitPullGate(_source_root(self.config))
+            if self.config.get("auto_git_pull") is True else None
+        )
         self.rpc_slots = threading.BoundedSemaphore(32)
         self.rpc_lock = threading.Lock()
         self.rpc_active = 0
@@ -136,6 +141,8 @@ class ClientRuntime:
         return self.tasks.has_active_jobs()
 
     def close(self):
+        if self.git_pull is not None:
+            self.git_pull.close()
         try:
             self.tasks.close()
         finally:
@@ -171,6 +178,10 @@ def _create_resources(config, *, protected_paths=()):
         raise ValueError("transport_timeout_seconds must be between 10 and 600 seconds")
     if "auto_reload" in config and not isinstance(config["auto_reload"], bool):
         raise ValueError("auto_reload must be a boolean")
+    if "auto_git_pull" in config and not isinstance(config["auto_git_pull"], bool):
+        raise ValueError("auto_git_pull must be a boolean")
+    if config.get("auto_git_pull") and not config.get("auto_reload"):
+        raise ValueError("auto_git_pull requires auto_reload=true")
     if "source_root" in config:
         if not isinstance(config["source_root"], str) or not config["source_root"].strip():
             raise ValueError("source_root must be a non-empty absolute path")
@@ -326,6 +337,35 @@ def _server_hello(value):
     return handshake_version, server_fingerprint, minimum
 
 
+def _source_root(config):
+    from openkapsel.source_fingerprint import project_root
+    return (Path(config["source_root"]).expanduser().resolve()
+            if config.get("source_root") else project_root())
+
+
+def _pull_before_reload(runtime):
+    gate = getattr(runtime, "git_pull", None)
+    return gate is None or gate.start()
+
+
+def _check_completed_pull(config, runtime, minimum_version):
+    gate = getattr(runtime, "git_pull", None)
+    if gate is None or not gate.ready.is_set():
+        return False
+    source = inspect_local_source(config)
+    if (source is None or source.fingerprint == runtime.client_fingerprint
+            or not local_source_can_satisfy(
+                source, minimum_version, MAPPING_HANDSHAKE_VERSION)):
+        gate.reset()
+        return False
+    runtime.pending_reload = True
+    if runtime.has_active_tasks():
+        LOG.info("Deferring Git-updated client reload until active tasks drain")
+    else:
+        LOG.info("Git-updated client source is ready for reload")
+    return True
+
+
 def _reload_decision(
     config,
     runtime,
@@ -338,20 +378,23 @@ def _reload_decision(
     below_minimum = not version_at_least(__version__, minimum_version)
     source = None
     if protocol_mismatch or below_minimum:
-        # A required upgrade never makes an incompatible runtime READY. Preserve
-        # already-running client tasks by remaining offline until they drain.
+        # A required upgrade cannot become READY, but Git can already retry
+        # while existing tasks are finishing in the old runtime.
+        pull_ready = _pull_before_reload(runtime)
+        # Preserve already-running client tasks until they drain.
         if runtime.has_active_tasks():
             if protocol_mismatch:
                 raise ClientProtocolRequired(server_handshake_version)
             raise ClientVersionRequired(minimum_version)
-        source = inspect_local_source(config)
-        if (
-            local_source_can_satisfy(
-                source, minimum_version, server_handshake_version
-            )
-            and source.fingerprint != runtime.client_fingerprint
-        ):
-            raise ClientReloadRequired(source, required=True)
+        if pull_ready:
+            source = inspect_local_source(config)
+            if (
+                local_source_can_satisfy(
+                    source, minimum_version, server_handshake_version
+                )
+                and source.fingerprint != runtime.client_fingerprint
+            ):
+                raise ClientReloadRequired(source, required=True)
         if protocol_mismatch:
             raise ClientProtocolRequired(server_handshake_version)
         raise ClientVersionRequired(minimum_version)
@@ -364,9 +407,20 @@ def _reload_decision(
         and reload_state.last_server_fingerprint != server_fingerprint
     )
     refresh_due = time.time() - reload_state.last_source_check_at >= LOCAL_REFRESH_SECONDS
-    inspect = runtime.pending_reload or server_changed or refresh_due
+    gate = getattr(runtime, "git_pull", None)
+    inspect = (runtime.pending_reload or server_changed or refresh_due
+               or (gate is not None and gate.ready.is_set()))
     if not inspect:
         return
+    if gate is not None:
+        if not gate.ready.is_set():
+            gate.start()
+            if server_changed or refresh_due:
+                reload_state.mark_source_checked()
+            # The handshake may still complete using compatible running code.
+            return
+        if not _check_completed_pull(config, runtime, minimum_version):
+            return
     source = inspect_local_source(config)
     reload_state.mark_source_checked()
     if (
@@ -388,6 +442,18 @@ def _reload_decision(
 def _periodic_reload_check(config, runtime, reload_state, minimum_version):
     if reload_state is None or runtime.pending_reload:
         return runtime.pending_reload
+    gate = getattr(runtime, "git_pull", None)
+    if gate is not None:
+        if gate.ready.is_set():
+            return _check_completed_pull(config, runtime, minimum_version)
+        if gate.thread is not None:
+            # Git retries are entirely background; keep sending heartbeats.
+            return False
+        if time.time() - reload_state.last_source_check_at < LOCAL_REFRESH_SECONDS:
+            return False
+        reload_state.mark_source_checked()
+        gate.start()
+        return False
     if time.time() - reload_state.last_source_check_at < LOCAL_REFRESH_SECONDS:
         return False
     source = inspect_local_source(config)
