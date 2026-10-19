@@ -84,6 +84,12 @@ def validated_path_grants(record: TokenRecord, scope_root: Path | None = None) -
 
 def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tuple[Path, ...]:
     from openkapsel.auth.path_access import existing_pattern_masks
+    # Preserve the Server workspace metadata directory even if it has not
+    # been created yet. A user explicit rw rule can override its fallback.
+    internal = scope_root / INTERNAL_DIRECTORY
+    if effective_path_access(internal, scope_root, True, grants,
+                             resolve_symlinks=False) == "deny":
+        ensure_workspace_layout(scope_root)
     # All protected names are masked at launch; explicit same-target rw
     # overrides the default .openkapsel deny.
     scan_roots = [scope_root, *(
@@ -92,10 +98,13 @@ def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tu
         and Path(g.path.rstrip("/")).is_dir()
     )]
     masks = tuple(item for base in dict.fromkeys(scan_roots)
-                  for item in existing_pattern_masks(base, True, grants))
+                  for item in existing_pattern_masks(
+                      base, True, grants, skip_roots=mapping_roots))
     hidden: list[Path] = [grant_path for grant in masks
                           if grant.access == "deny"
                           for grant_path in (Path(grant.path),)]
+    masked_directories = {Path(item.path) for item in masks
+                          if Path(item.path).is_dir()}
     mapped = set(mapping_roots)
     for current, directories, _files in os.walk(scope_root, followlinks=False):
         parent = Path(current)
@@ -106,7 +115,8 @@ def sandbox_hidden_paths(scope_root: Path, *, mapping_roots=(), grants=()) -> tu
             if path in mapped:
                 directories.remove(name)
                 continue
-            if path.is_symlink() or name.casefold().startswith(".openkapsel-"):
+            if (path.is_symlink() or path in masked_directories
+                    or name.casefold().startswith(".openkapsel-")):
                 directories.remove(name)
             if name.casefold().startswith(".openkapsel-") and path.is_dir() and not path.is_symlink():
                 hidden.append(path)

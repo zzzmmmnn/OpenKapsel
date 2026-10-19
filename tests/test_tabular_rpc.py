@@ -244,7 +244,13 @@ class TabularTests(unittest.TestCase):
         self.source()
         for args in ({"offset": 1000000}, {"csv": {"encoding": "utf-16"}}, {"csv": {"delimiter": "\n"}}, {"columns": [0, 0]}):
             self.call("read", dict(args, path="data.csv"), 400)
-        self.call("read", {"path": ".openkapsel/private.csv"}, 403)
+        # Private data is invisible even when it exists; no existence leak.
+        (self.root / ".openkapsel").mkdir()
+        (self.root / ".openkapsel" / "private.csv").write_text("secret\nconfidential\n")
+        for name in (".openkapsel/private.csv", ".openkapsel/missing.csv"):
+            result = self.call("read", {"path": name}, 404)
+            self.assertEqual("path_not_found", result["code"])
+            self.assertNotIn("confidential", str(result))
 
     @unittest.skipIf(os.name == "nt", "POSIX sparse seek fixture; do not allocate 10 GiB on Windows")
     def test_large_csv_headers_and_authenticated_seek_cookies_above_2_and_10_gib(self):

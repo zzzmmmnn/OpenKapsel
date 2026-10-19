@@ -104,6 +104,17 @@ class HiddenPathRuleTests(unittest.TestCase):
             scope, grants=fake.allowed_paths)
         self.assertIn(outside / ".openkapsel", hidden)
 
+    def test_shell_default_metadata_mask_honors_explicit_rw_override(self):
+        from openkapsel.execution.shell_execution import sandbox_hidden_paths
+        scope = self.root / "d"
+        internal = scope / ".openkapsel"
+        internal.mkdir()
+        (internal / "secret").write_text("metadata")
+        self.assertIn(internal, sandbox_hidden_paths(scope))
+        override = (SimpleNamespace(path="*/.openkapsel/", access="rw"),)
+        self.assertNotIn(internal, sandbox_hidden_paths(scope, grants=override))
+        self.assertEqual("metadata", (internal / "secret").read_text())
+
     def test_strict_syntax_and_non_regex(self):
         self.assertEqual((True, True, "abc"), _rule_parts("*/abc/"))
         self.assertEqual((True, False, ".gitconfig"), _rule_parts("*/.gitconfig"))

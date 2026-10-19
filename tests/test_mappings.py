@@ -350,8 +350,19 @@ class MappingTests(unittest.TestCase):
         remote.mkdir()
         (remote / "project").mkdir()
         (remote / "project" / ".openkapsel").mkdir()
-        hidden = sandbox_hidden_paths(self.export, mapping_roots=(remote,))
+        # Fail loudly if either the pattern scanner or the later Shell
+        # traversal enters the remote export. A mere absence in the result
+        # cannot prove the remote filesystem was not scanned.
+        real_scandir = os.scandir
+        def guarded_scandir(path):
+            candidate = Path(path)
+            if candidate == remote or remote in candidate.parents:
+                raise AssertionError("remote Mapping export must not be scanned")
+            return real_scandir(path)
+        with patch("os.scandir", side_effect=guarded_scandir):
+            hidden = sandbox_hidden_paths(self.export, mapping_roots=(remote,))
         self.assertEqual(hidden, (self.export / ".openkapsel",))
+        self.assertTrue((self.export / ".openkapsel").is_dir())
 
     def test_execution_requires_explicit_policy_and_no_sandbox_fallback(self):
         tasks = ClientTasks(self.files)

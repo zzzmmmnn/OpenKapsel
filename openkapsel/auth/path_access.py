@@ -187,7 +187,7 @@ def effective_path_access(path: Path, root: Path, writable: bool, grants,
 
 
 def existing_pattern_masks(root: Path, writable: bool, rules,
-                           *, limit: int = 8192):
+                           *, limit: int = 8192, skip_roots=()):
     """Return static sandbox masks for currently existing named paths.
 
     Filesystem sandboxes consume concrete paths, not suffix patterns.
@@ -196,6 +196,9 @@ def existing_pattern_masks(root: Path, writable: bool, rules,
     """
     from openkapsel.auth.tokens import PathGrant
     root = Path(root)
+    excluded = frozenset(Path(value) for value in skip_roots)
+    if any(root == item or item in root.parents for item in excluded):
+        return ()
     named = {target for pattern, _mode in DEFAULT_ACCESS_RULES
              if (parts := _rule_parts(pattern))[0]
              for target in (parts[2],)}
@@ -204,6 +207,15 @@ def existing_pattern_masks(root: Path, writable: bool, rules,
     masks = []
     for parent, directories, files in os.walk(root, followlinks=False):
         directory = Path(parent)
+        # A Mapping mount must never be walked by the Server's local sandbox
+        # mask scanner: scanning a remote provider could block Shell startup.
+        # Prune before os.walk descends, including for nested Mapping roots.
+        if excluded:
+            directories[:] = [
+                name for name in directories
+                if not any(directory / name == item or item in (directory / name).parents
+                           for item in excluded)
+            ]
         # Do not follow symlinks; they must be evaluated at their lexical
         # spelling and via their canonical destination independently.
         for name in tuple(directories):

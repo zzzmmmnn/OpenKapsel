@@ -125,9 +125,20 @@ class StructuredTests(unittest.TestCase):
         self.call("read", {"path": path})
         self.call("preview", {"path": path, "operations": [{"op": "replace", "path": "/a", "value": 2}]})
         self.call("write", {"path": "new.json", "content": '{}'}, 403)
-        for name in ("../outside.json", ".openkapsel/x.json", ".a.openkapsel-put-secret"):
+        # Exported protected names must not disclose whether a file exists:
+        # the generic guarded file API deliberately presents them as ENOENT.
+        (self.root / ".openkapsel").mkdir()
+        (self.root / ".openkapsel" / "x.json").write_text('{"secret":true}')
+        for name, expected, code in (
+            ("../outside.json", 403, "path_access_denied"),
+            (".openkapsel/x.json", 404, "path_not_found"),
+            (".openkapsel/absent.json", 404, "path_not_found"),
+            (".a.openkapsel-put-secret", 403, "reserved_path"),
+        ):
             value = plugin.dispatch(self.files, "read", {"path": name})
-            self.assertEqual(403, value["status"], value)
+            self.assertEqual(expected, value["status"], value)
+            self.assertEqual(code, value["error"]["code"])
+            self.assertNotIn("secret", str(value))
         self.files.writable = True
         with self.assertRaises(OSError) as error:
             self.call("write", {"path": "cancel.json", "content": '{}'}, task=Task(True))
