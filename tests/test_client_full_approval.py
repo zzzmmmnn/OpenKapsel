@@ -24,8 +24,7 @@ class FullApprovalClientTests(unittest.TestCase):
         self.export = self.root / "export"
         self.export.mkdir()
         self.runtime = ClientRuntime({"url": "ws://127.0.0.1/provider", "token": "test",
-            "root": str(self.export), "writable": True, "allow_exec": True,
-            "sandbox": False})
+            "root": str(self.export), "writable": True, "allow_exec": True})
         self.session = ClientRpcSession(self.runtime, SimpleNamespace(), threading.Event())
 
     def tearDown(self):

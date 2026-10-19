@@ -177,7 +177,9 @@ def _create_resources(config, *, protected_paths=()):
         raise ValueError("remote mapping connections require wss")
     if not isinstance(config.get("token"), str) or not config["token"] or any(c.isspace() for c in config["token"]):
         raise ValueError("a mapping token is required")
-    for key in ("writable", "allow_exec", "sandbox", "network"):
+    if "sandbox" in config:
+        raise ValueError("sandbox is removed; set job_sandbox to enable isolation or omit it")
+    for key in ("writable", "allow_exec", "network"):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")
     ssh_config = config.get("ssh")
@@ -284,8 +286,7 @@ def _create_resources(config, *, protected_paths=()):
         if os.name == "nt" and job_sandbox is not None else ()
     )
     tasks = ClientTasks(files, enabled=config.get("allow_exec", False),
-                        sandbox=(config.get("sandbox", True)
-                                 if job_sandbox is None and os.name != "nt" else False),
+                        sandbox=False,
                         managed_sandbox=job_sandbox is not None or os.name == "nt",
                         approval_only=os.name == "nt",
                         powershell_rules=powershell_rules,
@@ -300,13 +301,13 @@ def _create_resources(config, *, protected_paths=()):
     if tasks.enabled and not tasks.sandbox and job_sandbox is None:
         if isinstance(ssh_config, dict) and ssh_config.get("profiles"):
             LOG.warning(
-                "Sandbox explicitly disabled while SSH profiles are configured: "
+                "job_sandbox is not configured while SSH profiles are configured: "
                 "remote tasks have this OS account's host permissions and may read "
                 "client configuration or referenced SSH credentials"
             )
         else:
             LOG.warning(
-                "Sandbox explicitly disabled: remote tasks have this OS account's host permissions"
+                "job_sandbox is not configured: remote tasks have this OS account's host permissions"
             )
     return files, tasks
 

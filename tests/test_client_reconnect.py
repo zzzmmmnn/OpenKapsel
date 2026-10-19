@@ -24,7 +24,7 @@ class ClientReconnectTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.config = {"url": "ws://127.0.0.1/provider", "token": "test",
                        "root": self.directory.name, "allow_exec": True,
-                       "writable": True, "sandbox": False, "limits": {"max_tasks": 1}}
+                       "writable": True, "limits": {"max_tasks": 1}}
         self.runtime = ClientRuntime(self.config)
 
     def tearDown(self):

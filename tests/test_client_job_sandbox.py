@@ -141,8 +141,39 @@ class ClientJobSandboxTests(unittest.TestCase):
         finally:
             runtime.close()
 
+    def test_job_sandbox_presence_is_the_only_activation_switch(self):
+        if platform.system() not in {"Linux", "Darwin", "Windows"}:
+            self.skipTest("unsupported native platform")
+        unsandboxed = self._config(writable=True)
+        unsandboxed.pop("job_sandbox")
+        # A Client without job_sandbox must never require legacy Podman.
+        with patch("openkapsel.client_runtime.client_tasks.shutil.which", return_value=None):
+            runtime = ClientRuntime(unsandboxed)
+        try:
+            self.assertIsNone(runtime.tasks.job_sandbox)
+            self.assertFalse(runtime.tasks.legacy.sandbox)
+            self.assertFalse(runtime.tasks.capabilities()["sandbox"])
+        finally:
+            runtime.close()
+
+        with patch("openkapsel.client_runtime.client_tasks.shutil.which", return_value=None):
+            runtime = ClientRuntime(self._config(writable=True, job_sandbox={}))
+        try:
+            self.assertIsNotNone(runtime.tasks.job_sandbox)
+            self.assertEqual(
+                {"Linux": "bubblewrap", "Darwin": "seatbelt",
+                 "Windows": "approval_only"}[platform.system()],
+                runtime.tasks.job_sandbox["type"],
+            )
+            self.assertEqual(platform.system() != "Windows",
+                             runtime.tasks.capabilities()["sandbox"])
+        finally:
+            runtime.close()
+
     def test_invalid_configs_fail_closed(self):
         cases = [
+            {"sandbox": True},
+            {"sandbox": False},
             {"job_sandbox": {"type": "seatbelt"}},
             {"job_sandbox": None},
             {"job_sandbox": {"paths": [{"path": str(self.readonly), "access": "invalid"}]}},

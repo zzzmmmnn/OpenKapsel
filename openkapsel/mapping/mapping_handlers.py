@@ -764,4 +764,4 @@ class MappingHandlersMixin:
             "transport_timeout_seconds": 60,
             "rpc": {"git": True, "archive": True},
             "rpc_plugins": {},
-            "sandbox": True, "proxy": None}, indent=2)
+            "proxy": None}, indent=2)

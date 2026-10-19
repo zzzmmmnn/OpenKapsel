@@ -213,7 +213,7 @@ class GitPullGateTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             config = {"url": "ws://127.0.0.1/provider", "token": "test", "root": td,
-                      "auto_reload": True, "auto_git_pull": True, "sandbox": False}
+                      "auto_reload": True, "auto_git_pull": True}
             runtime = ClientRuntime(config)
             try:
                 websocket = SimpleNamespace(

@@ -699,7 +699,7 @@ class MappingTransportTests(unittest.TestCase):
             thread.start()
             client = threading.Thread(target=run_once, args=({"url": f"ws://127.0.0.1:{server.server_port}/provider",
                                                               "token": "testing", "root": directory,
-                                                              "writable": writable, "allow_exec": writable, "sandbox": False},), daemon=True)
+                                                              "writable": writable, "allow_exec": writable},), daemon=True)
             client.start()
             try:
                 self.assertTrue(connected.wait(5))

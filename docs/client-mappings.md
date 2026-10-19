@@ -87,7 +87,7 @@ add `fs.inotify.max_user_watches=524288` to a configuration file under
 `/etc/sysctl.d/` and load it with `sudo sysctl --system`.
 The quota is shared by processes running under the same Linux user.
 
-Treat the client configuration as secret-bearing control-plane input: it contains the mapping token and may also contain SSH passwords, key passphrases, or paths to private keys. The selected `--config` file **must be outside the exported mapping root**; the client refuses to start otherwise. Keep it outside source control as well, and on POSIX systems use mode `0600`. This prevents ordinary mapping files, recursive search/tree/manifest operations, Archive/Git RPC snapshots, and sandboxed Shell tasks from treating the active configuration as workspace data. The file-provider layer also treats protected configuration paths as nonexistent as defense in depth. When SSH profiles are configured, `allow_exec=true` with `sandbox=false` remains allowed, but the client logs a prominent warning because native unsandboxed commands run with the client OS account and may read the configuration or referenced SSH key files.
+Treat the client configuration as secret-bearing control-plane input: it contains the mapping token and may also contain SSH passwords, key passphrases, or paths to private keys. The selected `--config` file **must be outside the exported mapping root**; the client refuses to start otherwise. Keep it outside source control as well, and on POSIX systems use mode `0600`. This prevents ordinary mapping files, recursive search/tree/manifest operations, Archive/Git RPC snapshots, and sandboxed Shell tasks from treating the active configuration as workspace data. The file-provider layer also treats protected configuration paths as nonexistent as defense in depth. When SSH profiles are configured and `allow_exec=true` without `job_sandbox`, the client warns that native Shell commands use the Client OS account and can access the configuration or referenced SSH key files.
 
 The client opens the selected configuration once and holds an exclusive process-lifetime lock. On Windows it opens the file with kernel-enforced share mode `0`, so while the client holds the handle other processes cannot newly open that path for read, write, or delete/rename access; if another process already has an incompatible handle open, client startup fails. On POSIX the lock uses advisory `flock`. A second client cannot start with the same locked file. If an automatic source reload re-execs the client, the original configuration SHA-256 is carried across the exec and verified before the new process parses the file; a changed or replaced configuration fails closed instead of being loaded. POSIX advisory locking cannot stop an arbitrary same-user process that ignores it, so the digest check remains the security boundary for automatic re-exec there. A fresh operator/service restart after the old client has exited intentionally reads the current file again.
 
@@ -106,7 +106,6 @@ The client opens the selected configuration once and holds an exclusive process-
     "archive": true
   },
   "rpc_plugins": {},
-  "sandbox": true,
   "proxy": "socks5://127.0.0.1:1080"
 }
 ```
@@ -340,9 +339,12 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 ## Client execution policy
 
-### Native Job Manager sandbox configuration (Linux/macOS)
+### Client sandbox configuration (Linux/macOS; Windows approval-only)
 
-On Linux/macOS, `job_sandbox` enables Bubblewrap or Seatbelt for Mapping
+The presence of `job_sandbox` (including an empty `{}`) enables Client-controlled
+sandbox policy. Omitting the field disables Client sandboxing. The old Client
+`sandbox` boolean option has been removed and is rejected at startup.
+On Linux/macOS, configured `job_sandbox` selects Bubblewrap or Seatbelt for Mapping
 Shell. Do not set `type` manually: the Client derives and validates it.
 On **Windows**, the same `job_sandbox.paths` entries inform the guarded
 PowerShell file-command interpreter but **no OS sandbox is started**.
@@ -436,13 +438,15 @@ This is an application-level command allowlist, **not** an OS sandbox.
 
 Linux/macOS retain their configured Sandbox backends.
 
-Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. Sandbox defaults to true. The initial sandbox backend is Podman; it must be installed and its VM started where required. The image is configurable using `image`; default `docker.io/library/python:3.14-slim-trixie`. Network defaults off for sandboxed tasks (`network: true` enables it). Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox` enabled, **all** Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. Podman's per-job resource defaults remain 256 MB, 64 processes, and one CPU; `limits.max_seconds` is an asynchronous RPC task limit; it does not cap Shell jobs.
+Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. `job_sandbox` alone determines Client sandbox activation: when present, Linux/macOS use their native Job Manager sandbox, and Windows uses guarded commands/approval without OS sandboxing; when absent, Linux/macOS execute natively as the Client OS user (Windows still requires approval for arbitrary commands). No Podman installation is required for Client Shell. Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox`, **all** Linux/macOS Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. `limits.max_seconds` limits asynchronous RPC tasks, not Shell jobs.
 
-To intentionally run unrestricted native Shell tasks without `job_sandbox`,
-explicitly set `"sandbox": false`. This mode also works on Linux. It grants the task the client's OS-account permissions: `cwd`, mapping read/write configuration, and `network: false` do not confine an unsandboxed process. The client warns at startup. An explicitly approved unsandboxed Shell inherits
+To run unrestricted native Linux/macOS Shell tasks, omit `job_sandbox` entirely.
+Such tasks inherit the Client OS account's permissions: `cwd`, Mapping read/write
+configuration and legacy `network` values do not confine a native process.
+The Client warns at startup. An explicitly approved unsandboxed Shell inherits
 the host user's normal environment (including HOME and SSH_AUTH_SOCK) for both
 short and long jobs; sandboxed jobs still receive their restricted environment.
-No missing sandbox ever causes automatic fallback to this mode.
+A configured `job_sandbox` never falls back to native execution after a sandbox launch failure.
 
 The unified `POST /shell/exec` entry defaults to `target=auto`: a workspace-relative mapped `cwd` selects client execution. Set `target=server` to execute on the server or `target=client` to require a mapping. This requires client 1.60.0+ (`execution.shell_command`); offline/denied/older clients never cause server fallback. Use its returned task ID with ordinary `/task/*` APIs. See [execution placement](shell-and-mcp.md#execution-placement) for platform, input, output, and timeout details.
 
@@ -465,18 +469,17 @@ previous Client version before upgrading to this protocol. If **the Manager itse
 To request shutdown through the Client CLI, run `python -m openkapsel.client --config /path/to/client.json --stop-manager` (or append `--force`). The configuration file is mandatory and is held by the existing exclusive `ClientConfigLock` during the command. If another Client instance already owns **that same configuration**, the command refuses to run; stop that Client first. The Manager is per **OS user**, not per Client config: forcing shutdown affects jobs from other Mapping configurations too. The stop command never launches an absent Manager. The Client only reads and locks the specified config; it does not connect to the Mapping Server while requesting the Manager stop. The configuration lock also prevents two ordinary Client processes from running simultaneously with the same config.
 
 The Job Manager `task_start` IPC accepts an optional `sandbox` **JSON string**.
-Omission or `"{\"type\":\"current_user\"}"` preserves existing
-OS-user/Podman execution. With `job_sandbox` configured, Client supplies a
+Omission or `"{\"type\":\"current_user\"}"` selects
+OS-user execution in the Manager. With `job_sandbox` configured, Client supplies a
 validated JSON string with native `type`, exported `root`, root `writable`,
 extra `allowed_paths`, `hidden_paths`, `network_mode`, and normalized
 `allowed_domains`. The Manager validates these again and rejects unsupported
 sandboxes; it never falls back silently.
 
-Podman on macOS/Windows runs Linux workloads, not native platform tests.
 Native Job Manager sandboxing covers Linux Bubblewrap and macOS Seatbelt;
 Windows uses guarded literal commands or explicit approval.
 
-Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; CPU/memory/process limits are Podman container controls. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
+Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; these values apply to supported native sandbox resource controls and Client-owned RPC tasks. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 
 `POST /recycle/purge` removes one selected recycle entry permanently. It requires the root selector, entry ID, normal mutation Context, and `confirm: true`.
 

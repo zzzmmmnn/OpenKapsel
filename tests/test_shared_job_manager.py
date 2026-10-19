@@ -503,7 +503,7 @@ class SharedManagerTests(unittest.TestCase):
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         first = ClientRuntime(config)
         tid = "&T0kN&"
@@ -536,7 +536,7 @@ class SharedManagerTests(unittest.TestCase):
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         launcher = """
 import json,sys,time
@@ -595,7 +595,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         runtime = ClientRuntime(config)
         tid = "&R1Ld&"
@@ -857,7 +857,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         one = ClientRuntime(config)
         try:
@@ -896,7 +896,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": False, "sandbox": True,
+            "writable": True, "allow_exec": False,
             "rpc": {"archive": True},
         }
         runtime = ClientRuntime(config)
@@ -944,7 +944,7 @@ time.sleep(30)
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": "private-token-never-sent-to-manager",
             "root": str(self.root), "writable": True,
-            "allow_exec": True, "sandbox": False,
+            "allow_exec": True,
             "rpc": {"archive": {"enabled": True, "config": {"secret": "private-plugin-setting"}}},
         }
         runtime = ClientRuntime(config)
@@ -982,7 +982,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         runtime = ClientRuntime(config)
         custom_home = str(self.base / "operator-home")
@@ -1024,7 +1024,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
             "limits": {"max_seconds": 30},
         }
         runtime = ClientRuntime(config)
@@ -1060,7 +1060,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         runtime = ClientRuntime(config)
         tid = "&St1n&"
@@ -1092,7 +1092,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         runtime = ClientRuntime(config)
         job_id = "&L121&"
@@ -1114,7 +1114,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         runtime = ClientRuntime(config)
         tid = "&Sh0r&"
@@ -1134,7 +1134,7 @@ time.sleep(30)
         config = {
             "url": "ws://127.0.0.1/mapping-connect/" + self.MAPPING_A,
             "token": self.TOKEN_A, "root": str(self.root),
-            "writable": True, "allow_exec": True, "sandbox": False,
+            "writable": True, "allow_exec": True,
         }
         runtime = ClientRuntime(config)
         try:

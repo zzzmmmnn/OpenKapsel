@@ -31,7 +31,7 @@ class FullApprovalHTTPTests(unittest.TestCase):
         secret_file.write_text("host sample")
         config = {"url": f'ws://127.0.0.1:{self.server.server_port}/kapsel/mapping-connect/{row["id"]}',
             "token": secret, "root": str(self.export), "writable": True,
-            "allow_exec": True, "sandbox": False}
+            "allow_exec": True}
         runtime = ClientRuntime(config)
         runtime.files.sandbox_denied_paths = frozenset({secret_file})
         ready, stop = threading.Event(), threading.Event()

@@ -149,7 +149,6 @@ class ClientConfigSecrecyPolicyTests(unittest.TestCase):
                 "root": str(root),
                 "writable": True,
                 "allow_exec": True,
-                "sandbox": False,
                 "ssh": {
                     "profiles": {
                         "prod": {
