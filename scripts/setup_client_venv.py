@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Create or repair the OpenKapsel Client virtual environment.
 
-No third-party modules are needed by the launcher. Dependency declarations
-come directly from pyproject.toml, including all Client RPC optional extras.
+No third-party modules are needed by the launcher. Client requirements
+come from pyproject.toml without including the Server-only extra. Optional
+Client RPC extras are included.
 Existing distributions that satisfy their version requirements are never
 reinstalled or upgraded merely because this script was run again.
 """
@@ -97,7 +98,9 @@ def load_requirements(project_root: Path):
     missing = set(DEFAULT_EXTRAS) - set(extras)
     if missing:
         raise RuntimeError(f"missing Client dependency groups: {sorted(missing)}")
-    return list(project["dependencies"]) + [
+    # All base requirements apply to both runtimes. The Server-specific
+    # requirements are deliberately excluded from Client bootstrap.
+    return list(project.get("dependencies", [])) + [
         requirement for group in DEFAULT_EXTRAS for requirement in extras[group]
     ]
 

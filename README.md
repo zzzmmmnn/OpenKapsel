@@ -110,6 +110,21 @@ The two root-level `/.well-known/` matchers are required for OAuth MCP discovery
 
 `install.sh` also generates `/var/lib/openkapsel/caddy-routes.caddyfile` from the configured `url_base_path`. Import or merge that fragment into the API-origin site block, then validate and reload the existing Caddy process. The installer deliberately does not rewrite or reload a host's existing proxy configuration automatically.
 
+## Source-based Python dependencies
+
+The package has separate Client and Server extras. The Client extra installs
+only WebSocket, proxy, and cross-platform file-monitoring dependencies;
+Server-specific scientific libraries and HTTP frameworks are not installed.
+
+```sh
+python3 -m pip install -e '.[client]'
+python3 -m pip install -e '.[server]'
+```
+
+For structured/tabular and SSH Client RPC, additionally select
+the data-rpc and ssh-rpc extras. The production installer automatically
+installs the Server extra.
+
 ## Development mode
 
 ```bash

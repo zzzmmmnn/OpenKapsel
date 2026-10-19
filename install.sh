@@ -370,7 +370,7 @@ STAGING_DIR=
 (
     umask 0022
     /usr/bin/python3 -m venv "$INSTALL_DIR/venv"
-    "$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check --no-cache-dir "$INSTALL_DIR"
+    "$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check --no-cache-dir "$INSTALL_DIR[server]"
 )
 
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$DATA_DIR"

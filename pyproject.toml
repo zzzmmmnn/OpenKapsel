@@ -9,7 +9,18 @@ description = "Token-scoped remote workspace infrastructure for AI clients"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-dependencies = [
+# Extras add to base dependencies. Keep Client and Server requirements
+# separate so that installing a Client does not pull Server packages.
+dependencies = []
+
+[project.optional-dependencies]
+client = [
+  "websocket-client>=1.8,<2",
+  "python-socks>=2.7,<3",
+  "watchfiles>=1,<2; sys_platform == 'linux' or sys_platform == 'win32'",
+]
+# Server install: pip install .[server]
+server = [
   "beautifulsoup4>=4.12,<5",
   "cryptography>=49.0.0,<50",
   "fastapi>=0.115,<1",
@@ -30,9 +41,6 @@ dependencies = [
   "fusepy>=3,<4; sys_platform == 'linux'",
   "watchfiles>=1,<2; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
-
-[project.optional-dependencies]
-client = ["websocket-client>=1.8,<2", "python-socks>=2.7,<3"]
 data-rpc = [
   "ruamel.yaml>=0.18.6,<0.19",
   "tomlkit>=0.13,<1",

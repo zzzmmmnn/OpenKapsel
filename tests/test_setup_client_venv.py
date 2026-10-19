@@ -38,7 +38,16 @@ class BootstrapTests(unittest.TestCase):
                 dependency,
             )
         self.assertEqual(len(requirements), len(set(requirements)))
-        self.assertGreaterEqual(len(requirements), 20)
+        # The Client environment must not pull Server/scientific packages.
+        for server_only in (
+            "fastapi", "matplotlib", "numba", "numpy", "pandas", "scipy",
+            "uvicorn", "lxml", "pillow",
+        ):
+            self.assertFalse(
+                any(req.lower().startswith(server_only) for req in requirements),
+                server_only,
+            )
+        self.assertGreaterEqual(len(requirements), 9)
 
     def test_missing_and_incompatible_dependencies_only(self):
         fake = {

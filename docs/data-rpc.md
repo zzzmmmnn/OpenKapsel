@@ -32,7 +32,7 @@ A full editable project installation may instead include the new optional extra:
 python -m pip install -e '.[client,data-rpc]'
 ```
 
-The full package retains its existing server/scientific dependencies. A client
+The Client extras do not install Server/scientific dependencies. A client
 that only needs JSON/CSV does not need the parser extra. Restart an upgraded
 mapping client to publish its new capabilities. No credentials or mapping IDs
 need to change. Families can be disabled independently:

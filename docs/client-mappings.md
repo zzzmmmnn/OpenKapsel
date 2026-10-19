@@ -40,16 +40,25 @@ py -3 scripts\setup_client_venv.py
 ```
 
 The setup script detects Linux, macOS or Windows, creates `.venv` if absent,
-then checks the **current source checkout's** `pyproject.toml` for all core
-dependencies and all three optional Client groups: `client`, `data-rpc`,
-`ssh-rpc`. These include mapping WebSocket/proxy support, tabular/structured
-data, and SSH RPC. It also checks necessary transitive packages and versions.
-Packages already satisfying their requirements are left in place; only
-missing or incompatible dependencies are passed to pip. The local source
-checkout is installed editable only when not already correctly installed.
-No packages are installed if a second run finds the environment complete.
-The full default set includes scientific/web libraries from the project's
-core dependency group, so the first installation can be relatively large.
+then checks the current checkout for all three Client dependency groups:
+client, data-rpc, and ssh-rpc, plus any shared base requirements. These
+provide mapping WebSocket/proxy support, Linux/Windows file monitoring,
+structured/tabular formats, and SSH RPC. The Server extra is not installed:
+the Client needs neither Server scientific packages nor its HTTP framework.
+The script checks transitive dependencies, installs only missing/incompatible
+packages, and installs the local editable checkout only when needed.
+
+For minimal Client installation without optional RPC plugins:
+
+```sh
+python3 -m pip install -e '.[client]'
+```
+
+For all bundled Client RPC features:
+
+```sh
+python3 -m pip install -e '.[client,data-rpc,ssh-rpc]'
+```
 
 Use `python3 scripts/setup_client_venv.py --check` (or `py -3` on Windows)
 to report missing packages without making changes; it exits nonzero if the
