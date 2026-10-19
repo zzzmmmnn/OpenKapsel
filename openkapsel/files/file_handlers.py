@@ -1283,6 +1283,15 @@ class FileExecutionMixin(FileOperationSupportMixin):
     def _handle_upload_commit(self, upload_id: str) -> None:
         self._require_permission(self.token_record.can_write, "write permission is not granted")
         record = self._upload_record(upload_id)
+        # A resumable upload is bound to its original Mapping identity, not
+        # merely its destination spelling. Check this before path resolution:
+        # after a Mapping rename the old mount path can be inaccessible on
+        # Linux, and probing it must not turn this conflict into HTTP 500.
+        if record.mapping_id is not None:
+            original_mapping = self.server.mappings.at_path(Path(record.target_path))
+            if original_mapping is None or original_mapping["id"] != record.mapping_id:
+                raise ApiError(409, "upload_mapping_changed",
+                               "upload destination mapping identity changed; start a new upload")
         target = self._resolve_path(record.target_path, write=True)
         mapping = self.server.mappings.at_path(target)
         if (mapping["id"] if mapping else None) != record.mapping_id:

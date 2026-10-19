@@ -192,11 +192,35 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         upload = result["upload_id"]
         self.server.uploads.append(upload, self.record.token, 0, io.BytesIO(b"x"), 1)
         self.server.mappings.store.update(self.row["id"], name="renamed")
-        status, _, raw = self.raw("POST", "/upload/commit/" + upload)
+        # The stored Mapping ID must be rejected *before* trying to resolve
+        # an old mount path. Linux may raise EACCES from that native path.
+        with patch.object(WorkspaceRequestHandler, "_resolve_path",
+                          side_effect=AssertionError("stale upload resolved old Mapping path")):
+            status, _, raw = self.raw("POST", "/upload/commit/" + upload)
         result = json.loads(raw)
         self.assertEqual(409, status, result)
         self.assertEqual("upload_mapping_changed", result["error"]["code"])
+        self.assertEqual(b"x", Path(self.server.uploads.get(upload, self.record.token).temp_path).read_bytes())
         self.server.mappings.store.update(self.row["id"], name="laptop")
+
+    def test_upload_commit_rejects_rebound_mapping_name_before_resolution(self):
+        status, result = self.api("/upload/create", {"path": "laptop/wrong-target", "size": 1})
+        self.assertEqual(201, status, result)
+        upload = result["upload_id"]
+        self.server.uploads.append(upload, self.record.token, 0, io.BytesIO(b"x"), 1)
+        self.server.mappings.store.update(self.row["id"], name="renamed")
+        replacement, _ = self.server.mappings.store.create(
+            self.record.path_prefix, "laptop", writable=True)
+        try:
+            with patch.object(WorkspaceRequestHandler, "_resolve_path",
+                              side_effect=AssertionError("rebound Mapping path resolved")):
+                status, _, body = self.raw("POST", "/upload/commit/" + upload)
+            self.assertEqual(409, status, body)
+            self.assertEqual("upload_mapping_changed", json.loads(body)["error"]["code"])
+            self.assertFalse((self.export / "wrong-target").exists())
+        finally:
+            self.server.mappings.store.delete(replacement["id"])
+            self.server.mappings.store.update(self.row["id"], name="laptop")
 
     def test_copy_move_between_local_and_two_mappings(self):
         second = self.second_mapping()
