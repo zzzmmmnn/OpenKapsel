@@ -301,7 +301,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         # The Windows fallback for an unrecognized command must also return
         # advice rather than silently creating a browser ticket.
         self.session.capabilities["execution"].update(
-            platform="win32", safe_powershell=True)
+            platform="win32", safe_powershell=True, approval_required=True)
         status, unknown = self.api("/shell/exec", {
             "command": "Get-Process", "cwd": "laptop",
             "writer_nonce": self.ownership()[1],
@@ -2027,7 +2027,8 @@ class CapabilityHTTPTests(unittest.TestCase):
         row, token = self.server.mappings.store.create(self.record.path_prefix, "real", writable=True, allow_exec=False)
         self.server.mappings.mount_path(row).mkdir()
         config = {"url": f"ws://127.0.0.1:{self.server.server_port}/kapsel/mapping-connect/{row['id']}",
-                  "token": token, "root": str(self.export), "writable": True, "allow_exec": False}
+                  "token": token, "root": str(self.export), "writable": True, "allow_exec": False,
+                  "job_sandbox": {}}
         with patch.dict(os.environ, {"OPENKAPSEL_JOB_MANAGER_HOME": str(self.manager_home)}):
             runtime = ClientRuntime(config)
         ready, stop = threading.Event(), threading.Event()
@@ -2043,7 +2044,10 @@ class CapabilityHTTPTests(unittest.TestCase):
                 self.assertEqual(202, status, task)
                 self.assertEqual("approved", self.finished(task["task_id"])["stdout"])
             self.assertFalse(runtime.tasks.enabled)
-            self.assertTrue(runtime.tasks.sandbox)
+            # Mapping sandbox lives in the Job Manager, not legacy ClientTasks.
+            self.assertIsNotNone(runtime.tasks.job_sandbox)
+            self.assertTrue(runtime.tasks.capabilities()["sandbox"])
+            self.assertFalse(runtime.tasks.sandbox)
         finally:
             stop.set()
             with self.server.mappings.lock:
