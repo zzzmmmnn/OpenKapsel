@@ -57,6 +57,18 @@ def _object_schema(
     return schema
 
 
+_FILE_APPROVAL_PROPERTIES = {
+    "approved": {"type": "boolean", "default": False,
+                 "description": "Use an existing temporary File grant for this Token and target. Missing approval returns request_approval guidance, never an URL; call files.request_approval first."},
+    "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
+                     "description": "Owning Conversation writer nonce, required when approved=true."},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 500,
+               "description": "Optional purpose metadata; to request approval and display a reason to the user, call files.request_approval explicitly."},
+    "target": {"type": "string", "minLength": 1,
+               "description": "Required when approved=true: server or exact Mapping ID."},
+}
+
+
 def _tool(
     name: str,
     title: str,
@@ -75,16 +87,7 @@ def _tool(
         "fs_write", "fs_edit_text", "fs_delete", "fs_mutate",
         "fs_replace_large", "fs_mkdir", "fs_move",
     }:
-        schema["properties"].update({
-            "approved": {"type": "boolean", "default": False,
-                         "description": "Use an existing temporary File grant for this Token and target. Missing approval returns request_approval guidance, never an URL; call files.request_approval first."},
-            "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$",
-                             "description": "Owning Conversation writer nonce, required when approved=true."},
-            "reason": {"type": "string", "minLength": 1, "maxLength": 500,
-                       "description": "Optional purpose metadata; to request approval and display a reason to the user, call files.request_approval explicitly."},
-            "target": {"type": "string", "minLength": 1,
-                       "description": "Required when approved=true: server or exact Mapping ID."},
-        })
+        schema["properties"].update(copy.deepcopy(_FILE_APPROVAL_PROPERTIES))
     if context_message:
         schema["properties"]["plan_id"] = plan_id_schema(
             description=(
@@ -130,6 +133,11 @@ _MCP_SHARED_SCHEMA_DESCRIPTIONS.update({
     "Owning Plan id; modifying operations require this Plan to be in_progress.",
     "Optional owning Plan id for recorded reads.",
 })
+# File approval fields repeat on every File tool; their rules are in MCP
+# initialize instructions and the Discovery/files approval workflow.
+_MCP_SHARED_SCHEMA_DESCRIPTIONS.update(
+    rule["description"] for rule in _FILE_APPROVAL_PROPERTIES.values()
+)
 
 
 ALL_TOOLS: tuple[dict[str, Any], ...] = (
@@ -1346,6 +1354,7 @@ def auxiliary_operations_for(
                 for field in ("plan_id", "taskname", "message")
             )
             operation_schema = _auxiliary_operation_schema(tool, fields, required)
+            _compact_public_schema_descriptions(operation_schema)
             if tool_name == "fs_read_binary":
                 operation_schema["properties"]["length"].update({
                     "maximum": mcp_binary_chunk_bytes,

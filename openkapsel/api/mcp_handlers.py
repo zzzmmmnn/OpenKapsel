@@ -168,6 +168,7 @@ class McpHandlersMixin:
                 "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context before planning or modifying anything. "
                 "Query or reuse an active root Plan before writes and load relevant Memory when durable cross-task facts matter. "
                 "Attach every modifying tool to its owning plan_id, taskname, and message; reads are recorded only when taskname and message are supplied. "
+                "File tools accept approved=true only with an existing temporary File grant, plus writer_nonce and target (server or exact Mapping ID); request one with capability_call family=files operation=request_approval, whose reason is shown to the user. Missing grants never return an URL. "
                 "Low-frequency File Transfer, Upload, Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load the matching Discovery section for operation schemas (File Transfer and Upload use discovery/files; Shell and Task use discovery/shell)."
             ),
         }

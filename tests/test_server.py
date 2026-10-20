@@ -1658,7 +1658,8 @@ class WorkspaceServerTests(unittest.TestCase):
             {"update", "archive"},
             set(memory_capability["memory_action_enum"]),
         )
-        action_variants = memory_capability["memory_actions_schema"]["items"]["oneOf"]
+        self.assertNotIn("memory_actions_schema", memory_capability)
+        action_variants = memory_capability["plan_debrief_schema"]["properties"]["memory_actions"]["items"]["oneOf"]
         variants_by_action = {
             item["properties"]["action"]["const"]: item for item in action_variants
         }
