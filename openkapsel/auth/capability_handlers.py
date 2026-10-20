@@ -404,7 +404,7 @@ class CapabilityHandlersMixin:
                             return
                     elif action == "password_link":
                         ticket = grants.create_password_setup_link(workspace)
-                        url = self._public_base_url() + "/admin/password-setup/" + ticket
+                        url = self._public_base_url() + "/password-setup/" + ticket
                         esc = html.escape
                         body = ("<h1>Temporary Workspace password URL</h1>"
                                 f"<p>Token: <strong>{esc(record.name)}</strong></p>"

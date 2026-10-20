@@ -158,8 +158,13 @@ class RequestDispatchMixin:
             if request_path == "/skills" or request_path.startswith("/skills/"):
                 self._dispatch_skill(method, request_path)
                 return
-            if (request_path == "/admin" or request_path.startswith("/admin/")
-                    or request_path.startswith("/capability/")):
+            if (request_path.startswith(("/password-setup/", "/capability/",
+                                         "/admin/password-setup/", "/admin/capability/"))):
+                if method != "POST":
+                    self._discard_request_body()
+                self._dispatch_user_page(method, request_path, parsed.query)
+                return
+            if request_path == "/admin" or request_path.startswith("/admin/"):
                 if method != "POST":
                     self._discard_request_body()
                 self._dispatch_admin(method, request_path, parsed.query)

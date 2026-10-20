@@ -78,6 +78,7 @@ explicit reassignment behavior for already-issued grants remains unchanged.
 If permissions change after the consent page was displayed, reload and review
 before approving. The first upgrade adds owner-binding columns and discards only
 pre-upgrade pending handshakes/codes, not issued access/refresh credentials.
+OAuth consent is served at `/kapsel/oauth/<connection_id>/consent`, outside the administrator console.
 Legacy GET `/admin/oauth/approve?request=...` links redirect to the independent
 page when still valid; old POST approval forms are rejected, never forwarded.
 

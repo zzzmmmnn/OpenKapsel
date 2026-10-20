@@ -63,6 +63,24 @@ class ControlConsentHTTPTests(unittest.TestCase):
                 self.assertEqual(429, status, response)
                 take.assert_called_once_with("127.0.0.1", pending["rid"])
 
+    def test_oauth_consent_remains_independent_of_admin_console(self):
+        pending = self.pending()
+        saved = self.server.config
+        self.server.config = replace(saved, admin_username=None, admin_password_hash=None)
+        try:
+            self.assertEqual(404, self.request("GET", "/kapsel/admin")[0])
+            status, _, page = self.request(
+                "GET", pending["location"], headers={"Cookie": pending["cookie"]})
+            self.assertEqual(200, status, page)
+            self.assertIn(b'name="csrf"', page)
+            legacy = "/kapsel/admin/oauth/approve?request=" + pending["rid"]
+            status, headers, _ = self.request("GET", legacy)
+            self.assertEqual(303, status)
+            self.assertEqual(pending["location"], headers["Location"])
+            self.assertEqual(303, self.submit(pending)[0])
+        finally:
+            self.server.config = saved
+
     def test_browser_oauth_links_ignore_tracking_but_require_protocol_fields(self):
         pending = self.pending()
         rid = pending["rid"]

@@ -131,7 +131,9 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertTrue(location.startswith("/kapsel/capability/"), location)
         self.assertNotIn("/admin/", location)
         old_link = location.replace("/capability/", "/admin/capability/")
-        self.assertEqual(200, self.request("GET", old_link)[0])
+        status, headers, _ = self.request("GET", old_link)
+        self.assertEqual(303, status)
+        self.assertEqual(location, headers["Location"])
         location, headers, form, page = self.approval(
             {"error": {"details": pending}})
         self.assertIn(f'action="{location}"'.encode(), page)
@@ -170,9 +172,13 @@ class CapabilityHTTPTests(unittest.TestCase):
             for query in ("?utm_source=chatgpt.com",
                           "?utm_source=chatgpt.com&utm_medium=referral",
                           "?other_tracking=ignored"):
-                status, _, body = self.request("GET", path + query)
-                self.assertEqual(200, status, body)
-                self.assertIn(b"Approve temporary capability", body)
+                status, headers, body = self.request("GET", path + query)
+                if path == old_location:
+                    self.assertEqual(303, status)
+                    self.assertEqual(location, headers["Location"])
+                else:
+                    self.assertEqual(200, status, body)
+                    self.assertIn(b"Approve temporary capability", body)
         location, headers, form, _ = self.approval(
             {"error": {"details": pending}})
         self.assertEqual(403, self.form(
@@ -1730,17 +1736,21 @@ class CapabilityHTTPTests(unittest.TestCase):
         status, response_headers, response = self.form("/kapsel/admin/capabilities", payload, admin)
         self.assertEqual(200, status, response)
         self.assertEqual("no-store", response_headers["Cache-Control"])
-        matches = re.findall(rb'/admin/password-setup/([A-Za-z0-9_-]{43})', response)
+        matches = re.findall(rb'/password-setup/([A-Za-z0-9_-]{43})', response)
         self.assertEqual(1, len(matches))
         old_ticket = matches[0].decode()
         self.assertEqual(self.record.app_id, grants.password_setup_workspace(old_ticket))
         status, _, response = self.form("/kapsel/admin/capabilities", payload, admin)
         self.assertEqual(200, status, response)
-        ticket = re.search(rb'/admin/password-setup/([A-Za-z0-9_-]{43})', response).group(1).decode()
+        ticket = re.search(rb'/password-setup/([A-Za-z0-9_-]{43})', response).group(1).decode()
         self.assertNotEqual(old_ticket, ticket)
         self.assertIsNone(grants.password_setup_workspace(old_ticket))
-        self.assertEqual(400, self.request("GET", "/kapsel/admin/password-setup/" + old_ticket)[0])
-        location = "/kapsel/admin/password-setup/" + ticket
+        self.assertEqual(400, self.request("GET", "/kapsel/password-setup/" + old_ticket)[0])
+        location = "/kapsel/password-setup/" + ticket
+        legacy = "/kapsel/admin/password-setup/" + ticket
+        status, legacy_headers, _ = self.request("GET", legacy)
+        self.assertEqual(303, status)
+        self.assertEqual(location, legacy_headers["Location"])
         status, headers, page = self.request("GET", location + "?utm_source=chatgpt.com")
         self.assertEqual(200, status, page)
         self.assertIn(b'name="confirm_password"', page)
@@ -1763,6 +1773,40 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertIsNone(grants.password_setup_workspace(ticket))
         self.assertEqual(400, self.request("GET", location + "?utm_source=chatgpt.com")[0])
         self.assertEqual(400, self.form(location, form, recipient)[0])
+
+    def test_delegated_pages_not_gated_by_admin_console(self):
+        self.configure()
+        status, pending = self.request_approval(reason="Previously issued capability")
+        self.assertEqual(200, status, pending)
+        capability_url = urlsplit(pending["approval_url"]).path
+        session = self.server.admin_sessions.create()
+        admin = {"Cookie": "ws_admin=" + session.id, "Origin": "https://example.test"}
+        payload = {"csrf": session.csrf, "workspace": self.record.app_id,
+                   "action": "password_link"}
+        status, _, response = self.form("/kapsel/admin/capabilities", payload, admin)
+        self.assertEqual(200, status, response)
+        ticket = re.search(rb'/password-setup/([A-Za-z0-9_-]{43})', response).group(1).decode()
+        password_url = "/kapsel/password-setup/" + ticket
+
+        saved = self.server.config
+        self.server.config = replace(saved, admin_username=None, admin_password_hash=None)
+        try:
+            self.assertEqual(404, self.request("GET", "/kapsel/admin")[0])
+            self.assertEqual(200, self.request("GET", capability_url)[0])
+            status, headers, page = self.request("GET", password_url)
+            self.assertEqual(200, status, page)
+            self.assertIn(b'name="confirm_password"', page)
+            proof = re.search(rb'name="csrf" value="([0-9a-f]{64})"', page).group(1).decode()
+            browser = {"Cookie": headers["Set-Cookie"].split(";", 1)[0],
+                       "Origin": "https://example.test"}
+            status, _, result = self.form(password_url, {
+                "csrf": proof, "password": "delegated-password-123",
+                "confirm_password": "delegated-password-123"}, browser)
+            self.assertEqual(200, status, result)
+            self.assertTrue(self.server.capability_grants.verify_workspace_password(
+                self.record.app_id, "delegated-password-123"))
+        finally:
+            self.server.config = saved
 
     def test_six_character_workspace_password_admin_and_approval(self):
         session = self.server.admin_sessions.create()

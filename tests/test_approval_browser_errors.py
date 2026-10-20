@@ -26,7 +26,7 @@ class _ApprovalBrowserHandler(AdminHandlersMixin):
 class ApprovalBrowserErrorTests(unittest.TestCase):
     def show(self, failure, *, path="/capability/TICKET", method="POST"):
         handler = _ApprovalBrowserHandler(failure)
-        handler._dispatch_admin(method, path, "utm_source=external")
+        handler._dispatch_user_page(method, path, "utm_source=external")
         self.assertEqual([(method, "TICKET", "utm_source=external")], handler.calls)
         status, document, options = handler.response
         self.assertEqual(status, failure.status)

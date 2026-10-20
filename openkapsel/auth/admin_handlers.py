@@ -32,24 +32,35 @@ LOGGER = logging.getLogger("openkapsel")
 
 class AdminHandlersMixin(CapabilityHandlersMixin):
     """Admin-domain methods mixed into the main request handler."""
+    def _dispatch_user_page(self, method: str, path: str, raw_query: str = "") -> None:
+        """Handle delegated browser pages independently of the admin console."""
+        for prefix in ("/password-setup/", "/admin/password-setup/"):
+            if path.startswith(prefix):
+                ticket = path.removeprefix(prefix)
+                if prefix.startswith("/admin/") and method == "GET" and re.fullmatch(r"[A-Za-z0-9_-]{43}", ticket):
+                    self._redirect(self.server.config.url_base_path + "/password-setup/" + ticket)
+                    return
+                self._handle_workspace_password_setup(method, ticket, raw_query)
+                return
+        for prefix in ("/capability/", "/admin/capability/"):
+            if path.startswith(prefix):
+                ticket = path.removeprefix(prefix)
+                if prefix.startswith("/admin/") and method == "GET" and re.fullmatch(r"[A-Za-z0-9_-]{32}", ticket):
+                    self._redirect(self.server.config.url_base_path + "/capability/" + ticket)
+                    return
+                try:
+                    self._handle_capability_approval(method, ticket, raw_query)
+                except ApiError as exc:
+                    self._send_approval_error_page(exc)
+                return
+        self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
+
     def _dispatch_admin(self, method: str, path: str, raw_query: str = "") -> None:
         if not self.server.config.admin_enabled:
             self._send_html(HTTPStatus.NOT_FOUND, "<h1>404 Not Found</h1>")
             return
         if method in {"GET", "HEAD"} and path.endswith("/favicon.svg"):
             self._send_builtin_favicon(head_only=method == "HEAD")
-            return
-        if path.startswith("/admin/password-setup/"):
-            self._handle_workspace_password_setup(method, path.removeprefix("/admin/password-setup/"), raw_query)
-            return
-        if path.startswith("/capability/") or path.startswith("/admin/capability/"):
-            # Approval links are browser pages, unlike REST/MCP calls. Client
-            # rejections and stale tickets must not fall through to JSON errors.
-            prefix = "/admin/capability/" if path.startswith("/admin/capability/") else "/capability/"
-            try:
-                self._handle_capability_approval(method, path.removeprefix(prefix), raw_query)
-            except ApiError as exc:
-                self._send_approval_error_page(exc)
             return
         if path == "/admin/capabilities":
             self._handle_admin_capabilities(method)
@@ -170,7 +181,7 @@ class AdminHandlersMixin(CapabilityHandlersMixin):
         cookie = cookie or secrets.token_urlsafe(32)
         proof = grants.browser_proof(ticket, cookie)
         esc = html.escape
-        action = esc(self._admin_path() + "/password-setup/" + ticket, quote=True)
+        action = esc(self.server.config.url_base_path + "/password-setup/" + ticket, quote=True)
         notice = f'<p class="error">{esc(error)}</p>' if error else ""
         body = (f'<h1>Set Workspace password</h1><p>Token: <strong>{esc(record.name)}</strong></p>'
                 '<p>Set a new password for this Workspace Token without administrator access or the old password.</p>'

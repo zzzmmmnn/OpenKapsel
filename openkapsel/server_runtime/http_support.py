@@ -495,7 +495,7 @@ class HttpSupportMixin:
         # Password-setup links authorize replacing a Workspace password and
         # therefore need the same protection as capability approval tickets.
         for approval_path in ("/admin/capability/", "/capability/",
-                              "/admin/password-setup/"):
+                              "/admin/password-setup/", "/password-setup/"):
             if approval_path in request_path:
                 message = message.replace(
                     self.path,

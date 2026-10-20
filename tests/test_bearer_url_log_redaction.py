@@ -35,7 +35,9 @@ class BearerURLLogRedactionTests(unittest.TestCase):
         ticket = "A" * 43
         approval = "B" * 43
         cases = [
-            ("/kapsel/admin/password-setup/" + ticket, "GET", 200),
+            ("/kapsel/password-setup/" + ticket, "GET", 200),
+            ("/kapsel/password-setup/" + ticket + "?utm_source=chatgpt.com", "POST", 403),
+            ("/kapsel/admin/password-setup/" + ticket, "GET", 303),
             ("/kapsel/admin/password-setup/" + ticket + "?utm_source=chatgpt.com", "POST", 403),
             ("/admin/password-setup/" + ticket, "HEAD", 405),
             ("/custom/admin/password-setup/" + ticket + "?next=" + ticket, "GET", 400),
@@ -56,11 +58,12 @@ class BearerURLLogRedactionTests(unittest.TestCase):
                 output.close()
                 LOGGER.setLevel(original_level)
             logged = file_path.read_text(encoding="utf-8")
-        self.assertEqual(12, logged.count("127.0.0.1 -"))
+        self.assertEqual(16, logged.count("127.0.0.1 -"))
         self.assertNotIn(ticket, logged)
         self.assertNotIn(approval, logged)
         self.assertNotIn("utm_source=", logged)
         self.assertNotIn("?next=", logged)
+        self.assertIn("/password-setup/[redacted]", logged)
         self.assertIn("/admin/password-setup/[redacted]", logged)
         self.assertIn("/capability/[redacted]", logged)
         self.assertIn("GET ", logged)

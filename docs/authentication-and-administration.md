@@ -108,6 +108,15 @@ link and existing temporary approvals/grants for that Token. Only an
 authenticated administrator with a valid CSRF token can create such a URL.
 Treat it as a secret bearer credential and share it securely.
 
+Delegated browser pages live outside the administrator URL space:
+`/password-setup/<ticket>` sets a Workspace password and `/capability/<ticket>`
+approves a requested capability (under the configured API base path, typically
+`/kapsel`). Neither page requires an administrator session. Previously issued
+`/admin/password-setup/<ticket>` and `/admin/capability/<ticket>` GET links
+redirect to these URLs; existing legacy forms can still POST while valid.
+These pages remain accessible if the administrator console is disabled, but
+creating new password setup links still requires administrator access.
+
 **Each Token is its own
 Workspace for passwords and temporary grants**: even two Tokens pointing at the
 same filesystem directory have independent passwords. The stable Token
