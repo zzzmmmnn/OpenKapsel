@@ -139,7 +139,7 @@ class ClientTasks:
         if enabled and not sandbox and not files.writable and not managed_sandbox:
             raise ValueError("native unsandboxed execution requires explicit writable=true")
         if enabled and sandbox and (backend != "podman" or not shutil.which("podman")):
-            raise ValueError("enabled sandbox requires Podman; install it or explicitly set sandbox=false")
+            raise ValueError("enabled Podman sandbox requires Podman")
         self.secret_mask_path = None
         if enabled and sandbox and files.protected_paths:
             descriptor, mask_path = tempfile.mkstemp(prefix="openkapsel-secret-mask-")

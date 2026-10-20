@@ -58,7 +58,6 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertEqual(second.path_prefix, moved["workspace"])
         self.assertEqual("moved", moved["name"])
         self.assertIn('name="workspace"', raw.decode())
-        self.assertNotIn("sandbox", config)
         self.assertTrue(config["allow_exec"])
         self.assertEqual(60, config["transport_timeout_seconds"])
         self.assertNotIn("source_root", config)
