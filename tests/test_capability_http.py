@@ -1891,15 +1891,21 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.assertIn('copyUrlAndToken(', basic)
         self.assertNotIn('Read/control credential expiration', basic)
         self.assertNotIn('Regenerate control token', basic)
-        self.assertNotIn('Copy web preview URL', basic)
+        self.assertLess(basic.index('Copy Workspace URL'),
+                        basic.index('<label>Control token '))
+        self.assertIn('Web preview URL (independent read-only credential)', basic)
+        self.assertIn('Copy web preview URL', basic)
+        self.assertLess(basic.index('Copy URL + control token'),
+                        basic.index('Web preview URL (independent read-only credential)'))
 
         credentials = card.split('data-token-pane="credentials"', 1)[1].split('</section>', 1)[0]
         self.assertNotIn("<h3>REST connection</h3>", credentials)
         self.assertNotIn('Copy Workspace URL', credentials)
         self.assertNotIn('Copy Authorization header', credentials)
         self.assertNotIn('Copy URL + control token', credentials)
-        self.assertIn('Web preview URL (independent read-only credential)', credentials)
-        self.assertIn('Copy web preview URL', credentials)
+        self.assertNotIn('<label>Workspace URL</label>', credentials)
+        self.assertNotIn('Web preview URL (independent read-only credential)', credentials)
+        self.assertNotIn('Copy web preview URL', credentials)
         self.assertIn('Read/control credential expiration', credentials)
         self.assertIn('name="action" value="renew"', credentials)
         self.assertIn('Regenerate read-only URL token', credentials)

@@ -682,27 +682,33 @@ def _collapsible_token_card(
         raise ValueError("Token copy controls could not be relocated")
     heading = heading.replace(initial_copy_actions, "", 1)
 
+    workspace_details, control_start, control_details = rest_details.partition(
+        '<label>Control token '
+    )
     rest_details = (
         '<div class="token-rest-info"><h3>REST connection</h3>'
-        '<label>Workspace URL</label>' + rest_details
+        '<label>Workspace URL</label>' + workspace_details
         + '<div class="actions">'
         f'<button type="button" class="secondary" onclick="copyToken(\'{url_id}\',this)">'
-        'Copy Workspace URL</button></div></div>'
+        'Copy Workspace URL</button></div>'
+        + control_start + control_details + '</div>'
     )
+    preview_label = '<label>Web preview URL (independent read-only credential)</label>'
     preview_marker = f'<div class="token" id="{preview_id}">'
-    before_preview, preview_start, after_preview = credentials.partition(preview_marker)
-    if not preview_start:
+    before_preview, preview_start, after_preview = credentials.partition(preview_label)
+    if not preview_start or not after_preview.startswith(preview_marker):
         raise ValueError("Preview URL could not be found in Credentials")
     preview_value, preview_end, preview_tail = after_preview.partition('</div>')
     if not preview_end:
         raise ValueError("Preview URL markup is malformed")
-    credentials = (
-        before_preview + preview_start + preview_value + preview_end
+    preview_details = (
+        '<div class="token-preview-info">'
+        + preview_start + preview_value + preview_end
         + '<div class="actions">'
         f'<button type="button" class="secondary" onclick="copyToken(\'{preview_id}\',this)">'
-        'Copy web preview URL</button></div>'
-        + preview_tail
+        'Copy web preview URL</button></div></div>'
     )
+    credentials = before_preview + preview_tail
     tabs = (
         '<div class="token-tablist" role="tablist" aria-label="Token settings">'
         + "".join(
@@ -765,13 +771,14 @@ def _collapsible_token_card(
         + '<input type="hidden" name="token_pane" value="basic" data-token-pane-field>'
         + pane_open("basic")
         + rest_details
+        + preview_details
         + '<div class="grid">' + basic_fields + '</div></section>'
         + pane_open("permissions", hidden=True)
         + '<div class="grid">' + permission_fields + '</div></section>'
         + '<div class="token-save-actions" data-token-save>'
         '<button type="submit">Save changes</button></div></form>'
         + pane_open("credentials", hidden=True)
-        + marker + credentials + delete_form + '</section>'
+        + credentials + delete_form + '</section>'
         + pane_open("workspace-password", hidden=True) + password_panel + '</section>'
     )
     return (
