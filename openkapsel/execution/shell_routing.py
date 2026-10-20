@@ -21,11 +21,8 @@ def native_mapping_shell_ready(row, execution):
         bool(row.get("writable")) and bool(row.get("allow_exec"))
         and execution.get("enabled") is True
         and execution.get("shell_command") is True
-        and execution.get("unsandboxed") is True
         and execution.get("sandbox") is False
         and execution.get("approval_required") is False
-        and execution.get("safe_powershell") is False
-        and execution.get("backend") == "native-unsandboxed"
     )
 
 

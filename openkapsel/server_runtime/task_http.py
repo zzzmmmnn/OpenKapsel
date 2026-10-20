@@ -37,7 +37,7 @@ class TaskHttpMixin:
                 execution = session.capabilities.get("execution", {}) if session else {}
             if session is None or session.closed or not row["enabled"]:
                 raise ApiError(503, "mapping_unavailable", "mapping client is offline")
-            if not execution.get("shell_command") or not execution.get("unsandboxed"):
+            if not execution.get("shell_command"):
                 raise ApiError(409, "client_upgrade_required",
                                "update and reconnect client for approved Shell execution")
             target = row["id"]
@@ -49,6 +49,9 @@ class TaskHttpMixin:
                     "target": target,
                 })
                 return
+            if not execution.get("unsandboxed"):
+                raise ApiError(409, "client_upgrade_required",
+                               "update and reconnect client for approved Shell execution")
         # New Clients declare private function approval callbacks.  Reuse
         # the public Shell request operation, but let the function issue and
         # merge opaque auth rather than building scopes in the Server.

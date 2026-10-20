@@ -2039,6 +2039,20 @@ class CapabilityHTTPTests(unittest.TestCase):
                 self.assertEqual(202, status, task)
                 self.assertEqual("NATIVE_SHELL", self.finished(task["task_id"])["stdout"])
 
+        # Descriptive/optional client metadata must not force an unnecessary
+        # browser grant when the Server already allows ordinary native Shell.
+        legacy_native = dict(native, backend="legacy-native")
+        legacy_native.pop("safe_powershell")
+        legacy_native.pop("unsandboxed")
+        self.session.capabilities["execution"] = legacy_native
+        status, response = self.request_approval(self.row["id"])
+        self.assertEqual(200, status, response)
+        self.assertEqual("granted", response["status"])
+        status, task = self.approved(cwd="laptop", command="printf LEGACY_NATIVE")
+        self.assertEqual(202, status, task)
+        self.assertEqual("LEGACY_NATIVE", self.finished(task["task_id"])["stdout"])
+        self.assertEqual({}, self.server.function_grants.pending_requests)
+
         # No waiver for an actual sandbox, approval-only Windows, or disabled Shell.
         for change in (
             {"sandbox": True, "backend": "bubblewrap"},
