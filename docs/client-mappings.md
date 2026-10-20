@@ -373,8 +373,8 @@ Approved Windows Shell commands run with the Client's OS-user rights.
 ```
 
 The exported Mapping root is always included; its write permission follows
-`writable`. Extra `job_sandbox.paths` entries use `rw`, `ro` (alias `r`)
-or `deny`. **The most-specific matching path wins**, independent of
+`writable`. Extra `job_sandbox.paths` entries use `rw`, `ro` (alias `r`),
+`protect` or `deny`. **The most-specific matching path wins**, independent of
 configuration order; a child `rw` may override parent `ro` or `protect`.
 Absolute `deny` at any ancestor cannot be overridden by child rules or
 File Approval. Otherwise deepest path wins, with same-path priority
@@ -389,8 +389,10 @@ permissions and can access paths blocked by sandbox `deny`; its starting
 `cwd` and the Mapping/caller authorization still require validation.
 Up to 32 rules are supported. Invalid or nonexistent paths fail closed.
 Client configuration and `.openkapsel` / `.openkapsel-*` private metadata are denied, including mixed-case spellings such as `.OpenKapsel` on case-insensitive filesystems. The check rejects these spellings on every platform before filesystem traversal.
-File RPC cannot access outside the Mapping export even if an extra Shell path
-is granted.
+Extra `ro`/`rw` paths are shared Shell and File policy: File API requests that
+explicitly select the Mapping with `target=<mapping ID or name>` can read
+(and, for `rw`, write) those external scopes without browser approval. See
+[Client-configured external File access](client-configured-file-paths.md).
 
 On Linux/macOS, `job_sandbox.network.mode` accepts `none` (default),
 `full` or `domain_allowlist`; for the last option the Manager uses a
@@ -400,8 +402,8 @@ start never falls back to unrestricted execution. Linux needs Bubblewrap
 (and RootlessKit where applicable); macOS uses `/usr/bin/sandbox-exec`.
 
 On Windows, path rules are enforced only for recognized literal PowerShell
-commands **within** the Mapping export. Extra Shell grants never broaden
-those commands to external paths. The `network` configuration is validated
+commands, within the Mapping export or a configured external `ro`/`rw`
+scope. Paths outside those scopes are refused. The `network` configuration is validated
 but **not enforced** on approved native Windows Shell processes. There is no
 OS network or filesystem sandbox for approved commands; unrecognized
 commands require `shell.request_approval`. Async RPC and SSH are separate
@@ -426,8 +428,9 @@ It does **not** invoke PowerShell for these commands. Supported aliases include:
 
 No pipelines, variables, wildcards, command substitutions, semicolons,
 redirection, optional switches, recursive deletion, or scripts are recognized.
-Known file commands whose paths escape the Mapping export, target a
-protected/reparse path, or violate `ro`/`deny` are refused. In-scope reads
+Known file commands whose paths fall outside the Mapping export and the
+configured external scopes, target a protected/reparse path, or violate
+`ro`/`deny` are refused. In-scope reads
 require token read permission; writes require token write permission and an
 enabled writable Mapping. The token must also allow Shell invocation. Unknown
 Shell commands require explicit `shell.request_approval` and then
@@ -441,7 +444,10 @@ Linux/macOS retain their configured Sandbox backends.
 Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. `job_sandbox` alone determines Client sandbox activation: when present, Linux/macOS use their native Job Manager sandbox, and Windows uses guarded commands/approval without OS sandboxing; when absent, all three platforms execute natively as the Client OS user without temporary Shell approval. No Podman installation is required for Client Shell. Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox`, **all** Linux/macOS Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. `limits.max_seconds` limits asynchronous RPC tasks, not Shell jobs.
 
 To run unrestricted native Shell tasks on Linux/macOS/Windows, omit `job_sandbox` entirely.
-Client-local `allow_exec: true` and `writable: true` are required.
+Client-local `allow_exec: true` and `writable: true` are required; with
+`allow_exec: true`, `writable: false` and no `job_sandbox`, the Client refuses
+to start. The top-level `backend`, `image` and `network` keys are legacy and
+have no effect.
 Windows native commands use `cmd.exe /d /s /c`; invoke PowerShell explicitly
 when PowerShell syntax is needed. Both Server and Client must be updated and
 the Client reconnected so Server sees `execution.approval_required: false`.
@@ -477,14 +483,14 @@ The Job Manager `task_start` IPC accepts an optional `sandbox` **JSON string**.
 Omission or `"{\"type\":\"current_user\"}"` selects
 OS-user execution in the Manager. With `job_sandbox` configured, Client supplies a
 validated JSON string with native `type`, exported `root`, root `writable`,
-extra `allowed_paths`, `hidden_paths`, `network_mode`, and normalized
-`allowed_domains`. The Manager validates these again and rejects unsupported
+extra `allowed_paths`, name-pattern `pattern_rules`, `hidden_paths`,
+`network_mode`, and normalized `allowed_domains`. The Manager validates these again and rejects unsupported
 sandboxes; it never falls back silently.
 
 Native Job Manager sandboxing covers Linux Bubblewrap and macOS Seatbelt.
 With `job_sandbox` configured, Windows uses guarded literal commands or explicit approval.
 
-Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; these values apply to supported native sandbox resource controls and Client-owned RPC tasks. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
+Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`. They are **not** forwarded to the Job Manager: native Bubblewrap jobs use fixed Manager limits (64 processes, 256 MiB), and Seatbelt has no per-job resource quota. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 
 `POST /recycle/purge` removes one selected recycle entry permanently. It requires the root selector, entry ID, normal mutation Context, and `confirm: true`.
 

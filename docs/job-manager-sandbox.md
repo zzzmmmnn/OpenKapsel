@@ -40,12 +40,14 @@ Example JSON **value of the `sandbox` string**:
 ```
 
 `root` is required and must be an existing directory, not `/`; `cwd` must
-lie inside it. `allowed_paths` grants up to 32 existing absolute directories
-with `access: "rw"` or `"ro"` (alias `"r"`). `hidden_paths` masks up
+lie inside it. `allowed_paths` holds up to 32 existing absolute directories or files
+with `access: "rw"`, `"ro"` (alias `"r"`), `"protect"` or `"deny"`.
+`pattern_rules` holds up to 32 name rules starting with `*/`, applied from the
+actual root at launch. `hidden_paths` masks up
 to 32 existing files/directories beneath `root` **or a permitted extra
 directory**. Manager IPC intentionally does not accept old `read_only`
-entries. Denies take precedence over all grants, and read-only ancestors
-take precedence over descendant rw grants. `writable` is the implicit
+entries. `deny` at any ancestor is absolute; otherwise the most-specific matching
+rule wins, so a descendant `rw` grant may override a read-only ancestor. `writable` is the implicit
 workspace root access. Directory denies mask contents on Bubblewrap/Podman;
 file denies are read-only /dev/null bind mounts. Seatbelt applies
 read/write denies. Existing direct-child `.openkapsel` directories and
@@ -104,8 +106,9 @@ the pathname itself; they prevent reading or modifying the host contents.
 ## Job Manager IPC security (Linux/macOS/Windows)
 
 The shared Manager authenticates IPC using a private 32-byte key stored in
-`job-manager/ipc.key` (mode 0600 on POSIX). Each connection uses
-`multiprocessing.connection` challenge-response authentication; random
+`job-manager/ipc.key` (mode 0600 on POSIX). Connections use
+`multiprocessing.connection` with `authkey=None` and then a bounded mutual
+HMAC-SHA256 challenge-response with that key; random
 Mapping identifiers and Unix socket owner permissions alone are not credentials.
 The Manager state directory and IPC key are not exposed to sandboxed jobs.
 If the Mapping root or an extra permitted directory contains Manager state,

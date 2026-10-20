@@ -185,6 +185,8 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 - [Scheduled Shell tasks](docs/schedules.md): timing rules, permissions, dispatch behavior, Context, and run history.
 - [Context and Memory](docs/context-and-memory.md): Plans, operations, Notes, long-lived Memory, revisions, and queries.
 - [Client mappings and execution](docs/client-mappings.md): outbound mapping setup, client security, unified execution, RPC families, reconnects, and source reloads.
+- [Job Manager sandbox](docs/job-manager-sandbox.md): Client Job Manager sandbox IPC contract, path rules, and IPC security.
+- [Client-configured external File access](docs/client-configured-file-paths.md): `job_sandbox.paths` scopes outside the Mapping export for File API and Windows file commands.
 - [RPC-first mapping architecture](docs/mapping-rpc-first.md): native-mount leasing, migration behavior, boundaries, and validation.
 - [Structured and tabular RPC](docs/data-rpc.md): JSON/YAML/TOML operations plus bounded CSV/Excel inspection and scans.
 - [SSH RPC](docs/ssh-rpc.md): client-local SSH profiles, connection lifecycle, remote commands, and SFTP transfer.
@@ -201,8 +203,9 @@ OpenKapsel is AI workspace infrastructure, not a multi-user IDE or a general web
 Optional reverse directory mappings let a Linux server access files kept on a
 connected client without synchronizing them into the workspace image. Each
 mapping has independent provider credentials, read/write policy, and a local
-recycle bin. Clients can also opt into remote task execution, with sandboxing
-enabled by default. See [client mappings and execution](docs/client-mappings.md)
+recycle bin. Clients can also opt into remote task execution. Client
+sandboxing is opt-in through `job_sandbox`; without it, enabled tasks run
+natively as the Client OS user. See [client mappings and execution](docs/client-mappings.md)
 for setup, proxy support, permissions, and current platform limitations.
 
 Read-only Git inspection, multi-file reads, recursive manifests, and glob-filtered search are available through REST and MCP. Fixed RPC operations do not require Shell/client execution permission; write RPCs still require write access. Git uses bounded sanitized snapshots; see [Git inspection and limits](docs/shell-and-mcp.md#git-inspection).

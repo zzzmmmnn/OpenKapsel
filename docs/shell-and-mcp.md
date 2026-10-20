@@ -21,7 +21,7 @@ Client-local sandbox and resource policy apply; server `/env` and
 server sandbox/network settings are not copied to the client. Both Server and
 Mapping Shell default to a **120-second timeout** when omitted or null.
 An explicit positive finite `timeout_seconds` has no maximum (for example, `1e9`);
-Mapping Shell at most 120 seconds runs in Client; longer Mapping Shell runs in Manager. Both ignore Client `limits.max_seconds`, which applies only to asynchronous RPC tasks.
+Mapping Shell at most 120 seconds runs in Client; longer Mapping Shell runs in Manager. With Linux/macOS `job_sandbox` configured, every Mapping Shell job runs in Manager. Both ignore Client `limits.max_seconds`, which applies only to asynchronous RPC tasks.
 Native Windows uses `cmd.exe /d /s /c`; POSIX and client Podman use `/bin/sh -c`.
 Choose commands for the advertised platform. The client argv limit (32768 total
 characters, including the interpreter) still applies.
@@ -45,7 +45,7 @@ process group/tree. Server interruption retains its existing behavior.
 tasks and the workspace's accessible client tasks. `target=server|client`
 filters location; normal status/pagination still apply. `unavailable_mappings`
 reports clients whose tasks could not be listed, not that their tasks stopped.
-Long Mapping Shell jobs (timeout >120 seconds) survive Client reconnects, Client process exits, and server restarts while their Job Manager keeps running. Short Shell jobs (timeout ≤120 seconds, including the default) are Client-owned and stop on Client exit. RPC operations retain
+Long Mapping Shell jobs (timeout >120 seconds) survive Client reconnects, Client process exits, and server restarts while their Job Manager keeps running. Short Shell jobs (timeout ≤120 seconds, including the default) are Client-owned and stop on Client exit, except with Linux/macOS `job_sandbox`, where all Shell jobs are Manager-owned. RPC operations retain
 their existing Client/Server execution and task lifecycle.
 Manager restarts cannot reattach lost anonymous process pipes; details and
 retention are in [client mappings](client-mappings.md).
@@ -205,7 +205,9 @@ automatic placement.
 
 The response is HTTP 200 with `status="approval_required"`, a full
 `approval_url`, `approval_expires_in`, `capability`, and exact `target` (or
-`status="granted"` when already approved). Open the URL for Workspace password
+`status="granted"` when already approved, or immediately for a Mapping without
+`job_sandbox` that already permits native Shell: writable, `allow_exec`, and
+advertising `execution.approval_required: false`). Open the URL for Workspace password
 approval. This call never runs a command or implicitly approves subsequent
 Shell calls. Execute with `approved=true` after approval. Mapping requests
 require an authorized, connected, writable Mapping supporting approval;
@@ -256,7 +258,9 @@ cannot constrain an explicitly approved unsandboxed host process; File API
 
 `approved=false` preserves ordinary Shell policy, including permanent
 administrator-configured `shell_mode=full`. Explicit `approved=true` always checks
-for approval, including for full Shell tokens. Expiry, password reset, revocation
+for approval, including for full Shell tokens, except on a Mapping that already
+permits native Shell without `job_sandbox`: there `approved=true` is ignored and
+the command runs as ordinary Shell. Expiry, password reset, revocation
 or restart prevents new approved jobs without killing jobs already started.
 Scheduled jobs do not inherit these conversation grants. Other API capabilities
 cannot borrow Shell approval.
