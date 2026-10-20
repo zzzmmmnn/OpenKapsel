@@ -177,8 +177,6 @@ def _create_resources(config, *, protected_paths=()):
         raise ValueError("remote mapping connections require wss")
     if not isinstance(config.get("token"), str) or not config["token"] or any(c.isspace() for c in config["token"]):
         raise ValueError("a mapping token is required")
-    if "sandbox" in config:
-        raise ValueError("sandbox is removed; set job_sandbox to enable isolation or omit it")
     for key in ("writable", "allow_exec", "network"):
         if key in config and not isinstance(config[key], bool):
             raise ValueError(f"{key} must be a boolean")

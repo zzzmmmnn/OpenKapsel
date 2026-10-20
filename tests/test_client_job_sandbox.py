@@ -170,10 +170,27 @@ class ClientJobSandboxTests(unittest.TestCase):
         finally:
             runtime.close()
 
+    def test_legacy_sandbox_setting_does_not_block_startup_or_override_job_sandbox(self):
+        if platform.system() not in {"Linux", "Darwin", "Windows"}:
+            self.skipTest("unsupported native platform")
+        for legacy_value in (True, False, None, "outdated"):
+            for configured in (False, True):
+                with self.subTest(legacy_value=legacy_value, job_sandbox=configured):
+                    config = self._config(writable=True, sandbox=legacy_value)
+                    if not configured:
+                        config.pop("job_sandbox")
+                    with patch("openkapsel.client_runtime.client_tasks.shutil.which", return_value=None):
+                        runtime = ClientRuntime(config)
+                    try:
+                        self.assertEqual(configured, runtime.tasks.job_sandbox is not None)
+                        self.assertEqual(configured and platform.system() != "Windows",
+                                         runtime.tasks.capabilities()["sandbox"])
+                        self.assertFalse(runtime.tasks.legacy.sandbox)
+                    finally:
+                        runtime.close()
+
     def test_invalid_configs_fail_closed(self):
         cases = [
-            {"sandbox": True},
-            {"sandbox": False},
             {"job_sandbox": {"type": "seatbelt"}},
             {"job_sandbox": None},
             {"job_sandbox": {"paths": [{"path": str(self.readonly), "access": "invalid"}]}},

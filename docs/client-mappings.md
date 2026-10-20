@@ -343,7 +343,8 @@ API deletion moves files to `.openkapsel/recycle` on the client. Recycle list/re
 
 The presence of `job_sandbox` (including an empty `{}`) enables Client-controlled
 sandbox policy. Omitting the field disables Client sandboxing. The old Client
-`sandbox` boolean option has been removed and is rejected at startup.
+`sandbox` option is obsolete and ignored if still present in an existing config;
+remove it when convenient. It never overrides `job_sandbox`.
 On Linux/macOS, configured `job_sandbox` selects Bubblewrap or Seatbelt for Mapping
 Shell. Do not set `type` manually: the Client derives and validates it.
 On **Windows**, the same `job_sandbox.paths` entries inform the guarded
