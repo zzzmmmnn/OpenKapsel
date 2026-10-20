@@ -11,6 +11,24 @@ from openkapsel.random_ids import token_urlsafe_alnum
 from openkapsel.job_manager import new_job_id
 
 
+def native_mapping_shell_ready(row, execution):
+    """A modern Mapping already runs native Shell without a grant.
+
+    Fail closed for old clients and for sandboxed/approval-only clients.
+    A disabled Mapping or Client must still require explicit approval.
+    """
+    return (
+        bool(row.get("writable")) and bool(row.get("allow_exec"))
+        and execution.get("enabled") is True
+        and execution.get("shell_command") is True
+        and execution.get("unsandboxed") is True
+        and execution.get("sandbox") is False
+        and execution.get("approval_required") is False
+        and execution.get("safe_powershell") is False
+        and execution.get("backend") == "native-unsandboxed"
+    )
+
+
 def client_task_id(mid, tid):
     return f"client.{mid}.{tid}"
 
@@ -151,6 +169,11 @@ class ShellRoutingMixin:
         if not execution.get("shell_command"):
             raise ApiError(409, "client_upgrade_required", "update and reconnect client for unified Shell execution")
         full = self.server.mappings.full_approval_status(row["id"])["active"]
+        # approved=true must not demand a grant when the same native Shell
+        # is already available without approval. Treat it as ordinary Shell;
+        # do not elevate disabled or sandboxed clients.
+        if native_mapping_shell_ready(row, execution):
+            approved = False
         safe = None
         windows = execution.get("platform") == "win32"
         # Older Windows Clients always required approval. Only an explicit

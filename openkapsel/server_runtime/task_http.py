@@ -13,7 +13,7 @@ from typing import Any
 
 from openkapsel.errors import ApiError
 from openkapsel.execution.cgroups import BUBBLEWRAP_PROCESS_OVERHEAD, SandboxLimits
-from openkapsel.execution.shell_routing import RemoteTask
+from openkapsel.execution.shell_routing import RemoteTask, native_mapping_shell_ready
 
 class TaskHttpMixin:
     def _handle_shell_approval_request(self) -> None:
@@ -41,6 +41,14 @@ class TaskHttpMixin:
                 raise ApiError(409, "client_upgrade_required",
                                "update and reconnect client for approved Shell execution")
             target = row["id"]
+            if native_mapping_shell_ready(row, execution):
+                # No sandbox exists to bypass: proactive approval must not
+                # mint a ticket for an already permitted native Shell.
+                self._send_json(200, {
+                    "status": "granted", "capability": "shell.unsandboxed",
+                    "target": target,
+                })
+                return
         # New Clients declare private function approval callbacks.  Reuse
         # the public Shell request operation, but let the function issue and
         # merge opaque auth rather than building scopes in the Server.

@@ -1025,7 +1025,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "shell_request_approval",
         "Request temporary Shell approval",
-        "Request temporary approval for unsandboxed Shell execution on an explicit target without running a command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. Provide a specific reason for the user; it is displayed in the browser approval page. The user must approve in the browser; later Shell execution still requires approved=true.",
+        "Request temporary approval for unsandboxed Shell execution on an explicit target without running a command. Use target=server or a Mapping ID (from mapping inventory); there is no auto target. Returns status=approval_required and approval_url when approval is needed, or status=granted. Provide a specific reason for the user; it is displayed in the browser approval page. A Mapping already allowed to run native Shell without job_sandbox returns granted immediately without a browser step; otherwise the user must approve in the browser and later Shell execution requires approved=true.",
         _object_schema(
             {
                 "target": {
@@ -1050,7 +1050,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
         "Start an asynchronous Shell job with &a1B2& reference ID. Omitted/null timeout defaults to 120s; client Shell with timeout <=120s runs in Client, >120s in shared Job Manager. Explicit finite positive timeouts have no maximum. target=auto routes mapped cwd to client, otherwise server; errors never fall back. Only Mapping Shell with timeout >120s survives Client restart via disk-backed Job Manager (16 global, 4 per Mapping key). Use family=task operations to inspect and control output.",
         _object_schema(
             {
-                "approved": {"type": "boolean", "default": False, "description": "Use an existing temporary unsandboxed Shell grant; a missing grant returns guidance, not a URL. Call shell.request_approval first to request user approval."},
+                "approved": {"type": "boolean", "default": False, "description": "Use an existing temporary unsandboxed Shell grant when one is required; an already enabled native Mapping Shell needs none even if approved=true is supplied. Call shell.request_approval only to request additional privilege."},
                 "reason": {"type": "string", "minLength": 1, "maxLength": 500,
                            "description": "Optional operation purpose; only shell.request_approval can create a link and show its reason to the user."},
                 "writer_nonce": {"type": "string", "pattern": "^@[A-Za-z0-9]{4}@$", "description": "Owning Conversation writer nonce; required when approved=true. Conversation is derived from outer plan_id."},

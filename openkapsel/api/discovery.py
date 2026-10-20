@@ -2107,7 +2107,7 @@ class DiscoveryMixin:
                         "taskname": "<taskname>",
                         "message": "<reason for request>",
                     },
-                    "response": "Only this explicit request endpoint can create a Shell approval URL: HTTP 200 status=approval_required, approval_url, approval_expires_in, capability and target; or status=granted. Ordinary Shell operations never mint links; if insufficient permissions may be the cause, call request_approval. Does not execute a command. Each target requires separate browser approval.",
+                    "response": "Only this explicit request endpoint can create a Shell approval URL: HTTP 200 status=approval_required, approval_url, approval_expires_in, capability and target; or status=granted. Ordinary Shell operations never mint links; if insufficient permissions may be the cause, call request_approval. Does not execute a command. A permitted native Mapping Shell returns granted without a browser approval; other targets require separate grants.",
                     "mcp": "capability_call family=shell operation=request_approval; include reason describing the actual use of unsandboxed Shell, plus target and writer_nonce in args; plan_id/taskname/message outside args.",
                 },
                 "shell_exec": {

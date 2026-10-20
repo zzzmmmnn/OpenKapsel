@@ -2015,6 +2015,48 @@ class CapabilityHTTPTests(unittest.TestCase):
         self.server.config = replace(self.server.config, public_base_url="http://example.test")
         self.assertEqual(403, self.approved()[0])
 
+    def test_windows_native_mapping_does_not_require_redundant_shell_approval(self):
+        # A native Windows Client advertises these capabilities without
+        # job_sandbox. Older callers may still send approved=true or proactively
+        # request an approval link.
+        native = dict(self.tasks.capabilities(), platform="win32")
+        self.assertIs(native["approval_required"], False)
+        self.assertIs(native["safe_powershell"], False)
+        self.assertIs(native["sandbox"], False)
+        self.assertEqual("native-unsandboxed", native["backend"])
+        self.session.capabilities["execution"] = native
+        status, result = self.request_approval(
+            self.row["id"], reason="Native Shell already permitted")
+        self.assertEqual(200, status, result)
+        self.assertEqual("granted", result["status"])
+        self.assertEqual({}, self.server.capability_grants.pending_requests)
+        self.assertEqual({}, self.server.function_grants.pending_requests)
+        for seconds in (5, 121):
+            with self.subTest(seconds=seconds):
+                status, task = self.approved(
+                    cwd="laptop", command="printf NATIVE_SHELL",
+                    timeout_seconds=seconds)
+                self.assertEqual(202, status, task)
+                self.assertEqual("NATIVE_SHELL", self.finished(task["task_id"])["stdout"])
+
+        # No waiver for an actual sandbox, approval-only Windows, or disabled Shell.
+        for change in (
+            {"sandbox": True, "backend": "bubblewrap"},
+            {"approval_required": True, "safe_powershell": True},
+            {"enabled": False},
+        ):
+            with self.subTest(change=change):
+                self.session.capabilities["execution"] = dict(native, **change)
+                status, denial = self.approved(cwd="laptop")
+                self.assertEqual(403, status, denial)
+                self.assertEqual("capability_approval_required",
+                                 denial["error"]["code"])
+        self.session.capabilities["execution"] = native
+        self.server.mappings.store.update(self.row["id"], allow_exec=False)
+        status, denial = self.approved(cwd="laptop")
+        self.assertEqual(403, status, denial)
+        self.assertEqual("capability_approval_required", denial["error"]["code"])
+
     def test_real_mapping_websocket_approved_shell(self):
         try:
             import websocket
