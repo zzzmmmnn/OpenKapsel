@@ -153,7 +153,10 @@ class ShellRoutingMixin:
         full = self.server.mappings.full_approval_status(row["id"])["active"]
         safe = None
         windows = execution.get("platform") == "win32"
-        if windows and execution.get("safe_powershell") and not approved and not full:
+        # Older Windows Clients always required approval. Only an explicit
+        # false from a new Client enables ordinary native Shell.
+        approval_required = windows and execution.get("approval_required", True) is not False
+        if approval_required and execution.get("safe_powershell") and not approved and not full:
             if not self._optional_bool(body, "interactive", False):
                 from openkapsel.client_runtime.windows_powershell_policy import parse_simple_powershell
                 safe = parse_simple_powershell(body.get("command"))
@@ -170,7 +173,7 @@ class ShellRoutingMixin:
                            {"request_operation": "shell.request_approval", "target": row["id"]})
         if full and not row["allow_exec"]:
             raise ApiError(403, "client_execution_disabled", "Mapping execution is disabled")
-        if windows and not approved and not full and safe is None:
+        if approval_required and not approved and not full and safe is None:
             raise ApiError(403, "capability_approval_required",
                            "Windows Shell requires temporary approval for unrecognized commands. "
                            "Call shell.request_approval with an explicit target and reason; "

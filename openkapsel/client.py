@@ -273,8 +273,8 @@ def _create_resources(config, *, protected_paths=()):
     is_mapping = urlsplit(config["url"]).path.rstrip("/").split("/")[-2:-1] == ["mapping-connect"]
     if job_sandbox is not None and not is_mapping:
         raise ValueError("job_sandbox requires a mapping-connect Client")
-    # Interpret only literal, in-scope file commands without approval on Windows.
-    # Every other Windows Shell invocation requires explicit approval.
+    # A configured Windows sandbox uses guarded file commands and approval.
+    # Without job_sandbox, Windows uses native Shell like Linux/macOS.
     from types import SimpleNamespace
     powershell_rules = (
         tuple(SimpleNamespace(path=item["path"], access=item["access"])
@@ -285,8 +285,8 @@ def _create_resources(config, *, protected_paths=()):
     )
     tasks = ClientTasks(files, enabled=config.get("allow_exec", False),
                         sandbox=False,
-                        managed_sandbox=job_sandbox is not None or os.name == "nt",
-                        approval_only=os.name == "nt",
+                        managed_sandbox=job_sandbox is not None,
+                        approval_only=os.name == "nt" and job_sandbox is not None,
                         powershell_rules=powershell_rules,
                         backend=config.get("backend", "podman"), image=config.get("image", "docker.io/library/python:3.14-slim-trixie"),
                         network=config.get("network", False),

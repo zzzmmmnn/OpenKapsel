@@ -68,8 +68,9 @@ venv location. An existing directory that is not a healthy Python venv is
 therefore needs access to a configured package index or cached wheels.
 
 This script installs **Python dependencies only**. Windows does not require
-Node.js/npm or an external sandbox runtime. Windows Shell uses guarded literal
-file commands and explicit approval for other commands.
+Node.js/npm or an external sandbox runtime. With `job_sandbox`, Windows Shell
+uses guarded literal file commands and explicit approval for other commands.
+Without it, enabled writable Clients run native Shell directly.
 
 A minimal manual installation with only `websocket-client` and
 `python-socks` can still be used for basic Client connection where the
@@ -411,8 +412,8 @@ isolation and the Manager IPC contract.
 
 ### Windows approval-only Shell mode
 
-On Windows, OpenKapsel does not start an OS sandbox for Mapping
-Shell jobs. The Client interprets a small, literal-only set of PowerShell
+With `job_sandbox` configured on Windows, OpenKapsel does not start an OS
+sandbox for Mapping Shell jobs. The Client interprets a small, literal-only set of PowerShell
 filesystem commands directly using the same guarded file provider as File RPC.
 It does **not** invoke PowerShell for these commands. Supported aliases include:
 
@@ -437,9 +438,14 @@ This is an application-level command allowlist, **not** an OS sandbox.
 
 Linux/macOS retain their configured Sandbox backends.
 
-Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. `job_sandbox` alone determines Client sandbox activation: when present, Linux/macOS use their native Job Manager sandbox, and Windows uses guarded commands/approval without OS sandboxing; when absent, Linux/macOS execute natively as the Client OS user (Windows still requires approval for arbitrary commands). No Podman installation is required for Client Shell. Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox`, **all** Linux/macOS Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. `limits.max_seconds` limits asynchronous RPC tasks, not Shell jobs.
+Execution requires server caller Shell/write permissions, a writable mapping with client execution enabled, and client-local `allow_exec: true`. `job_sandbox` alone determines Client sandbox activation: when present, Linux/macOS use their native Job Manager sandbox, and Windows uses guarded commands/approval without OS sandboxing; when absent, all three platforms execute natively as the Client OS user without temporary Shell approval. No Podman installation is required for Client Shell. Mapping Shell defaults to 120 seconds. Without `job_sandbox`, jobs at or below 120 seconds run directly in ClientRuntime; longer jobs use the shared Job Manager. With `job_sandbox`, **all** Linux/macOS Shell jobs run in Manager, with a limit of 16 total and 4 per Mapping ID. Explicit finite positive Shell timeouts have no upper bound. `limits.max_seconds` limits asynchronous RPC tasks, not Shell jobs.
 
-To run unrestricted native Linux/macOS Shell tasks, omit `job_sandbox` entirely.
+To run unrestricted native Shell tasks on Linux/macOS/Windows, omit `job_sandbox` entirely.
+Client-local `allow_exec: true` and `writable: true` are required.
+Windows native commands use `cmd.exe /d /s /c`; invoke PowerShell explicitly
+when PowerShell syntax is needed. Both Server and Client must be updated and
+the Client reconnected so Server sees `execution.approval_required: false`.
+Older Windows Clients retain their approval requirement.
 Such tasks inherit the Client OS account's permissions: `cwd`, Mapping read/write
 configuration and legacy `network` values do not confine a native process.
 The Client warns at startup. An explicitly approved unsandboxed Shell inherits
@@ -475,8 +481,8 @@ extra `allowed_paths`, `hidden_paths`, `network_mode`, and normalized
 `allowed_domains`. The Manager validates these again and rejects unsupported
 sandboxes; it never falls back silently.
 
-Native Job Manager sandboxing covers Linux Bubblewrap and macOS Seatbelt;
-Windows uses guarded literal commands or explicit approval.
+Native Job Manager sandboxing covers Linux Bubblewrap and macOS Seatbelt.
+With `job_sandbox` configured, Windows uses guarded literal commands or explicit approval.
 
 Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpus`; these values apply to supported native sandbox resource controls and Client-owned RPC tasks. `max_tasks` (1–16) limits Client-owned tasks. `max_seconds` (1–86400, default 600) continues to limit Client-owned asynchronous RPC tasks; it does not restrict Shell. The Job Manager alone enforces its 16-global/4-per-Mapping running limit for Shell timeouts greater than 120 seconds. Short Shell jobs use the existing Client local limits; all Shell jobs default to 120 seconds when omitted, and explicitly requested finite positive timeouts have no upper bound (Manager-owned after 120 seconds). Native unsandboxed execution has the OS account's host permissions and is not a sandbox.
 

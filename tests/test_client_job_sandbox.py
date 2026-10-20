@@ -153,6 +153,8 @@ class ClientJobSandboxTests(unittest.TestCase):
             self.assertIsNone(runtime.tasks.job_sandbox)
             self.assertFalse(runtime.tasks.legacy.sandbox)
             self.assertFalse(runtime.tasks.capabilities()["sandbox"])
+            self.assertFalse(runtime.tasks.capabilities()["approval_required"])
+            self.assertFalse(runtime.tasks.capabilities()["safe_powershell"])
         finally:
             runtime.close()
 
@@ -167,6 +169,34 @@ class ClientJobSandboxTests(unittest.TestCase):
             )
             self.assertEqual(platform.system() != "Windows",
                              runtime.tasks.capabilities()["sandbox"])
+        finally:
+            runtime.close()
+
+    def test_native_runtime_executes_shell_without_approval(self):
+        config = self._config(writable=True)
+        config.pop("job_sandbox")
+        runtime = ClientRuntime(config)
+        try:
+            runtime.tasks.dispatch("task_start", {
+                "task_id": "&Nat1&", "command": "echo NATIVE_OK",
+                "timeout_seconds": 5,
+            })
+            self.assertTrue(runtime.tasks.legacy.tasks["&Nat1&"]["done"].wait(10))
+            result = runtime.tasks.dispatch("task_get", {"task_id": "&Nat1&"})
+            self.assertEqual(0, result["exit_code"])
+            self.assertIn(b"NATIVE_OK", base64.b64decode(result["output"]))
+            # Long jobs must reach Manager with host environment and no sandbox.
+            with patch("openkapsel.client_runtime.shared_job_tasks.request",
+                       return_value={"native": "manager"}) as manager:
+                self.assertEqual({"native": "manager"}, runtime.tasks.dispatch(
+                    "task_start", {"task_id": "&Nat2&", "command": "echo LONG_OK",
+                                   "timeout_seconds": 121}))
+            prepared = manager.call_args.args[3]
+            self.assertNotIn("sandbox", prepared)
+            self.assertEqual(dict(os.environ), prepared["env"])
+            self.assertIsNone(prepared["container"])
+            if os.name == "nt":
+                self.assertTrue(prepared["executable"].lower().endswith("cmd.exe"))
         finally:
             runtime.close()
 

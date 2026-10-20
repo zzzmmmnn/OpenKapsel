@@ -144,6 +144,28 @@ class UnifiedShellHTTPTests(unittest.TestCase):
         )
         self.assertEqual(403, status, chained)
 
+    def test_windows_native_shell_uses_advertised_policy_for_short_and_long_jobs(self):
+        self.session.capabilities["execution"] = dict(
+            self.tasks.capabilities(), platform="win32"
+        )
+        for timeout in (5, 121):
+            with self.subTest(timeout=timeout):
+                status, task = self.api("/shell/exec", {
+                    "command": "echo WINDOWS_NATIVE", "cwd": "laptop",
+                    "target": "client", "timeout_seconds": timeout,
+                })
+                self.assertEqual(202, status, task)
+                result = self.finished(task["task_id"])
+                self.assertEqual(0, result["exit_code"])
+                self.assertIn("WINDOWS_NATIVE", result["stdout"])
+        # Old Windows Clients never opted into native execution.
+        self.session.capabilities["execution"].pop("approval_required")
+        status, denied = self.api("/shell/exec", {
+            "command": "echo old-client", "cwd": "laptop", "target": "client",
+        })
+        self.assertEqual(403, status, denied)
+        self.assertEqual("capability_approval_required", denied["error"]["code"])
+
     def test_remote_output_input_reconnect_and_termination(self):
         status, result = self.api("/shell/exec", {"command": "cat", "cwd": "laptop", "target": "client", "interactive": True})
         self.assertEqual(202, status, result)
