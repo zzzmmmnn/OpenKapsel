@@ -28,6 +28,7 @@ from openkapsel.api.discovery_sections import (
     SECTION_ENDPOINTS,
     SECTION_LIMITS,
     SECTION_MCP_FAMILIES,
+    SECTION_ALIASES,
     SECTION_NAMES,
     SECTION_SUMMARIES,
     SECTION_WORKFLOWS,
@@ -150,6 +151,7 @@ class DiscoveryMixin:
 
     def _discovery_payload(self, section: str | None = None) -> dict[str, Any]:
         requested = "main" if section in {None, "", "main"} else str(section)
+        requested = SECTION_ALIASES.get(requested, requested)
         if requested != "full" and requested not in SECTION_NAMES and requested != "main":
             raise ApiError(
                 HTTPStatus.NOT_FOUND,
@@ -196,7 +198,7 @@ class DiscoveryMixin:
         if section == "main":
             # Main is an index plus the shared REST preamble. Detailed capability, limit,
             # path, and error contracts live only in their authoritative sections.
-            for key in ("request_transport", "path_rules", "capabilities", "limits", "errors"):
+            for key in ("restricted_http", "path_rules", "capabilities", "limits", "errors"):
                 payload.pop(key, None)
             payload.get("sections", {}).pop("mcp", None)
             endpoints = payload.get("endpoints", {})
@@ -314,10 +316,10 @@ class DiscoveryMixin:
                     "section": operation("discovery_section"),
                 },
             ),
-            "transport": family(
-                "./transport/hmac",
-                "GET-only helpers for constrained transports.",
-                {"hmac": operation("transport_hmac")},
+            "restricted_http": family(
+                "./restricted_http/hmac",
+                "GET-only helpers for restricted HTTP clients.",
+                {"hmac": operation("restricted_http_hmac")},
             ),
             "credential": family(
                 "./credential/renew",
@@ -615,7 +617,7 @@ class DiscoveryMixin:
         capabilities = full["capabilities"]
         sections: dict[str, Any] = {}
         availability = {
-            "transport": True,
+            "restricted_http": True,
             "files": bool(
                 capabilities["files"]["read"] or capabilities["files"]["write"]
             ),
@@ -657,10 +659,10 @@ class DiscoveryMixin:
         result = self._discovery_common(full, "main")
         result.update(
             {
-                "request_transport": {
+                "restricted_http": {
                     "available": True,
-                    "discovery_url": "./discovery/transport",
-                    "summary": "Query routing and signed GET or native-method transport for constrained clients.",
+                    "discovery_url": "./discovery/restricted_http",
+                    "summary": SECTION_SUMMARIES["restricted_http"],
                 },
                 "path_rules": {
                     "relative_paths_from": full["path_rules"]["relative_paths_from"],
@@ -745,8 +747,8 @@ class DiscoveryMixin:
     def _section_discovery(self, full: dict[str, Any], section: str) -> dict[str, Any]:
         result = self._discovery_common(full, section)
         result["summary"] = SECTION_SUMMARIES[section]
-        if section == "transport":
-            result["request_transport"] = full["request_transport"]
+        if section == "restricted_http":
+            result["restricted_http"] = full["restricted_http"]
         if section == "paths":
             result["path_rules"] = full["path_rules"]
         capability_names = SECTION_CAPABILITIES[section]
@@ -887,12 +889,17 @@ class DiscoveryMixin:
                     "preview_token_unchanged": True,
                 },
             },
-            "request_transport": {
+            "restricted_http": {
                 "summary": (
-                    "Compatibility transport for constrained clients; prefer ordinary REST "
-                    "paths and Authorization headers whenever the client supports them."
+                    "Fallbacks for HTTP clients that cannot set the URL path, HTTP method, "
+                    "or Authorization header; prefer ordinary REST paths and Authorization "
+                    "headers whenever the client supports them."
                 ),
-                "discovery_url": "./transport",
+                "discovery_url": "./restricted_http",
+                "legacy_aliases": {
+                    "discovery/transport": "discovery/restricted_http",
+                    "transport/hmac": "restricted_http/hmac",
+                },
                 "selection": {
                     "ordinary_rest": (
                         "preferred when the client can set the request path, HTTP method, "
@@ -917,8 +924,8 @@ class DiscoveryMixin:
                 },
                 "examples": {
                     "query_route": "GET <workspace_url>?req=fs/query/list&path=.",
-                    "hmac_helper_path": "GET <workspace_url>transport/hmac?key=<url-encoded-key>&target=<url-encoded-target>",
-                    "hmac_helper_query_route": "GET <workspace_url>?req=transport/hmac&key=<url-encoded-key>&target=<url-encoded-target>",
+                    "hmac_helper_path": "GET <workspace_url>restricted_http/hmac?key=<url-encoded-key>&target=<url-encoded-target>",
+                    "hmac_helper_query_route": "GET <workspace_url>?req=restricted_http/hmac&key=<url-encoded-key>&target=<url-encoded-target>",
                     "signed_get_envelope": (
                         "GET <workspace_url>?req=context&timestamp=<unix-seconds>"
                         "&nonce=<8-alnum>&body=<url-encoded-json>&http_method=POST"
@@ -948,7 +955,7 @@ class DiscoveryMixin:
                 "hmac_helper": {
                     "available": True,
                     "method": "GET",
-                    "paths": ["./transport/hmac", "?req=transport/hmac"],
+                    "paths": ["./restricted_http/hmac", "?req=restricted_http/hmac"],
                     "authentication": "workspace read URL only; no Authorization header",
                     "required_parameters": ["key", "target"],
                     "algorithm": "HMAC-SHA256",
@@ -984,7 +991,7 @@ class DiscoveryMixin:
                 "response_envelope": {
                     "available": True,
                     "query_parameter": "response_mode=envelope",
-                    "scope": "Core Workspace REST/transport JSON responses only (including signed GET and native signed requests); excludes admin, OAuth, public sharing, preview apps, binary/streaming responses, HEAD and upstream rejections",
+                    "scope": "Core Workspace REST and restricted HTTP JSON responses only (including signed GET and native signed requests); excludes admin, OAuth, public sharing, preview apps, binary/streaming responses, HEAD and upstream rejections",
                     "authentication": "unchanged; response_mode only changes presentation, never control authorization",
                     "signature": "include the raw response_mode=envelope query parameter in the existing HMAC input before the final signature field; never append it after signing",
                     "wire_http_status": 200,
@@ -1621,7 +1628,7 @@ class DiscoveryMixin:
                 "discovery_section": {
                     "notes": "main discovery is a compact index; section documents contain domain-specific details and full preserves the complete compatibility document",
                 },
-                "transport_hmac": {
+                "restricted_http_hmac": {
                     "authentication": "workspace read URL only; no Authorization header",
                     "query": {
                         "key": "required UTF-8 HMAC key, at most 4096 bytes",
@@ -1632,7 +1639,7 @@ class DiscoveryMixin:
                         "encoding": "base64url-nopad",
                         "result": "<43-character base64url digest>",
                     },
-                    "notes": "pure computation with no server-side state change; also available through ?req=transport/hmac at the exact workspace root; the secret-bearing query is redacted from OpenKapsel access logs but upstream proxies may still log request URLs",
+                    "notes": "pure computation with no server-side state change; also available through ?req=restricted_http/hmac at the exact workspace root; the secret-bearing query is redacted from OpenKapsel access logs but upstream proxies may still log request URLs",
                 },
                 "credential_renew": {
                     "authentication": "current Bearer control token bound to the current read URL",
@@ -2607,7 +2614,7 @@ class DiscoveryMixin:
             ]
         if section == "main":
             for key in (
-                "request_transport", "path_rules", "limits", "errors",
+                "restricted_http", "path_rules", "limits", "errors",
                 "server_version", "name", "os", "root",
             ):
                 payload.pop(key, None)

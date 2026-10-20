@@ -16,9 +16,9 @@ Control tokens do not sign in to administration. Interactive browser consent on 
 
 The workspace-relative `.openkapsel` directory is reserved private runtime state. File, preview, sharing, application-worker, and restricted-Shell surfaces do not expose it. Use the dedicated recycle, Context, Memory, database-runtime, and environment interfaces instead.
 
-## GET-only transport fallback
+## Restricted HTTP clients
 
-When an AI host cannot change the Workspace URL path, HTTP method, or Authorization header, load `GET <workspace_url>/discovery/transport` and follow [request-transport.md](request-transport.md). That dedicated document is the only detailed wire-format reference; prefer ordinary REST whenever the host supports it.
+When an AI host cannot change the Workspace URL path, HTTP method, or Authorization header, load `GET <workspace_url>/discovery/restricted_http` and follow [restricted-http.md](restricted-http.md). That dedicated document is the only detailed wire-format reference; prefer ordinary REST whenever the host supports it.
 
 ## Directory-scoped configuration and renewal
 
@@ -38,7 +38,7 @@ Directory-scoped helpers discover and cache `OPENKAPSEL_CREDENTIALS_EXPIRES_AT`.
 | Method | Relative path | Purpose |
 |---|---|---|
 | `GET` | `/` | Compact capability index and links |
-| `GET` | `/discovery/transport` | GET-only query routing and signed-envelope transport contract |
+| `GET` | `/discovery/restricted_http` | Fallbacks for HTTP clients that cannot set the URL path, HTTP method, or Authorization header |
 | `GET` | `/discovery/files` | File, recycle, and binary transfer contract |
 | `GET` | `/discovery/context` | Context and Plan contract |
 | `GET` | `/discovery/memory` | Long-term Memory contract |

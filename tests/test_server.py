@@ -428,19 +428,19 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(body, (self.root / "native-signed-binary.bin").read_bytes())
 
     def test_hmac_helper_accepts_target_up_to_128k_in_handler(self) -> None:
-        from openkapsel.server_runtime.dispatch import RequestDispatchMixin, TRANSPORT_HMAC_MAX_TARGET_BYTES
-        self.assertEqual(131072, TRANSPORT_HMAC_MAX_TARGET_BYTES)
+        from openkapsel.server_runtime.dispatch import RequestDispatchMixin, RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES
+        self.assertEqual(131072, RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES)
         class Capture:
             def _send_json(self, status, data):
                 self.result = status, data
         capture = Capture()
-        RequestDispatchMixin._handle_transport_hmac(capture, {"key": ["k"], "target": ["x" * 131072]})
+        RequestDispatchMixin._handle_restricted_http_hmac(capture, {"key": ["k"], "target": ["x" * 131072]})
         self.assertEqual(200, capture.result[0])
         with self.assertRaises(ApiError) as error:
-            RequestDispatchMixin._handle_transport_hmac(capture, {"key": ["k"], "target": ["x" * 131073]})
-        self.assertEqual("transport_hmac_target_too_large", error.exception.code)
+            RequestDispatchMixin._handle_restricted_http_hmac(capture, {"key": ["k"], "target": ["x" * 131073]})
+        self.assertEqual("restricted_http_hmac_target_too_large", error.exception.code)
         # A 40 KiB target also passes through the actual HTTP helper endpoint.
-        short_url = self.endpoint("/transport/hmac?" + urlencode({"key": "k", "target": "x" * 40000}))
+        short_url = self.endpoint("/restricted_http/hmac?" + urlencode({"key": "k", "target": "x" * 40000}))
         status, raw, _ = self.raw_request("GET", short_url, authorize=False)
         self.assertEqual(200, status, raw)
 
@@ -463,15 +463,23 @@ class WorkspaceServerTests(unittest.TestCase):
 
         discovery_status, discovery = self.request("GET", self.endpoint())
         self.assertEqual(HTTPStatus.OK, discovery_status)
-        transport_ref = discovery["sections"]["transport"]
-        self.assertEqual("./discovery/transport", transport_ref["url"])
+        self.assertNotIn("transport", discovery["sections"])
+        transport_ref = discovery["sections"]["restricted_http"]
+        self.assertEqual("./discovery/restricted_http", transport_ref["url"])
+        self.assertTrue(transport_ref["summary"].startswith("Only if your HTTP client cannot"))
         self.assertNotIn("signed_get_envelope", transport_ref)
 
         transport_status, transport_doc = self.request(
-            "GET", self.endpoint("/discovery/transport")
+            "GET", self.endpoint("/discovery/restricted_http")
         )
         self.assertEqual(HTTPStatus.OK, transport_status)
-        transport = transport_doc["request_transport"]
+        transport = transport_doc["restricted_http"]
+        # The former section name keeps serving the same document.
+        legacy_status, legacy_doc = self.request(
+            "GET", self.endpoint("/discovery/transport")
+        )
+        self.assertEqual(HTTPStatus.OK, legacy_status)
+        self.assertEqual(transport, legacy_doc["restricted_http"])
         self.assertTrue(transport["query_route"]["available"])
         signed = transport["signed_get_envelope"]
         self.assertEqual(
@@ -486,8 +494,8 @@ class WorkspaceServerTests(unittest.TestCase):
             "GET", self.endpoint("/discovery/full")
         )
         self.assertEqual(HTTPStatus.OK, full_status)
-        full_transport = full_doc["request_transport"]
-        self.assertEqual("./transport", full_transport["discovery_url"])
+        full_transport = full_doc["restricted_http"]
+        self.assertEqual("./restricted_http", full_transport["discovery_url"])
         self.assertIn("ordinary_rest", full_transport["selection"])
         self.assertIn("query_route", full_transport["selection"])
         self.assertIn("signed_get_envelope", full_transport["selection"])
@@ -723,15 +731,18 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertLessEqual(abs(result["error"]["data"]["timestamp"] - int(time.time())), 2)
         self.assertEqual({"jsonrpc", "id", "error"}, set(result))
 
-    def test_transport_hmac_supports_path_and_req_route_without_authorization(self) -> None:
+    def test_restricted_http_hmac_supports_path_and_req_route_without_authorization(self) -> None:
         key = "helper-secret"
         target = "req=memory&timestamp=1700000000&nonce=Ab12Cd34&http_method=GET"
         expected = base64.urlsafe_b64encode(
             hmac.digest(key.encode("utf-8"), target.encode("utf-8"), "sha256")
         ).rstrip(b"=").decode("ascii")
         cases = [
-            self.endpoint("/transport/hmac?" + urlencode({"key": key, "target": target})),
-            self.endpoint("?" + urlencode({"req": "transport/hmac", "key": key, "target": target})),
+            self.endpoint(f"/{route}?" + urlencode({"key": key, "target": target}))
+            for route in ("restricted_http/hmac", "transport/hmac")
+        ] + [
+            self.endpoint("?" + urlencode({"req": route, "key": key, "target": target}))
+            for route in ("restricted_http/hmac", "transport/hmac")
         ]
         for path in cases:
             with self.subTest(path=path):
@@ -748,22 +759,22 @@ class WorkspaceServerTests(unittest.TestCase):
                 self.assertNotIn(key, logged)
                 self.assertNotIn(urlencode({"target": target}), logged)
 
-    def test_transport_hmac_validates_parameters_and_limits(self) -> None:
+    def test_restricted_http_hmac_validates_parameters_and_limits(self) -> None:
         duplicate = self.endpoint(
-            "/transport/hmac?" + urlencode([("key", "a"), ("key", "b"), ("target", "c")])
+            "/restricted_http/hmac?" + urlencode([("key", "a"), ("key", "b"), ("target", "c")])
         )
         status, raw, _ = self.raw_request("GET", duplicate, authorize=False)
         self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
         payload = json.loads(raw.decode("utf-8"))
-        self.assertEqual("invalid_transport_hmac", payload["error"]["code"])
+        self.assertEqual("invalid_restricted_http_hmac", payload["error"]["code"])
 
         oversized = self.endpoint(
-            "/transport/hmac?" + urlencode({"key": "x" * 4097, "target": "c"})
+            "/restricted_http/hmac?" + urlencode({"key": "x" * 4097, "target": "c"})
         )
         status, raw, _ = self.raw_request("GET", oversized, authorize=False)
         self.assertEqual(HTTPStatus.BAD_REQUEST, status, raw)
         payload = json.loads(raw.decode("utf-8"))
-        self.assertEqual("transport_hmac_key_too_large", payload["error"]["code"])
+        self.assertEqual("restricted_http_hmac_key_too_large", payload["error"]["code"])
 
     def test_signed_get_envelope_authorizes_control_get_and_rejects_replay(self) -> None:
         path = self.signed_envelope_path(
@@ -1370,7 +1381,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("main", main["section"])
         self.assertEqual(
-            {"transport", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"},
+            {"restricted_http", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"},
             set(main["sections"]),
         )
         self.assertEqual({"discovery"}, set(main["endpoints"]))
@@ -1382,7 +1393,7 @@ class WorkspaceServerTests(unittest.TestCase):
             },
             main["mutation_core"],
         )
-        for duplicate in ("request_transport", "path_rules", "capabilities", "limits", "errors"):
+        for duplicate in ("restricted_http", "path_rules", "capabilities", "limits", "errors"):
             self.assertNotIn(duplicate, main)
         skill = main["skills"]["openkapsel_rest"]
         self.assertEqual("openkapsel-rest", skill["name"])
@@ -1407,7 +1418,7 @@ class WorkspaceServerTests(unittest.TestCase):
             mutate["operation_contracts"]["text.replace"]["required"],
         )
         self.assertNotIn("context", files["endpoints"])
-        self.assertNotIn("request_transport", files)
+        self.assertNotIn("restricted_http", files)
 
         status, authentication = self.request(
             "GET", self.endpoint("/discovery/authentication")
@@ -1442,7 +1453,7 @@ class WorkspaceServerTests(unittest.TestCase):
             discovery_operation(payload, "fs_write", "mutate")["method"],
         )
         section_endpoint_sets = []
-        for section_name in ("transport", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing"):
+        for section_name in ("restricted_http", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing"):
             section_status, section_payload = self.request(
                 "GET", self.endpoint(f"/discovery/{section_name}")
             )
@@ -1752,7 +1763,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "context", "conversation", "credential", "discovery", "environment",
                 "fs_content", "fs_query", "fs_read", "fs_write",
                 "mapping", "memory", "recycle", "rpc", "schedule",
-                "share", "shell", "task", "transfer", "transport", "upload", "web",
+                "share", "shell", "task", "transfer", "restricted_http", "upload", "web",
             },
             set(payload["endpoints"]),
         )
@@ -2355,7 +2366,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         status, body, headers = self.raw_request(
             "GET",
-            self.endpoint("/discovery/transport"),
+            self.endpoint("/discovery/restricted_http"),
             headers=browser_headers,
             authorize=False,
         )
@@ -3518,7 +3529,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertNotIn("endpoints", workspace_payload)
         self.assertNotIn("errors", workspace_payload)
         self.assertNotIn("limits", workspace_payload)
-        self.assertNotIn("request_transport", workspace_payload)
+        self.assertNotIn("restricted_http", workspace_payload)
         self.assertNotIn("path_rules", workspace_payload)
         status, shell_discovery, _ = self.mcp_request(
             token,

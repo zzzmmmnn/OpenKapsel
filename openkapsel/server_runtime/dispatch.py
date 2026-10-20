@@ -24,8 +24,8 @@ SIGNED_GET_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
 SIGNED_GET_RESERVED_QUERY = frozenset(
     {"req", "timestamp", "nonce", "body", "http_method", "signature"}
 )
-TRANSPORT_HMAC_MAX_KEY_BYTES = 4096
-TRANSPORT_HMAC_MAX_TARGET_BYTES = 131072
+RESTRICTED_HTTP_HMAC_MAX_KEY_BYTES = 4096
+RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES = 131072
 
 class RequestDispatchMixin:
     def version_string(self) -> str:
@@ -109,9 +109,9 @@ class RequestDispatchMixin:
         try:
             parsed = urlsplit(self.path)
             req_values = parse_qs(parsed.query, keep_blank_values=True).get("req", [])
-            self._redact_request_query = (
-                parsed.path.rstrip("/").endswith("/transport/hmac")
-                or "transport/hmac" in req_values
+            self._redact_request_query = any(
+                parsed.path.rstrip("/").endswith("/" + route) or route in req_values
+                for route in ("restricted_http/hmac", "transport/hmac")
             )
             if self._is_dedicated_preview_request():
                 route = self._preview_authenticated_route(parsed.path)
@@ -763,13 +763,13 @@ class RequestDispatchMixin:
             handler(*args, **kwargs)
 
 
-    def _handle_transport_hmac(self, query: dict[str, list[str]]) -> None:
+    def _handle_restricted_http_hmac(self, query: dict[str, list[str]]) -> None:
         unexpected = sorted(set(query) - {"key", "target"})
         if unexpected:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
-                "invalid_transport_hmac",
-                "transport HMAC accepts only key and target query parameters",
+                "invalid_restricted_http_hmac",
+                "restricted HTTP HMAC accepts only key and target query parameters",
             )
 
         values: dict[str, str] = {}
@@ -778,24 +778,24 @@ class RequestDispatchMixin:
             if len(items) != 1:
                 raise ApiError(
                     HTTPStatus.BAD_REQUEST,
-                    "invalid_transport_hmac",
+                    "invalid_restricted_http_hmac",
                     f"{name} must appear exactly once",
                 )
             values[name] = items[0]
 
         key_bytes = values["key"].encode("utf-8")
         target_bytes = values["target"].encode("utf-8")
-        if len(key_bytes) > TRANSPORT_HMAC_MAX_KEY_BYTES:
+        if len(key_bytes) > RESTRICTED_HTTP_HMAC_MAX_KEY_BYTES:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
-                "transport_hmac_key_too_large",
-                f"key must not exceed {TRANSPORT_HMAC_MAX_KEY_BYTES} UTF-8 bytes",
+                "restricted_http_hmac_key_too_large",
+                f"key must not exceed {RESTRICTED_HTTP_HMAC_MAX_KEY_BYTES} UTF-8 bytes",
             )
-        if len(target_bytes) > TRANSPORT_HMAC_MAX_TARGET_BYTES:
+        if len(target_bytes) > RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES:
             raise ApiError(
                 HTTPStatus.BAD_REQUEST,
-                "transport_hmac_target_too_large",
-                f"target must not exceed {TRANSPORT_HMAC_MAX_TARGET_BYTES} UTF-8 bytes",
+                "restricted_http_hmac_target_too_large",
+                f"target must not exceed {RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES} UTF-8 bytes",
             )
 
         result = base64.urlsafe_b64encode(

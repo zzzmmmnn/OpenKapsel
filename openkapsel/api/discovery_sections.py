@@ -9,7 +9,10 @@ from openkapsel.context.conversation import (
 )
 
 
-SECTION_NAMES = ("transport", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors")
+# Former section names that remain served for existing clients.
+SECTION_ALIASES = {"transport": "restricted_http"}
+
+SECTION_NAMES = ("restricted_http", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors")
 
 
 SECTION_MCP_FAMILIES = {
@@ -22,7 +25,7 @@ SECTION_MCP_FAMILIES = {
 }
 
 SECTION_ENDPOINTS = {
-    "transport": {"transport"},
+    "restricted_http": {"restricted_http"},
     "files": {"fs_query", "fs_read", "fs_content", "fs_write", "transfer", "recycle", "upload"},
     "context": {"context", "conversation"},
     "memory": {"memory"},
@@ -39,7 +42,7 @@ SECTION_ENDPOINTS = {
 }
 
 SECTION_CAPABILITIES = {
-    "transport": set(),
+    "restricted_http": set(),
     "files": {"files", "recycle", "file_operations", "binary_transfer"},
     "context": {"context"},
     "memory": {"memory"},
@@ -60,7 +63,7 @@ SECTION_CAPABILITIES = {
 }
 
 SECTION_LIMITS = {
-    "transport": set(),
+    "restricted_http": set(),
     "files": {
         "workspace_storage", "max_request_body_bytes", "max_read_chars",
         "default_read_chars", "max_direct_upload_bytes", "max_file_bytes",
@@ -110,7 +113,7 @@ SECTION_LIMITS = {
 }
 
 SECTION_SUMMARIES = {
-    "transport": "Query routing, HMAC helper, and signed GET or native-method envelopes for constrained clients.",
+    "restricted_http": "Only if your HTTP client cannot set the URL path, HTTP method, or Authorization header: call endpoints through the workspace root with ?req=, signed envelopes, and an HMAC helper. Unrelated to MCP or Mapping transport.",
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Append-only Conversation summaries plus operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",
@@ -127,13 +130,13 @@ SECTION_SUMMARIES = {
 }
 
 SECTION_WORKFLOWS = {
-    "transport": [
+    "restricted_http": [
         "Prefer ordinary REST paths and Authorization: Bearer <CONTROL_TOKEN> whenever the client supports them.",
         "Use req at the exact workspace root only when the client cannot change the request path.",
         "Use signed GET only for GET-only clients; when the client can send POST or DELETE but not Authorization headers, use the native signed envelope with HTTP body and method-bound HMAC.",
-        "If the client also lacks HMAC-SHA256, call transport/hmac or ?req=transport/hmac with URL-encoded key and target, then use the returned base64url-no-padding result as signature.",
+        "If the client also lacks HMAC-SHA256, call restricted_http/hmac or ?req=restricted_http/hmac with URL-encoded key and target, then use the returned base64url-no-padding result as signature.",
         "Generate a fresh random nonce for every signed envelope and never reuse it inside the timestamp acceptance window.",
-        "For clients that cannot read non-2xx response bodies, add response_mode=envelope to core Workspace REST/transport query (before signature when signed); JSON responses become HTTP 200 with ok/status/result or ok/status/error, without changing authorization.",
+        "For clients that cannot read non-2xx response bodies, add response_mode=envelope to core Workspace REST or restricted HTTP query (before signature when signed); JSON responses become HTTP 200 with ok/status/result or ok/status/error, without changing authorization.",
         "If the client has no clock, request ?req=memory&response_mode=envelope without signing: its readable permission error provides a server-generated integer timestamp (Unix seconds). Use that timestamp and a fresh nonce for the signed request; signed errors including expired timestamps also include server timestamp.",
     ],
     "files": [

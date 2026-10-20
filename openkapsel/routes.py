@@ -94,8 +94,13 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="environment",
     ),
     _exact(
-        "transport_hmac", ("GET",), "/transport/hmac", "_handle_transport_hmac",
-        invocation="query", discovery_key="transport",
+        "restricted_http_hmac", ("GET",), "/restricted_http/hmac", "_handle_restricted_http_hmac",
+        invocation="query", discovery_key="restricted_http",
+    ),
+    # Former route name, kept so existing restricted clients keep working.
+    _exact(
+        "transport_hmac", ("GET",), "/transport/hmac", "_handle_restricted_http_hmac",
+        invocation="query", discovery_key="restricted_http",
     ),
     EndpointSpec(
         "discovery_section", frozenset(("GET",)),

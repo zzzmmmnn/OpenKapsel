@@ -47,8 +47,8 @@ DISCOVERY_BUDGETS = {
     "errors": 1_000,
 }
 
-# The MCP discovery tool does not serve the REST-only transport section.
-MCP_DISCOVERY_SECTIONS = tuple(name for name in SECTION_NAMES if name != "transport")
+# The MCP discovery tool does not serve the REST-only restricted_http section.
+MCP_DISCOVERY_SECTIONS = tuple(name for name in SECTION_NAMES if name != "restricted_http")
 
 
 def size(value) -> int:

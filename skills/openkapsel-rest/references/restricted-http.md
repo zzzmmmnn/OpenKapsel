@@ -1,6 +1,6 @@
-# Signed and GET-only request transport
+# Restricted HTTP clients
 
-These fallbacks support AI hosts limited to `GET` or able to send native HTTP methods but not custom Authorization headers. Prefer ordinary REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them. Runtime `GET <workspace_url>/discovery/transport` is authoritative for the current wire contract.
+Read this only if your HTTP client cannot set the URL path, HTTP method, or Authorization header. These fallbacks support AI hosts limited to `GET` or able to send native HTTP methods but not custom Authorization headers. They are unrelated to MCP or Mapping transport. Prefer ordinary REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them. Runtime `GET <workspace_url>/discovery/restricted_http` is authoritative for the current wire contract; the former `discovery/transport` and `transport/hmac` names remain accepted as aliases.
 
 ## Query-route fallback
 
@@ -72,8 +72,8 @@ Because the exact raw query is signed, `req`, `timestamp`, `nonce`, endpoint que
 If the host can issue only bare `GET` requests and has no HMAC-SHA256 primitive, OpenKapsel can perform only the HMAC calculation. Both forms below call the same read-only helper:
 
 ```text
-GET <workspace_url>transport/hmac?key=<url-encoded-key>&target=<url-encoded-target>
-GET <workspace_url>?req=transport/hmac&key=<url-encoded-key>&target=<url-encoded-target>
+GET <workspace_url>restricted_http/hmac?key=<url-encoded-key>&target=<url-encoded-target>
+GET <workspace_url>?req=restricted_http/hmac&key=<url-encoded-key>&target=<url-encoded-target>
 ```
 
 `key` and `target` must each appear exactly once. The helper computes `HMAC-SHA256(UTF-8(key), UTF-8(target))` and returns the digest as Base64URL without padding. `key` is limited to 4096 UTF-8 bytes and `target` to 131072 UTF-8 bytes (128 KiB). Actual GET request-line lengths can be lower (often ~64 KiB or less in servers/proxies), so large helper targets may require a different network transport or local HMAC calculation. It does not validate or consume a signed-envelope nonce and has no state-changing side effects.
@@ -100,7 +100,7 @@ Build the query prefix *before* `&signature=`, exactly as transmitted. Sign the 
 METHOD/ + ASCII(raw_query_prefix) + LF + lowercase_hex(SHA256(exact_raw_HTTP_body_bytes))
 ```
 
-For POST the prefix starts `POST/`; for DELETE it starts `DELETE/`. `LF` is one newline byte (`0x0a`); the hash is 64 lowercase ASCII hex digits, **including SHA256 of the empty body** if no bytes are sent. The resulting signature is unpadded base64url. If using `transport/hmac`, pass that entire constructed text as `target` (URL-encoded). Do not append raw body bytes or the HTTP method as unsigned, out-of-band values. Never reformat JSON after hashing. Native requests still use the same 300-second timestamp window and 8-character nonce replay cache as legacy signed GET requests. The endpoint's ordinary content type/body requirements still apply; `Content-Length` is required for nonempty bodies.
+For POST the prefix starts `POST/`; for DELETE it starts `DELETE/`. `LF` is one newline byte (`0x0a`); the hash is 64 lowercase ASCII hex digits, **including SHA256 of the empty body** if no bytes are sent. The resulting signature is unpadded base64url. If using `restricted_http/hmac`, pass that entire constructed text as `target` (URL-encoded). Do not append raw body bytes or the HTTP method as unsigned, out-of-band values. Never reformat JSON after hashing. Native requests still use the same 300-second timestamp window and 8-character nonce replay cache as legacy signed GET requests. The endpoint's ordinary content type/body requirements still apply; `Content-Length` is required for nonempty bodies.
 
 This removes the signed GET query-string body size bottleneck for native POST/DELETE while keeping the server's ordinary request-body and reverse proxy limits. Plain query-routing with Authorization headers also works with actual POST/DELETE without an `http_method` query parameter.
 
@@ -125,7 +125,7 @@ Core Workspace JSON responses then use HTTP **200** and the following shapes:
 
 The `status` field is the **actual original HTTP status**, and `result` or `error` contains the original API JSON payload. Existing successful responses are wrapped too, so callers must inspect `ok` rather than assuming HTTP 200 means success. Context bookkeeping still records the original status. For an unexpected server exception, `error.code` is `internal_error` and its status is `500`; stack traces remain server-side. The response uses `Cache-Control: no-store`, and error responses close the connection when necessary to prevent unread request-body bytes from contaminating the next request.
 
-This is opt-in and applies only to OpenKapsel's core Workspace JSON REST/transport handlers. It does **not** wrap successful binary/file streaming or empty/non-JSON responses, HEAD, preview web-app responses, admin/OAuth/public-sharing responses, or HTTP errors generated by a reverse proxy before OpenKapsel receives the request. Core Workspace API errors are still converted when possible, including errors from otherwise streaming endpoints. Without the parameter, normal HTTP codes and JSON response shapes remain unchanged.
+This is opt-in and applies only to OpenKapsel's core Workspace JSON REST and restricted HTTP handlers. It does **not** wrap successful binary/file streaming or empty/non-JSON responses, HEAD, preview web-app responses, admin/OAuth/public-sharing responses, or HTTP errors generated by a reverse proxy before OpenKapsel receives the request. Core Workspace API errors are still converted when possible, including errors from otherwise streaming endpoints. Without the parameter, normal HTTP codes and JSON response shapes remain unchanged.
 
 ## Server verification
 
@@ -146,7 +146,7 @@ After successful verification, OpenKapsel treats the request as control-authoriz
 
 `body`, when present, is URL-decoded and supplied to ordinary JSON-body handlers. It is intended only for simple operations that would normally use an `application/json` request body.
 
-Do not use this fallback for raw binary bodies, resumable upload chunks, streaming protocols, or operations that depend on additional request headers. Use the normal REST transport for those cases.
+Do not use this fallback for raw binary bodies, resumable upload chunks, streaming protocols, or operations that depend on additional request headers. Use ordinary REST requests for those cases.
 
 Endpoint query parameters and `body` are still present in the URL and may be recorded by browsers, proxies, or access logs. Do not put unrelated secrets in them. The HMAC prevents modification but does not encrypt URL contents.
 
