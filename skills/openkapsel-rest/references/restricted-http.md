@@ -144,9 +144,11 @@ After successful verification, OpenKapsel treats the request as control-authoriz
 
 ## Body and protocol limits
 
-`body`, when present, is URL-decoded and supplied to ordinary JSON-body handlers. It is intended only for simple operations that would normally use an `application/json` request body.
+Limits depend on the method:
 
-Do not use this fallback for raw binary bodies, resumable upload chunks, streaming protocols, or operations that depend on additional request headers. Use ordinary REST requests for those cases.
+- **Signed GET envelope**: `body`, when present, is URL-decoded and supplied to ordinary JSON-body handlers. It carries only UTF-8 JSON for operations that would normally use an `application/json` body, never binary or raw upload bytes, and its size is bounded by URL length limits.
+- **Native signed requests**: the HTTP body may be any bytes, including binary (for example `PUT fs/content` or upload chunks). The server buffers and hashes the whole body before dispatch, so one request is limited to `max_request_body_bytes` (2 MiB by default), `Content-Length` is required, and chunked or streaming bodies are not supported. Upload larger files with `upload/create` and `PATCH upload/chunk/<id>` chunks no larger than that limit. Endpoint headers other than `Authorization`, such as `Upload-Offset` or `OpenKapsel-Plan-Id`, are sent normally.
+- **Query route with an Authorization header**: ordinary REST request-body limits apply; the body is streamed rather than buffered for signing.
 
 Endpoint query parameters and `body` are still present in the URL and may be recorded by browsers, proxies, or access logs. Do not put unrelated secrets in them. The HMAC prevents modification but does not encrypt URL contents.
 

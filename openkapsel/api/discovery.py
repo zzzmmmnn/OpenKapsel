@@ -966,7 +966,7 @@ class DiscoveryMixin:
                     "side_effects": "none",
                     "response_cache": "no-store",
                     "logging": "OpenKapsel removes the complete query from its access log for both helper entry forms; upstream HTTP infrastructure may still log URLs",
-                    "transport_use": "For GET sign the raw query prefix. For native signed requests sign METHOD/ + raw query prefix + newline + lowercase SHA256 hex of exact HTTP body bytes; URL-encode this full message as target.",
+                    "signing_input": "For GET sign the raw query prefix. For native signed requests sign METHOD/ + raw query prefix + newline + lowercase SHA256 hex of exact HTTP body bytes; URL-encode this full message as target.",
                 },
                 "signed_get_envelope": {
                     "available": True,
@@ -985,7 +985,7 @@ class DiscoveryMixin:
                     "nonce_format": "fresh random string of exactly 8 ASCII letters or digits",
                     "nonce_replay": "a nonce cannot be reused for the same credential identity inside the acceptance window",
                     "nonce_replay_scope": "process-local cache bounded to the remaining timestamp acceptance window",
-                    "body": "optional URL-encoded UTF-8 JSON object for simple JSON-body endpoints",
+                    "body": "optional URL-encoded UTF-8 JSON object for simple JSON-body endpoints; cannot carry binary or raw upload bytes",
                     "response_cache": "no-store",
                 },
                 "response_envelope": {
@@ -1018,6 +1018,10 @@ class DiscoveryMixin:
                     "signature_key": "matching control token",
                     "signed_bytes": "ASCII METHOD/ followed by the exact ASCII query prefix before &signature=, one LF byte, then lowercase hexadecimal SHA256 of the exact raw HTTP body bytes (including SHA256(empty) when no body)",
                     "body_hash": "lowercase hex SHA-256 of raw HTTP request body; signed but never placed in URL",
+                    "binary_body": True,
+                    "max_body_bytes": self.server.config.max_body_bytes,
+                    "streaming": "not supported; the whole body is buffered and hashed before dispatch, so Content-Length is required and larger files use upload chunks of at most max_body_bytes",
+                    "headers": "endpoint headers other than Authorization, such as Upload-Offset or OpenKapsel-Plan-Id, are sent normally",
                     "query_encoding": "ASCII; percent-encode UTF-8 query values before signing; never re-encode after signing",
                     "timestamp_window_seconds": 300,
                     "nonce_format": "8 ASCII alphanumeric characters, fresh on each signed attempt",

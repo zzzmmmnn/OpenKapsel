@@ -1273,7 +1273,7 @@ class FileExecutionMixin(FileOperationSupportMixin):
                 upload_id,
                 self.token_record.token,
                 offset,
-                self.rfile,
+                self._request_body_reader(),
                 length,
             )
         except UploadError as exc:

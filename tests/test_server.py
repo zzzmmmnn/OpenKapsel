@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import dataclasses
 import hashlib
 import hmac
 import http.client
@@ -426,6 +427,40 @@ class WorkspaceServerTests(unittest.TestCase):
         status, raw, _ = self.raw_request("PUT", url, body, headers, authorize=False)
         self.assertEqual(201, status, raw)
         self.assertEqual(body, (self.root / "native-signed-binary.bin").read_bytes())
+
+    def test_native_signed_resumable_upload_accepts_binary_chunks_up_to_body_limit(self) -> None:
+        content = b"\x00\xff" * 3000
+        create = json.dumps({"path": "project/native-chunked.bin", "size": len(content)}).encode()
+        url = self.native_signed_path("POST", "upload/create", create, nonce="Up12Cr34")
+        status, raw, _ = self.raw_request("POST", url, create, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(201, status, raw)
+        upload_id = json.loads(raw)["upload_id"]
+        chunk_headers = {"Content-Type": "application/octet-stream"}
+        offset = 0
+        for index, chunk in enumerate((content[:4000], content[4000:])):
+            url = self.native_signed_path("PATCH", f"upload/chunk/{upload_id}", chunk, nonce=f"Chunk00{index}")
+            status, raw, _ = self.raw_request(
+                "PATCH", url, chunk, {**chunk_headers, "Upload-Offset": str(offset)}, authorize=False
+            )
+            self.assertEqual(200, status, raw)
+            offset += len(chunk)
+        commit_url = self.native_signed_path("POST", f"upload/commit/{upload_id}", nonce="Up12Cm34")
+        status, raw, _ = self.raw_request("POST", commit_url, b"", authorize=False)
+        self.assertEqual(201, status, raw)
+        self.assertEqual(content, (self.root / "project" / "native-chunked.bin").read_bytes())
+
+        # Native signed bodies are buffered for hashing, so one request is capped
+        # at max_request_body_bytes even where ordinary chunks may be larger.
+        original_config = self.server.config
+        self.server.config = dataclasses.replace(original_config, max_body_bytes=4000)
+        self.addCleanup(setattr, self.server, "config", original_config)
+        oversized = b"\x00" * 4001
+        url = self.native_signed_path("PATCH", f"upload/chunk/{upload_id}", oversized, nonce="Ov12Er34")
+        status, raw, _ = self.raw_request(
+            "PATCH", url, oversized, {**chunk_headers, "Upload-Offset": "0"}, authorize=False
+        )
+        self.assertEqual(413, status, raw)
+        self.assertEqual("body_too_large", json.loads(raw)["error"]["code"])
 
     def test_hmac_helper_accepts_target_up_to_128k_in_handler(self) -> None:
         from openkapsel.server_runtime.dispatch import RequestDispatchMixin, RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES
