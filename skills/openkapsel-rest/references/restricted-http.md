@@ -48,7 +48,16 @@ The memory route requires control authorization, so an unsigned request normally
 
 The integer shown is only illustrative; **always read the actual response timestamp**. For ordinary non-envelope REST errors the JSON has the form `{"error":{"code":"...","message":"..."},"timestamp":1791519000}` with a non-2xx status. For JSON-RPC/MCP, protocol errors carry `error.data.timestamp`; MCP tool failures carry `structuredContent.error.timestamp`.
 
-Server-supplied time does **not** relax the 300-second validation window or nonce replay prevention. The client must promptly sign its next request using the received timestamp, with each retry using a fresh nonce. TLS is important: a clock bootstrap response itself is not HMAC-signed.
+Server-supplied time does **not** relax the 300-second validation window or nonce replay prevention. Sign the next request promptly using the received timestamp. TLS is important: a clock bootstrap response itself is not HMAC-signed.
+
+## Retrying signed requests
+
+Choose the retry by what the failure proves:
+
+- **Rejected before execution** (`invalid_signed_signature`, `signed_envelope_expired`, `invalid_signed_nonce`, `invalid_signed_envelope`): the endpoint did not run. Sign again with a current timestamp and a fresh nonce.
+- **Timeout or lost response**: the first request may already have run, so do not sign a new request for a write. Resend the identical signed URL and body. If the first request was received, the server answers `409 signed_envelope_replay` without running it again; this means the first request arrived, not that it succeeded, so read the resulting state. A resend that returns `signed_envelope_expired` was not run either, but the first request still may have been. Write endpoints that accept `request_id` can instead be retried with the same `request_id` and a fresh nonce; they return the original result.
+
+The nonce cache lives in server process memory, so a server restart within the 300-second window forgets it. Use `request_id` where a duplicate write matters.
 
 ## Signing
 
@@ -97,10 +106,12 @@ Content-Length: <byte-length>
 Build the query prefix *before* `&signature=`, exactly as transmitted. Sign the following byte string using HMAC-SHA256 with the matching control token as key:
 
 ```text
-METHOD/ + ASCII(raw_query_prefix) + LF + lowercase_hex(SHA256(exact_raw_HTTP_body_bytes))
+METHOD/ + ASCII(raw_query_prefix)
 ```
 
-For POST the prefix starts `POST/`; for DELETE it starts `DELETE/`. `LF` is one newline byte (`0x0a`); the hash is 64 lowercase ASCII hex digits, **including SHA256 of the empty body** if no bytes are sent. The resulting signature is unpadded base64url. If using `restricted_http/hmac`, pass that entire constructed text as `target` (URL-encoded). Do not append raw body bytes or the HTTP method as unsigned, out-of-band values. Never reformat JSON after hashing. Native requests still use the same 300-second timestamp window and 8-character nonce replay cache as legacy signed GET requests. The endpoint's ordinary content type/body requirements still apply; `Content-Length` is required for nonempty bodies.
+For POST the signed text starts `POST/`; for DELETE it starts `DELETE/`. The resulting signature is unpadded base64url. If using `restricted_http/hmac`, pass that entire constructed text as `target` (URL-encoded). The body is not signed: like an ordinary request with an `Authorization` header, it is protected by HTTPS. The HMAC proves possession of the control token without putting it in the URL, and the timestamp and nonce make a leaked URL expire and work only once. Native requests use the same 300-second timestamp window and 8-character nonce replay cache as signed GET requests. The endpoint's ordinary content type and body requirements still apply.
+
+The earlier format that appends `LF + lowercase_hex(SHA256(exact_raw_HTTP_body_bytes))` to the signed text is still accepted. Prefer the shorter form for new clients.
 
 This removes the signed GET query-string body size bottleneck for native POST/DELETE while keeping the server's ordinary request-body and reverse proxy limits. Plain query-routing with Authorization headers also works with actual POST/DELETE without an `http_method` query parameter.
 
@@ -147,8 +158,8 @@ After successful verification, OpenKapsel treats the request as control-authoriz
 Limits depend on the method:
 
 - **Signed GET envelope**: `body`, when present, is URL-decoded and supplied to ordinary JSON-body handlers. It carries only UTF-8 JSON for operations that would normally use an `application/json` body, never binary or raw upload bytes, and its size is bounded by URL length limits.
-- **Native signed requests**: the HTTP body may be any bytes, including binary (for example `PUT fs/content` or upload chunks). The server buffers and hashes the whole body before dispatch, so one request is limited to `max_request_body_bytes` (2 MiB by default), `Content-Length` is required, and chunked or streaming bodies are not supported. Upload larger files with `upload/create` and `PATCH upload/chunk/<id>` chunks no larger than that limit. Endpoint headers other than `Authorization`, such as `Upload-Offset` or `OpenKapsel-Plan-Id`, are sent normally.
-- **Query route with an Authorization header**: ordinary REST request-body limits apply; the body is streamed rather than buffered for signing.
+- **Native signed requests**: the HTTP body may be any bytes, including binary (for example `PUT fs/content` or upload chunks). The body is streamed to the endpoint, so the same limits apply as with an `Authorization` header. Only the legacy body-hash format buffers the whole body before dispatch; it is limited to `max_request_body_bytes` (2 MiB by default) per request and requires `Content-Length`. Endpoint headers other than `Authorization`, such as `Upload-Offset` or `OpenKapsel-Plan-Id`, are sent normally.
+- **Query route with an Authorization header**: ordinary REST request-body limits apply; the body is streamed.
 
 Endpoint query parameters and `body` are still present in the URL and may be recorded by browsers, proxies, or access logs. Do not put unrelated secrets in them. The HMAC prevents modification but does not encrypt URL contents.
 

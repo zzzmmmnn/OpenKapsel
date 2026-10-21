@@ -27,6 +27,11 @@ SIGNED_GET_RESERVED_QUERY = frozenset(
 RESTRICTED_HTTP_HMAC_MAX_KEY_BYTES = 4096
 RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES = 131072
 
+
+def _hmac_base64url(key: bytes, message: bytes) -> str:
+    return base64.urlsafe_b64encode(hmac.digest(key, message, "sha256")).rstrip(b"=").decode("ascii")
+
+
 class RequestDispatchMixin:
     def version_string(self) -> str:
         """Avoid exposing the Python runtime and stdlib HTTP server versions."""
@@ -523,28 +528,30 @@ class RequestDispatchMixin:
                 "signature is invalid",
             )
         signed_query = raw_query.rsplit("&", 1)[0]
-        signed_bytes = signed_query.encode("ascii")
+        key = self.token_record.control_token.encode("utf-8")
         if native_method:
-            length = self._request_content_length(required=False)
-            if length > self.server.config.max_body_bytes:
-                self.close_connection = True
-                raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body_too_large", "request body is too large")
-            raw_body = self.rfile.read(length)
-            if len(raw_body) != length:
-                self.close_connection = True
-                raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_length", "request body is incomplete")
-            # METHOD/ and the SHA256 of the *exact* body bytes bind both to the HMAC.
-            signed_bytes = (outer_method.encode("ascii") + b"/" + signed_bytes
-                            + b"\n" + hashlib.sha256(raw_body).hexdigest().encode("ascii"))
-            self._signed_envelope_body = raw_body
-        expected_signature = base64.urlsafe_b64encode(
-            hmac.digest(
-                self.token_record.control_token.encode("utf-8"),
-                signed_bytes,
-                "sha256",
-            )
-        ).rstrip(b"=").decode("ascii")
-        if not hmac.compare_digest(supplied_signature, expected_signature):
+            # METHOD/ binds the physical method; the body is left on the socket
+            # and read by the endpoint exactly as with Authorization headers.
+            signed_bytes = outer_method.encode("ascii") + b"/" + signed_query.encode("ascii")
+            if not hmac.compare_digest(supplied_signature, _hmac_base64url(key, signed_bytes)):
+                # Legacy native format also appends LF + lowercase SHA256 hex of the body.
+                length = self._request_content_length(required=False)
+                if length > self.server.config.max_body_bytes:
+                    self.close_connection = True
+                    raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "body_too_large", "request body is too large")
+                raw_body = self.rfile.read(length)
+                if len(raw_body) != length:
+                    self.close_connection = True
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_length", "request body is incomplete")
+                self._signed_envelope_body = raw_body
+                legacy_bytes = signed_bytes + b"\n" + hashlib.sha256(raw_body).hexdigest().encode("ascii")
+                if not hmac.compare_digest(supplied_signature, _hmac_base64url(key, legacy_bytes)):
+                    raise ApiError(
+                        HTTPStatus.UNAUTHORIZED,
+                        "invalid_signed_signature",
+                        "signature is invalid",
+                    )
+        elif not hmac.compare_digest(supplied_signature, _hmac_base64url(key, signed_query.encode("ascii"))):
             raise ApiError(
                 HTTPStatus.UNAUTHORIZED,
                 "invalid_signed_signature",
@@ -798,9 +805,7 @@ class RequestDispatchMixin:
                 f"target must not exceed {RESTRICTED_HTTP_HMAC_MAX_TARGET_BYTES} UTF-8 bytes",
             )
 
-        result = base64.urlsafe_b64encode(
-            hmac.digest(key_bytes, target_bytes, "sha256")
-        ).rstrip(b"=").decode("ascii")
+        result = _hmac_base64url(key_bytes, target_bytes)
         self._send_json(
             HTTPStatus.OK,
             {

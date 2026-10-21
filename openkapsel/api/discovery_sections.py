@@ -135,7 +135,7 @@ SECTION_WORKFLOWS = {
         "Use req at the exact workspace root only when the client cannot change the request path.",
         "Use signed GET only for GET-only clients; when the client can send POST or DELETE but not Authorization headers, use the native signed envelope with HTTP body and method-bound HMAC.",
         "If the client also lacks HMAC-SHA256, call restricted_http/hmac or ?req=restricted_http/hmac with URL-encoded key and target, then use the returned base64url-no-padding result as signature.",
-        "Generate a fresh random nonce for every signed envelope and never reuse it inside the timestamp acceptance window.",
+        "Generate a fresh random nonce for every new signed request. After a rejection (invalid signature, expired timestamp or malformed envelope) sign again with a fresh nonce. After a timeout, resend the identical signed request instead: 409 signed_envelope_replay means the first one arrived and was not run again, so read the resulting state. Prefer request_id retries for writes that support it.",
         "For clients that cannot read non-2xx response bodies, add response_mode=envelope to core Workspace REST or restricted HTTP query (before signature when signed); JSON responses become HTTP 200 with ok/status/result or ok/status/error, without changing authorization.",
         "If the client has no clock, request ?req=memory&response_mode=envelope without signing: its readable permission error provides a server-generated integer timestamp (Unix seconds). Use that timestamp and a fresh nonce for the signed request; signed errors including expired timestamps also include server timestamp.",
     ],

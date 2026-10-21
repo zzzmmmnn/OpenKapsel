@@ -307,12 +307,14 @@ class WorkspaceServerTests(unittest.TestCase):
     def native_signed_path(
         self, method: str, req: str, body: bytes = b"", *, nonce: str,
         query: list[tuple[str, str]] | None = None, token: str = "test-token",
+        legacy_body_hash: bool = False,
     ) -> str:
         pairs = [("req", req), ("timestamp", str(int(time.time()))), ("nonce", nonce)]
         pairs.extend(query or [])
         raw_query = urlencode(pairs)
-        signed_bytes = (method.encode("ascii") + b"/" + raw_query.encode("ascii")
-                        + b"\n" + hashlib.sha256(body).hexdigest().encode("ascii"))
+        signed_bytes = method.encode("ascii") + b"/" + raw_query.encode("ascii")
+        if legacy_body_hash:
+            signed_bytes += b"\n" + hashlib.sha256(body).hexdigest().encode("ascii")
         key = self.server.tokens.get(token).control_token.encode("utf-8")
         signature = base64.urlsafe_b64encode(hmac.digest(key, signed_bytes, "sha256")).rstrip(b"=").decode("ascii")
         return f"/kapsel/w/{token}?{raw_query}&signature={signature}"
@@ -346,7 +348,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(result["structuredContent"]["replayed"])
         self.assertEqual(first["writer_nonce"], result["structuredContent"]["writer_nonce"])
 
-    def test_native_signed_post_binds_method_body_and_rejects_replay(self) -> None:
+    def test_native_signed_post_binds_method_and_rejects_replay(self) -> None:
         entries = [
             {"role": "user", "content": "first"},
             {"role": "ai", "content": "second"},
@@ -367,8 +369,13 @@ class WorkspaceServerTests(unittest.TestCase):
         retry_status, raw, _ = self.raw_request("POST", retry_url, data, {"Content-Type": "application/json"}, authorize=False)
         self.assertEqual(200, retry_status, raw)
         self.assertEqual(created["writer_nonce"], json.loads(raw)["writer_nonce"])
+        # The legacy format that appends the body SHA256 is still accepted and still binds the body.
+        legacy_url = self.native_signed_path("POST", "conversation", data, nonce="Na12Pb39", legacy_body_hash=True)
+        legacy_status, raw, _ = self.raw_request("POST", legacy_url, data, {"Content-Type": "application/json"}, authorize=False)
+        self.assertEqual(200, legacy_status, raw)
         altered = data.replace(b"first", b"other")
-        tamper_status, raw, _ = self.raw_request("POST", self.native_signed_path("POST", "conversation", data, nonce="Na12Pb36"), altered, {"Content-Type": "application/json"}, authorize=False)
+        legacy_url = self.native_signed_path("POST", "conversation", data, nonce="Na12Pb36", legacy_body_hash=True)
+        tamper_status, raw, _ = self.raw_request("POST", legacy_url, altered, {"Content-Type": "application/json"}, authorize=False)
         self.assertEqual(401, tamper_status, raw)
         self.assertEqual("invalid_signed_signature", json.loads(raw)["error"]["code"])
         method_status, raw, _ = self.raw_request("DELETE", self.native_signed_path("POST", "conversation", data, nonce="Na12Pb37"), authorize=False)
@@ -428,7 +435,12 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(201, status, raw)
         self.assertEqual(body, (self.root / "native-signed-binary.bin").read_bytes())
 
-    def test_native_signed_resumable_upload_accepts_binary_chunks_up_to_body_limit(self) -> None:
+    def test_native_signed_resumable_upload_streams_binary_chunks(self) -> None:
+        # Only the legacy body-hash format buffers the body, so it alone is
+        # capped at max_request_body_bytes; the current format streams.
+        original_config = self.server.config
+        self.server.config = dataclasses.replace(original_config, max_body_bytes=4000)
+        self.addCleanup(setattr, self.server, "config", original_config)
         content = b"\x00\xff" * 3000
         create = json.dumps({"path": "project/native-chunked.bin", "size": len(content)}).encode()
         url = self.native_signed_path("POST", "upload/create", create, nonce="Up12Cr34")
@@ -437,7 +449,7 @@ class WorkspaceServerTests(unittest.TestCase):
         upload_id = json.loads(raw)["upload_id"]
         chunk_headers = {"Content-Type": "application/octet-stream"}
         offset = 0
-        for index, chunk in enumerate((content[:4000], content[4000:])):
+        for index, chunk in enumerate((content[:5000], content[5000:])):
             url = self.native_signed_path("PATCH", f"upload/chunk/{upload_id}", chunk, nonce=f"Chunk00{index}")
             status, raw, _ = self.raw_request(
                 "PATCH", url, chunk, {**chunk_headers, "Upload-Offset": str(offset)}, authorize=False
@@ -449,13 +461,10 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(201, status, raw)
         self.assertEqual(content, (self.root / "project" / "native-chunked.bin").read_bytes())
 
-        # Native signed bodies are buffered for hashing, so one request is capped
-        # at max_request_body_bytes even where ordinary chunks may be larger.
-        original_config = self.server.config
-        self.server.config = dataclasses.replace(original_config, max_body_bytes=4000)
-        self.addCleanup(setattr, self.server, "config", original_config)
         oversized = b"\x00" * 4001
-        url = self.native_signed_path("PATCH", f"upload/chunk/{upload_id}", oversized, nonce="Ov12Er34")
+        url = self.native_signed_path(
+            "PATCH", f"upload/chunk/{upload_id}", oversized, nonce="Ov12Er34", legacy_body_hash=True
+        )
         status, raw, _ = self.raw_request(
             "PATCH", url, oversized, {**chunk_headers, "Upload-Offset": "0"}, authorize=False
         )
@@ -621,7 +630,7 @@ class WorkspaceServerTests(unittest.TestCase):
 
         bad_path = self.native_signed_path(
             "POST", "conversation", data, nonce="Di12Ap35",
-            query=[("response_mode", "envelope")],
+            query=[("response_mode", "envelope")], legacy_body_hash=True,
         )
         status, raw, _ = self.raw_request(
             "POST", bad_path, b'{"ignored":false}',
