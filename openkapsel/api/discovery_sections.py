@@ -113,7 +113,7 @@ SECTION_LIMITS = {
 }
 
 SECTION_SUMMARIES = {
-    "restricted_http": "Only if your HTTP client cannot set the URL path, HTTP method, or Authorization header: call endpoints through the workspace root with ?req=, signed envelopes, and an HMAC helper. Unrelated to MCP or Mapping transport.",
+    "restricted_http": "Only if your HTTP client cannot set the URL path, HTTP method, or Authorization header, or cannot read non-2xx response bodies: call endpoints through the workspace root with ?req=, signed envelopes, an HMAC helper, and an HTTP 200 response envelope. Unrelated to MCP or Mapping transport.",
     "files": "File operations, metadata, search, recycle, downloads, and uploads.",
     "context": "Append-only Conversation summaries plus operation history, hierarchical plans, notes, and required mutation context.",
     "memory": "Revisioned project-level long-term Memory and plan debrief integration.",

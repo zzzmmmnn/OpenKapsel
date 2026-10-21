@@ -18,7 +18,7 @@ Authorization: Bearer <CONTROL_TOKEN>
 
 The control token must belong to the same record as the URL token. A missing or invalid control token returns `401`; a valid token from a different record returns `403`. Discovery never echoes the control token.
 
-For HTTP clients that cannot set the URL path, HTTP method, or Authorization header, Discovery advertises restricted HTTP fallbacks: a query-route fallback, HMAC-signed GET and native-method envelopes, and an HMAC helper. Load `GET <workspace_url>/discovery/restricted_http` for the authoritative wire contract; the REST Skill mirrors it in `references/restricted-http.md`. The former `discovery/transport` and `transport/hmac` names remain accepted as aliases.
+For HTTP clients that cannot set the URL path, HTTP method, or Authorization header, or cannot read non-2xx response bodies, Discovery advertises restricted HTTP fallbacks: a query-route fallback, HMAC-signed GET and native-method envelopes, an HMAC helper, and an HTTP 200 response envelope. Load `GET <workspace_url>/discovery/restricted_http` for the authoritative wire contract; the REST Skill mirrors it in `references/restricted-http.md`. The former `discovery/transport` and `transport/hmac` names remain accepted as aliases.
 
 Read and control credentials share a short expiration, initially three days. The administrator-selected workspace lifetime is separate and usually longer. The independent preview token remains valid until preview is disabled, it is rotated, or the workspace expires.
 

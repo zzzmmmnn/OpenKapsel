@@ -38,7 +38,7 @@ Directory-scoped helpers discover and cache `OPENKAPSEL_CREDENTIALS_EXPIRES_AT`.
 | Method | Relative path | Purpose |
 |---|---|---|
 | `GET` | `/` | Compact capability index and links |
-| `GET` | `/discovery/restricted_http` | Fallbacks for HTTP clients that cannot set the URL path, HTTP method, or Authorization header |
+| `GET` | `/discovery/restricted_http` | Fallbacks for HTTP clients that cannot set the URL path, HTTP method, or Authorization header, or cannot read non-2xx response bodies |
 | `GET` | `/discovery/files` | File, recycle, and binary transfer contract |
 | `GET` | `/discovery/context` | Context and Plan contract |
 | `GET` | `/discovery/memory` | Long-term Memory contract |

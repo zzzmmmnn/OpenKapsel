@@ -1,6 +1,6 @@
 # Restricted HTTP clients
 
-Read this only if your HTTP client cannot set the URL path, HTTP method, or Authorization header. These fallbacks support AI hosts limited to `GET` or able to send native HTTP methods but not custom Authorization headers. They are unrelated to MCP or Mapping transport. Prefer ordinary REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them. Runtime `GET <workspace_url>/discovery/restricted_http` is authoritative for the current wire contract; the former `discovery/transport` and `transport/hmac` names remain accepted as aliases.
+Read this only if your HTTP client cannot set the URL path, HTTP method, or Authorization header, or cannot read non-2xx response bodies. These fallbacks support AI hosts limited to `GET`, able to send native HTTP methods but not custom Authorization headers, or that hide error response bodies. They are unrelated to MCP or Mapping transport. Prefer ordinary REST paths and `Authorization: Bearer <CONTROL_TOKEN>` whenever the host supports them. Runtime `GET <workspace_url>/discovery/restricted_http` is authoritative for the current wire contract; the former `discovery/transport` and `transport/hmac` names remain accepted as aliases.
 
 ## Query-route fallback
 

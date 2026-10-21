@@ -915,7 +915,7 @@ class DiscoveryMixin:
                     ),
                     "native_signed_envelope": (
                         "use when POST/DELETE/PUT/PATCH/HEAD is supported but Authorization headers "
-                        "are unavailable; method is taken from the HTTP request and raw body is signed"
+                        "are unavailable; method and query are signed, the body is sent normally and protected by HTTPS"
                     ),
                     "hmac_helper": (
                         "use when the client can issue only bare GET requests and cannot compute "
