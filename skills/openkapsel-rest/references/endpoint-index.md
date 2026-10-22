@@ -7,7 +7,7 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | Method | Route |
 |---|---|
 | `GET` | `<workspace_url>/` |
-| `GET` | `<workspace_url>/discovery/{files,context,memory,shell,schedules,web,sharing,full}` |
+| `GET` | `<workspace_url>/discovery/{files,context,memory,shell,schedules,web,full}` |
 | `POST` | `<workspace_url>/credential/renew` |
 | `GET` | `<workspace_url>/fs/query/list` |
 | `GET` | `<workspace_url>/fs/query/stat` |

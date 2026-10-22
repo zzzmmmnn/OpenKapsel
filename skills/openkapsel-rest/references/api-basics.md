@@ -5,7 +5,7 @@
 Normalize `workspace_url` by removing its trailing slash. Workspace endpoints are relative to it.
 
 - The read token embedded in `workspace_url` authenticates read-only file and Discovery access.
-- Send `Authorization: Bearer <CONTROL_TOKEN>` for privileged Discovery, Context, Memory, mutations, uploads, sharing changes, Shell, and task control.
+- Send `Authorization: Bearer <CONTROL_TOKEN>` for privileged Discovery, Context, Memory, mutations, uploads, Shell, and task control.
 - The Bearer token must belong to the same record as the URL token. Missing/invalid credentials normally return `401`; a valid control token bound to another workspace URL returns `403`.
 - A preview token is independent. Never substitute it for either workspace credential.
 - `GET <workspace_url>/` never echoes the control token.
@@ -14,7 +14,7 @@ Use the control token only on the workspace origin or a documented control-authe
 
 Control tokens do not sign in to administration. Interactive browser consent on the configured OpenKapsel service origin is a separate user-driven workflow; these REST helpers do not submit credentials to browser forms or follow client callback redirects. Never place a control token in a URL or request log.
 
-The workspace-relative `.openkapsel` directory is reserved private runtime state. File, preview, sharing, application-worker, and restricted-Shell surfaces do not expose it. Use the dedicated recycle, Context, Memory, database-runtime, and environment interfaces instead.
+The workspace-relative `.openkapsel` directory is reserved private runtime state. File, preview, application-worker, and restricted-Shell surfaces do not expose it. Use the dedicated recycle, Context, Memory, database-runtime, and environment interfaces instead.
 
 ## Restricted HTTP clients
 

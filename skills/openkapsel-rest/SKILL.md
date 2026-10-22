@@ -1,6 +1,6 @@
 ---
 name: openkapsel-rest
-description: Operate an OpenKapsel workspace through its REST, raw-transfer, sharing, preview, and FastAPI HTTP surfaces. Use when a task provides an OpenKapsel workspace URL or asks to inspect files, modify a workspace, manage Context or Memory, run or schedule Shell tasks, transfer data, share content, or test a workspace web app; this skill covers neither MCP nor administrator operations.
+description: Operate an OpenKapsel workspace through its REST, raw-transfer, preview, and FastAPI HTTP surfaces. Use when a task provides an OpenKapsel workspace URL or asks to inspect files, modify a workspace, manage Context or Memory, run or schedule Shell tasks, transfer data or test a workspace web app; this skill covers neither MCP nor administrator operations.
 ---
 
 # OpenKapsel REST
