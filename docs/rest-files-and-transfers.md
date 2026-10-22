@@ -1,4 +1,4 @@
-# REST files, transfers, and sharing
+# REST files and transfers
 
 [Back to README](../README.md)
 
@@ -35,8 +35,6 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `POST` | `/task/stdin/<id>` | Write or close interactive stdin |
 | `POST/DELETE` | `/task/interrupt/<id>`, `/task/<id>` | Graceful interrupt or forced termination |
 | `GET` | `/sandbox/processes` | List token cgroup processes and usage |
-| `POST/GET/DELETE` | `/share/create`, `/share/query/<id>`, `/share/<id>` | Create, inspect, or delete a share |
-| `POST` | `/share/import/<id>` | Import a share into the Workspace |
 | `POST` | `/mcp` | Stateless Streamable HTTP MCP |
 
 Discovery contains the complete request schemas, permissions, configured size limits, and stable error codes.
@@ -146,7 +144,7 @@ in-progress Plan, and `approved=true`. Absolute `deny`, Mapping write
 protection, private Client configuration/metadata and OS permissions
 cannot be bypassed. Deleting/moving an ancestor cannot indirectly remove
 unapproved protected or denied descendants. File approval never grants
-Shell/Git/Archive RPC, uploads, or sharing.
+Shell/Git/Archive RPC or uploads.
 
 File requests spanning multiple targets cannot borrow another target's grant.
 Approval URLs last thirty minutes; grants default to ten minutes and are
@@ -262,11 +260,3 @@ For larger files:
 Offset conflicts return the server offset. State survives service restarts. Commit rechecks permission, destination absence, size, and optional SHA-256, then atomically publishes without replacement. Temporary quotas, chunk recommendations, concurrency, and TTL are configured and published in Discovery.
 
 Downloads support GET, HEAD, ETag, and one HTTP Range. MCP can return authenticated transfer URLs so large bytes remain outside JSON and AI context.
-
-## Temporary cross-workspace sharing
-
-A source token can copy exactly one file or directory into the service share store and receive a random `share_id`. Workspace Root, host-path grants, symlinks, and `.openkapsel` cannot be shared.
-
-Anyone holding the ID can inspect the immutable share without a Workspace token. A destination token imports it with its own credentials and mutation context. Import requires a new destination and never overwrites.
-
-Shares expire after 24 hours by default. At most ten are retained; creating another evicts the oldest. Creators may delete their shares early. Invalid, expired, evicted, and deleted IDs all return `404 share_not_found`.

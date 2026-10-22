@@ -177,13 +177,6 @@ class RequestDispatchMixin:
                     self._discard_request_body()
                 self._dispatch_admin(method, request_path, parsed.query)
                 return
-            if request_path.startswith("/share/query/") and method == "GET":
-                parts = request_path.split("/")
-                if len(parts) != 4 or not parts[3]:
-                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
-                self._discard_request_body()
-                self._handle_share_query(parts[3], parse_qs(parsed.query, keep_blank_values=True))
-                return
             if request_path.startswith("/connect/"):
                 route = self._oauth_authenticated_route(request_path)
             elif request_path.startswith("/mcp-connect/"):

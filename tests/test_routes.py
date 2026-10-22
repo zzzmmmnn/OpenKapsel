@@ -122,7 +122,14 @@ class EndpointContractTests(unittest.TestCase):
                 self.assertEqual(expected[0], endpoint.name)
                 self.assertEqual(expected[1], route_match.groupdict())
         self.assertIsNone(match_endpoint("GET", "/fs/read/text"))
-        self.assertIsNone(match_endpoint("DELETE", "/share/delete/share_abc"))
+        for method, path in (
+            ("POST", "/share/create"),
+            ("GET", "/share/query/abcdefghijklmnopqrstuv"),
+            ("POST", "/share/import/abcdefghijklmnopqrstuv"),
+            ("DELETE", "/share/abcdefghijklmnopqrstuv"),
+        ):
+            with self.subTest(removed_share_route=(method, path)):
+                self.assertIsNone(match_endpoint(method, path))
         self.assertIsNone(match_endpoint("DELETE", "/upload/cancel/upload_123"))
         self.assertIsNone(match_endpoint("POST", "/task/kill/task_abc"))
         self.assertIsNone(match_endpoint("POST", "/schedule/schedule_abc/run"))
@@ -237,7 +244,7 @@ class EndpointContractTests(unittest.TestCase):
         tool = next(tool for tool in ALL_TOOLS if tool["name"] == "discovery")
         section = tool["inputSchema"]["properties"]["section"]
         self.assertEqual(
-            {"main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"},
+            {"main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "authentication", "errors", "full"},
             set(section["enum"]),
         )
 

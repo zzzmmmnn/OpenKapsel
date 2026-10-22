@@ -1325,9 +1325,6 @@ class WorkspaceServerTests(unittest.TestCase):
                     "task_kill",
                     "schedule_write",
                     "schedule_control",
-                    "share_create",
-                    "share_import",
-                    "share_delete",
                 }
                 if name in modifying_tools:
                     arguments = dict(params["arguments"])
@@ -1343,10 +1340,6 @@ class WorkspaceServerTests(unittest.TestCase):
                     "fs_replace_large": ("file_transfer", "replace_large"),
                     "credential_get": ("credential", "get"),
                     "credential_renew": ("credential", "renew"),
-                    "share_create": ("sharing", "create"),
-                    "share_query": ("sharing", "query"),
-                    "share_import": ("sharing", "import"),
-                    "share_delete": ("sharing", "delete"),
                     "web_preview_url": ("web", "preview_url"),
                     "shell_exec": ("shell", "exec"),
                     "sandbox_processes": ("shell", "processes"),
@@ -1425,7 +1418,7 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("main", main["section"])
         self.assertEqual(
-            {"restricted_http", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"},
+            {"restricted_http", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "authentication", "errors", "full"},
             set(main["sections"]),
         )
         self.assertEqual({"discovery"}, set(main["endpoints"]))
@@ -1497,7 +1490,7 @@ class WorkspaceServerTests(unittest.TestCase):
             discovery_operation(payload, "fs_write", "mutate")["method"],
         )
         section_endpoint_sets = []
-        for section_name in ("restricted_http", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web", "sharing"):
+        for section_name in ("restricted_http", "files", "context", "memory", "paths", "rpc", "network", "shell", "schedules", "web"):
             section_status, section_payload = self.request(
                 "GET", self.endpoint(f"/discovery/{section_name}")
             )
@@ -1546,11 +1539,6 @@ class WorkspaceServerTests(unittest.TestCase):
         )
         self.assertIn("normal task termination", op("task", "interrupt")["description"])
         self.assertIn("force-stops", op("task", "kill")["description"])
-        self.assertEqual("POST", op("share", "create")["method"])
-        self.assertEqual("GET", op("share", "query")["method"])
-        self.assertEqual(86400, payload["limits"]["share_ttl_seconds"])
-        self.assertEqual(10, payload["limits"]["max_share_entries"])
-        self.assertEqual(256 * 1024 * 1024, payload["limits"]["max_share_bytes"])
         self.assertEqual(1000, payload["limits"]["max_batch_file_operations"])
         self.assertEqual(
             {
@@ -1807,7 +1795,7 @@ class WorkspaceServerTests(unittest.TestCase):
                 "context", "conversation", "credential", "discovery", "environment",
                 "fs_content", "fs_query", "fs_read", "fs_write",
                 "mapping", "memory", "recycle", "rpc", "schedule",
-                "share", "shell", "task", "transfer", "restricted_http", "upload", "web",
+                "shell", "task", "transfer", "restricted_http", "upload", "web",
             },
             set(payload["endpoints"]),
         )
@@ -1854,7 +1842,6 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertIn("fs_move", workflow)
         self.assertIn("recycle_list", workflow)
         self.assertIn("recycle_restore", workflow)
-        self.assertIn("share_id", workflow)
         self.assertIn("task_kill", workflow)
         self.assertIn("web_preview endpoint", workflow)
         self.assertIn("openkapsel_runtime.database", workflow)
@@ -3544,7 +3531,6 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertTrue(
             {
                 "credential_get", "credential_renew",
-                "share_create", "share_query", "share_import", "share_delete",
                 "web_preview_url",
                 "schedule_read", "schedule_write", "schedule_control",
                 "shell_exec", "sandbox_processes",
@@ -5338,88 +5324,39 @@ class WorkspaceServerTests(unittest.TestCase):
             if original.exists() and not race.exists():
                 original.rename(race)
 
-    def test_cross_workspace_share_rest_mcp_and_discovery(self) -> None:
-        source = self.root / "project" / "handoff"
-        (source / "nested").mkdir(parents=True)
-        (source / "readme.txt").write_text("shared text", encoding="utf-8")
-        (source / "nested" / "data.bin").write_bytes(b"\x00\x01\x02")
-        destination_token = self.server.tokens.create(
-            name="Destination",
-            expires_at=None,
-            path_prefix="destination",
-            can_read=True,
-            can_write=True,
-            shell_mode="none",
+    def test_share_feature_is_not_exposed_in_rest_discovery_or_mcp(self) -> None:
+        paths = (
+            ("POST", self.endpoint("/share/create"), {"path": "project/test.txt"}),
+            ("POST", self.endpoint("/share/import/abcdefghijklmnopqrstuv"), {"destination": "x"}),
+            ("DELETE", self.endpoint("/share/abcdefghijklmnopqrstuv"), None),
+            ("GET", "/kapsel/share/query/abcdefghijklmnopqrstuv", None),
+            ("GET", self.endpoint("/discovery/sharing"), None),
         )
-
-        status, created = self.request(
-            "POST",
-            self.endpoint("/share/create"),
-            {"path": "project/handoff"},
-        )
-        self.assertEqual(201, status)
-        share_id = created["share_id"]
-        self.assertRegex(share_id, r"^[A-Za-z0-9_-]{22}$")
-        self.assertEqual("directory", created["type"])
-        self.assertNotIn("test-token", created["query_url"])
-        self.assertEqual(
-            f"https://ws.example.test/kapsel/share/query/{share_id}",
-            created["query_url"],
-        )
-
-        status, listing = self.request(
-            "GET",
-            f"/kapsel/share/query/{share_id}?depth=2",
-        )
+        for method, path, body in paths:
+            with self.subTest(method=method, path=path):
+                status, payload = self.request(method, path, body)
+                self.assertEqual(404, status, payload)
+        status, full = self.request("GET", self.endpoint("/discovery/full"))
         self.assertEqual(200, status)
-        self.assertEqual(
-            ["handoff", "handoff/nested", "handoff/nested/data.bin", "handoff/readme.txt"],
-            [item["path"] for item in listing["entries"]],
-        )
-
-        destination = f"/kapsel/w/{destination_token.token}/share/import/{share_id}"
-        status, imported = self.request(
-            "POST",
-            destination,
-            {"destination": "incoming/handoff", "create_parents": True},
-        )
-        self.assertEqual(201, status)
-        self.assertEqual(share_id, imported["share_id"])
-        imported_root = self.root / "destination" / "incoming" / "handoff"
-        self.assertEqual("shared text", (imported_root / "readme.txt").read_text())
-        self.assertEqual(b"\x00\x01\x02", (imported_root / "nested" / "data.bin").read_bytes())
-
-        status, duplicate = self.request(
-            "POST",
-            destination,
-            {"destination": "incoming/handoff", "create_parents": True},
-        )
-        self.assertEqual(409, status)
-        self.assertEqual("destination_exists", duplicate["error"]["code"])
-
-        status, mcp_listing, _ = self.mcp_request(
-            destination_token.token,
-            70,
-            "tools/call",
-            {"name": "share_query", "arguments": {"share_id": share_id, "depth": 0}},
-        )
+        self.assertNotIn("share", full["endpoints"])
+        self.assertNotIn("sharing", full["capabilities"])
+        self.assertNotIn("sharing", full.get("mcp", {}).get("operation_families", {}))
+        status, main = self.request("GET", self.endpoint("/"))
         self.assertEqual(200, status)
-        self.assertFalse(mcp_listing["result"]["isError"])
-        self.assertEqual(share_id, mcp_listing["result"]["structuredContent"]["share_id"])
-
-        headers = {
-            "Authorization": f"Bearer {self.server.tokens.get('test-token').control_token}"
-        }
-        status, raw, _ = self.raw_request(
-            "DELETE",
-            self.endpoint(f"/share/{share_id}"),
-            headers=headers,
-        )
-        self.assertEqual(204, status)
-        self.assertEqual(b"", raw)
-        status, missing = self.request("GET", f"/kapsel/share/query/{share_id}")
-        self.assertEqual(404, status)
-        self.assertEqual("share_not_found", missing["error"]["code"])
+        self.assertNotIn("sharing", main["sections"])
+        self.assertNotIn("sharing", main.get("capabilities", {}))
+        status, listed, _ = self.mcp_request("test-token", 99, "tools/list")
+        self.assertEqual(200, status)
+        names = {tool["name"] for tool in listed["result"]["tools"]}
+        self.assertTrue({"share_create", "share_query", "share_import", "share_delete"}.isdisjoint(names))
+        status, reply, _ = self.mcp_request("test-token", 100, "tools/call", {
+            "name": "capability_call", "arguments": {"family": "sharing", "operation": "query", "args": {"share_id": "abcdefghijklmnopqrstuv"}},
+        })
+        self.assertEqual(200, status)
+        if "error" in reply:
+            self.assertEqual(-32602, reply["error"]["code"])
+        else:
+            self.assertTrue(reply["result"]["isError"], reply)
 
     def test_mkdir_move_rename_and_delete(self) -> None:
         record = self.server.tokens.create(

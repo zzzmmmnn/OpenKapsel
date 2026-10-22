@@ -75,10 +75,6 @@ class ServerConfig:
     api_worker_idle_seconds: int = 600
     api_max_body_bytes: int = 16 * 1024 * 1024
     workspace_image_socket: Path | None = None
-    share_dir: Path | None = None
-    share_ttl_seconds: int = 24 * 60 * 60
-    max_share_entries: int = 10
-    max_share_bytes: int = 256 * 1024 * 1024
     schedule_misfire_grace_seconds: int = 300
     mappings_enabled: bool = False
     mapping_fuse_enabled: bool = True
@@ -167,9 +163,6 @@ class ServerConfig:
             self.max_network_proxy_connections_per_instance,
             self.api_worker_idle_seconds,
             self.api_max_body_bytes,
-            self.share_ttl_seconds,
-            self.max_share_entries,
-            self.max_share_bytes,
             self.schedule_misfire_grace_seconds,
         ) < 1:
             raise ValueError("size and task limits must be positive")
@@ -281,23 +274,6 @@ class ServerConfig:
         else:
             raise ValueError("network_proxy_dir must be outside workspace_root")
         object.__setattr__(self, "network_proxy_dir", network_proxy_dir)
-        share_dir = self.share_dir
-        if share_dir is None:
-            if self.token_data_file is not None:
-                share_dir = self.token_data_file.parent / "shares"
-            elif self.config_file is not None:
-                share_dir = self.config_file.parent / "shares"
-            else:
-                share_dir = resolved.parent / ".openkapsel-shares"
-        share_dir = share_dir.expanduser().resolve()
-        try:
-            share_dir.relative_to(resolved)
-        except ValueError:
-            pass
-        else:
-            raise ValueError("share_dir must be outside workspace_root")
-        object.__setattr__(self, "share_dir", share_dir)
-
     @property
     def admin_enabled(self) -> bool:
         return self.admin_username is not None and self.admin_password_hash is not None
@@ -389,12 +365,6 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
     upload_state_dir = (
         config_path_value(upload_state_value, "upload_state_dir")
         if upload_state_value is not None
-        else None
-    )
-    share_dir_value = payload.get("share_dir")
-    share_dir = (
-        config_path_value(share_dir_value, "share_dir")
-        if share_dir_value is not None
         else None
     )
     task_history_dir = config_path_value(
@@ -522,10 +492,6 @@ def load_config(args: argparse.Namespace) -> tuple[str, int, ServerConfig]:
             if payload.get("workspace_image_socket") is not None
             else None
         ),
-        share_dir=share_dir,
-        share_ttl_seconds=int(payload.get("share_ttl_hours", 24)) * 60 * 60,
-        max_share_entries=int(payload.get("max_share_entries", 10)),
-        max_share_bytes=int(payload.get("max_share_mb", 256)) * 1024 * 1024,
         schedule_misfire_grace_seconds=int(
             payload.get("schedule_misfire_grace_seconds", 300)
         ),

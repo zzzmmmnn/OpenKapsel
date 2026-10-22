@@ -48,7 +48,6 @@ Directory-scoped helpers discover and cache `OPENKAPSEL_CREDENTIALS_EXPIRES_AT`.
 | `GET` | `/discovery/shell` | Shell, task, process, and resource limits |
 | `GET` | `/discovery/schedules` | Schedule operations and schedule-specific limits |
 | `GET` | `/discovery/web` | Preview, FastAPI, libraries, and database runtime |
-| `GET` | `/discovery/sharing` | Temporary share contract |
 | `GET` | `/discovery/full` | Complete compatibility document; load only when necessary |
 
 Send `Accept: application/json`. Supplying the Bearer token changes capability fields from redacted/read-only to the privileges actually available.

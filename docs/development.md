@@ -45,7 +45,7 @@ openkapsel/
   client_runtime/          mapping-client filesystem, tasks, reload and Windows support
   context/                 Context plans and Memory storage/handlers
   execution/               Shell/tasks, schedules, sandboxing, cgroups and network policy
-  files/                   file APIs, safe paths, recycle, uploads/share/create and Git primitives
+  files/                   file APIs, safe paths, recycle, uploads and Git primitives
   mapping/                 provider transport, registry, RPC/native views and transfers
   rpc_plugins/             Git, Archive and extensible client RPC families
   server_runtime/          server configuration, lifecycle, dispatch and shared HTTP support
@@ -71,7 +71,7 @@ Create a virtual environment with project dependencies, then run:
 .venv/bin/python -m unittest discover -s tests
 ```
 
-The suite covers routes, authorization, files, binary and resumable transfers, Shell, HTTP and SSE limits, strict domain-proxy framing, sandbox isolation, Context, Memory, images, sharing, applications, MCP, Skills, and administration.
+The suite covers routes, authorization, files, binary and resumable transfers, Shell, HTTP and SSE limits, strict domain-proxy framing, sandbox isolation, Context, Memory, images, applications, MCP, Skills, and administration.
 
 GitHub Actions runs the suite on supported Python versions. Some sandbox integration checks require Linux utilities; tests use explicit capability checks where the CI host cannot provide a production namespace backend.
 

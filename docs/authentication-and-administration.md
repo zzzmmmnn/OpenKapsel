@@ -35,7 +35,6 @@ The Workspace root returns a compact Discovery index with authentication rules, 
 - `./discovery/shell`
 - `./discovery/schedules`
 - `./discovery/web`
-- `./discovery/sharing`
 - `./discovery/full`
 
 The `full` section is the compatibility document. The same URL token and optional matching Bearer token apply to each section. Browser requests preferring HTML receive a readable page; API clients receive JSON. Invalid tokens and paths keep their real non-2xx status.

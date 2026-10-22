@@ -120,4 +120,4 @@ New Memory is created directly by `debrief.items`. `memory_actions` therefore on
 
 Updates and archives require the current revision to prevent silent multi-agent overwrite. REST accepts the ETag through `If-Match` or `expected_revision`. Discovery and MCP expose the same action schema and consistently identify records with `memory_id`.
 
-`.openkapsel` is private from file APIs, preview, application workers, sharing, and restricted Shell. Full Shell is outside the sandbox boundary and can alter Workspace-private files.
+`.openkapsel` is private from file APIs, preview, application workers and restricted Shell. Full Shell is outside the sandbox boundary and can alter Workspace-private files.

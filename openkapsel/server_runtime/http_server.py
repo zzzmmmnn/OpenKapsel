@@ -33,7 +33,6 @@ from openkapsel.execution.scheduler import SchedulerManager
 from openkapsel.execution.scheduler_store import ScheduleStore
 from openkapsel.execution.tasks import TaskRegistry
 from openkapsel.files.recycle import RecycleBin, RecycleError
-from openkapsel.files.share_store import ShareStore
 from openkapsel.files.uploads import UploadRegistry
 from openkapsel.mapping.mapping_manager import MappingManager
 from openkapsel.mapping.mapping_transfers import FileTransferManager
@@ -140,14 +139,6 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
             max_file_bytes=config.max_file_bytes,
             max_incomplete_bytes=config.max_incomplete_upload_bytes,
             recommended_chunk_size=config.upload_chunk_bytes,
-        )
-        self.shares = ShareStore(
-            config.share_dir,
-            ttl_seconds=config.share_ttl_seconds,
-            max_entries=config.max_share_entries,
-            max_bytes=config.max_share_bytes,
-            max_depth=config.max_recursion_depth,
-            max_query_nodes=config.max_tree_nodes,
         )
         self.transfer_slots = threading.BoundedSemaphore(config.max_concurrent_transfers)
         self.file_transfers = FileTransferManager(config.upload_state_dir.parent / "file-transfers", self.mappings, self.recycle_for, self.transfer_slots)

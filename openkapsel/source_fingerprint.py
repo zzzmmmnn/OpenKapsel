@@ -52,7 +52,6 @@ SERVER_FILES = (
     "openkapsel/mapping/mapping_manager.py",
     "openkapsel/mapping/mapping_process.py",
     "openkapsel/mapping/mapping_queries.py",
-    "openkapsel/mapping/mapping_shares.py",
     "openkapsel/mapping/mapping_store.py",
     "openkapsel/mapping/mapping_transfers.py",
     "openkapsel/mapping/mapping_ui.py",

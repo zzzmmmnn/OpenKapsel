@@ -282,18 +282,6 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         self.assertFalse((self.export / "c").exists())
         self.assertTrue(result["items"][1]["recycled"])
 
-    def test_share_snapshot_and_import_without_native_descriptors(self):
-        (self.export / "folder").mkdir()
-        (self.export / "folder/data").write_bytes(b"snapshot")
-        handler = self.handler()
-        from openkapsel.mapping.mapping_shares import create_share, import_share
-        record, _ = create_share(handler, self.mount / "folder")
-        (self.export / "folder/data").write_bytes(b"modified")
-        import_share(handler, record.id, self.mount / "imported")
-        self.assertEqual(b"snapshot", (self.export / "imported/data").read_bytes())
-        self.assertEqual(1, record.file_count)
-        self.assertEqual(8, record.size_bytes)
-
     def test_generation_fencing_readonly_and_old_client(self):
         (self.export / "a").write_text("unchanged")
         files = WorkspaceFiles(self.server.mappings, (self.scope,))

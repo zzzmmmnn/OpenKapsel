@@ -42,7 +42,6 @@ DISCOVERY_BUDGETS = {
     "shell": 11_600,
     "schedules": 2_500,
     "web": 5_100,
-    "sharing": 2_900,
     "authentication": 2_100,
     "errors": 1_000,
 }

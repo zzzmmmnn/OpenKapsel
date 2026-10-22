@@ -21,7 +21,6 @@ from openkapsel.files.file_handlers import FileExecutionMixin
 from openkapsel.files.file_support import FileOperationSupportMixin
 from openkapsel.files.filename_index import FilenameIndex
 from openkapsel.files.git_operations import git_arguments
-from openkapsel.files.share_store import ShareError, ShareStore
 
 
 class PrivatePathCaseTests(unittest.TestCase):
@@ -138,13 +137,11 @@ class PrivatePathCaseTests(unittest.TestCase):
         self.assertFalse(is_internal_transfer_stage(
             self.root / (".OPENKAPSEL-share-" + "a" * 24), self.root))
 
-    def test_enumeration_git_share_and_transfer_filters(self):
+    def test_enumeration_git_and_transfer_filters(self):
         self.assertTrue(FilenameIndex._ignored(".OPENKAPSEL"))
         self.assertTrue(FilenameIndex._ignored(".OpenKapsel-state"))
         for name in (".OPENKAPSEL", ".OpEnKaPsEl-TEMP"):
             with self.subTest(name=name):
-                with self.assertRaises(ShareError):
-                    ShareStore._validate_child_name(name)
                 with self.assertRaises(ApiError):
                     git_arguments("blame", {"path": name + "/private.txt"})
                 with self.assertRaises(ValueError):

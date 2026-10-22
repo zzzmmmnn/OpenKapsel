@@ -60,7 +60,6 @@ client setting rpc.file has been removed; see the mappings reference.
 - For Git inspection, persistent Shell environments, tasks, output polling or SSE, interactive stdin, interruption, force-kill, and process inspection, read [references/shell.md](references/shell.md).
 - For persistent once, interval, or six-field cron Shell schedules and their run history, read [references/schedules.md](references/schedules.md).
 - For static preview and workspace FastAPI applications, read [references/web-and-apps.md](references/web-and-apps.md).
-- For temporary cross-workspace transfer by share ID, read [references/sharing.md](references/sharing.md).
 - For client-backed mapped directories, RPC plugins, archive preview, cross-root copying/moving, and tasks executed on a client machine, read [references/mappings.md](references/mappings.md).
 - For JSON/YAML/TOML reads and conditional edits, and read-only CSV/Excel pages or large-file scans, read [references/data-rpc.md](references/data-rpc.md).
 - For client-local SSH profiles, reusable SSH connections, remote command tasks, and SFTP transfer, read [references/ssh-rpc.md](references/ssh-rpc.md).

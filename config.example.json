@@ -11,7 +11,6 @@
   "preview_base_url": "https://preview.example.com",
   "token_data_file": "state/tokens.json",
   "upload_state_dir": "state/uploads",
-  "share_dir": "state/shares",
   "task_history_dir": "state/tasks",
   "network_proxy_dir": "state/network-proxies",
   "bubblewrap_path": "/usr/bin/bwrap",
@@ -73,9 +72,6 @@
   "max_search_file_mb": 8,
   "max_tree_nodes": 5000,
   "max_batch_file_operations": 1000,
-  "share_ttl_hours": 24,
-  "max_share_entries": 10,
-  "max_share_mb": 256,
   "max_recursion_depth": 32,
   "admin": {
     "username": "generated during installation",

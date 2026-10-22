@@ -88,14 +88,10 @@ routing, and client execution rejects non-empty declarations. See
 | `GET` | `<workspace_url>/schedule/run/list/<schedule_id>` |
 | `GET` | `<workspace_url>/schedule/run/<run_id>` |
 
-## Sharing, preview, and applications
+## Preview and applications
 
 | Method | Route |
 |---|---|
-| `POST` | `<workspace_url>/share/create` |
-| `GET` | `<service-base>/share/query/<share_id>` |
-| `POST` | `<workspace_url>/share/import/<share_id>` |
-| `DELETE` | `<workspace_url>/share/<share_id>` |
 | `GET|HEAD` | `<preview-base>/<workspace-relative-path>` |
 | `GET|HEAD|POST|PUT|PATCH|DELETE` | `<preview-base>/<app-path>/api/<route>` |
 

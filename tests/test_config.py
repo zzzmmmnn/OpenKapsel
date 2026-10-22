@@ -164,9 +164,6 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(15, defaults.network_proxy_header_timeout_seconds)
             self.assertEqual(60 * 60, defaults.finished_task_retention_seconds)
             self.assertEqual(4, defaults.max_finished_tasks_per_token)
-            self.assertEqual(24 * 60 * 60, defaults.share_ttl_seconds)
-            self.assertEqual(10, defaults.max_share_entries)
-            self.assertEqual(256 * 1024 * 1024, defaults.max_share_bytes)
             self.assertEqual(300, defaults.schedule_misfire_grace_seconds)
             self.assertIn("github.com", defaults.default_network_domains)
             self.assertIn("npm.pkg.github.com", defaults.default_network_domains)
@@ -191,7 +188,6 @@ class ConfigurationTests(unittest.TestCase):
                         "preview_base_url": "https://preview.example.test",
                         "token_data_file": "state/tokens.json",
                         "upload_state_dir": "state/uploads",
-                        "share_dir": "state/shares",
                         "task_history_dir": "state/tasks",
                         "workspace_image_socket": "state/images.sock",
                         "finished_task_retention_minutes": 30,
@@ -227,9 +223,6 @@ class ConfigurationTests(unittest.TestCase):
                         "max_search_file_mb": 6,
                         "max_tree_nodes": 1200,
                         "max_batch_file_operations": 125,
-                        "share_ttl_hours": 36,
-                        "max_share_entries": 7,
-                        "max_share_mb": 192,
                         "max_recursion_depth": 12,
                         "admin": {
                             "username": "operator",
@@ -257,7 +250,6 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual("https://preview.example.test", config.preview_base_url)
             self.assertEqual((base / "state" / "tokens.json").resolve(), config.token_data_file)
             self.assertEqual((base / "state" / "uploads").resolve(), config.upload_state_dir)
-            self.assertEqual((base / "state" / "shares").resolve(), config.share_dir)
             self.assertEqual((base / "state" / "tasks").resolve(), config.task_history_dir)
             self.assertEqual((base / "state" / "images.sock").resolve(), config.workspace_image_socket)
             self.assertEqual(30 * 60, config.finished_task_retention_seconds)
@@ -292,9 +284,6 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(6 * 1024 * 1024, config.max_search_file_bytes)
             self.assertEqual(1200, config.max_tree_nodes)
             self.assertEqual(125, config.max_batch_file_operations)
-            self.assertEqual(36 * 60 * 60, config.share_ttl_seconds)
-            self.assertEqual(7, config.max_share_entries)
-            self.assertEqual(192 * 1024 * 1024, config.max_share_bytes)
             self.assertEqual(12, config.max_recursion_depth)
             self.assertEqual("operator", config.admin_username)
             config_data = json.loads(config_path.read_text(encoding="utf-8"))

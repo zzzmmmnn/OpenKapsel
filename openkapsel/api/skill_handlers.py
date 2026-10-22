@@ -16,7 +16,7 @@ from openkapsel.errors import ApiError
 
 SKILL_NAME = "openkapsel-rest"
 SKILL_DESCRIPTION = (
-    "Operate OpenKapsel workspace REST, reliable file-transfer, sharing, preview, "
+    "Operate OpenKapsel workspace REST, reliable file-transfer, preview, "
     "and FastAPI HTTP surfaces without loading the full Discovery document."
 )
 

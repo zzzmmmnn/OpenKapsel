@@ -4,7 +4,7 @@
 
 ## Workspace-private layout
 
-OpenKapsel reserves one `.openkapsel` directory inside every Workspace. Its `recycle`, `sql`, `context`, and `env` children hold runtime-managed private state and are hidden from file APIs, preview, application source mounts, restricted Shell, and sharing. Do not create project files under this directory.
+OpenKapsel reserves one `.openkapsel` directory inside every Workspace. Its `recycle`, `sql`, `context`, and `env` children hold runtime-managed private state and are hidden from file APIs, preview, application source mounts, restricted Shell. Do not create project files under this directory.
 
 On service startup, an existing Workspace referenced by a token is initialized automatically. Legacy top-level `.recycle`, `.sql`, and `.context` directories are moved into `.openkapsel` without copying. Startup refuses symlinks or conflicting old/new entries instead of guessing which data to discard. Back up production Workspace data before an upgrade that introduces this migration.
 
@@ -18,7 +18,6 @@ The installer uses the following layout:
 - `/var/lib/openkapsel/oauth.sqlite3`: remote MCP OAuth connections, client registrations and hashed credentials
 - `/var/lib/openkapsel/static-mcp.sqlite3`: independent static MCP connections and their private copyable credentials
 - `/var/lib/openkapsel/workspace`: Workspace Root
-- `/var/lib/openkapsel/share/create`: temporary cross-workspace shares
 - `/var/lib/openkapsel/network-proxies`: ephemeral token-scoped proxy sockets
 - `/var/lib/openkapsel/home`: service-account home and rootless Podman storage
 - `/var/lib/openkapsel/run`: service-account runtime directory

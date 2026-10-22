@@ -109,28 +109,6 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
         discovery_key="discovery",
     ),
     _exact(
-        "share_create", ("POST",), "/share/create", "_handle_share_create",
-        control_required=True, request_body=True, transfer_slot=True,
-        context_mode="deferred", context_operations=(("POST", "share.create"),),
-        discovery_key="share",
-    ),
-    EndpointSpec(
-        "share_import", frozenset(("POST",)),
-        re.compile(r"/share/import/(?P<share_id>[A-Za-z0-9_-]+)"),
-        "_handle_share_import", invocation="param", parameter="share_id",
-        control_required=True, request_body=True, transfer_slot=True,
-        context_mode="deferred", context_operations=(("POST", "share.import"),),
-        discovery_key="share",
-    ),
-    EndpointSpec(
-        "share_delete", frozenset(("DELETE",)),
-        re.compile(r"/share/(?P<share_id>[A-Za-z0-9_-]+)"),
-        "_handle_share_delete", invocation="param", parameter="share_id",
-        control_required=True, context_mode="header",
-        context_operations=(("DELETE", "share.delete"),),
-        discovery_key="share",
-    ),
-    _exact(
         "files_approval_request", ("POST",), "/files/approval/request",
         "_handle_files_approval_request",
         control_required=True, request_body=True, context_mode="deferred",

@@ -179,7 +179,7 @@ class McpHandlersMixin:
                 "Query or reuse an active root Plan before writes and load relevant Memory when durable cross-task facts matter. "
                 "Attach every modifying tool to its owning plan_id, taskname, and message; reads are recorded only when taskname and message are supplied. "
                 "File tools accept approved=true only with an existing temporary File grant, plus writer_nonce and target (server or exact Mapping ID); request one with capability_call family=files operation=request_approval, whose reason is shown to the user. Missing grants never return an URL. "
-                "Low-frequency File Transfer, Upload, Shell, Task, Schedule, Sharing, Web, and Credential operations use capability_call; load the matching Discovery section for operation schemas (File Transfer and Upload use discovery/files; Shell and Task use discovery/shell)."
+                "Low-frequency File Transfer, Upload, Shell, Task, Schedule, Web, and Credential operations use capability_call; load the matching Discovery section for operation schemas (File Transfer and Upload use discovery/files; Shell and Task use discovery/shell)."
             ),
         }
 
@@ -811,7 +811,6 @@ class McpHandlersMixin:
             "shell_request_approval": self._handle_shell_approval_request,
             "files_request_approval": self._handle_files_approval_request,
             "upload_create": self._handle_upload_create,
-            "share_create": self._handle_share_create,
         }
         self._capturing_mcp_tool = True
         self._mcp_tool_response: tuple[int, dict[str, Any]] | None = None
@@ -900,18 +899,6 @@ class McpHandlersMixin:
                 return self._mcp_prepare_download(arguments)
             elif name == "web_preview_url":
                 return self._mcp_web_preview_url(arguments)
-            elif name == "share_query":
-                query = {
-                    key: [str(value)]
-                    for key, value in arguments.items()
-                    if key not in {"share_id", "plan_id", "taskname", "message"}
-                }
-                self._handle_share_query(str(arguments["share_id"]), query)
-            elif name == "share_import":
-                self._mcp_tool_arguments = arguments
-                self._handle_share_import(str(arguments["share_id"]))
-            elif name == "share_delete":
-                self._handle_share_delete(str(arguments["share_id"]))
             elif name == "upload_chunk":
                 return self._mcp_upload_chunk(arguments)
             elif name == "upload_status":

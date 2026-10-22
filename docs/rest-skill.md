@@ -4,7 +4,7 @@
 
 `skills/openkapsel-rest` is a portable AI-agent Skill for the non-MCP HTTP interface. Administrator operations are intentionally excluded.
 
-Its short `SKILL.md` routes an AI to focused references for files, Context, Memory, Shell, preview applications, and sharing. Runtime focused Discovery remains authoritative, so routine work does not need to load `discovery/full`.
+Its short `SKILL.md` routes an AI to focused references for files, Context, Memory, Shell, and preview applications. Runtime focused Discovery remains authoritative, so routine work does not need to load `discovery/full`.
 
 ## Installation and discovery
 

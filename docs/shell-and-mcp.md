@@ -175,11 +175,10 @@ The current tool surface includes:
 - schedules: grouped `schedule_read`, `schedule_write`, and `schedule_control`
 - preview: independent browser preview URL
 - Shell/tasks: run, list, status, output, stdin, interrupt, kill, and process listing
-- sharing: create, inspect, import, and delete
 
 MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated `/transfer/...` URLs containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
 
-`discovery` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `schedules`, `web`, `sharing`, or `full`. `tools/list` is authoritative for current MCP schemas.
+`discovery` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `shell`, `schedules`, `web` or `full`. `tools/list` is authoritative for current MCP schemas.
 
 The Shell tools in `tools/list` use the same unified task IDs as REST:
 `shell_exec` and `task_list` accept `target=auto|server|client`; `task_get` and

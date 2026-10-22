@@ -12,7 +12,7 @@ from openkapsel.context.conversation import (
 # Former section names that remain served for existing clients.
 SECTION_ALIASES = {"transport": "restricted_http"}
 
-SECTION_NAMES = ("restricted_http", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors")
+SECTION_NAMES = ("restricted_http", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "authentication", "errors")
 
 
 SECTION_MCP_FAMILIES = {
@@ -21,7 +21,6 @@ SECTION_MCP_FAMILIES = {
     "shell": {"shell", "task"},
     "schedules": {"schedule"},
     "web": {"web"},
-    "sharing": {"sharing"},
 }
 
 SECTION_ENDPOINTS = {
@@ -36,7 +35,6 @@ SECTION_ENDPOINTS = {
     "shell": {"shell", "task", "environment"},
     "schedules": {"schedule"},
     "web": {"web"},
-    "sharing": {"share"},
     "authentication": {"credential"},
     "errors": set(),
 }
@@ -57,7 +55,6 @@ SECTION_CAPABILITIES = {
     },
     "schedules": {"schedules"},
     "web": {"web_preview", "web_app_api"},
-    "sharing": {"sharing"},
     "authentication": set(),
     "errors": set(),
 }
@@ -105,9 +102,6 @@ SECTION_LIMITS = {
         "max_sse_streams", "max_sse_streams_per_token", "max_sse_duration_seconds",
         "http_socket_timeout_seconds",
     },
-    "sharing": {
-        "share_ttl_seconds", "max_share_entries", "max_share_bytes",
-    },
     "authentication": set(),
     "errors": set(),
 }
@@ -124,7 +118,6 @@ SECTION_SUMMARIES = {
     "shell": "Shell execution and Task polling/output/input/control together with sandbox and task limits.",
     "schedules": "Persistent once, interval, and six-field cron Shell schedules.",
     "web": "Static web preview, FastAPI applications, runtime libraries, and managed databases.",
-    "sharing": "Temporary ID-addressed transfer of one file or directory between workspaces.",
     "authentication": "Credential inspection and renewal; load only when authentication state or rotation is needed.",
     "errors": "Shared API error envelope and error-code reference.",
 }
@@ -141,7 +134,7 @@ SECTION_WORKFLOWS = {
     ],
     "files": [
         "For Mapping Clients advertising configured_file_paths=true, ordinary File operations may specify target=<Mapping ID or name> and a native Client absolute path. job_sandbox.paths ro/rw scopes are then available without approved=true or browser approval; unconfigured, protect and deny paths remain restricted, and ro never permits writes. The Client evaluates native Windows drive paths and both lexical/canonical restrictions; the Server does not resolve Client paths.",
-        "To request temporary File API read/write privilege before operations, use REST POST /files/approval/request or MCP capability_call family=files operation=request_approval; specify access=read|write, explicit server/Mapping target, owning Conversation writer_nonce, in_progress plan_id and a concrete reason describing why these files are needed (reason is shown on the approval page). Only request_approval creates an approval URL. If a File operation fails and temporary permissions might be the cause, proactively call files.request_approval with a specific reason; ordinary File operation errors never create approval URLs. Show approval_url for that Token\'s Workspace password. Approved operations must separately send approved=true, writer_nonce, target and plan_id. A files.read grant never implies files.write. For external directories, include an absolute path in the request (e.g. path=/Users on the specified Mapping); for a file symlink, set scope_is_directory=false to approve its real parent. After broad File approval, unapproved paths and missing paths return the same path_unavailable error on direct approved File operations; use request_approval for approval. Internal symlinks need no additional scope. Approval grants only the canonical directory subtree and is shown after password confirmation. No unscoped grant can unlock external paths. Four modes: rw, ro, protect and deny. Public File API and Approval forbid .openkapsel and .openkapsel-* components regardless of letter case, including mixed-case aliases on case-insensitive filesystems. Validated internal Mapping transfer stages are not exposed through those APIs. For File API and sandboxed Shell, absolute deny at any ancestor cannot be bypassed by child configuration or File Approval. An explicitly approved unsandboxed Shell runs as the host OS user outside these path restrictions. Otherwise deepest path wins, with same-path deny > protect > ro > rw. Protect requires an independent files.read/files.write Approval for the protected directory or a narrower canonical child; ancestor approvals never open nested protect. Child grants remain distinct. Scoped approved files.write elevates ro, but not absolute deny. Mapping write protection, system-protected Client configuration/metadata and OS permissions remain enforced; generic RPC/uploads/sharing cannot use File approval grants.",
+        "To request temporary File API read/write privilege before operations, use REST POST /files/approval/request or MCP capability_call family=files operation=request_approval; specify access=read|write, explicit server/Mapping target, owning Conversation writer_nonce, in_progress plan_id and a concrete reason describing why these files are needed (reason is shown on the approval page). Only request_approval creates an approval URL. If a File operation fails and temporary permissions might be the cause, proactively call files.request_approval with a specific reason; ordinary File operation errors never create approval URLs. Show approval_url for that Token\'s Workspace password. Approved operations must separately send approved=true, writer_nonce, target and plan_id. A files.read grant never implies files.write. For external directories, include an absolute path in the request (e.g. path=/Users on the specified Mapping); for a file symlink, set scope_is_directory=false to approve its real parent. After broad File approval, unapproved paths and missing paths return the same path_unavailable error on direct approved File operations; use request_approval for approval. Internal symlinks need no additional scope. Approval grants only the canonical directory subtree and is shown after password confirmation. No unscoped grant can unlock external paths. Four modes: rw, ro, protect and deny. Public File API and Approval forbid .openkapsel and .openkapsel-* components regardless of letter case, including mixed-case aliases on case-insensitive filesystems. Validated internal Mapping transfer stages are not exposed through those APIs. For File API and sandboxed Shell, absolute deny at any ancestor cannot be bypassed by child configuration or File Approval. An explicitly approved unsandboxed Shell runs as the host OS user outside these path restrictions. Otherwise deepest path wins, with same-path deny > protect > ro > rw. Protect requires an independent files.read/files.write Approval for the protected directory or a narrower canonical child; ancestor approvals never open nested protect. Child grants remain distinct. Scoped approved files.write elevates ro, but not absolute deny. Mapping write protection, system-protected Client configuration/metadata and OS permissions remain enforced; generic RPC/uploads cannot use File approval grants.",
         "Use /fs/query/<operation> for list/stat/tree/search/manifest inspection.",
         "Use /fs/read/<operation> for text, multi-file, or bounded large-file reads; keep /fs/content for raw Range streaming.",
         "Use /fs/write/<operation> for mutate, guarded large-range replace, mkdir, move, and asynchronous copy.",
@@ -152,10 +145,10 @@ SECTION_WORKFLOWS = {
         "Existing paths require exact ETags for guarded mutations; deletion remains recoverable through recycle.",
     ],
     "context": [
-        "If a valid writer_nonce and its conversation_id are already available, MUST reuse that Conversation for subsequent tasks and Plans: append entries there and DO NOT call conversation_create. Only create a new Conversation when explicitly requested to start a separate one or the existing Conversation truly cannot be continued. Shell approvals are Conversation-bound.",
-        "Before creating a new Conversation, use conversation_query.next_conversation_id exactly. IDs are caller-supplied non-negative integers starting at 0 and cannot skip; creation atomically records at least user then ai and returns writer_nonce. Supply an optional stable request_id to replay the original writer_nonce after a lost create response.",
-        f"Append materially new user/ai context with conversation_id plus writer_nonce. user/ai records are per-side context summaries (max 1000 chars) and may keep original wording without extra compression when it already fits. Summary cadence is dynamic: after 40 user/ai entries since the newest summary, append responses recommend summary via summary_status; after 49, another user/ai entry is blocked until summary is appended. The summary covers from the newest summary itself (or sub_id 1) through the latest entry. Without conversation_id, conversation_query pages through non-empty Conversations by last entry time, {DEFAULT_RECENT_CONVERSATION_COUNT} per page for up to {MAX_RECENT_CONVERSATION_PAGES} pages, and returns each grouped window from its newest summary (or sub_id 1) forward. With conversation_id it returns the newest at most 100 entries, optionally after a sub_id range filter. Returned entries are always in forward reading order.",
-        "Plan creation and every non-cancellation-only Plan update append at least one Conversation entry using conversation_id plus the writer_nonce returned by conversation_create; completion must include at least one ai entry. Cancellation-only remains possible without writer_nonce for in_progress Plans. After completion, a Plan is immutable: it cannot be reopened, renamed, edited, cancelled or completed again. Create a new Plan for subsequent work; existing Memory can be revised under that new in_progress Plan.",
+        "MUST reuse existing conversation_id/writer_nonce across tasks and Plans; append to that Conversation, not conversation_create, unless a separate one is explicitly requested or continuation is impossible. Shell approvals are Conversation-bound.",
+        "Before conversation_create, query next_conversation_id: caller-supplied IDs start at 0 and must be sequential. Create atomically records user then ai and returns writer_nonce; optional stable request_id replays it after lost responses.",
+        f"Append user/ai context with conversation_id and writer_nonce (1000 chars max per side; original wording need not be compressed). summary_status recommends summary after 40 user/ai entries since the latest summary; after 49, user/ai append is blocked until summary. The summary covers the latest summary (or sub_id 1) through the newest entry. Without conversation_id, conversation_query returns non-empty Conversations sorted by last update, {DEFAULT_RECENT_CONVERSATION_COUNT} per page up to {MAX_RECENT_CONVERSATION_PAGES} pages, from their latest summary (or 1). With conversation_id, it returns the newest 100, optionally filtered by sub_id range. All results are in forward order.",
+        "Plan creation and non-cancellation-only updates require conversation_id, writer_nonce and a Conversation entry; completion requires an ai entry. In_progress Plans may be cancelled without writer_nonce. Completed Plans are immutable, including status; use a new Plan for later work, including revisions of existing Memory.",
         "After creating any plan, inspect unfinished_root_plans in the response to avoid duplicating another in-progress root plan.",
         "Use plan_id for parent/sub-plan relationships and to attach every modifying operation and note to its owning plan. A mutation owner must normally be an in_progress Plan; schedule resume/end are lifecycle exceptions that may record against a closed historical Plan.",
         "Reads are not recorded unless taskname and message are supplied; plan completion also requires a debrief.",
@@ -179,7 +172,7 @@ SECTION_WORKFLOWS = {
     ],
     "mcp": [
         "Keep Conversation, Plan, Memory, File, discovery, rpc_call, and capability_call schemas in the ordinary tools/list response.",
-        "capability_call operation schemas are published in the matching capability section, not here: shell also covers task; schedules, web, sharing, and authentication each own their family schemas.",
+        "capability_call operation schemas are published in the matching capability section, not here: shell also covers task; schedules, web, and authentication each own their family schemas.",
         "When mutation_context=true, pass plan_id, taskname, and message outside args; plan_id normally references an in_progress Plan. Schedule resume/end are the explicit lifecycle exceptions. Read operations may optionally use those outer fields when optional_read_context=true.",
     ],
     "shell": [
@@ -202,11 +195,6 @@ SECTION_WORKFLOWS = {
         "A directory named api delegates that application subtree to its FastAPI app.py; each app owns private managed database storage.",
         "Use a GET StreamingResponse with media type text/event-stream for live updates; send periodic SSE comments below the published upstream idle timeout and let EventSource reconnect when the duration limit closes a stream.",
         "Implement application users, sessions, CSRF, and roles inside the workspace application; OpenKapsel does not provide them. Load discovery/network only when application network policy matters.",
-    ],
-    "sharing": [
-        "Create a share from exactly one file or directory inside the source token workspace.",
-        "The recipient can inspect by share ID without a workspace token, then imports with its own destination control token.",
-        "Imports never overwrite, and shares expire or are evicted according to the published limits. Shared tree/transfer limits and path rules live in discovery/files and discovery/paths.",
     ],
     "authentication": [
         "Load this section only when credential state, expiry, or renewal is needed.",

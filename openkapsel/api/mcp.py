@@ -175,7 +175,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "capability_call",
         "Call auxiliary capability",
-        "Call one low-frequency native capability operation by family and operation. Load operation_specs on demand from the matching Discovery capability section: shell also owns task; schedules, web, sharing, and authentication own their families. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when required, and its plan_id must reference an in_progress Plan.",
+        "Call one low-frequency native capability operation by family and operation. Load operation_specs on demand from the matching Discovery capability section: shell also owns task; schedules, web, and authentication own their families. Like rpc_call, args contains only operation-specific fields; mutation Context stays in outer plan_id/taskname/message when required, and its plan_id must reference an in_progress Plan.",
         _object_schema({
             "family": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
             "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -219,7 +219,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             {
                 "section": {
                     "type": "string",
-                    "enum": ["main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "sharing", "authentication", "errors", "full"],
+                    "enum": ["main", "files", "context", "memory", "paths", "rpc", "network", "mcp", "shell", "schedules", "web", "authentication", "errors", "full"],
                     "default": "main",
                     "description": "Discovery section to return. Use full only for compatibility or comprehensive inspection.",
                 }
@@ -363,7 +363,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_add",
         "Add workspace context",
-        "Create a Plan objective and its step-by-step todo checklist. On multi-step tasks, populate todos with concrete actions (inspect relevant code, implement, add tests, verify), not only high-level milestones. Each todo is a child Plan with its own status: update/complete it when that step finishes. Root Plan creation requires todos; use [] for work with no meaningful separate steps. Up to 64 todos are created atomically. All Plans begin in_progress; creation rejects status, child taskname inherits when omitted. Sub-plans require an in_progress parent and hierarchy root; notes require an in_progress owning Plan. Optional request_id deduplicates retries. Hints are returned once for the batch.",
+        "Create a Plan or note. For multi-step Plans, use actionable, verifiable todos (inspect, implement, test, verify), not milestones. Todos are child Plans finished via context_plan_update. Root Plans require todos ([] if simple); up to 64 are created atomically in_progress. Creation rejects status; child taskname inherits. Adding children requires an in_progress parent and root; notes need an in_progress owner. request_id enables retries.",
         _object_schema(
             {
                 "type": {
@@ -391,7 +391,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update or finish any Plan, including a todo: todos are child Plans and use this same context_plan_update tool with their own id and expected_revision. Mark each finished todo completed (or cancelled) before completing its parent. Completion requires the owning Conversation id, writer_nonce, a role=ai conversation entry and the normal debrief (items may be []). Parentage cannot change. A Plan cannot be completed while any descendant remains in_progress.",
+        "Update/complete any Plan or child todo using its own id and expected_revision. Complete/cancel todos before their parent. Completion needs owning conversation_id, writer_nonce, role=ai entry and debrief (items=[] allowed); in_progress descendants block completion. Parentage cannot change.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},
@@ -410,7 +410,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
                 ),
                 "debrief": {
                     **plan_debrief_schema(),
-                    "description": "Required when completing a plan: items, outcome, memory_actions, memory_feedback, and memory_conflicts. Each item directly creates one new long-lived Memory; multiple items create multiple Memories. Each item has 1-256 character content plus tags (prefer 4-16). One path is derived by the server from successful writes owned by the Plan. memory_actions only updates or archives existing Memory.",
+                    "description": "Required on completion: items, outcome, memory_actions, memory_feedback and memory_conflicts. Each item creates one durable Memory (1-256 character content plus tags, preferably 4-16). Path derives from Plan writes; memory_actions only updates/archives existing Memory.",
                 },
             },
             ("id", "expected_revision", "taskname"),
@@ -545,51 +545,6 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
             }
         ),
         read_only=True,
-        idempotent=True,
-    ),
-    _tool(
-        "share_create",
-        "Create temporary share",
-        "Copy one workspace file or directory into the temporary shared area and return a random share ID. Shares expire after one day by default.",
-        _object_schema({"path": PATH}, ("path",)),
-        read_only=False,
-    ),
-    _tool(
-        "share_query",
-        "Inspect temporary share",
-        "List an ID-addressed temporary share without requiring the creator's token.",
-        _object_schema(
-            {
-                "share_id": {"type": "string", "minLength": 1},
-                "path": {"type": "string", "default": ""},
-                "depth": {**NONNEGATIVE, "default": 1},
-            },
-            ("share_id",),
-        ),
-        read_only=True,
-        idempotent=True,
-    ),
-    _tool(
-        "share_import",
-        "Import temporary share",
-        "Copy a temporary share into a new path in this token's workspace. Existing destinations are never overwritten.",
-        _object_schema(
-            {
-                "share_id": {"type": "string", "minLength": 1},
-                "destination": PATH,
-                "create_parents": {"type": "boolean", "default": False},
-            },
-            ("share_id", "destination"),
-        ),
-        read_only=False,
-    ),
-    _tool(
-        "share_delete",
-        "Delete temporary share",
-        "Delete a temporary share early. Only the token application that created it may delete it.",
-        _object_schema({"share_id": {"type": "string", "minLength": 1}}, ("share_id",)),
-        read_only=False,
-        destructive=True,
         idempotent=True,
     ),
     _tool(
@@ -1186,12 +1141,6 @@ _AUXILIARY_OPERATION_MAP: dict[
         "get": ("credential_get", None, (), (), "sync"),
         "renew": ("credential_renew", None, (), (), "sync"),
     },
-    "sharing": {
-        "create": ("share_create", None, None, ("path",), "sync"),
-        "query": ("share_query", None, None, ("share_id",), "sync"),
-        "import": ("share_import", None, None, ("share_id", "destination"), "sync"),
-        "delete": ("share_delete", None, None, ("share_id",), "sync"),
-    },
     "web": {
         "preview_url": ("web_preview_url", None, None, (), "sync"),
     },
@@ -1263,8 +1212,6 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
         "discovery",
         "credential_get",
         "credential_renew",
-        "share_query",
-        "share_delete",
         "conversation_create",
         "conversation_append",
         "context_add",
@@ -1292,7 +1239,7 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
             "conversation_query", "context_query", "context_plan_tree",
             "memory_query", "memory_get", "memory_project",
             "fs_list", "fs_stat", "fs_read_binary", "fs_read_large", "fs_download",
-            "fs_find", "fs_grep", "fs_tree", "share_create",
+            "fs_find", "fs_grep", "fs_tree",
         })
         if record.can_preview:
             names.add("web_preview_url")
@@ -1302,7 +1249,7 @@ def _authorized_tool_names(record: TokenRecord, recycle_enabled: bool) -> set[st
         names.update({
             "fs_write", "fs_edit_text", "fs_mutate", "fs_replace_large", "fs_mkdir",
             "fs_move", "upload_create", "upload_chunk", "upload_status", "upload_commit",
-            "upload_cancel", "share_import",
+            "upload_cancel",
         })
         if recycle_enabled:
             names.update({"fs_delete", "recycle_restore"})

@@ -419,19 +419,6 @@ class DiscoveryMixin:
                     "cancel": operation("upload_cancel", path="./upload/cancel/<upload_id>"),
                 },
             ),
-            "share": family(
-                "./share/<operation>[/<share_id>]",
-                "Temporary cross-workspace file/directory sharing.",
-                {
-                    "create": operation("share_create", path="./share/create"),
-                    "query": operation(
-                        "share_query",
-                        path=endpoints["share_query"].get("url"),
-                    ),
-                    "import": operation("share_import", path="./share/import/<share_id>"),
-                    "delete": operation("share_delete", path="./share/<share_id>"),
-                },
-            ),
             "environment": family(
                 "./env",
                 "App-identity-scoped Shell environment configuration.",
@@ -641,7 +628,6 @@ class DiscoveryMixin:
             ),
             "schedules": capabilities["schedules"]["enabled"],
             "web": capabilities["web_preview"]["enabled"],
-            "sharing": capabilities["sharing"]["enabled"],
             "authentication": True,
             "errors": True,
         }
@@ -675,10 +661,6 @@ class DiscoveryMixin:
                     "recycle": capabilities["recycle"],
                     "context": {"enabled": capabilities["context"]["enabled"]},
                     "memory": {"enabled": capabilities["memory"]["enabled"]},
-                    "sharing": {
-                        key: capabilities["sharing"][key]
-                        for key in ("enabled", "create", "inspect_by_id", "import", "delete_own")
-                    },
                     "shell": capabilities["shell"],
                     "schedules": {"enabled": capabilities["schedules"]["enabled"]},
                     "environment": {
@@ -714,7 +696,6 @@ class DiscoveryMixin:
                         "max_sse_streams_per_token", "max_sse_duration_seconds",
                         "http_socket_timeout_seconds",
                         "max_batch_file_operations",
-                        "share_ttl_seconds", "max_share_entries", "max_share_bytes",
                         "max_operation_message_characters", "max_taskname_characters",
                         "max_environment_variables", "max_environment_name_characters",
                         "max_environment_value_characters", "max_environment_total_characters",
@@ -737,7 +718,6 @@ class DiscoveryMixin:
                     "Configure server Shell variables and POSIX initialization with the control-authenticated env endpoint.",
                     "Start ordinary workspace work with discovery/files; use discovery/context and discovery/memory when coordinating or retaining project knowledge.",
                     "MCP clients use tools/list for core tool schemas. capability_call operation schemas live in their matching capability sections; shell and task share discovery/shell.",
-                    "Use discovery/sharing for temporary cross-workspace transfer by random share ID.",
                 ],
                 "errors": full["errors"],
             }
@@ -820,10 +800,6 @@ class DiscoveryMixin:
 
     def _full_discovery(self) -> dict[str, Any]:
         base = self._base_path()
-        share_public_base = (
-            f"{self._public_base_url().rstrip('/')}"
-            f"/share/query"
-        )
         if self.server.config.preview_base_url:
             preview_base = (
                 f"{self.server.config.preview_base_url.rstrip('/')}/"
@@ -991,7 +967,7 @@ class DiscoveryMixin:
                 "response_envelope": {
                     "available": True,
                     "query_parameter": "response_mode=envelope",
-                    "scope": "Core Workspace REST and restricted HTTP JSON responses only (including signed GET and native signed requests); excludes admin, OAuth, public sharing, preview apps, binary/streaming responses, HEAD and upstream rejections",
+                    "scope": "Core Workspace REST and restricted HTTP JSON responses only (including signed GET and native signed requests); excludes admin, OAuth, preview apps, binary/streaming responses, HEAD and upstream rejections",
                     "authentication": "unchanged; response_mode only changes presentation, never control authorization",
                     "signature": "include the raw response_mode=envelope query parameter in the existing HMAC input before the final signature field; never append it after signing",
                     "wire_http_status": 200,
@@ -1034,7 +1010,7 @@ class DiscoveryMixin:
                 "absolute_paths": "allowed inside the token workspace or an authorized extra directory",
                 "symlink_escape": "rejected",
                 "private_directory": ".openkapsel is reserved for runtime-managed recycle, database, Context, Memory, Shell-environment, and scheduler state",
-                "private_directory_access": "hidden from file APIs, preview, application source mounts, restricted Shell, and sharing",
+                "private_directory_access": "hidden from file APIs, preview, application source mounts, restricted Shell",
             },
             "token": {
                 "name": self.token_record.name,
@@ -1047,18 +1023,6 @@ class DiscoveryMixin:
             },
             "capabilities": {
                 "files": {"read": read_enabled, "write": write_enabled, "text_encodings": list(ENCODINGS)},
-                "sharing": {
-                    "enabled": True,
-                    "create": control_authorized and read_enabled,
-                    "inspect_by_id": True,
-                    "import": write_enabled,
-                    "delete_own": control_authorized,
-                    "single_root_item": True,
-                    "immutable_until_expiry": True,
-                    "public_id_is_read_only_capability": True,
-                    "source_token_not_required_for_inspection_or_import": True,
-                    "destination_control_token_required_for_import": True,
-                },
                 "recycle": recycle_enabled,
                 "context": {
                     "enabled": control_authorized and read_enabled,
@@ -1077,7 +1041,7 @@ class DiscoveryMixin:
                         "caller_supplied_sequential_ids": True,
                         "create_id_must_equal_next_conversation_id": True,
                         "writer_nonce_returned_on_create": True,
-                        "writer_nonce_usage": "When a valid writer_nonce and its conversation_id are already available, MUST reuse that same Conversation for new tasks and Plans. Do NOT call conversation_create merely for a new task or Plan; only create when explicitly requested to start a separate Conversation or the existing one cannot be continued. Retain writer_nonce and pass it unchanged; Shell approvals are Conversation-bound.",
+                        "writer_nonce_usage": "MUST reuse a valid conversation_id/writer_nonce for later tasks and Plans. Create a new Conversation only when explicitly requested or unable to continue the old one. Pass writer_nonce unchanged; Shell approvals are Conversation-bound.",
                         "create_request_id": "optional per-actor durable retry key; identical request returns original writer_nonce even after server restart",
                         "create_request_conflict": "context_request_conflict (409) when request_id is reused with different content",
                         "roles": ["user", "ai", "summary"],
@@ -1159,8 +1123,8 @@ class DiscoveryMixin:
                         "empty_root_todos_allowed": True,
                         "max_normalized_request_bytes": MAX_PLAN_REQUEST_BYTES,
                         "child_taskname_inherits": True, "nested_todos": False,
-                        "todo_semantics": "ordered executable checklist, not just major milestones; each todo is a child Plan with its own id, revision and status",
-                        "todo_completion": "complete each todo using the same Plan update API: REST PATCH /context/plans/<todo_id> or MCP context_plan_update(id=<todo_id>); pass expected_revision, taskname, conversation_id, writer_nonce, a role=ai conversation_entries item and debrief (items may be []). Mark todos completed or cancelled before their parent Plan",
+                        "todo_semantics": "ordered verifiable steps, not milestones; each todo is a child Plan with its own id, revision and status",
+                        "todo_completion": "Complete each todo via REST PATCH /context/plans/<todo_id> or MCP context_plan_update with its own ID/revision, taskname, conversation_id, writer_nonce, role=ai entry and debrief (items=[] allowed). Complete/cancel todos before the parent Plan.",
                         "child_refs": "optional unique request-local labels echoed beside IDs",
                         "request_id": "optional durable key scoped to workspace and stable actor; same normalized request returns original creation IDs",
                         "max_idempotency_keys_per_workspace": MAX_PLAN_REQUESTS,
@@ -1576,9 +1540,6 @@ class DiscoveryMixin:
                 "max_tree_nodes": self.server.config.max_tree_nodes,
                 "max_recursion_depth": self.server.config.max_recursion_depth,
                 "max_batch_file_operations": self.server.config.max_batch_file_operations,
-                "share_ttl_seconds": self.server.config.share_ttl_seconds,
-                "max_share_entries": self.server.config.max_share_entries,
-                "max_share_bytes": self.server.config.max_share_bytes,
                 "max_task_output_chunk_bytes": 262144,
                 "max_task_input_bytes_per_request": 262144,
                 "max_task_wait_seconds": 30,
@@ -1756,7 +1717,7 @@ class DiscoveryMixin:
                         "unfinished_root_plans_total": "total matching unfinished root plans",
                         "unfinished_root_plans_truncated": "true when more than 20 unfinished root plans exist",
                     },
-                    "notes": "operation entries are generated automatically by OpenKapsel and cannot be added manually; for multi-step work, supply todos as the concrete executable checklist for the Plan, rather than reserving children for major milestones. Each todo is a child Plan tracked and completed separately. Plan creation requires conversation_id, its returned writer_nonce, and at least one Conversation entry. Every created Plan starts in_progress and creation rejects status. Creating a child Plan requires its hierarchy root to remain in_progress; every created plan response includes related_memory and unfinished_root_plans; the newly created plan is excluded from the hint list; content_preview is capped at 256 characters",
+                    "notes": "Operations are logged automatically, not added manually. For multi-step work, todos are verifiable child Plans, not milestones; complete each separately. Plan creation needs conversation_id, writer_nonce and an entry; status is forbidden and every Plan starts in_progress. Child creation requires an in_progress root. Responses include related_memory and unfinished_root_plans (excluding the new Plan); content_preview is limited to 256 characters.",
                 },
                 "context_plan_update": {
                     "authentication": "Bearer control token",
@@ -1773,7 +1734,7 @@ class DiscoveryMixin:
                             "required_when": "status transitions to completed",
                         },
                     },
-                    "notes": "this same endpoint updates and completes both root Plans and their todo child Plans; pass a todo's own ID and expected_revision to finish that step before completing its parent. Updates require the owning conversation_id, returned writer_nonce, and a Conversation entry, except cancellation-only. Completion requires a role=ai entry plus the full debrief (items may be []) and fails while any descendant remains in_progress. Plan parentage is immutable; stale revisions fail with 412",
+                    "notes": "Updates and completes root Plans and todo child Plans using their own ID and expected_revision. Except cancellation-only, requires owning conversation_id, writer_nonce and entry. Completion needs a role=ai entry and debrief (items=[] allowed), and rejects in_progress descendants. Parentage is immutable; stale revisions return 412.",
                 },
                 "context_note_replace": {
                     "authentication": "Bearer control token",
@@ -2028,47 +1989,6 @@ class DiscoveryMixin:
                     "json": {"root": ".", "recycle_id": "<recycle_id>", "plan_id": "<plan_id>", "taskname": "<taskname>", "message": "<message>"},
                     "notes": "restores to the original path and refuses to overwrite an existing path",
                 },
-                "share_create": {
-                    "authentication": "Bearer control token",
-                    "json": {
-                        "path": "<one file or directory inside this token workspace>",
-                        "plan_id": "<plan_id>",
-                        "taskname": "<taskname>",
-                        "message": "<message>",
-                    },
-                    "response": {
-                        "share_id": "random 22-character read-only capability ID",
-                        "query_url": f"{share_public_base}/<share_id>",
-                        "expires_at": "UTC timestamp",
-                    },
-                    "notes": "copies exactly one workspace file or directory; the workspace root, extra authorized paths, symlinks, and private internal directories are rejected",
-                },
-                "share_query": {
-                    "method": "GET",
-                    "url": f"{share_public_base}/<share_id>?path=<relative-path>&depth=1",
-                    "authentication": "none; possession of share_id grants read-only metadata listing",
-                    "notes": "returns ls-like names, paths, types, sizes, and modification times; expired, evicted, deleted, and invalid IDs return 404 without revealing their prior state",
-                },
-                "share_import": {
-                    "authentication": "destination Bearer control token",
-                    "json": {
-                        "destination": "<new path inside this token workspace>",
-                        "create_parents": False,
-                        "plan_id": "<plan_id>",
-                        "taskname": "<taskname>",
-                        "message": "<message>",
-                    },
-                    "notes": "the destination token may differ from the creator; existing destinations are never overwritten",
-                },
-                "share_delete": {
-                    "authentication": "creator Bearer control token",
-                    "request_headers": {
-                        "OpenKapsel-Plan-Id": "<plan_id>",
-                        "OpenKapsel-Taskname": "<taskname>",
-                        "OpenKapsel-Message": "<message>",
-                    },
-                    "notes": "deletes a share early; only the stable token application that created it can do this, including after that token is regenerated",
-                },
                 "upload_create": {
                     "json": {
                         "path": "<path>",
@@ -2107,7 +2027,7 @@ class DiscoveryMixin:
                     },
                     "response": "Only this explicit request endpoint can create a File approval URL: HTTP 200 status=approval_required with approval_url, or status=granted. Ordinary File operations never mint links; permission-like errors may suggest proactively requesting approval.",
                     "mcp": "capability_call family=files operation=request_approval; include reason describing the specific purpose of access, with access/target/writer_nonce and optional path/scope_is_directory in args; Plan Context remains outside args.",
-                    "execution": "Pass approved=true, writer_nonce, target and owning plan_id on each REST/MCP File operation. GET uses query parameters and/or Plan header. Unscoped read/write grants only override Token permissions within existing roots. For outside directories, use the optional absolute path in the approval request; the approved Token/Conversation/target/capability/path subtree remains the only external scope. Four modes: rw, ro, protect, deny. Absolute deny at any ancestor cannot be bypassed by a child grant or Approval. Otherwise deepest path wins, with same-path deny > protect > ro > rw. Protect needs independently approved files.read/files.write at its exact directory or narrower canonical child; ancestor grants never unlock nested protect. Approved files.write elevates ro within its scope, never absolute deny, Mapping write protection, Client configuration/metadata or OS permissions. Does not approve Git/Archive RPC, uploads or sharing.",
+                    "execution": "Pass approved=true, writer_nonce, target and owning plan_id on each REST/MCP File operation. GET uses query parameters and/or Plan header. Unscoped read/write grants only override Token permissions within existing roots. For outside directories, use the optional absolute path in the approval request; the approved Token/Conversation/target/capability/path subtree remains the only external scope. Four modes: rw, ro, protect, deny. Absolute deny at any ancestor cannot be bypassed by a child grant or Approval. Otherwise deepest path wins, with same-path deny > protect > ro > rw. Protect needs independently approved files.read/files.write at its exact directory or narrower canonical child; ancestor grants never unlock nested protect. Approved files.write elevates ro within its scope, never absolute deny, Mapping write protection, Client configuration/metadata or OS permissions. Does not approve Git/Archive RPC, uploads.",
                 },
                 "shell_approval_request": {
                     "json": {
@@ -2300,7 +2220,7 @@ class DiscoveryMixin:
                 "Skill-capable REST clients should inspect skills.openkapsel_rest and may install its token-free SHA-256-verified archive or read the linked SKILL.md remotely before loading detailed endpoint contracts.",
                 "Before changing the workspace, query context with type=plan&root_plans=true&status=in_progress. Reuse a suitable plan tree or create one root plan by POST /context with type=plan and no plan_id.",
                 "At task start, read memory_project when project-wide knowledge is needed. When creating a plan, provide scope_paths and memory_tags when known; OpenKapsel returns related_memory using path overlap, exact tags, and text relevance.",
-                "For every multi-step Plan, supply a useful todos checklist at creation: concrete ordered actions such as reading the relevant code, implementing, adding tests, and verifying results. Each todo is a child Plan, not a separate data type. Complete each todo with the SAME API as Plan completion: REST PATCH /context/plans/<todo_id> or MCP context_plan_update using the todo's id and current revision, owning Conversation, role=ai entry and debrief (items=[] when there are no durable findings). Mark todos completed or cancelled before their parent Plan; do not leave finished steps in_progress. Use [] only for genuinely simple tasks. To add steps later, create child Plans with plan_id equal to the parent ID. Inspect progress with context_plan_tree.",
+                "For multi-step Plans, create actionable, verifiable todos (inspect, implement, test, verify), not milestones; use [] only when no separate steps exist. Each todo is a child Plan, completed/cancelled before its parent via PATCH /context/plans/<todo_id> or context_plan_update with its own revision, Conversation, AI entry and debrief (items=[] if none). Add later steps by creating child Plans with plan_id=parent ID; inspect with context_plan_tree.",
                 "Every modifying REST or MCP operation must provide plan_id, taskname, and a short message. Ordinarily plan_id must identify an in_progress Plan or sub-plan that owns the action; schedule resume/end are narrow lifecycle exceptions and may record against a closed historical Plan, and automatic schedule dispatch records schedule.run under its configured historical plan_id.",
                 "Reads should normally omit taskname, message, and plan_id and are then not recorded. To record a read, provide taskname and message; plan_id is optional but recommended to attach it to the relevant plan.",
                 "Use context_query to filter history by direct plan_id, root plans, text, integer id, exact taskname, anonymous actor_id, or exact recorded path. Plans update in place and move through in_progress, completed, or cancelled; replacing a note creates a newer id and removes the old row.",
@@ -2320,7 +2240,6 @@ class DiscoveryMixin:
                 "For ordinary files up to 32 MiB, use fs_mutate for content changes; existing paths require exact ETags and all items are preflighted before publication. MCP fs_write, fs_edit_text, and fs_delete are convenience wrappers over the same transaction engine.",
                 "Files above 32 MiB are large files: inspect them only through fs_read_large with explicit offset+length, and mutate them only through fs_replace_large using exact ETag + range SHA-256 and equal-length bytes.",
                 "Use fs_mutate path.delete (or MCP fs_delete) for recoverable transactional deletion, recycle_list to inspect deleted items, and recycle_restore to recover them.",
-                "For cross-workspace transfer, share_create copies one file or directory and returns a one-day random share_id. The recipient can inspect it with the public share_query endpoint and import it with share_import using only that ID plus the recipient workspace's own control token; imports never overwrite.",
                 "Run tests or builds with shell_exec; list tasks, read output incrementally, and send input to interactive tasks.",
                 "When schedules permission is enabled, use persistent once, interval, or six-field cron schedules for background Shell work. Every dispatched run records Context under its configured plan_id even after that Plan closes. End recurring schedules non-destructively as stopped (restartable) or completed (terminal); use run-now instead of creating sub-three-minute schedules.",
                 "Use GET, PUT, or DELETE env to inspect, replace, or clear server Shell variables and POSIX initialization. PUT and DELETE require mutation Context.",
@@ -2484,11 +2403,6 @@ class DiscoveryMixin:
             "upload_chunk": ("Bearer control token + files.write", write_enabled),
             "upload_commit": ("Bearer control token + files.write", write_enabled),
             "upload_cancel": ("Bearer control token + files.write", write_enabled),
-            "share_create": ("Bearer control token + files.read", control_authorized and read_enabled),
-            "share_query": ("share_id capability; no workspace token", True),
-            "share_import": ("destination Bearer control token + files.write", write_enabled),
-            "share_delete": ("creator Bearer control token", control_authorized),
-            "mcp": ("Bearer control token", control_authorized),
             "shell_exec": ("Bearer control token + shell", shell_enabled),
             "shell_approval_request": ("Bearer control token + shell", shell_enabled),
             "schedule_list": ("Bearer control token + schedules + shell", schedules_enabled),
@@ -2561,9 +2475,6 @@ class DiscoveryMixin:
                 "upload_chunk",
                 "upload_commit",
                 "upload_cancel",
-                "share_create",
-                "share_import",
-                "share_delete",
                 "mcp",
                 "shell_exec",
                 "schedule_list",
