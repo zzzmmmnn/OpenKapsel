@@ -363,7 +363,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_add",
         "Add workspace context",
-        "Append an AI-authored plan or note. Every created Plan starts in_progress and creation never accepts status. Root Plan creation must include subplans; use [] when no direct children are needed. A sub-plan requires both its direct parent and hierarchy root to remain in_progress; a note requires its owning Plan to be in_progress. A plan may include up to 64 direct subplans, created atomically and returned with all IDs and optional refs. Child taskname inherits when omitted. Optional request_id deduplicates retries per workspace/actor; changed requests conflict. Hints are returned once for the whole batch.",
+        "Create a Plan objective and its step-by-step todo checklist. On multi-step tasks, populate todos with concrete actions (inspect relevant code, implement, add tests, verify), not only high-level milestones. Each todo is a child Plan with its own status: update/complete it when that step finishes. Root Plan creation requires todos; use [] for work with no meaningful separate steps. Up to 64 todos are created atomically. All Plans begin in_progress; creation rejects status, child taskname inherits when omitted. Sub-plans require an in_progress parent and hierarchy root; notes require an in_progress owning Plan. Optional request_id deduplicates retries. Hints are returned once for the batch.",
         _object_schema(
             {
                 "type": {
@@ -391,7 +391,7 @@ ALL_TOOLS: tuple[dict[str, Any], ...] = (
     _tool(
         "context_plan_update",
         "Update context plan",
-        "Update a plan in place using its current revision as an optimistic concurrency precondition. Plan parentage is fixed at creation and cannot be changed by updates. Completion is rejected while any descendant Plan is in_progress; completed or cancelled descendants are allowed.",
+        "Update or finish any Plan, including a todo: todos are child Plans and use this same context_plan_update tool with their own id and expected_revision. Mark each finished todo completed (or cancelled) before completing its parent. Completion requires the owning Conversation id, writer_nonce, a role=ai conversation entry and the normal debrief (items may be []). Parentage cannot change. A Plan cannot be completed while any descendant remains in_progress.",
         _object_schema(
             {
                 "id": {"type": "integer", "minimum": 1},

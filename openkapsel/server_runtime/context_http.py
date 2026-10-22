@@ -519,7 +519,19 @@ class ContextHttpMixin:
 
 
     def _handle_context_add(self) -> None:
-        entry = self._create_context_entry(self._read_json())
+        body = self._read_json()
+        # REST-only compatibility: earlier clients called the todo batch
+        # "subplans". Keep the MCP schema and Discovery contract todos-only.
+        if "subplans" in body:
+            if "todos" in body:
+                raise ApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_context_entry",
+                    "supply either todos or subplans, not both",
+                )
+            if body.get("type") == "plan":
+                body["todos"] = body.pop("subplans")
+        entry = self._create_context_entry(body)
         self._send_json(HTTPStatus.OK if entry.get("replayed") else HTTPStatus.CREATED, entry)
 
 

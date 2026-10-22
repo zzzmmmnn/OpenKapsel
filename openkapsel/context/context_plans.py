@@ -27,7 +27,7 @@ from openkapsel.context.memory_store import MemoryStore, MAX_MEMORY_SCOPE_PATHS
 from openkapsel.contract import (
     MAX_PLAN_REQUEST_BYTES,
     MAX_PLAN_REQUESTS,
-    MAX_SUBPLANS,
+    MAX_TODOS,
     PLAN_REF_PATTERN,
     PLAN_REQUEST_ID_PATTERN,
 )
@@ -75,12 +75,14 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     # requests are strict so misspelled plan fields cannot be silently ignored.
     if "status" in body:
         raise ValueError("plan creation does not accept status; all plans start in_progress")
+    if "subplans" in body:
+        raise ValueError("subplans was renamed to todos; use todos instead")
     allowed = {
         "type", "content", "taskname", "plan_id", "scope_paths",
-        "memory_tags", "subplans", "request_id", "message",
+        "memory_tags", "todos", "request_id", "message",
         "conversation_id", "writer_nonce", "conversation_entries",
     }
-    if ("subplans" in body or "request_id" in body) and set(body) - allowed:
+    if ("todos" in body or "request_id" in body) and set(body) - allowed:
         raise ValueError("plan creation contains unknown fields")
 
     def node(raw: dict[str, Any], inherited_taskname: str | None = None) -> dict[str, Any]:
@@ -101,31 +103,31 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("plan_id exceeds the database ID range")
     root = node(body)
     root["plan_id"] = parent
-    if parent is None and "subplans" not in body:
+    if parent is None and "todos" not in body:
         raise ValueError(
-            "root plan creation requires subplans; use [] when there are no direct child plans"
+            "root plan creation requires todos; use [] when there are no direct child plans"
         )
-    children = body.get("subplans", [])
-    if not isinstance(children, list) or len(children) > MAX_SUBPLANS:
-        raise ValueError(f"subplans must be an array of at most {MAX_SUBPLANS} direct children")
+    children = body.get("todos", [])
+    if not isinstance(children, list) or len(children) > MAX_TODOS:
+        raise ValueError(f"todos must be an array of at most {MAX_TODOS} direct children")
     normalized, refs = [], set()
     for index, child in enumerate(children):
         if not isinstance(child, dict):
-            raise ValueError(f"subplans[{index}] must be a direct child object with only supported fields")
+            raise ValueError(f"todos[{index}] must be a direct child object with only supported fields")
         if "status" in child:
-            raise ValueError(f"subplans[{index}] does not accept status; all plans start in_progress")
+            raise ValueError(f"todos[{index}] does not accept status; all plans start in_progress")
         if set(child) - {"ref", "content", "taskname", "scope_paths", "memory_tags"}:
-            raise ValueError(f"subplans[{index}] must be a direct child object with only supported fields")
+            raise ValueError(f"todos[{index}] must be a direct child object with only supported fields")
         for field in ("scope_paths", "memory_tags"):
             if field in child and not isinstance(child[field], list):
-                raise ValueError(f"subplans[{index}].{field} must be an array")
+                raise ValueError(f"todos[{index}].{field} must be an array")
         item = node(child, root["taskname"])
         if "ref" in child:
             ref = child["ref"]
             if not isinstance(ref, str) or not re.fullmatch(PLAN_REF_PATTERN, ref):
-                raise ValueError("subplan ref must contain 1-64 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
+                raise ValueError("todo ref must contain 1-64 ASCII letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit")
             if ref in refs:
-                raise ValueError("subplan refs must be unique within this request")
+                raise ValueError("todo refs must be unique within this request")
             refs.add(ref)
             item["ref"] = ref
         normalized.append(item)
@@ -134,11 +136,15 @@ def normalize_plan_request(body: dict[str, Any]) -> dict[str, Any]:
     conversation_entries = normalize_entries(body.get("conversation_entries"), minimum=1)
     request = {
         "root": root,
-        "subplans": normalized,
+        "todos": normalized,
         "conversation_id": conversation_id,
         "conversation_entries": conversation_entries,
     }
-    encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    # Preserve pre-rename idempotency fingerprints so retry keys generated before
+    # the API name change still match their original Plan creation receipts.
+    fingerprint_request = {**request, "subplans": request["todos"]}
+    del fingerprint_request["todos"]
+    encoded = json.dumps(fingerprint_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_PLAN_REQUEST_BYTES:
         raise ValueError(f"combined plan request exceeds {MAX_PLAN_REQUEST_BYTES} UTF-8 bytes")
     # Keep one bounded Memory lookup instead of N nearly identical lookups and N
@@ -217,7 +223,10 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
                     if previous["fingerprint"] != spec["fingerprint"]:
                         raise PlanRequestConflict("context_request_conflict", "request_id was already used with a different plan request")
                     receipt = json.loads(previous["response_json"])
-                    ids = [receipt["id"], *(child["id"] for child in receipt["subplans"])]
+                    # Old persisted receipts use the previous field name.
+                    if "todos" not in receipt and "subplans" in receipt:
+                        receipt["todos"] = receipt.pop("subplans")
+                    ids = [receipt["id"], *(child["id"] for child in receipt["todos"])]
                     retained = connection.execute(
                         "SELECT COUNT(*) FROM context_entries WHERE entry_type = 'plan' AND id IN (" + ",".join("?" for _ in ids) + ")", ids,
                     ).fetchone()[0]
@@ -262,7 +271,7 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
                 conversation_id,
             )
             children = []
-            for index, node in enumerate(spec["subplans"]):
+            for index, node in enumerate(spec["todos"]):
                 entry = _insert_plan(
                     store,
                     connection,
@@ -281,7 +290,7 @@ def create_plans(store: ContextStore, body: dict[str, Any], *, actor_id: str | N
                     child["ref"] = node["ref"]
                 children.append(child)
             root.update(
-                subplans=children,
+                todos=children,
                 scope_paths=spec["root"]["scope_paths"],
                 memory_tags=spec["root"]["memory_tags"],
                 conversation_entries=appended_conversation_entries,

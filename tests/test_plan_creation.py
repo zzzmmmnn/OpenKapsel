@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sqlite3
 import tempfile
 import threading
@@ -33,7 +34,7 @@ class PlanCreationTests(unittest.TestCase):
         self.body = {
             "type": "plan", "taskname": "batch", "content": "Implement one feature",
             "scope_paths": ["src"], "memory_tags": ["feature"],
-            "subplans": [
+            "todos": [
                 {"ref": "code", "content": "Implement the code"},
                 {"ref": "tests", "content": "Test it", "taskname": "batch-tests"},
                 {"content": "Review the result"},
@@ -72,7 +73,7 @@ class PlanCreationTests(unittest.TestCase):
         self.assertEqual(4, self.count())
         self.assertNotIn("request_id", result)
         self.assertIsNone(result["plan_id"])
-        children = result["subplans"]
+        children = result["todos"]
         self.assertEqual([0, 1, 2], [c["index"] for c in children])
         self.assertEqual(["batch", "batch-tests", "batch"], [c["taskname"] for c in children])
         self.assertEqual(["code", "tests", None], [c.get("ref") for c in children])
@@ -92,15 +93,46 @@ class PlanCreationTests(unittest.TestCase):
         result = self.create(body)
         self.assertEqual(parent, result["plan_id"])
         self.assertEqual(5, len(self.store.plan_tree(parent)["plans"]))
-        with self.assertRaisesRegex(ValueError, "root plan creation requires subplans"):
+        with self.assertRaisesRegex(ValueError, "root plan creation requires todos"):
             self.create({"content": "Missing list", "taskname": "single"})
         one = self.create({
             "content": "Singleton",
             "taskname": "single",
-            "subplans": [],
+            "todos": [],
         })
-        self.assertEqual([], one["subplans"])
+        self.assertEqual([], one["todos"])
         self.assertEqual(6, self.count())
+
+    def test_old_subplans_argument_is_rejected_instead_of_ignored(self):
+        for extra in ({"subplans": []}, {"subplans": [{"content": "Old child"}]}):
+            for parent in (None, self.store.add("plan", "Existing parent", taskname="older")):
+                payload = dict(self.body, **extra)
+                payload.pop("todos")
+                if parent is not None:
+                    payload["plan_id"] = parent
+                with self.assertRaisesRegex(ValueError, "subplans was renamed to todos"):
+                    self.create(payload)
+
+    def test_pre_rename_persisted_receipt_replays_with_todos(self):
+        body = dict(self.body, request_id="legacy-todos-receipt")
+        first = self.create(body)
+        with closing(self.store._connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT response_json FROM context_plan_requests WHERE actor_id = ? AND request_id = ?",
+                ("actor-a", body["request_id"]),
+            ).fetchone()
+            receipt = json.loads(row["response_json"])
+            receipt["subplans"] = receipt.pop("todos")
+            connection.execute(
+                "UPDATE context_plan_requests SET response_json = ? WHERE actor_id = ? AND request_id = ?",
+                (json.dumps(receipt), "actor-a", body["request_id"]),
+            )
+        replayed = self.create(body)
+        self.assertTrue(replayed["replayed"])
+        self.assertNotIn("subplans", replayed)
+        self.assertEqual(first["todos"], replayed["todos"])
+        self.assertEqual(first["id"], replayed["id"])
+        self.assertEqual(4, self.count())
 
     def test_plan_creation_rejects_any_explicit_status(self):
         for status in ("in_progress", "completed", "cancelled", None):
@@ -121,14 +153,14 @@ class PlanCreationTests(unittest.TestCase):
                     "content": "Child",
                     "plan_id": parent,
                     "status": status,
-                    "subplans": [],
+                    "todos": [],
                 })
 
         for status in ("in_progress", "completed", "cancelled", None):
             with self.subTest(kind="atomic-subplan", status=status), self.assertRaisesRegex(
-                ValueError, r"subplans\[0\] does not accept status"
+                ValueError, r"todos\[0\] does not accept status"
             ):
-                self.create(dict(self.body, subplans=[{"content": "Child", "status": status}]))
+                self.create(dict(self.body, todos=[{"content": "Child", "status": status}]))
 
     def test_subplan_creation_requires_in_progress_parent_and_root(self):
         root = self.store.add("plan", "Active root", taskname="root")
@@ -143,10 +175,10 @@ class PlanCreationTests(unittest.TestCase):
             "taskname": "nested",
             "content": "Nested while root is active",
             "plan_id": child,
-            "subplans": [{"content": "Nested child"}],
+            "todos": [{"content": "Nested child"}],
         })
         self.assertEqual("in_progress", created["status"])
-        self.assertEqual(["in_progress"], [item["status"] for item in created["subplans"]])
+        self.assertEqual(["in_progress"], [item["status"] for item in created["todos"]])
 
         current = self.store.query(entry_id=root)[0][0]
         self.store.update_plan(
@@ -164,13 +196,13 @@ class PlanCreationTests(unittest.TestCase):
                     "taskname": "blocked",
                     "content": "Must not be created",
                     "plan_id": parent,
-                    "subplans": [],
+                    "todos": [],
                 })
 
     def test_invalid_children_metadata_and_payload_are_all_or_nothing(self):
         malformed = [None, {}, ["child"], [{"content": " "}], [{"content": "x", "taskname": "x" * 33}],
                      [{"content": "x", "status": []}], [{"content": "x", "ref": ""}],
-                     [{"content": "x", "plan_id": 10}], [{"content": "x", "subplans": []}],
+                     [{"content": "x", "plan_id": 10}], [{"content": "x", "todos": []}],
                      [{"content": "x", "ref": "same"}, {"content": "y", "ref": "same"}],
                      [{"content": "x", "scope_paths": ["../escape"]}],
                      [{"content": "x", "memory_tags": [None]}],
@@ -180,12 +212,12 @@ class PlanCreationTests(unittest.TestCase):
         for children in malformed:
             with self.subTest(children=str(children)[:100]):
                 with self.assertRaises(ValueError):
-                    self.create(dict(self.body, subplans=children))
+                    self.create(dict(self.body, todos=children))
                 self.assertEqual(0, self.count())
-        oversized = dict(self.body, subplans=[{"content": "x" * 32768}] * 9)
+        oversized = dict(self.body, todos=[{"content": "x" * 32768}] * 9)
         with self.assertRaisesRegex(ValueError, "combined"):
             self.create(oversized)
-        invalid_union = dict(self.body, subplans=[{"content": str(i), "memory_tags": ["tag" + str(i)]} for i in range(32)])
+        invalid_union = dict(self.body, todos=[{"content": str(i), "memory_tags": ["tag" + str(i)]} for i in range(32)])
         with self.assertRaises(ValueError):
             self.create(invalid_union)
         self.assertEqual(0, self.count())
@@ -238,11 +270,11 @@ class PlanCreationTests(unittest.TestCase):
 
     def test_same_key_conflicts_on_changed_children_refs_scope_or_parent(self):
         first = self.create(dict(self.body, request_id="retry-conflict"))
-        changes = [{"content": "Changed root"}, {"taskname": "other"}, {"subplans": []},
+        changes = [{"content": "Changed root"}, {"taskname": "other"}, {"todos": []},
                    {"scope_paths": ["other"]}, {"memory_tags": ["other"]}, {"plan_id": first["id"]}]
-        different_ref = copy.deepcopy(self.body["subplans"])
+        different_ref = copy.deepcopy(self.body["todos"])
         different_ref[0]["ref"] = "changed"
-        changes.append({"subplans": different_ref})
+        changes.append({"todos": different_ref})
         for change in changes:
             with self.subTest(change=change), self.assertRaises(PlanRequestConflict) as error:
                 self.create(dict(self.body, request_id="retry-conflict", **change))
@@ -254,7 +286,7 @@ class PlanCreationTests(unittest.TestCase):
         first = self.create(body)
         explicit = copy.deepcopy(body)
         explicit.update(plan_id=None)
-        explicit["subplans"][0].update(taskname="batch", scope_paths=[], memory_tags=[])
+        explicit["todos"][0].update(taskname="batch", scope_paths=[], memory_tags=[])
         replay = self.create(explicit)
         self.assertEqual(first["id"], replay["id"])
         self.assertTrue(replay["replayed"])
@@ -281,7 +313,7 @@ class PlanCreationTests(unittest.TestCase):
             results = list(executor.map(run, stores))
         self.assertEqual(1, sum(not r["replayed"] for r in results))
         self.assertEqual(1, len({r["id"] for r in results}))
-        self.assertEqual(1, len({tuple(c["id"] for c in r["subplans"]) for r in results}))
+        self.assertEqual(1, len({tuple(c["id"] for c in r["todos"]) for r in results}))
         self.assertEqual(4, self.count())
 
     def test_concurrent_changed_request_has_one_winner_and_one_conflict(self):
@@ -324,9 +356,9 @@ class PlanCreationTests(unittest.TestCase):
             self.assertEqual(4, self.count())
 
     def test_maximum_batch_returns_all_65_unique_plan_ids(self):
-        body = dict(self.body, subplans=[{"ref": f"part-{i}", "content": f"Part {i}"} for i in range(64)])
+        body = dict(self.body, todos=[{"ref": f"part-{i}", "content": f"Part {i}"} for i in range(64)])
         result = self.create(body)
-        ids = [result["id"], *(c["id"] for c in result["subplans"])]
+        ids = [result["id"], *(c["id"] for c in result["todos"])]
         self.assertEqual(65, len(set(ids)))
         self.assertEqual(65, self.count())
         self.assertEqual(65, len(self.store.plan_tree(result["id"])["plans"]))

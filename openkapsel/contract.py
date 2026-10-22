@@ -215,7 +215,7 @@ def plan_memory_tags_schema(*, description: str | None = None) -> dict[str, Any]
     return schema
 
 
-MAX_SUBPLANS = 64
+MAX_TODOS = 64
 MAX_PLAN_REQUEST_BYTES = 256 * 1024
 MAX_PLAN_REQUESTS = 100_000
 PLAN_REQUEST_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
@@ -225,15 +225,20 @@ PLAN_REF_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}"
 def plan_creation_properties() -> dict[str, Any]:
     """Return the shared Plan creation extension schema used by MCP and Discovery."""
     return {
-        "subplans": {
+        "todos": {
             "type": "array",
-            "maxItems": MAX_SUBPLANS,
+            "maxItems": MAX_TODOS,
             "description": (
-                "Direct child plans created atomically with this plan. Root Plan creation requires "
-                "this field; use [] when there are no direct children. It remains optional when "
-                "creating a Plan under an existing parent. Every created Plan starts in_progress; "
-                "status is not accepted. Children inherit taskname when omitted. No nested subplans "
-                "or child plan_id; use a later call with a parent ID for deeper levels."
+                "An ordered, actionable todo checklist for this Plan, not merely large project "
+                "milestones. For multi-step work, include concrete verifiable actions such as "
+                "read relevant code, implement changes, add tests, and run verification. Each "
+                "todo becomes a direct child Plan with its own status; complete or cancel it "
+                "using the regular Plan update/complete API and a debrief. Root Plan creation "
+                "requires this field; use [] for work "
+                "without meaningful separate steps. Optional under an existing parent. "
+                "Todos are created atomically; all start in_progress, status is not accepted, "
+                "and taskname inherits when omitted. No nested todos or child plan_id; "
+                "create deeper steps later using the existing parent ID."
             ),
             "items": {
                 "type": "object",
@@ -251,6 +256,7 @@ def plan_creation_properties() -> dict[str, Any]:
                         "type": "string",
                         "minLength": 1,
                         "maxLength": MAX_CONTEXT_CONTENT_CHARS,
+                        "description": "One specific, executable action with a clear completion or verification criterion; avoid vague milestones.",
                     },
                     "taskname": taskname_schema(),
                     "scope_paths": plan_scope_paths_schema(),

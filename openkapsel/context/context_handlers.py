@@ -25,8 +25,8 @@ class ContextCreationMixin:
                 related = self._related_memories(spec["hint_content"], spec["hint_paths"], spec["hint_tags"])
                 entry = store.create_plans(body, actor_id=self.token_record.actor_id)
             else:
-                if "subplans" in body or "request_id" in body:
-                    raise ValueError("subplans and request_id are supported only for type=plan")
+                if "todos" in body or "subplans" in body or "request_id" in body:
+                    raise ValueError("todos and request_id are supported only for type=plan")
                 if body.get("plan_id") is None:
                     raise ValueError("notes must reference a plan_id")
                 plan_id = self._parse_operation_plan_id(body["plan_id"], required=True)
@@ -54,7 +54,7 @@ class ContextCreationMixin:
         if entry_type == "plan":
             entry["related_memory"] = related
             # Hints are live advisory data, not part of the persisted creation
-            # receipt. Return them once, excluding this root and all subplans.
+            # receipt. Return them once, excluding this root and all todos.
             unfinished = store.unfinished_root_plan_hints(exclude_plan_id=entry["id"])
             entry["unfinished_root_plans"] = unfinished["plans"]
             entry["unfinished_root_plans_total"] = unfinished["total"]

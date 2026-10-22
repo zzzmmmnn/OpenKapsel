@@ -230,7 +230,7 @@ class MappingHTTPTests(unittest.TestCase):
                 "POST", base + "/context",
                 json.dumps({
                     "type": "plan",
-                    "subplans": [],
+                    "todos": [],
                     "taskname": "rpc",
                     "content": "RPC write test",
                     "conversation_id": conversation["conversation_id"],

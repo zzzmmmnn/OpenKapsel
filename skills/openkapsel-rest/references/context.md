@@ -65,6 +65,7 @@ POST /context
   "content": "Diagnose and correct preview loading.",
   "scope_paths": ["site"],
   "memory_tags": ["preview"],
+  "todos": [],
   "conversation_id": 123,
   "writer_nonce": "@a1B2@",
   "conversation_entries": [
@@ -77,9 +78,12 @@ Omit `plan_id` for a root Plan. Supply a parent Plan ID to create a sub-plan. Th
 
 Plans are hierarchical but not global locks. Independent agents may use different Plans or sub-plans concurrently.
 
-## Create a plan and direct subplans in one call
+## Create a Plan and its executable todo checklist
 
-First check `capabilities.context.plan_creation.atomic_subplans` in runtime
+For multi-step work, describe the overall outcome in the Plan and list concrete,
+verifiable actions as `todos` rather than only large milestones. A todo is stored
+as a child Plan; update/complete each step's Plan status as it is finished.
+First check `capabilities.context.plan_creation.atomic_todos` in runtime
 Discovery. Older REST servers may ignore unknown fields; do not assume an older
 server accepted a batch. MCP `context_add` and REST `POST /context` use the same
 fields and creation logic:
@@ -96,9 +100,10 @@ fields and creation logic:
   "conversation_entries": [
     {"role": "ai", "content": "AI is creating the feature Plan tree."}
   ],
-  "subplans": [
-    {"ref": "implementation", "content": "Implement the code."},
-    {"ref": "verification", "content": "Add regression tests.", "taskname": "feature-tests"}
+  "todos": [
+    {"ref": "inspect", "content": "Read relevant code and identify affected paths"},
+    {"ref": "implementation", "content": "Implement the change"},
+    {"ref": "verification", "content": "Add and run regression tests", "taskname": "feature-tests"}
   ]
 }
 ```
@@ -108,7 +113,11 @@ optional retry key, not a plan ID, credential, or JSON-RPC envelope ID. A UUID i
 suitable. It accepts 1-128 ASCII letters/digits/`.`/`_`/`:`/`-`, starting with a
 letter or digit.
 
-The response keeps the normal top-level plan `id` and adds compact `subplans` in
+For older REST callers only, `POST /context` still accepts the legacy `subplans`
+field instead of `todos`, but not both. MCP and Discovery use only `todos`;
+all responses use `todos`. New callers should always send `todos`.
+
+The response keeps the normal top-level plan `id` and adds compact `todos` in
 request order. Example IDs below are illustrative:
 
 ```json
@@ -119,9 +128,10 @@ request order. Example IDs below are illustrative:
   "plan_id": null,
   "request_id": "feature-20260921-01",
   "replayed": false,
-  "subplans": [
-    {"index": 0, "ref": "implementation", "id": 2001, "plan_id": 2000, "taskname": "feature", "status": "in_progress"},
-    {"index": 1, "ref": "verification", "id": 2002, "plan_id": 2000, "taskname": "feature-tests", "status": "in_progress"}
+  "todos": [
+    {"index": 0, "ref": "inspect", "id": 2001, "plan_id": 2000, "taskname": "feature", "status": "in_progress"},
+    {"index": 1, "ref": "implementation", "id": 2002, "plan_id": 2000, "taskname": "feature", "status": "in_progress"},
+    {"index": 2, "ref": "verification", "id": 2003, "plan_id": 2000, "taskname": "feature-tests", "status": "in_progress"}
   ]
 }
 ```
@@ -132,19 +142,21 @@ root nor any children. Use each returned child ID directly as `plan_id` on later
 operations. Children remain ordinary, independently updateable plans; creating
 or completing the parent does not run or automatically complete its children.
 
-`subplans` accepts at most 64 **direct** children. Every child requires `content`;
-`taskname` inherits from the newly created parent when omitted. Optional `status`
-defaults independently to `in_progress`. Optional unique `ref` labels are echoed
+`todos` accepts at most 64 **direct** children. Every child requires `content`;
+`taskname` inherits from the newly created parent when omitted. Todo status
+starts as `in_progress`; supplying `status` during creation is rejected. Each
+todo must be explicitly updated to `completed` (or `cancelled`) when finished.
+Optional unique `ref` labels are echoed
 with the assigned IDs (1-64 characters, the same ASCII character set as
 `request_id`). Refs are request-local, not globally unique identifiers. Optional
 `scope_paths` and `memory_tags` are accepted on children. Child metadata is stored
 in its Context `request` field, so refs can also be recovered using the Plan tree.
 
-Nested `subplans`, child `plan_id`, and arbitrary child fields are rejected.
+Nested `todos`, child `plan_id`, and arbitrary child fields are rejected.
 For deeper levels, a later call may supply an existing parent `plan_id`, thereby
 creating a new sub-plan with its own direct children. Root Plan creation requires
-`subplans`; use `[]` when there are no direct children. Sub-plan creation under
-an existing parent may omit `subplans`. Notes do not accept `subplans` or
+`todos`; use `[]` when there are no direct children. Sub-plan creation under
+an existing parent may omit `todos`. Notes do not accept `todos` or
 `request_id`.
 
 Content and taskname retain their existing per-entry limits. The combined
@@ -190,15 +202,20 @@ Ordinary reads should omit Context parameters. To intentionally record a read, p
 
 `GET /context/plans/<plan_id>/tree?max_depth=8&limit=200` returns flat depth-annotated Plans plus operations and Notes attached to them. Rebuild hierarchy from each record's `id` and `plan_id`. Observe truncation fields.
 
-`PATCH /context/plans/<id>` requires `taskname` and the current positive `expected_revision`, then accepts optional replacement `content`, optional `plan_id` (`null` moves to root), and optional `status`: `in_progress`, `completed`, or `cancelled`. Every successful update increments `revision`; stale revisions fail with HTTP 412. Parent cycles and self-parenting are rejected.
+`PATCH /context/plans/<id>` requires `taskname` and the current positive `expected_revision`, then accepts optional replacement `content` and `status`: `in_progress`, `completed`, or `cancelled`. Plan parentage is immutable; updates cannot change `plan_id`. Every successful update increments `revision`; stale revisions fail with HTTP 412.
 
-Completing a Plan requires:
+**Complete a todo using exactly the same Plan endpoint**, substituting its child Plan ID for `<id>` (or use MCP `context_plan_update` with `id` set to the todo ID). After each step finishes, mark it `completed`, or `cancelled` if intentionally abandoned; finish every todo before completing the parent Plan. Todo completion has the same Conversation and debrief requirements as any Plan completion; use empty `debrief.items` when no durable finding merits Memory.
+
+Completing a Plan or todo requires:
 
 ```json
 {
   "taskname": "fix-preview",
   "expected_revision": 1,
   "status": "completed",
+  "conversation_id": 123,
+  "writer_nonce": "@a1B2@",
+  "conversation_entries": [{"role": "ai", "content": "Completed and verified the requested step."}],
   "debrief": {
     "items": [
       {

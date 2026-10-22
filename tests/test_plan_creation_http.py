@@ -41,7 +41,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
             "conversation_entries": [
                 {"role": "ai", "content": "AI creates this feature Plan batch."}
             ],
-            "subplans": [
+            "todos": [
                 {"ref": "code", "content": "Implement", "scope_paths": ["src"]},
                 {"ref": "tests", "content": "Verify", "memory_tags": ["tests"]},
             ],
@@ -82,16 +82,83 @@ class PlanCreationHTTPTests(unittest.TestCase):
         lookup.assert_called_once()
         self.assertEqual([related["memory_id"]], [m["memory_id"] for m in created["related_memory"]])
         self.assertEqual([previous], [p["id"] for p in created["unfinished_root_plans"]])
-        self.assertEqual(2, len(created["subplans"]))
-        self.assertTrue(all("related_memory" not in c and "content" not in c for c in created["subplans"]))
+        self.assertEqual(2, len(created["todos"]))
+        self.assertTrue(all("related_memory" not in c and "content" not in c for c in created["todos"]))
         status, tree = self.rest("GET", f'/context/plans/{created["id"]}/tree')
         self.assertEqual(200, status)
         self.assertEqual([0, 1, 1], [p["depth"] for p in tree["plans"]])
-        child = created["subplans"][0]["id"]
+        child = created["todos"][0]["id"]
         status, written = self.rest("POST", "/fs/write/mutate", {"items": [{"op": "file.create", "path": "batch.txt", "content": "works"}], "plan_id": child, "taskname": "feature", "message": "Use the returned child ID"})
         self.assertEqual(200, status, written)
         status, tree = self.rest("GET", f'/context/plans/{created["id"]}/tree')
         self.assertTrue(any(e["plan_id"] == child and e["type"] == "operation" for e in tree["entries"]))
+
+    def test_rest_legacy_subplans_alias_replays_as_todos_across_protocols(self):
+        legacy = dict(self.body, request_id="legacy-rest-alias")
+        legacy["subplans"] = legacy.pop("todos")
+        status, created = self.rest("POST", "/context", legacy)
+        self.assertEqual(201, status, created)
+        self.assertEqual(["code", "tests"], [item["ref"] for item in created["todos"]])
+        self.assertNotIn("subplans", created)
+        modern = dict(self.body, request_id="legacy-rest-alias")
+        status, replay = self.rest("POST", "/context", modern)
+        self.assertEqual(200, status, replay)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(created["todos"], replay["todos"])
+        status, rpc = self.mcp_call("tools/call", {"name": "context_add", "arguments": modern})
+        self.assertEqual(200, status, rpc)
+        self.assertFalse(rpc["result"]["isError"], rpc)
+        self.assertTrue(rpc["result"]["structuredContent"]["replayed"])
+        self.assertEqual(created["id"], rpc["result"]["structuredContent"]["id"])
+        self.assertEqual(3, self.count())
+
+    def test_rest_rejects_both_todo_names_and_mcp_rejects_legacy_field(self):
+        for old_value in ([], [{"content": "Legacy step"}], None):
+            with self.subTest(old_value=old_value):
+                both = dict(self.body, subplans=old_value)
+                status, error = self.rest("POST", "/context", both)
+                self.assertEqual(400, status, error)
+                self.assertEqual("invalid_context_entry", error["error"]["code"])
+                self.assertIn("either todos or subplans", error["error"]["message"])
+                self.assertEqual(0, self.count())
+        old = dict(self.body)
+        old["subplans"] = old.pop("todos")
+        status, rpc = self.mcp_call("tools/call", {"name": "context_add", "arguments": old})
+        self.assertEqual(200, status, rpc)
+        if "error" in rpc:
+            self.assertEqual(-32602, rpc["error"]["code"])
+        else:
+            self.assertTrue(rpc["result"]["isError"], rpc)
+        self.assertEqual(0, self.count())
+
+    def test_rest_and_mcp_complete_todos_through_normal_plan_update(self):
+        status, created = self.rest("POST", "/context", self.body)
+        self.assertEqual(201, status, created)
+        self.assertEqual(2, len(created["todos"]))
+        finish = {
+            "taskname": "feature", "expected_revision": 1, "status": "completed",
+            "conversation_id": self.conversation_id, "writer_nonce": self.writer_nonce,
+            "conversation_entries": [{"role": "ai", "content": "Verified todo step."}],
+            "debrief": {"items": [], "outcome": "succeeded", "memory_actions": [],
+                        "memory_feedback": [], "memory_conflicts": []},
+        }
+        status, root_error = self.rest("PATCH", f"/context/plans/{created['id']}", finish)
+        self.assertEqual(400, status, root_error)
+        first, second = (node["id"] for node in created["todos"])
+        status, completed = self.rest("PATCH", f"/context/plans/{first}", finish)
+        self.assertEqual(200, status, completed)
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual(first, completed["id"])
+        self.assertEqual(2, completed["revision"])
+        status, rpc = self.mcp_call("tools/call", {
+            "name": "context_plan_update", "arguments": dict(finish, id=second),
+        })
+        self.assertEqual(200, status, rpc)
+        self.assertFalse(rpc["result"]["isError"], rpc)
+        self.assertEqual("completed", rpc["result"]["structuredContent"]["status"])
+        status, root = self.rest("PATCH", f"/context/plans/{created['id']}", finish)
+        self.assertEqual(200, status, root)
+        self.assertEqual("completed", root["status"])
 
     def test_rest_and_mcp_share_retry_ids_without_repeating_creations(self):
         body = dict(self.body, request_id="cross-protocol")
@@ -107,7 +174,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         result = rpc["result"]["structuredContent"]
         self.assertTrue(result["replayed"])
         self.assertEqual(first["id"], result["id"])
-        self.assertEqual(first["subplans"], result["subplans"])
+        self.assertEqual(first["todos"], result["todos"])
         self.assertEqual(3, self.count())
         status, bad = self.rest("POST", "/context", dict(body, content="Different"))
         self.assertEqual(409, status, bad)
@@ -136,7 +203,7 @@ class PlanCreationHTTPTests(unittest.TestCase):
         self.assertEqual(200, status, replay)
         self.assertTrue(replay["replayed"])
         self.assertEqual(receipts[0]["id"], replay["id"])
-        self.assertEqual(receipts[0]["subplans"], replay["subplans"])
+        self.assertEqual(receipts[0]["todos"], replay["todos"])
         self.assertEqual(3, self.count())
 
     def test_retry_survives_control_credential_rotation(self):
@@ -157,18 +224,18 @@ class PlanCreationHTTPTests(unittest.TestCase):
         status, reply = self.mcp_call("tools/call", {"name": "context_add", "arguments": self.body})
         self.assertEqual(200, status, reply)
         result = reply["result"]["structuredContent"]
-        self.assertEqual(["code", "tests"], [c["ref"] for c in result["subplans"]])
-        self.assertEqual(["feature", "feature"], [c["taskname"] for c in result["subplans"]])
+        self.assertEqual(["code", "tests"], [c["ref"] for c in result["todos"]])
+        self.assertEqual(["feature", "feature"], [c["taskname"] for c in result["todos"]])
         count = self.count()
-        for child in ("not-an-object", {"content": "x", "plan_id": result["id"]}, {"content": "x", "subplans": []}, {"content": " "}):
-            status, reply = self.mcp_call("tools/call", {"name": "context_add", "arguments": dict(self.body, subplans=[child])})
+        for child in ("not-an-object", {"content": "x", "plan_id": result["id"]}, {"content": "x", "todos": []}, {"content": " "}):
+            status, reply = self.mcp_call("tools/call", {"name": "context_add", "arguments": dict(self.body, todos=[child])})
             self.assertTrue(reply["result"]["isError"], reply)
             self.assertEqual(count, self.count())
 
     def test_plan_explicit_status_is_rejected_by_rest_and_mcp(self):
         bodies = [
             dict(self.body, status="completed"),
-            dict(self.body, subplans=[{"content": "Child", "status": "cancelled"}]),
+            dict(self.body, todos=[{"content": "Child", "status": "cancelled"}]),
         ]
         for index, body in enumerate(bodies):
             with self.subTest(protocol="rest", case=index):
@@ -194,8 +261,8 @@ class PlanCreationHTTPTests(unittest.TestCase):
 
     def test_all_invalid_metadata_fails_before_any_plan_is_inserted(self):
         for fields in ({"scope_paths": ["/outside"]}, {"memory_tags": [None]},
-                       {"subplans": [{"content": "valid"}, {"content": "invalid", "taskname": "x" * 33}]},
-                       {"subplans": None}, {"request_id": None}):
+                       {"todos": [{"content": "valid"}, {"content": "invalid", "taskname": "x" * 33}]},
+                       {"todos": None}, {"request_id": None}):
             status, error = self.rest("POST", "/context", dict(self.body, **fields))
             self.assertEqual(400, status, error)
             self.assertEqual(0, self.count())
@@ -213,14 +280,14 @@ class PlanCreationHTTPTests(unittest.TestCase):
         status, created = self.rest("POST", "/context", self.body)
         self.assertEqual(201, status, created)
         note = {"type": "note", "content": "A note", "taskname": "feature", "plan_id": created["id"]}
-        for extra in ({"subplans": []}, {"request_id": "notes-not-supported"}):
+        for extra in ({"todos": []}, {"request_id": "notes-not-supported"}):
             status, denied = self.rest("POST", "/context", dict(note, **extra))
             self.assertEqual(400, status, denied)
         self.assertEqual(3, self.count())
         status, saved = self.rest("POST", "/context", note)
         self.assertEqual(201, status, saved)
         self.assertEqual("note", saved["type"])
-        self.assertNotIn("subplans", saved)
+        self.assertNotIn("todos", saved)
         singleton_body = {
             "type": "plan",
             "taskname": "singleton",
@@ -233,21 +300,21 @@ class PlanCreationHTTPTests(unittest.TestCase):
         }
         status, missing = self.rest("POST", "/context", singleton_body)
         self.assertEqual(400, status, missing)
-        self.assertIn("root plan creation requires subplans", missing["error"]["message"])
+        self.assertIn("root plan creation requires todos", missing["error"]["message"])
 
         status, singleton = self.rest(
             "POST",
             "/context",
-            dict(singleton_body, subplans=[]),
+            dict(singleton_body, todos=[]),
         )
         self.assertEqual(201, status, singleton)
-        self.assertEqual([], singleton["subplans"])
+        self.assertEqual([], singleton["todos"])
         self.assertNotIn("replayed", singleton)
 
     def test_completed_plan_is_immutable_over_rest_and_mcp(self):
         # A terminal Plan cannot be reopened, edited, or cancelled through
         # either public adapter. Its existing completion debrief is preserved.
-        status, created = self.rest("POST", "/context", dict(self.body, subplans=[]))
+        status, created = self.rest("POST", "/context", dict(self.body, todos=[]))
         self.assertEqual(201, status, created)
         finish = {
             "taskname": "feature",
@@ -295,8 +362,11 @@ class PlanCreationHTTPTests(unittest.TestCase):
         status, discovery = self.rest("GET", "/discovery/context")
         self.assertEqual(200, status, discovery)
         creation = discovery["capabilities"]["context"]["plan_creation"]
-        self.assertTrue(creation["atomic_subplans"])
-        self.assertEqual(64, creation["max_direct_subplans"])
+        self.assertIn("context_plan_update", creation["todo_completion"])
+        self.assertIn("PATCH /context/plans/<todo_id>", creation["todo_completion"])
+        self.assertIn("debrief", creation["todo_completion"])
+        self.assertTrue(creation["atomic_todos"])
+        self.assertEqual(64, creation["max_direct_todos"])
         self.assertTrue(creation["creation_status_must_be_omitted"])
         self.assertEqual("in_progress", creation["creation_status_initial"])
         self.assertTrue(creation["subplan_root_immutable"])
@@ -317,9 +387,13 @@ class PlanCreationHTTPTests(unittest.TestCase):
                 extension = copy.deepcopy(extension)
                 extension["items"]["properties"]["content"].pop("description", None)
             self.assertEqual(extension, schema[name])
-        self.assertFalse(schema["subplans"]["items"]["additionalProperties"])
-        self.assertEqual(["content"], schema["subplans"]["items"]["required"])
-        self.assertNotIn("status", schema["subplans"]["items"]["properties"])
+        self.assertNotIn("subplans", schema)
+        self.assertNotIn('"subplans"', json.dumps(discovery, ensure_ascii=False))
+        self.assertIn("actionable todo checklist", schema["todos"]["description"])
+        self.assertIn("executable action", schema["todos"]["items"]["properties"]["content"]["description"])
+        self.assertFalse(schema["todos"]["items"]["additionalProperties"])
+        self.assertEqual(["content"], schema["todos"]["items"]["required"])
+        self.assertNotIn("status", schema["todos"]["items"]["properties"])
         self.assertFalse(tool["annotations"]["idempotentHint"])
 
 

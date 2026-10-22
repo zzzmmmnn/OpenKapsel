@@ -1639,7 +1639,7 @@ class CapabilityHTTPTests(unittest.TestCase):
         # Plan identity determines the scope even when a valid foreign nonce/ID is sent.
         self.assertEqual(403, self.approved(writer_nonce=other["writer_nonce"], conversation_id=other["conversation_id"])[0])
         status, _, raw = self.request("POST", self.base + "/context", json.dumps({
-            "type": "plan", "subplans": [], "taskname": "new owner", "content": "New conversation plan",
+            "type": "plan", "todos": [], "taskname": "new owner", "content": "New conversation plan",
             "conversation_id": other["conversation_id"], "writer_nonce": other["writer_nonce"],
             "conversation_entries": [{"role": "ai", "content": "Create another conversation's plan"}],
         }), self.headers)

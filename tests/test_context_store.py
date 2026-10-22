@@ -127,7 +127,7 @@ class ContextStoreTests(unittest.TestCase):
             self.assertEqual(historical, store.query(entry_id=plan)[0][0])
             self.assertEqual("succeeded", store.plan_debrief(plan)["outcome"])
 
-    def test_closed_plan_cannot_own_mutations_notes_or_new_subplans(self) -> None:
+    def test_closed_plan_cannot_own_mutations_notes_or_new_todos(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = ContextStore(Path(raw))
             root = store.add("plan", "Root", taskname="closed-plan")
@@ -167,7 +167,7 @@ class ContextStoreTests(unittest.TestCase):
             )
             self.assertGreater(read_id, 0)
 
-    def test_unfinished_root_plan_hints_are_compact_and_exclude_subplans(self) -> None:
+    def test_unfinished_root_plan_hints_are_compact_and_exclude_todos(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch(
             "openkapsel.context.context_store.MAX_UNFINISHED_ROOT_PLAN_HINTS", 1
         ), patch("openkapsel.context.context_store.MAX_PLAN_HINT_CONTENT_CHARS", 8):

@@ -42,7 +42,7 @@ class MappingFileHTTPTests(unittest.TestCase):
             self.base + "/context",
             json.dumps({
                 "type": "plan",
-                "subplans": [],
+                "todos": [],
                 "taskname": "rpc",
                 "content": "Test file RPC",
                 "conversation_id": conversation["conversation_id"],
