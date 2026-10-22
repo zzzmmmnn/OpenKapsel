@@ -104,11 +104,16 @@ class OAuthHandlersMixin(OAuthConsentMixin):
                     "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
                     "code_challenge_methods_supported": ["S256"], "scopes_supported": [SCOPE],
                     "client_id_metadata_document_supported": False,
+                    # Optional branding hint; OAuth AS metadata does not mandate
+                    # that clients render this extension.
+                    "logo_uri": self._public_base_url() + "/favicon.png",
                     "openkapsel_consent": consent_metadata(),
                 })
             elif method in {"GET", "HEAD"} and action == "resource":
                 self._discard_request_body()
                 self._send_json(200, {"resource": resource, "authorization_servers": [base],
+                                      "resource_name": self.server.config.name,
+                                      "logo_uri": self._public_base_url() + "/favicon.png",
                                       "scopes_supported": [SCOPE], "bearer_methods_supported": ["header"]})
             elif method == "POST" and action == "register":
                 self._send_json(201, self.server.oauth.register(cid, self._read_json()))

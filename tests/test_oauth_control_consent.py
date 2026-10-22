@@ -73,6 +73,11 @@ class ControlConsentHTTPTests(unittest.TestCase):
                 "GET", pending["location"], headers={"Cookie": pending["cookie"]})
             self.assertEqual(200, status, page)
             self.assertIn(b'name="csrf"', page)
+            self.assertIn(b'<link rel="icon" type="image/png" href="../../favicon.png">', page)
+            status, image_headers, png = self.request("GET", "/kapsel/favicon.png")
+            self.assertEqual(200, status)
+            self.assertEqual("image/png", image_headers["Content-Type"])
+            self.assertTrue(png.startswith(bytes([0x89, 0x50, 0x4E, 0x47])))
             legacy = "/kapsel/admin/oauth/approve?request=" + pending["rid"]
             status, headers, _ = self.request("GET", legacy)
             self.assertEqual(303, status)

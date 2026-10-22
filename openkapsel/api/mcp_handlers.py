@@ -154,15 +154,25 @@ class McpHandlersMixin:
         if not isinstance(client_info, dict) or not isinstance(capabilities, dict):
             raise McpError(-32602, "initialize requires object clientInfo and capabilities")
         negotiated = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSION
+        server_info = {
+            "name": "OpenKapsel",
+            "title": self.server.config.name,
+            "version": PUBLIC_SERVER_VERSION,
+            "description": "Token-scoped filesystem, recycle bin, and asynchronous shell tools",
+        }
+        # Icons are an MCP 2025-11-25 feature. Use the configured public origin,
+        # never the untrusted request Host, so clients cannot be sent to a
+        # third-party tracking endpoint for their branding image.
+        if negotiated == "2025-11-25" and self.server.config.public_base_url:
+            icon_base = self.server.config.public_base_url.rstrip("/") + self.server.config.url_base_path
+            server_info["icons"] = [
+                {"src": icon_base + "/favicon.png", "mimeType": "image/png", "sizes": ["256x256"]},
+                {"src": icon_base + "/favicon.svg", "mimeType": "image/svg+xml", "sizes": ["any"]},
+            ]
         return {
             "protocolVersion": negotiated,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {
-                "name": "OpenKapsel",
-                "title": self.server.config.name,
-                "version": PUBLIC_SERVER_VERSION,
-                "description": "Token-scoped filesystem, recycle bin, and asynchronous shell tools",
-            },
+            "serverInfo": server_info,
             "instructions": (
                 "File paths are workspace-relative unless the selected tool accepts an authorized absolute path. "
                 "On first use of a workspace, query the most recent Conversation context first and use it to restore recent user/AI context before planning or modifying anything. "

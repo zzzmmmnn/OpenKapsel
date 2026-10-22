@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlsplit
 from openkapsel.auth.admin_ui import render_discovery, render_http_error
 from openkapsel.auth.tokens import CredentialRenewalNotDue
 from openkapsel.errors import ApiError
-from openkapsel.web_assets import builtin_favicon_etag, builtin_favicon_svg
+from openkapsel.web_assets import builtin_favicon, builtin_favicon_asset_etag
 from openkapsel.routes import EndpointSpec, match_endpoint
 
 LOGGER = __import__("logging").getLogger("openkapsel")
@@ -37,9 +37,9 @@ class RequestDispatchMixin:
         """Avoid exposing the Python runtime and stdlib HTTP server versions."""
         return "OpenKapsel"
 
-    def _send_builtin_favicon(self, *, head_only: bool = False) -> None:
-        data = builtin_favicon_svg()
-        etag = builtin_favicon_etag()
+    def _send_builtin_favicon(self, name: str = "favicon.svg", *, head_only: bool = False) -> None:
+        data = builtin_favicon(name)
+        etag = builtin_favicon_asset_etag(name)
         if self.headers.get("If-None-Match") == etag:
             self.send_response(HTTPStatus.NOT_MODIFIED)
             self.send_header("ETag", etag)
@@ -47,7 +47,9 @@ class RequestDispatchMixin:
             self.end_headers()
             return
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        content_type = {"favicon.svg": "image/svg+xml; charset=utf-8",
+                        "favicon.ico": "image/x-icon", "favicon.png": "image/png"}[name]
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache")
@@ -149,13 +151,14 @@ class RequestDispatchMixin:
                         "response_mode must appear once with value envelope",
                     )
                 self._response_mode_envelope = response_modes == ["envelope"] and method != "HEAD"
-            if (
-                self.server.config.admin_enabled
-                and method in {"GET", "HEAD"}
-                and request_path == "/favicon.svg"
-            ):
+            # MCP/OAuth branding must be fetchable without credentials even
+            # when the administrator console is disabled. Never claim the
+            # shared domain root favicon; only serve our configured prefix.
+            if method in {"GET", "HEAD"} and request_path in {
+                "/favicon.svg", "/favicon.ico", "/favicon.png"
+            }:
                 self._discard_request_body()
-                self._send_builtin_favicon(head_only=method == "HEAD")
+                self._send_builtin_favicon(request_path[1:], head_only=method == "HEAD")
                 return
             if request_path.startswith("/mapping-connect/"):
                 self._handle_mapping_provider(method, request_path)

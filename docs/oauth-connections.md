@@ -20,6 +20,12 @@ The dashboard shows the comment, pinned workspace, creation/authorization timest
 
 Connections are grouped by project directory. Edit a connection's comment or select another active child-workspace configuration without changing its URL, client registration, or existing access/refresh grant. The new workspace and permissions apply on the next request. Clients without OAuth support can use independently expiring [static MCP connections](static-mcp-connections.md).
 
+## Project icon in MCP clients
+
+OpenKapsel advertises its bundled project icon as `serverInfo.icons` in MCP `initialize` when the negotiated protocol is `2025-11-25` and `public_base_url` is configured. OAuth authorization-server and protected-resource metadata also provide an optional `logo_uri` extension. The PNG icon is served without authentication at `<public_base_url><url_base_path>/favicon.png` (with `.svg` and `.ico` alternatives), independently of the administrator console. OAuth consent pages link to this image.
+
+This does **not** replace the favicon of a shared website at `/favicon.ico`. In particular, clients that ignore MCP `serverInfo.icons` and OAuth branding metadata can still show the icon of a different application on the same hostname. Claude custom connectors have historically not consistently rendered server-supplied icons. If a client only uses the hostname favicon, a dedicated hostname for OpenKapsel is needed to separate the icon from the other site.
+
 ## Permissions and lifetime
 
 Connections refer to the stable `app_id` of a token configuration and pin its workspace directory. Current permissions, workspace expiry, sandbox and network policies remain authoritative on every call. Disabling/deleting the configuration or changing its directory blocks the connection. Read/control credential expiration and renewal do not invalidate OAuth credentials.

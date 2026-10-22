@@ -208,6 +208,60 @@ class OAuthHTTPTests(unittest.TestCase):
         status, _, raw = self.request("POST", self.mcp, json.dumps(message), {"Content-Type": "application/json", "Authorization": "Bearer " + token})
         return status, json.loads(raw)
 
+    def test_project_icon_is_advertised_by_oauth_and_mcp(self):
+        icon = "https://example.test/kapsel/favicon.png"
+        for path in (
+            self.prefix + "/resource",
+            "/.well-known/oauth-protected-resource" + self.mcp,
+            "/.well-known/oauth-authorization-server" + self.prefix,
+        ):
+            with self.subTest(path=path):
+                status, _, raw = self.request("GET", path, headers={"Host": "dns-exit.test"})
+                self.assertEqual(200, status, raw)
+                metadata = json.loads(raw)
+                self.assertEqual(icon, metadata["logo_uri"])
+                self.assertNotIn("dns-exit.test", raw.decode())
+
+        for ext, mime, signature in (
+            ("png", "image/png", b"\x89PNG\r\n\x1a\n"),
+            ("ico", "image/x-icon", b"\x00\x00\x01\x00"),
+            ("svg", "image/svg+xml", b"<svg"),
+        ):
+            with self.subTest(ext=ext):
+                path = "/kapsel/favicon." + ext
+                status, headers, content = self.request("GET", path)
+                self.assertEqual(200, status)
+                self.assertIn(mime, headers["Content-Type"])
+                self.assertTrue(content.lstrip().startswith(signature))
+                self.assertEqual("nosniff", headers["X-Content-Type-Options"])
+                status, _, head = self.request("HEAD", path)
+                self.assertEqual(200, status)
+                self.assertEqual(b"", head)
+                status, _, cached = self.request(
+                    "GET", path, headers={"If-None-Match": headers["ETag"]}
+                )
+                self.assertEqual(304, status)
+                self.assertEqual(b"", cached)
+
+        token, _, _ = self.authorize()
+        status, payload = self.rpc(token["access_token"], "initialize", {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"},
+        })
+        self.assertEqual(200, status)
+        self.assertEqual([
+            {"src": icon, "mimeType": "image/png", "sizes": ["256x256"]},
+            {"src": "https://example.test/kapsel/favicon.svg",
+             "mimeType": "image/svg+xml", "sizes": ["any"]},
+        ], payload["result"]["serverInfo"]["icons"])
+
+        status, payload = self.rpc(token["access_token"], "initialize", {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"},
+        })
+        self.assertEqual(200, status)
+        self.assertNotIn("icons", payload["result"]["serverInfo"])
+
     def test_discovery_and_full_flow_survive_credential_renewal(self):
         status, headers, _ = self.request("POST", self.mcp, "{}", {"Content-Type": "application/json"})
         self.assertEqual(401, status)
