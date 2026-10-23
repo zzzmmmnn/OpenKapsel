@@ -243,7 +243,7 @@ search and recursive manifests require the corresponding client capabilities;
 text codecs and exact newline preservation require file RPC version 3. Transactional multi-file mutation and dedicated large-file range read/equal-length replace require file RPC version 4.
 
 Binary downloads, static Web Preview, direct uploads, resumable upload commits,
-shared snapshots/imports, cross-root copies/moves, and mixed-root batches use a
+cross-root copies/moves and mixed-root batches use a
 common guarded local/RPC backend. Root listings merge registered mappings without
 opening native mountpoints or contacting providers. A root search, tree, or
 recursive manifest sends one coarse query per visited mapping, with the remaining

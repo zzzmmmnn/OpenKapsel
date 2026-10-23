@@ -27,7 +27,7 @@ Credentials are printed once. Configuration updates are atomic and use mode `060
 `config.example.json` provides the normal server baseline. Relative paths resolve from the configuration file directory. Important groups include:
 
 - listener, URL prefix, public URL, preview URL, and Workspace Root
-- token registry, uploads, shares, task history, application-worker, and network-proxy state
+- token registry, uploads, task history, application-worker, and network-proxy state
 - file, search, transfer, batch, task, SSE, and connection limits
 - Bubblewrap, Podman, RootlessKit, cgroups, and default network domains
 - optional workspace-image helper socket

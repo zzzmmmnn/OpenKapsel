@@ -10,7 +10,7 @@ Normalize `workspace_url` by removing its trailing slash. Workspace endpoints ar
 - A preview token is independent. Never substitute it for either workspace credential.
 - `GET <workspace_url>/` never echoes the control token.
 
-Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, public share URL, or workspace application's own route. When operating through an authenticated OAuth or Static MCP connection, use `capability_call` with `family=credential, operation=get` to obtain the current portable REST workspace URL/control token and `operation=renew` to rotate that pair inside the normal renewal window; ordinary MCP Discovery does not expose the secret values.
+Use the control token only on the workspace origin or a documented control-authenticated `/transfer/...` URL. Do not forward it to a static preview URL, unrelated public URL, or workspace application's own route. When operating through an authenticated OAuth or Static MCP connection, use `capability_call` with `family=credential, operation=get` to obtain the current portable REST workspace URL/control token and `operation=renew` to rotate that pair inside the normal renewal window; ordinary MCP Discovery does not expose the secret values.
 
 Control tokens do not sign in to administration. Interactive browser consent on the configured OpenKapsel service origin is a separate user-driven workflow; these REST helpers do not submit credentials to browser forms or follow client callback redirects. Never place a control token in a URL or request log.
 
@@ -52,7 +52,7 @@ Directory-scoped helpers discover and cache `OPENKAPSEL_CREDENTIALS_EXPIRES_AT`.
 
 Send `Accept: application/json`. Supplying the Bearer token changes capability fields from redacted/read-only to the privileges actually available.
 
-Endpoint contracts are grouped into families. For `available` and `required_capability`, resolve values in the order operation, family, then `endpoint_defaults`; omitted values intentionally inherit instead of repeating identical metadata. Operation `path` overrides the family `path` for routes such as public share inspection or workspace FastAPI APIs.
+Endpoint contracts are grouped into families. For `available` and `required_capability`, resolve values in the order operation, family, then `endpoint_defaults`; omitted values intentionally inherit instead of repeating identical metadata. Operation `path` overrides the family `path` for routes such as workspace FastAPI APIs.
 
 The root Discovery preamble contains `skills.openkapsel_rest`. Focused section responses inherit that metadata from the root instead of repeating it. The descriptor's `manifest_url`, `entrypoint_url`, and `archive_url` are public, contain no workspace credential, and require no Authorization header. To install, download `archive_url`, verify it against `archive_sha256`, and extract the single `openkapsel-rest` directory into the AI client's skill directory. An agent that cannot install may read `entrypoint_url` and its linked files directly.
 

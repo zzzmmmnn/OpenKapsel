@@ -35,5 +35,72 @@ class DocsInventoryTests(unittest.TestCase):
         )
 
 
+class DocsContractTests(unittest.TestCase):
+    """Guard retired features and method-specific REST documentation."""
+
+    @staticmethod
+    def _documented_rest_row(route: str) -> str:
+        overview = (ROOT / "docs/rest-files-and-transfers.md").read_text(encoding="utf-8")
+        matches = [
+            line for line in overview.splitlines()
+            if line.startswith("| ") and f"| `{route}` |" in line
+        ]
+        if len(matches) != 1:
+            raise AssertionError(f"Expected one dedicated REST overview row for {route}: {matches}")
+        return matches[0]
+
+    @staticmethod
+    def _declared_methods(path: str) -> set[str]:
+        from openkapsel.routes import ENDPOINTS
+        # Exact static routes own their documented resource; do not count
+        # catch-all /memory/<memory_id> methods against /memory/project.
+        explicit = [endpoint for endpoint in ENDPOINTS if endpoint.route_template == path]
+        endpoints = explicit if explicit else [
+            endpoint for endpoint in ENDPOINTS
+            if any(endpoint.match(method, path) is not None for method in endpoint.methods)
+        ]
+        return {method for endpoint in endpoints for method in endpoint.methods}
+
+    def test_removed_share_feature_is_not_still_advertised(self):
+        from openkapsel.routes import ENDPOINTS
+        self.assertFalse(
+            [endpoint.name for endpoint in ENDPOINTS if "share" in endpoint.name],
+            "Share endpoints have been removed; review the documentation guard if they return",
+        )
+        retired_phrases = (
+            "temporary sharing", "temporary shares", "capability-addressed shares",
+            "share snapshots/imports", "shared snapshots/imports", "share quota",
+            "shares remain immutable", "share-inspection", "public share URL",
+            "public share inspection", "Mapping share and cross-root transfers",
+            "token registry, uploads, shares", "mixed-batch preflight, shares",
+            "shares and cross-root transfers",
+        )
+        files = [
+            ROOT / "README.md",
+            *(ROOT / "docs").rglob("*.md"),
+            *(ROOT / "skills/openkapsel-rest").rglob("*.md"),
+        ]
+        for path in files:
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in retired_phrases:
+                with self.subTest(path=path.relative_to(ROOT), phrase=phrase):
+                    self.assertNotIn(phrase.lower(), text)
+
+    def test_memory_project_methods_match_rest_documentation(self):
+        self.assertEqual({"GET", "POST"}, self._declared_methods("/memory"))
+        self.assertEqual({"GET"}, self._declared_methods("/memory/project"))
+        self.assertTrue(self._documented_rest_row("/memory").startswith("| `GET/POST` |"))
+        self.assertTrue(self._documented_rest_row("/memory/project").startswith("| `GET` |"))
+
+    def test_plan_update_does_not_advertise_mutable_parent(self):
+        import inspect
+        from openkapsel.context.context_store import ContextStore
+        self.assertNotIn("plan_id", inspect.signature(ContextStore.update_plan).parameters)
+        self.assertEqual({"PATCH"}, self._declared_methods("/context/plans/123"))
+        row = self._documented_rest_row("/context/plans/<id>")
+        self.assertTrue(row.startswith("| `PATCH` |"))
+        self.assertIn("parentage is immutable", row)
+
+
 if __name__ == "__main__":
     unittest.main()

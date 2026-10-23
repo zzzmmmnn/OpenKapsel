@@ -16,7 +16,7 @@ For workspace operations, obtain:
 - `workspace_url`: the read-only capability URL ending in `/w/<READ_TOKEN>`.
 - `control_token`: the matching privileged token when the task needs Context, Memory, writes, uploads, Shell, task control, or authenticated capability discovery.
 
-Treat both as credentials. Do not print them, place them in source-controlled files, or send the control token to preview, share-inspection, or application-defined URLs.
+Treat both as credentials. Do not print them, place them in source-controlled files, or send the control token to preview or application-defined URLs.
 
 From the local controlling project directory, initialize the directory-scoped configuration once:
 

@@ -1,6 +1,6 @@
 # OpenKapsel
 
-OpenKapsel is a Python 3 remote-workspace service for AI clients. It gives an AI a scoped project directory, file APIs, asynchronous Shell tasks, browser previews, per-project FastAPI backends, Context and Memory, temporary sharing, and MCP without trying to be an online IDE.
+OpenKapsel is a Python 3 remote-workspace service for AI clients. It gives an AI a scoped project directory, file APIs, asynchronous Shell tasks, browser previews, per-project FastAPI backends, Context, Memory, and MCP without trying to be an online IDE.
 
 A Workspace Root contains direct child workspaces. Each token record points to one child directory or one capacity-limited ext4 workspace image. Read, control, and browser-preview credentials are independent, so a preview URL never exposes a credential that can modify the project.
 
@@ -19,7 +19,6 @@ Python 3.10 or later is required. Linux production hosts can isolate restricted 
 - Publish static browser previews on an independent origin and run project-owned FastAPI applications with live Server-Sent Events.
 - Provide project databases through a portable SQLAlchemy runtime without exposing raw database paths.
 - Record mutation history and hierarchical Plans in Context, and retain longer project knowledge in Memory.
-- Move one file or directory between workspaces through short-lived, capability-addressed shares.
 - Expose focused Discovery documents, a portable REST Skill, and a stateless Streamable HTTP MCP endpoint.
 - Connect remote MCP clients through individually revocable OAuth connections with stable URLs and control-token owner-approved access.
 - Manage token lifetimes, permissions, workspace images, sandbox limits, preview credentials, and administrator credentials from a browser console.
@@ -179,7 +178,7 @@ For an OAuth-capable remote MCP client, open **Administration → OAuth connecti
 - [Storage Providers](docs/storage-providers.md): Google Drive, Dropbox, pCloud, Microsoft OneDrive, WebDAV, S3-compatible storage, SFTP and SMB mounts, lazy VFS cache, credential isolation, and workspace bindings.
 - [OAuth connections](docs/oauth-connections.md): remote MCP onboarding, consent, client registration, refresh, and revocation.
 - [Sandboxing and networking](docs/sandboxing-and-networking.md): Bubblewrap, Podman, cgroups, path isolation, and domain-restricted egress.
-- [REST files, transfers, and sharing](docs/rest-files-and-transfers.md): endpoints, mutation context, ETags, recycle, large files, and temporary shares.
+- [REST files and transfers](docs/rest-files-and-transfers.md): endpoints, mutation context, ETags, recycle, large files, and cross-root transfers.
 - [Web preview and applications](docs/web-applications.md): preview security, FastAPI layout, bundled libraries, and SQLAlchemy runtime.
 - [Shell tasks and MCP](docs/shell-and-mcp.md): environments, task lifecycle, streaming, connection limits, process control, and MCP transport.
 - [Scheduled Shell tasks](docs/schedules.md): timing rules, permissions, dispatch behavior, Context, and run history.

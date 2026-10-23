@@ -12,8 +12,9 @@ Workspace endpoints are relative to `<url_base_path>/w/<READ_TOKEN>`. State-chan
 | `GET` | `/discovery/<section>` | Focused or complete Discovery |
 | `GET/POST` | `/context` | Query Context or create a Plan or Note |
 | `GET` | `/context/plans/<id>/tree` | Read a Plan subtree and attached entries |
-| `PATCH` | `/context/plans/<id>` | Update Plan content, status, parent, and debrief using `expected_revision` |
-| `GET/POST` | `/memory`, `/memory/project` | Query, create, or read project Memory |
+| `PATCH` | `/context/plans/<id>` | Update Plan content or status using `expected_revision` (completion includes a debrief; parentage is immutable) |
+| `GET/POST` | `/memory` | Query or create Memory |
+| `GET` | `/memory/project` | Read project Memory |
 | `GET/PATCH/DELETE` | `/memory/<id>` | Read, revise, or archive Memory |
 | `GET` | `/fs/query/list`, `/fs/query/tree`, `/fs/query/find`, `/fs/query/grep` | List, recursively inspect, find by name, or grep file contents |
 | `GET` | `/fs/query/stat` | Read selected metadata |
@@ -124,7 +125,7 @@ than silently accessing the normal export.
 and `deny`. For File API and sandboxed Shell, absolute `deny` at any
 ancestor cannot be overridden by a child rule or File Approval.
 A separately approved unsandboxed Shell is outside these path restrictions.
-User-facing File API and File Approval reject reserved `.openkapsel` and `.openkapsel-*` components regardless of letter case, including mixed-case aliases. Mapping share and cross-root transfers use narrowly validated, random temporary stage names through the internal low-level transport only; those stages remain hidden from public File APIs and directory listings.
+User-facing File API and File Approval reject reserved `.openkapsel` and `.openkapsel-*` components regardless of letter case, including mixed-case aliases. Cross-root transfers use narrowly validated, random temporary stage names through the internal low-level transport only; those stages remain hidden from public File APIs and directory listings.
 
 Archive RPC `extract` applies an uncompressed output quota of **512 MiB per
 operation** and **256 MiB per individual member**, in addition to the 100,000

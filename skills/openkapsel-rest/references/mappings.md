@@ -133,11 +133,11 @@ transport response limit.
 - `completed` is success. `copied_source_retained` means a move copied the destination but could not safely recycle the source. Do not delete the source blindly.
 - Partial data is staged on the destination storage, not buffered as an entire file on the server. Cancel preserves partial data for resumption.
 
-Binary downloads/upload/create, static preview, shares and cross-root transfers use
+Binary downloads/upload/create, static preview, and cross-root transfers use
 RPC without FUSE. Transfer staging is on the destination filesystem. Resumable
-uploads retain a bounded server spool until publication; shares remain immutable
-server-owned snapshots and consume share quota. In-progress handles are provider-
-generation-bound. Resume the existing transfer after reconnect and inspection;
+uploads retain a bounded server spool until publication. In-progress handles are
+provider-generation-bound. Resume the existing transfer after reconnect and
+inspection;
 never redirect an uncertain write to a different mapping. Upload/transfer records
 bind mapping IDs, so renamed/replaced registrations cannot redirect publication.
 Pending legacy mapped uploads without recorded mapping identity must restart.

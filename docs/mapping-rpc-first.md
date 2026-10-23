@@ -55,7 +55,7 @@ Same-mapping file operations retain their coarse-grained client RPC path. The
 shared local/RPC backend also supports workspace-root listing/traversal, mixed
 read/manifest/replace/delete batches, binary download and Range/HEAD responses,
 MCP binary chunks/download preparation, static Web Preview, binary uploads,
-resumable upload publication, cross-root copies/moves, and share snapshots/imports.
+resumable upload publication and cross-root copies/moves.
 Git and Archive operations within a mapping continue to use client RPC plugins.
 
 Copies place their temporary data in the destination filesystem. A cross-root
@@ -63,8 +63,7 @@ move verifies the destination before recycling its source; it is not atomic.
 Cancellation leaves resumable partial transfer data in that destination. Direct
 uploads stream to a destination-side temporary file. Resumable uploads retain
 the existing bounded server spool until commit and stream it to the provider;
-the successful commit removes that spool. Shares remain immutable server-owned
-snapshots, so they necessarily consume the configured server share quota.
+the successful commit removes that spool.
 
 A server Git read cannot span virtual mapping roots: it returns
 `git_mapping_boundary`. Inspect a repository wholly within one backend, use the
@@ -186,7 +185,7 @@ Validation performed on September 21, 2026:
 
 `tests/test_mapping_rpc_first.py` exercises file APIs with `mount()` forbidden,
 including root traversal, binary transfer, static preview, cross-root copy/move,
-mixed-batch preflight, shares, provider generation fencing and private-path
+mixed-batch preflight, provider generation fencing and private-path
 containment. It separately checks mount leases, rollback, native dependency
 selection, API-worker lifetime, and unavailable-mount failure before process
 launch. Existing mapping, file, Shell, API-worker, upload and safety tests remain
