@@ -122,7 +122,7 @@ class RequestDispatchMixin:
                 for route in ("restricted_http/hmac", "transport/hmac")
             )
             if self._is_dedicated_preview_request():
-                route = self._preview_authenticated_route(parsed.path)
+                route = self._authenticate_request(method, parsed.path, parsed.query).route
                 api_target = self._resolve_web_api_target(route)
                 if api_target is not None:
                     self._handle_web_api(method, api_target, parsed.query)
@@ -380,6 +380,7 @@ class RequestDispatchMixin:
         raw_query: str,
         *,
         outer_method: str = "GET",
+        record: Any,
     ) -> tuple[str, str, dict[str, list[str]]]:
         self._signed_envelope_active = True
         if not raw_query.isascii():
@@ -510,7 +511,7 @@ class RequestDispatchMixin:
                 "signature is invalid",
             )
         signed_query = raw_query.rsplit("&", 1)[0]
-        key = self.token_record.control_token.encode("utf-8")
+        key = record.control_token.encode("utf-8")
         if native_method:
             # METHOD/ binds the physical method; the body is left on the socket
             # and read by the endpoint exactly as with Authorization headers.
@@ -540,7 +541,7 @@ class RequestDispatchMixin:
                 "signature is invalid",
             )
 
-        identity = self.token_record.app_id or self.token_record.token
+        identity = record.app_id or record.token
         if not self.server.tokens.consume_signed_nonce(
             identity,
             nonce,
@@ -569,10 +570,6 @@ class RequestDispatchMixin:
             if key in SIGNED_GET_RESERVED_QUERY:
                 continue
             query.setdefault(key, []).append(value)
-        self._set_principal(
-            self.token_record, self.token_scope_root, control=True,
-            method="signed_native" if native_method else "signed_get",
-        )
         return effective_method, route, query
 
 
@@ -616,41 +613,54 @@ class RequestDispatchMixin:
         Connection entrances authenticate their MCP credential; workspace
         entrances authenticate the URL token, an optional Bearer control token
         and, at the workspace root, a signed query. Every path ends with exactly
-        one ``_set_principal`` call before routing begins.
+        one ``_set_principal`` call before routing begins; credential checks
+        never publish an intermediate principal.
         """
         query = parse_qs(raw_query, keep_blank_values=True)
+        if self._is_dedicated_preview_request():
+            route = self._preview_authenticated_route(request_path)
+            return AuthenticatedRequest(route, route, method, query, False)
         if request_path.startswith("/connect/"):
             route = self._oauth_authenticated_route(request_path)
             return AuthenticatedRequest(route, route, method, query, False)
         if request_path.startswith("/mcp-connect/"):
             route = self._static_mcp_authenticated_route(request_path)
             return AuthenticatedRequest(route, route, method, query, False)
-        entry_route = self._authenticated_route(request_path)
+        record, scope_root, entry_route, via_preview_token = self._identify_workspace_token(request_path)
+        control = self._verify_bearer_control(record)
+        principal_method = "bearer_control" if control else ("preview" if via_preview_token else "url_token")
         if entry_route.rstrip("/") == "/mcp":
             raise ApiError(404, "not_found", "Create an MCP connection in administration")
+        route, effective_method, query_routed = entry_route, method, False
         if entry_route in ("", "/"):
             if self._query_ends_with_signature(raw_query):
                 effective_method, route, query = self._decode_signed_get_envelope(
-                    raw_query, outer_method=method,
+                    raw_query, outer_method=method, record=record,
                 )
                 self.command = effective_method
-                return AuthenticatedRequest(entry_route, route, effective_method, query, True)
-            if "req" in query:
+                control = True
+                principal_method = "signed_get" if method == "GET" else "signed_native"
+                query_routed = True
+            elif "req" in query:
                 route, query = self._decode_query_route(query)
-                return AuthenticatedRequest(entry_route, route, method, query, True)
-        return AuthenticatedRequest(entry_route, entry_route, method, query, False)
+                query_routed = True
+        self._set_principal(record, scope_root, control=control, method=principal_method)
+        return AuthenticatedRequest(entry_route, route, effective_method, query, query_routed)
 
-    def _authenticated_route(self, path: str) -> str:
+    def _identify_workspace_token(self, path: str) -> tuple[Any, Any, str, bool]:
+        """Resolve the URL token of a workspace entrance without granting anything."""
         parts = path.split("/")
         if len(parts) < 3 or parts[1] != "w":
             raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
         supplied = unquote(parts[2])
         route = "/" + "/".join(parts[3:]) if len(parts) > 3 else ""
         record = None
+        via_preview_token = False
         if self.server.config.preview_base_url is None:
             record = self.server.tokens.authenticate_preview(supplied)
             if record is not None:
                 route = "/web" + route
+                via_preview_token = True
         if record is None:
             record = self.server.tokens.authenticate(supplied)
             if route == "/web" or route.startswith("/web/"):
@@ -661,31 +671,34 @@ class RequestDispatchMixin:
             scope_root = self.server.tokens.scope_root(record)
         except ValueError:
             raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist") from None
-        self._set_principal(record, scope_root, control=False, method="url_token")
+        return record, scope_root, route, via_preview_token
+
+    def _verify_bearer_control(self, record: Any) -> bool:
+        """Return True only for a valid Bearer control token bound to ``record``."""
         authorization_values = self.headers.get_all("Authorization") or []
-        if authorization_values:
-            if len(authorization_values) != 1:
-                self._raise_invalid_control_token()
-            scheme, separator, credential = authorization_values[0].partition(" ")
-            if (
-                not separator
-                or scheme.lower() != "bearer"
-                or not credential
-                or credential != credential.strip()
-                or any(char.isspace() for char in credential)
-            ):
-                self._raise_invalid_control_token()
-            control_record = self.server.tokens.authenticate_control(credential)
-            if control_record is None:
-                self._raise_invalid_control_token()
-            if not secrets.compare_digest(control_record.token, record.token):
-                raise ApiError(
-                    HTTPStatus.FORBIDDEN,
-                    "token_binding_mismatch",
-                    "the Bearer token does not belong to this read-only workspace URL",
-                )
-            self._set_principal(record, scope_root, control=True, method="bearer_control")
-        return route
+        if not authorization_values:
+            return False
+        if len(authorization_values) != 1:
+            self._raise_invalid_control_token()
+        scheme, separator, credential = authorization_values[0].partition(" ")
+        if (
+            not separator
+            or scheme.lower() != "bearer"
+            or not credential
+            or credential != credential.strip()
+            or any(char.isspace() for char in credential)
+        ):
+            self._raise_invalid_control_token()
+        control_record = self.server.tokens.authenticate_control(credential)
+        if control_record is None:
+            self._raise_invalid_control_token()
+        if not secrets.compare_digest(control_record.token, record.token):
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "token_binding_mismatch",
+                "the Bearer token does not belong to this read-only workspace URL",
+            )
+        return True
 
 
     def _preview_authenticated_route(self, path: str) -> str:

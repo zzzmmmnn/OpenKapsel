@@ -432,6 +432,63 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual(201, status, raw)
         self.assertEqual(body, (self.root / "native-signed-binary.bin").read_bytes())
 
+    def test_each_entrance_sets_the_principal_exactly_once(self) -> None:
+        from unittest import mock
+        from openkapsel.server import WorkspaceRequestHandler
+
+        original = WorkspaceRequestHandler._set_principal
+        calls: list[tuple[str, bool]] = []
+
+        def recording(handler, *args, **kwargs):
+            calls.append((kwargs["method"], kwargs["control"]))
+            return original(handler, *args, **kwargs)
+
+        self.server.tokens.update("test-token", can_preview=True)
+        plan_id = self._ensure_test_plan("test-token")
+        body = b"principal-once"
+        native_put = self.native_signed_path(
+            "PUT", "fs/content", body, nonce="Once0002", query=[("path", "principal-once.bin")]
+        )
+        list_path = "/kapsel/w/test-token/fs/query/list?path=."
+        cases = [
+            ("url_token", False, lambda: self.raw_request("GET", list_path, authorize=False)),
+            ("bearer_control", True, lambda: self.raw_request("GET", list_path)),
+            ("signed_get", True, lambda: self.raw_request(
+                "GET",
+                self.signed_envelope_path("fs/query/list", "GET", nonce="Once0001", query=[("path", ".")]),
+                authorize=False,
+            )),
+            ("signed_native", True, lambda: self.raw_request(
+                "PUT", native_put, body,
+                {
+                    "Content-Type": "application/octet-stream",
+                    "OpenKapsel-Plan-Id": str(plan_id),
+                    "OpenKapsel-Taskname": "principal-once",
+                    "OpenKapsel-Message": "principal set once",
+                },
+                authorize=False,
+            )),
+            ("preview", False, lambda: self.raw_preview_request("GET", "/")),
+        ]
+        with mock.patch.object(WorkspaceRequestHandler, "_set_principal", recording):
+            for expected_method, expected_control, send in cases:
+                calls.clear()
+                status, raw, _ = send()
+                with self.subTest(method=expected_method):
+                    self.assertLess(status, 500, raw[:200])
+                    self.assertEqual([(expected_method, expected_control)], calls)
+            calls.clear()
+            status, _, _ = self.raw_request(
+                "GET", list_path, headers={"Authorization": "Bearer wrong-control-token"}, authorize=False
+            )
+            self.assertIn(status, {401, 403})
+            self.assertEqual([], calls)
+            calls.clear()
+            _, response, _ = self.mcp_request("test-token", 9811, "tools/list", {})
+            self.assertIn("result", response)
+            self.assertTrue(calls)
+            self.assertEqual({("static_mcp", True)}, set(calls))
+
     def test_native_signed_resumable_upload_streams_binary_chunks(self) -> None:
         # Only the legacy body-hash format buffers the body, so it alone is
         # capped at max_request_body_bytes; the current format streams.
