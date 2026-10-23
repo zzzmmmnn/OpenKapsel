@@ -12,6 +12,7 @@ from openkapsel.auth.admin_ui import _page
 from openkapsel.auth.oauth_consent import consent_page, consent_metadata
 from openkapsel.auth.oauth_consent_handlers import OAuthConsentMixin
 from openkapsel.errors import ApiError
+from openkapsel.routes import CONNECTION_ROUTE_PATTERN
 from openkapsel.auth.oauth_store import OAuthError, SCOPE
 
 
@@ -153,7 +154,7 @@ class OAuthHandlersMixin(OAuthConsentMixin):
         return True
 
     def _oauth_authenticated_route(self, path: str) -> str:
-        match = re.fullmatch(r"/connect/(" + CONNECTION_ID + r")/(mcp|transfer/(?:fs/content|upload/(?:status|chunk|commit|cancel)/[^/]+))", path)
+        match = re.fullmatch(r"/connect/(" + CONNECTION_ID + r")/(" + CONNECTION_ROUTE_PATTERN + r")", path)
         if not match:
             raise ApiError(404, "not_found", "endpoint does not exist")
         cid, route = match.groups()
@@ -165,9 +166,10 @@ class OAuthHandlersMixin(OAuthConsentMixin):
             if scheme.lower() != "bearer" or not re.fullmatch(r"[A-Za-z0-9_-]{43}", access):
                 raise OAuthError("invalid_token", "OAuth access token required", 401)
             self.server.oauth.authenticate(cid, access)
-            self.token_record = record
-            self.token_scope_root = self.server.tokens.scope_root(record)
-            self.control_authorized = True
+            self._set_principal(
+                record, self.server.tokens.scope_root(record),
+                control=True, method="oauth", connection_id=cid,
+            )
             self.oauth_connection_id = cid
             self.server.oauth.touch(cid)
         except OAuthError as exc:

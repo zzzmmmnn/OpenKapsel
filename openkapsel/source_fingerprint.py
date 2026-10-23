@@ -35,6 +35,7 @@ SERVER_FILES = (
     "openkapsel/server.py",
     "openkapsel/server_runtime/__init__.py",
     "openkapsel/server_runtime/admin_sessions.py",
+    "openkapsel/server_runtime/authentication.py",
     "openkapsel/server_runtime/config.py",
     "openkapsel/server_runtime/context_http.py",
     "openkapsel/server_runtime/dispatch.py",

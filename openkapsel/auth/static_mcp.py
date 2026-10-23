@@ -8,6 +8,7 @@ import time
 from openkapsel.random_ids import token_urlsafe_alnum
 from openkapsel.auth.oauth_store import OAuthError, OAuthStore, digest
 from openkapsel.errors import ApiError
+from openkapsel.routes import CONNECTION_ROUTE_PATTERN
 
 
 EXPIRY_DAYS = (30, 91, 182, 365, 730)
@@ -77,7 +78,7 @@ class StaticMcpStore(OAuthStore):
 class StaticMcpHandlersMixin:
     def _static_mcp_authenticated_route(self, path):
         import re
-        match = re.fullmatch(r"/mcp-connect/([A-Za-z0-9_-]{32})/(mcp|transfer/(?:fs/content|upload/(?:status|chunk|commit|cancel)/[^/]+))", path)
+        match = re.fullmatch(r"/mcp-connect/([A-Za-z0-9_-]{32})/(" + CONNECTION_ROUTE_PATTERN + r")", path)
         if not match:
             raise ApiError(404, "not_found", "endpoint does not exist")
         cid, route = match.groups()
@@ -90,9 +91,10 @@ class StaticMcpHandlersMixin:
             record = self.server.tokens.get_by_app_id(conn["app_id"])
             if record is None or not record.valid or record.path_prefix != conn["workspace"]:
                 raise OAuthError("access_denied", "Linked workspace is unavailable or its directory has changed", 403)
-            self.token_record = record
-            self.token_scope_root = self.server.tokens.scope_root(record)
-            self.control_authorized = True
+            self._set_principal(
+                record, self.server.tokens.scope_root(record),
+                control=True, method="static_mcp", connection_id=cid,
+            )
             self.static_mcp_connection_id = cid
             self.server.static_mcp.touch(cid)
         except OAuthError as exc:

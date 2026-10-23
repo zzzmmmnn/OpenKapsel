@@ -17,6 +17,7 @@ from openkapsel.auth.tokens import CredentialRenewalNotDue
 from openkapsel.errors import ApiError
 from openkapsel.web_assets import builtin_favicon, builtin_favicon_asset_etag
 from openkapsel.routes import EndpointSpec, match_endpoint
+from openkapsel.server_runtime.authentication import AuthenticatedRequest, RequestPrincipal
 
 LOGGER = __import__("logging").getLogger("openkapsel")
 SIGNED_GET_WINDOW_SECONDS = 300
@@ -106,7 +107,7 @@ class RequestDispatchMixin:
         self.__dict__.pop("_file_approval_cached_body", None)
         self.oauth_connection_id = None
         self.static_mcp_connection_id = None
-        self.control_authorized = False
+        self.principal = None
         self._signed_envelope_active = False
         self._signed_envelope_body = None
         self._signed_envelope_body_reader = None
@@ -177,31 +178,18 @@ class RequestDispatchMixin:
                     self._discard_request_body()
                 self._dispatch_admin(method, request_path, parsed.query)
                 return
-            if request_path.startswith("/connect/"):
-                route = self._oauth_authenticated_route(request_path)
-            elif request_path.startswith("/mcp-connect/"):
-                route = self._static_mcp_authenticated_route(request_path)
-            else:
-                route = self._authenticated_route(request_path)
-                if route.rstrip("/") == "/mcp":
-                    raise ApiError(404, "not_found", "Create an MCP connection in administration")
-            api_target = self._resolve_web_api_target(route)
+            # Layer 1 - authentication: identify the token, verify whichever
+            # credential was supplied and record one RequestPrincipal.
+            authenticated = self._authenticate_request(method, request_path, parsed.query)
+            route = authenticated.route
+            query = authenticated.query
+            effective_method = authenticated.method
+            query_routed = authenticated.query_routed
+            # Layer 2 - routing: workspace web APIs, then the endpoint table.
+            api_target = self._resolve_web_api_target(authenticated.entry_route)
             if api_target is not None:
                 self._handle_web_api(method, api_target, parsed.query)
                 return
-            query = parse_qs(parsed.query, keep_blank_values=True)
-            effective_method = method
-            query_routed = False
-            if route in ("", "/"):
-                if self._query_ends_with_signature(parsed.query):
-                    effective_method, route, query = self._decode_signed_get_envelope(
-                        parsed.query, outer_method=method,
-                    )
-                    self.command = effective_method
-                    query_routed = True
-                elif "req" in query:
-                    route, query = self._decode_query_route(query)
-                    query_routed = True
             # Remove the presentation-only field *after* signed verification,
             # so the endpoint sees its normal query schema.
             query.pop("response_mode", None)
@@ -581,9 +569,76 @@ class RequestDispatchMixin:
             if key in SIGNED_GET_RESERVED_QUERY:
                 continue
             query.setdefault(key, []).append(value)
-        self.control_authorized = True
+        self._set_principal(
+            self.token_record, self.token_scope_root, control=True,
+            method="signed_native" if native_method else "signed_get",
+        )
         return effective_method, route, query
 
+
+    @property
+    def control_authorized(self) -> bool:
+        """Control authority derived only from the authenticated principal."""
+        principal = getattr(self, "principal", None)
+        return bool(principal is not None and principal.control)
+
+    def _set_principal(
+        self,
+        record: Any,
+        scope_root: Any,
+        *,
+        control: bool,
+        method: str,
+        connection_id: str | None = None,
+    ) -> None:
+        self.principal = RequestPrincipal(record, scope_root, control, method, connection_id)
+        self.token_record = record
+        self.token_scope_root = scope_root
+
+    def _rebind_principal_record(self, record: Any) -> None:
+        """Keep the principal coherent after a credential rotation."""
+        scope_root = self.server.tokens.scope_root(record)
+        principal = getattr(self, "principal", None)
+        if principal is None:
+            self.token_record = record
+            self.token_scope_root = scope_root
+            return
+        self._set_principal(
+            record, scope_root, control=principal.control,
+            method=principal.method, connection_id=principal.connection_id,
+        )
+
+    def _authenticate_request(
+        self, method: str, request_path: str, raw_query: str,
+    ) -> AuthenticatedRequest:
+        """Authentication layer for every API entrance.
+
+        Connection entrances authenticate their MCP credential; workspace
+        entrances authenticate the URL token, an optional Bearer control token
+        and, at the workspace root, a signed query. Every path ends with exactly
+        one ``_set_principal`` call before routing begins.
+        """
+        query = parse_qs(raw_query, keep_blank_values=True)
+        if request_path.startswith("/connect/"):
+            route = self._oauth_authenticated_route(request_path)
+            return AuthenticatedRequest(route, route, method, query, False)
+        if request_path.startswith("/mcp-connect/"):
+            route = self._static_mcp_authenticated_route(request_path)
+            return AuthenticatedRequest(route, route, method, query, False)
+        entry_route = self._authenticated_route(request_path)
+        if entry_route.rstrip("/") == "/mcp":
+            raise ApiError(404, "not_found", "Create an MCP connection in administration")
+        if entry_route in ("", "/"):
+            if self._query_ends_with_signature(raw_query):
+                effective_method, route, query = self._decode_signed_get_envelope(
+                    raw_query, outer_method=method,
+                )
+                self.command = effective_method
+                return AuthenticatedRequest(entry_route, route, effective_method, query, True)
+            if "req" in query:
+                route, query = self._decode_query_route(query)
+                return AuthenticatedRequest(entry_route, route, method, query, True)
+        return AuthenticatedRequest(entry_route, entry_route, method, query, False)
 
     def _authenticated_route(self, path: str) -> str:
         parts = path.split("/")
@@ -606,9 +661,7 @@ class RequestDispatchMixin:
             scope_root = self.server.tokens.scope_root(record)
         except ValueError:
             raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist") from None
-        self.token_record = record
-        self.token_scope_root = scope_root
-        self.control_authorized = False
+        self._set_principal(record, scope_root, control=False, method="url_token")
         authorization_values = self.headers.get_all("Authorization") or []
         if authorization_values:
             if len(authorization_values) != 1:
@@ -631,7 +684,7 @@ class RequestDispatchMixin:
                     "token_binding_mismatch",
                     "the Bearer token does not belong to this read-only workspace URL",
                 )
-            self.control_authorized = True
+            self._set_principal(record, scope_root, control=True, method="bearer_control")
         return route
 
 
@@ -647,9 +700,7 @@ class RequestDispatchMixin:
             scope_root = self.server.tokens.scope_root(record)
         except ValueError:
             raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist") from None
-        self.token_record = record
-        self.token_scope_root = scope_root
-        self.control_authorized = False
+        self._set_principal(record, scope_root, control=False, method="preview")
         tail = "/" + "/".join(parts[2:]) if len(parts) > 2 else ""
         return "/web" + tail
 

@@ -417,8 +417,7 @@ class McpHandlersMixin:
                     str(exc),
                 ) from None
             # Keep this request internally coherent after rotating the TokenStore.
-            self.token_record = record
-            self.token_scope_root = self.server.tokens.scope_root(record)
+            self._rebind_principal_record(record)
             return self._mcp_workspace_credentials(record, rotated=True)
         if name == "discovery":
             return self._mcp_discovery(str(arguments.get("section", "main")))

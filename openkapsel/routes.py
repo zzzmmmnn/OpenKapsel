@@ -549,3 +549,8 @@ def discovery_keys() -> frozenset[str]:
         for endpoint in ENDPOINTS
         if endpoint.discovery_key is not None
     )
+
+
+# Entrance route policy: inner routes an MCP connection entrance may reach.
+# Connection transfers deliberately exclude upload creation, which is an MCP tool.
+CONNECTION_ROUTE_PATTERN = r"mcp|transfer/(?:fs/content|upload/(?:status|chunk|commit|cancel)/[^/]+)"
