@@ -65,9 +65,10 @@ uploads stream to a destination-side temporary file. Resumable uploads retain
 the existing bounded server spool until commit and stream it to the provider;
 the successful commit removes that spool.
 
-A server Git read cannot span virtual mapping roots: it returns
-`git_mapping_boundary`. Inspect a repository wholly within one backend, use the
-mapping's Git plugin, or run an explicitly authorized server Shell command with
+Server Git RPC (`POST /rpc/git/<operation>`) runs only in the token's native
+server workspace; it does not traverse virtual mapping roots or Storage Provider
+mounts. Inspect a repository wholly within one backend, use the mapping's Git
+family through `POST /mapping/<mapping_name>/rpc/git/<operation>`, or run an explicitly authorized server Shell command with
 native mapping dependencies. Shell semantics are not silently substituted for
 read-authorized Git inspection.
 

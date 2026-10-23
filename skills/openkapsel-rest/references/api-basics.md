@@ -104,8 +104,10 @@ Use `--output FILE` for binary downloads, `--include-headers` to inspect respons
 The server also accepts these routes under the service base, without a URL token:
 
 - `GET|HEAD|PUT <service-base>/transfer/fs/content?...`
-- `GET|HEAD|PATCH|DELETE <service-base>/transfer/upload/status/<upload_id>`
+- `GET|HEAD <service-base>/transfer/upload/status/<upload_id>`
+- `PATCH <service-base>/transfer/upload/chunk/<upload_id>`
 - `POST <service-base>/transfer/upload/commit/<upload_id>`
+- `POST <service-base>/transfer/upload/cancel/<upload_id>`
 
 They require the Bearer control token, which selects the token record. There is no control-only alias for creating an upload session; create it through `<workspace_url>/upload/create` first. Prefer the canonical workspace routes unless a returned transfer URL specifically uses `/transfer`.
 

@@ -102,5 +102,39 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("parentage is immutable", row)
 
 
+    def test_control_transfer_aliases_match_declared_methods(self):
+        text = (ROOT / "skills/openkapsel-rest/references/api-basics.md").read_text(encoding="utf-8")
+        section = text.split("## Control-only raw transfer aliases", 1)[1].split("\n## ", 1)[0]
+        aliases = re.findall(r"^- `([A-Z|]+) <service-base>/transfer(/[^`?]+)", section, re.M)
+        self.assertGreaterEqual(len(aliases), 5, aliases)
+        for methods, route in aliases:
+            sample = re.sub(r"<[^>]+>", "upload_sample", route)
+            with self.subTest(route=route):
+                self.assertTrue(sample == "/fs/content" or sample.startswith("/upload/"))
+                self.assertEqual(set(methods.split("|")), self._declared_methods(sample))
+
+    def test_retired_file_api_names_are_not_documented(self):
+        retired = ("`fs/search`", "`fs/read`", "fs/read_many", "byte_offset", "git_mapping_boundary")
+        files = [
+            ROOT / "README.md",
+            *(ROOT / "docs").rglob("*.md"),
+            *(ROOT / "skills/openkapsel-rest").rglob("*.md"),
+        ]
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for name in retired:
+                with self.subTest(path=path.relative_to(ROOT), name=name):
+                    self.assertNotIn(name, text)
+
+    def test_mcp_discovery_sections_are_documented(self):
+        source = (ROOT / "openkapsel/api/mcp.py").read_text(encoding="utf-8")
+        match = re.search(r'"enum": (\["main", [^\]]*\])', source)
+        self.assertIsNotNone(match)
+        import json
+        sections = json.loads(match.group(1))
+        doc = (ROOT / "docs/shell-and-mcp.md").read_text(encoding="utf-8")
+        line = next(l for l in doc.splitlines() if l.startswith("`discovery` defaults to compact Discovery"))
+        self.assertEqual(sections, re.findall(r"`([a-z_]+)`", line.split("accepts", 1)[1].split(".", 1)[0]))
+
 if __name__ == "__main__":
     unittest.main()

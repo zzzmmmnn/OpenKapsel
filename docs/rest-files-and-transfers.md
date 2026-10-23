@@ -208,11 +208,11 @@ All three operations execute locally on an updated mapping client when the reque
 targets one mapping, using a single RPC. Large RPC responses may return HTTP 413;
 reduce batch size, character budgets, or traversal depth.
 
-`fs/stat` can return selected fields: `type`, `size`, `created_at`, `modified_at`, `changed_at`, `etag`, `content_type`, and `sha256`. SHA-256 is calculated only when requested. On platforms without birth time, `created_at` is `null`; inode change time remains separate.
+`GET /fs/query/stat` can return selected fields: `type`, `size`, `created_at`, `modified_at`, `changed_at`, `etag`, `content_type`, and `sha256`. SHA-256 is calculated only when requested. On platforms without birth time, `created_at` is `null`; inode change time remains separate.
 
-`fs/search` supports literal or regular-expression matching, case sensitivity, recursion depth, and bounded results. Binary, non-UTF-8, oversized, private, and symlinked content is skipped. `fs/tree` uses the same depth model and a total node limit.
+`GET /fs/query/grep` supports literal or regular-expression matching, case sensitivity, recursion depth, and bounded results. Binary, non-UTF-8, oversized, private, and symlinked content is skipped. `GET /fs/query/tree` uses the same depth model and a total node limit.
 
-`fs/manifest` classifies bounded path sets as `missing`, `same`, `conflict`, or `exists`, calculating hashes only when requested.
+`POST /fs/query/manifest` classifies bounded path sets as `missing`, `same`, `conflict`, or `exists`, calculating hashes only when requested.
 
 ## Transactional mutations
 
@@ -233,11 +233,11 @@ This is request-level transactionality, not a durable database transaction: v1 d
 
 ### Text encoding and line endings
 
-Text APIs default to UTF-8 independently of the host locale. `encoding` is a query parameter for `fs/read`, a body field for `fs/read_many`, and an item field for content operations in `fs/mutate`. Supported codecs: `utf-8`, `utf-8-sig`, `utf-16-le`, `utf-16-be`, `ascii`, `iso8859-1` (alias `latin-1`), `cp1252`, `gbk`, `gb18030`, `big5`, and `shift_jis`. MCP text tools expose the same parameter. Search remains UTF-8-only; binary download/upload preserves arbitrary bytes.
+Text APIs default to UTF-8 independently of the host locale. `encoding` is a request body field for `POST /fs/read/files` (applied to every listed path) and an item field for content operations in `POST /fs/write/mutate`. Supported codecs: `utf-8`, `utf-8-sig`, `utf-16-le`, `utf-16-be`, `ascii`, `iso8859-1` (alias `latin-1`), `cp1252`, `gbk`, `gb18030`, `big5`, and `shift_jis`. MCP text tools expose the same parameter. Search remains UTF-8-only; binary download/upload preserves arbitrary bytes.
 
 There is no encoding detection, locale fallback, or lossy replacement. Invalid input bytes return 415; unsupported codecs or unrepresentable output return 400 without replacing the target. Batch encoding failures are detected before any file is published. Specify the existing encoding for edits. For BOM handling, `utf-8-sig` consumes/emits the UTF-8 BOM; ordinary `utf-8` preserves it as U+FEFF. UTF-16 requires explicit endian and preserves any BOM as U+FEFF; include that character to create a new BOM-bearing UTF-16 file.
 
-Reads preserve LF (`\n`), CRLF (`\r\n`), CR (`\r`), and mixed endings. Character offsets count both characters of CRLF. Writes encode the supplied text literally, even on Windows; use `\r\n` explicitly to create CRLF files. Replacements match exact line endings and preserve all untouched text; replacement text controls its own endings. `byte_offset` remains UTF-8-only; use character offsets for other codecs. Client-local text reads require file API v3 (client 1.59.0+). Transactional mutation requires file API v4; RPC-first servers fail closed rather than degrading `fs/mutate` into older write calls.
+Reads preserve LF (`\n`), CRLF (`\r\n`), CR (`\r`), and mixed endings. Character offsets count both characters of CRLF. Writes encode the supplied text literally, even on Windows; use `\r\n` explicitly to create CRLF files. Replacements match exact line endings and preserve all untouched text; replacement text controls its own endings. `POST /fs/read/files` offsets and limits count characters for every codec; byte-addressed access uses the explicit offset/length windows of `POST /fs/read/large`, raw `/fs/content` HTTP Range requests, and upload offsets. Client-local text reads require file API v3 (client 1.59.0+). Transactional mutation requires file API v4; RPC-first servers fail closed rather than degrading `POST /fs/write/mutate` into older write calls.
 
 ## Recycle and overwrite policy
 
