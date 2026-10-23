@@ -48,6 +48,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         value.server = self.server
         value.token_record = self.record
         value.token_scope_root = self.scope
+        value.static_mcp_connection_id = "s" * 32
         return value
 
     def raw(self, method, endpoint, data=None, headers=None):
@@ -116,6 +117,7 @@ class RpcOnlyHTTPTests(unittest.TestCase):
         handler = self.handler()
         info = handler._mcp_prepare_download({"path": "laptop/data.bin"})
         self.assertEqual(len(data), info["size"])
+        self.assertIn("/mcp-connect/" + "s" * 32 + "/transfer/fs/content", info["transfer"]["url"])
         chunk = handler._mcp_read_binary_chunk({"path": "laptop/data.bin", "offset": 131070, "length": 100})
         self.assertEqual(data[131070:131170], base64.b64decode(chunk["data_base64"]))
         self.record = self.server.tokens.update(self.record.token, can_preview=True)

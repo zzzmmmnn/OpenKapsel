@@ -37,11 +37,6 @@ This inventory is for routing. Read the focused reference and runtime Discovery 
 | `PATCH` | `<workspace_url>/upload/chunk/<upload_id>` |
 | `POST` | `<workspace_url>/upload/cancel/<upload_id>` |
 | `POST` | `<workspace_url>/upload/commit/<upload_id>` |
-| `GET|HEAD|PUT` | `<service-base>/transfer/fs/content` |
-| `GET|HEAD` | `<service-base>/transfer/upload/status/<upload_id>` |
-| `PATCH` | `<service-base>/transfer/upload/chunk/<upload_id>` |
-| `POST` | `<service-base>/transfer/upload/cancel/<upload_id>` |
-| `POST` | `<service-base>/transfer/upload/commit/<upload_id>` |
 
 ## Context and Memory
 

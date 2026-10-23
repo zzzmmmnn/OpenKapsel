@@ -176,7 +176,7 @@ The current tool surface includes:
 - preview: independent browser preview URL
 - Shell/tasks: run, list, status, output, stdin, interrupt, kill, and process listing
 
-MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated `/transfer/...` URLs containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
+MCP binary chunks are bounded and Base64-encoded. Large transfers return complete authenticated MCP connection transfer URLs (`/connect/<id>/transfer/...` or `/mcp-connect/<id>/transfer/...`) containing no read, control, or preview token. The client reuses its Bearer header. Downloads support GET, HEAD, ETag, and one Range; uploads support offset inspection, raw PATCH, commit, and cancel.
 
 `discovery` defaults to compact Discovery and accepts `main`, `files`, `context`, `memory`, `paths`, `rpc`, `network`, `mcp`, `shell`, `schedules`, `web`, `authentication`, `errors` or `full`. `tools/list` is authoritative for current MCP schemas.
 

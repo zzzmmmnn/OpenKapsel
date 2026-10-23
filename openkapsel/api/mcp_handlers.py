@@ -1104,7 +1104,9 @@ class McpHandlersMixin:
         if static_cid:
             return f"{base}/mcp-connect/{static_cid}/transfer"
         cid = getattr(self, "oauth_connection_id", None)
-        return f"{base}/connect/{cid}/transfer" if cid else f"{base}/transfer"
+        if cid:
+            return f"{base}/connect/{cid}/transfer"
+        raise RuntimeError("MCP raw transfer URLs require an OAuth or Static MCP connection")
 
     def _mcp_upload_chunk(self, arguments: dict[str, Any]) -> dict[str, Any]:
         self._require_permission(self.token_record.can_write, "write permission is not granted")

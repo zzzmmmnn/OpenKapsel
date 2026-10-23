@@ -181,8 +181,6 @@ class RequestDispatchMixin:
                 route = self._oauth_authenticated_route(request_path)
             elif request_path.startswith("/mcp-connect/"):
                 route = self._static_mcp_authenticated_route(request_path)
-            elif request_path == "/transfer" or request_path.startswith("/transfer/"):
-                route = self._control_authenticated_transfer_route(request_path)
             else:
                 route = self._authenticated_route(request_path)
                 if route.rstrip("/") == "/mcp":
@@ -634,37 +632,6 @@ class RequestDispatchMixin:
                     "the Bearer token does not belong to this read-only workspace URL",
                 )
             self.control_authorized = True
-        return route
-
-
-    def _control_authenticated_transfer_route(self, path: str) -> str:
-        route = path.removeprefix("/transfer")
-        if route != "/fs/content" and not route.startswith("/upload/"):
-            raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist")
-        authorization_values = self.headers.get_all("Authorization") or []
-        if len(authorization_values) != 1:
-            if not authorization_values:
-                self._require_control_token()
-            self._raise_invalid_control_token()
-        scheme, separator, credential = authorization_values[0].partition(" ")
-        if (
-            not separator
-            or scheme.lower() != "bearer"
-            or not credential
-            or credential != credential.strip()
-            or any(char.isspace() for char in credential)
-        ):
-            self._raise_invalid_control_token()
-        record = self.server.tokens.authenticate_control(credential)
-        if record is None:
-            self._raise_invalid_control_token()
-        try:
-            scope_root = self.server.tokens.scope_root(record)
-        except ValueError:
-            raise ApiError(HTTPStatus.NOT_FOUND, "not_found", "endpoint does not exist") from None
-        self.token_record = record
-        self.token_scope_root = scope_root
-        self.control_authorized = True
         return route
 
 

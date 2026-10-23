@@ -223,7 +223,7 @@ class WorkspaceServerTests(unittest.TestCase):
             method in {"POST", "PUT", "PATCH", "DELETE"}
             and (
                 route_path.startswith("/kapsel/w/")
-                or route_path.startswith("/kapsel/transfer/")
+                or (route_path.startswith("/kapsel/mcp-connect/") and "/transfer/" in route_path)
             )
             and not route_path.endswith("/mcp")
             and "/context" not in route_path
@@ -236,11 +236,8 @@ class WorkspaceServerTests(unittest.TestCase):
                 except KeyError:
                     pass
             else:
-                authorization = request_headers.get("Authorization", "")
-                if authorization.startswith("Bearer "):
-                    record = self.server.tokens.authenticate_control(
-                        authorization.removeprefix("Bearer ").strip()
-                    )
+                connection = self.server.static_mcp.get(route_path.split("/")[3])
+                record = self.server.tokens.get_by_app_id(connection["app_id"])
             if record is not None:
                 request_headers.setdefault(
                     "OpenKapsel-Plan-Id",
@@ -5049,14 +5046,11 @@ class WorkspaceServerTests(unittest.TestCase):
         self.assertEqual("reuse_mcp_bearer", download["transfer"]["authorization"])
         self.assertNotIn(record.token, json.dumps(download))
         self.assertNotIn(record.control_token, json.dumps(download))
+        transfer_base = self.mcp_endpoint(token).removesuffix("/mcp") + "/transfer"
         status, raw, headers = self.raw_request(
             "GET",
-            "/kapsel/transfer/fs/content?path=conditional.txt",
-            headers={
-                "Authorization": f"Bearer {record.control_token}",
-                "Range": "bytes=1-3",
-            },
-            authorize=False,
+            transfer_base + "/fs/content?path=conditional.txt",
+            headers={"Range": "bytes=1-3"},
         )
         self.assertEqual(206, status)
         self.assertEqual(b"pda", raw)
@@ -5084,8 +5078,8 @@ class WorkspaceServerTests(unittest.TestCase):
             self.server.config.upload_chunk_bytes,
             raw_transfer["recommended_chunk_size"],
         )
-        upload_path = f"/kapsel/transfer/upload/chunk/{upload['upload_id']}"
-        commit_path = f"/kapsel/transfer/upload/commit/{upload['upload_id']}"
+        upload_path = f"{transfer_base}/upload/chunk/{upload['upload_id']}"
+        commit_path = f"{transfer_base}/upload/commit/{upload['upload_id']}"
         status, raw, _ = self.raw_request(
             "PATCH",
             upload_path,
@@ -5093,30 +5087,29 @@ class WorkspaceServerTests(unittest.TestCase):
             {
                 "Content-Type": "application/octet-stream",
                 "Upload-Offset": "0",
-                "Authorization": f"Bearer {record.control_token}",
             },
-            authorize=False,
         )
-        self.assertEqual(200, status)
+        self.assertEqual(200, status, raw)
         self.assertEqual(len(binary), json.loads(raw)["offset"])
-        status, raw, _ = self.raw_request(
-            "POST",
-            commit_path,
-            headers={"Authorization": f"Bearer {record.control_token}"},
-            authorize=False,
-        )
+        status, raw, _ = self.raw_request("POST", commit_path)
         committed = json.loads(raw)
         self.assertEqual(201, status)
         self.assertEqual(digest, committed["sha256"])
         self.assertEqual(binary, (scope / "large.bin").read_bytes())
 
-        status, unauthorized, _ = self.raw_request(
+        status, _, _ = self.raw_request(
             "GET",
-            "/kapsel/transfer/fs/content?path=conditional.txt",
+            transfer_base + "/fs/content?path=conditional.txt",
             authorize=False,
         )
         self.assertEqual(401, status)
-        self.assertEqual("control_token_required", json.loads(unauthorized)["error"]["code"])
+        status, _, _ = self.raw_request(
+            "GET",
+            "/kapsel/transfer/fs/content?path=conditional.txt",
+            headers={"Authorization": f"Bearer {record.control_token}"},
+            authorize=False,
+        )
+        self.assertEqual(404, status)
 
     def test_recorded_read_files_item_error_finishes_context_operation(self) -> None:
         plan_id = self._ensure_test_plan("test-token")

@@ -102,16 +102,17 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("parentage is immutable", row)
 
 
-    def test_control_transfer_aliases_match_declared_methods(self):
-        text = (ROOT / "skills/openkapsel-rest/references/api-basics.md").read_text(encoding="utf-8")
-        section = text.split("## Control-only raw transfer aliases", 1)[1].split("\n## ", 1)[0]
-        aliases = re.findall(r"^- `([A-Z|]+) <service-base>/transfer(/[^`?]+)", section, re.M)
-        self.assertGreaterEqual(len(aliases), 5, aliases)
-        for methods, route in aliases:
-            sample = re.sub(r"<[^>]+>", "upload_sample", route)
-            with self.subTest(route=route):
-                self.assertTrue(sample == "/fs/content" or sample.startswith("/upload/"))
-                self.assertEqual(set(methods.split("|")), self._declared_methods(sample))
+    def test_bare_transfer_entrance_is_not_documented(self):
+        files = [
+            ROOT / "README.md",
+            *(ROOT / "docs").rglob("*.md"),
+            *(ROOT / "skills/openkapsel-rest").rglob("*.md"),
+        ]
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertNotIn("<service-base>/transfer", text)
+                self.assertNotIn("`/transfer/", text)
 
     def test_retired_file_api_names_are_not_documented(self):
         retired = ("`fs/search`", "`fs/read`", "fs/read_many", "byte_offset", "git_mapping_boundary")
