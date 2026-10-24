@@ -83,6 +83,14 @@ class SafePathAccess:
         # symlink in its ancestry. Pin the original resolved destination;
         # never follow a subsequently retargeted alias or a symlink below it.
         self._root_targets = {root: root.resolve(strict=False) for root in self.roots}
+        self._root_ids = {}
+        for root, target in self._root_targets.items():
+            try:
+                details = target.stat()
+            except OSError:
+                continue
+            if stat.S_ISDIR(details.st_mode):
+                self._root_ids[root] = (details.st_dev, details.st_ino)
 
     def anchor(self, path: Path) -> tuple[Path, tuple[str, ...]]:
         absolute = path.absolute()
@@ -203,6 +211,28 @@ class SafePathAccess:
         except OSError as exc:
             if descriptor >= 0:
                 os.close(descriptor)
+            # Android can allow opening a Termux directory by absolute path
+            # while SELinux prevents obtaining a descriptor for /data itself.
+            # Only retry these ancestor permission failures, and never trust
+            # an arbitrary directory reached through an altered prefix: its
+            # device/inode must match the root recorded at authorization time.
+            expected = self._root_ids.get(root)
+            if (sys.platform.startswith("linux")
+                    and exc.errno in {errno.EACCES, errno.EPERM}
+                    and expected is not None):
+                direct = -1
+                try:
+                    direct = os.open(target, DIRECTORY_FLAGS)
+                    actual = os.fstat(direct)
+                    if (actual.st_dev, actual.st_ino) != expected:
+                        raise OSError(errno.EPERM, "authorized root changed")
+                    if root.resolve(strict=False) != target:
+                        raise OSError(errno.EPERM, "authorized root alias changed")
+                    return direct
+                except OSError as fallback_error:
+                    if direct >= 0:
+                        os.close(direct)
+                    raise self._safe_error(root, fallback_error) from None
             raise SafePathAccess._safe_error(root, exc) from None
 
     @staticmethod

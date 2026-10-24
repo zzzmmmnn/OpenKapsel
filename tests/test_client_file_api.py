@@ -117,6 +117,51 @@ class ClientFileAPITests(unittest.TestCase):
             self.assertEqual(str(other), self.files.dispatch(
                 "resolve_path", {"path": str(alias), "directory": True}))
 
+    @unittest.skipIf(os.name == "nt", "POSIX Android ancestor fallback")
+    def test_linux_blocked_ancestor_fallback_pins_authorized_root(self):
+        from openkapsel.files.safe_paths import SafePathAccess, SafePathError
+        import openkapsel.files.safe_paths as safe_paths
+
+        with tempfile.TemporaryDirectory(prefix="kapsel-direct-root-") as raw:
+            base = Path(raw)
+            root, other = base / "export", base / "other"
+            root.mkdir()
+            other.mkdir()
+            (root / "ok.txt").write_text("PUBLIC", encoding="utf-8")
+            (other / "secret.txt").write_text("SECRET", encoding="utf-8")
+            access = SafePathAccess((root,))
+            original_open = os.open
+
+            def blocked_ancestor(path, flags, *args, **kwargs):
+                # Simulate Android: direct child path is accessible, but the
+                # kernel denies even O_PATH descriptor access to /data.
+                if os.fspath(path) == os.path.sep and "dir_fd" not in kwargs:
+                    raise PermissionError(errno.EACCES, "parent directory access denied")
+                return original_open(path, flags, *args, **kwargs)
+
+            with patch.object(safe_paths.sys, "platform", "linux"), \
+                    patch.object(safe_paths.os, "open", side_effect=blocked_ancestor):
+                with os.fdopen(access.open(root / "ok.txt"), "r") as stream:
+                    self.assertEqual("PUBLIC", stream.read())
+                descriptor = access.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    self.assertIn("ok.txt", os.listdir(descriptor))
+                finally:
+                    os.close(descriptor)
+
+            def changed_root(path, flags, *args, **kwargs):
+                if os.fspath(path) == os.path.sep and "dir_fd" not in kwargs:
+                    raise PermissionError(errno.EACCES, "parent directory access denied")
+                if os.fspath(path) == str(root) and "dir_fd" not in kwargs:
+                    return original_open(other, flags, *args, **kwargs)
+                return original_open(path, flags, *args, **kwargs)
+
+            with patch.object(safe_paths.sys, "platform", "linux"), \
+                    patch.object(safe_paths.os, "open", side_effect=changed_root):
+                with self.assertRaises(SafePathError):
+                    descriptor = access.open(root / "secret.txt")
+                    os.close(descriptor)
+
     @unittest.skipUnless(
         sys.platform.startswith("linux") and hasattr(os, "O_PATH"),
         "Linux O_PATH is required for execute-only parent traversal",
