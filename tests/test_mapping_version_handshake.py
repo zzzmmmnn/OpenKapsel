@@ -275,10 +275,41 @@ class ReloadDecisionTests(unittest.TestCase):
         executable, argv, env = execute.call_args.args
         self.assertEqual(os.sys.executable, executable)
         self.assertEqual("-c", argv[1])
-        self.assertIn("sys.path.insert(0,'/trusted/OpenKapsel')", argv[2])
-        self.assertEqual(["--config", "/config/client.json"], argv[-2:])
-        self.assertTrue(env["PYTHONPATH"].startswith("/trusted/OpenKapsel"))
+        self.assertIn(f"sys.path.insert(0,{str(source.root)!r})", argv[2])
+        self.assertEqual(["--config", str(config)], argv[-2:])
+        self.assertTrue(env["PYTHONPATH"].startswith(str(source.root)))
         self.assertEqual(digest, env["OPENKAPSEL_CLIENT_CONFIG_SHA256"])
+
+    def test_windows_reload_spawns_successor_without_crt_execve(self):
+        source = LocalSource(Path("/trusted/OpenKapsel"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION)
+        config = Path("/config/client.json")
+        with (
+            patch("openkapsel.client_runtime.client_reload.os.name", "nt"),
+            patch("openkapsel.client_runtime.client_reload.subprocess.Popen") as spawn,
+            patch("openkapsel.client_runtime.client_reload.os.execve") as execve,
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            exec_local_source(source, config, config_sha256="b" * 64)
+        self.assertEqual(0, stopped.exception.code)
+        argv = spawn.call_args.args[0]
+        self.assertEqual(os.sys.executable, argv[0])
+        self.assertEqual("-c", argv[1])
+        self.assertIn(f"sys.path.insert(0,{str(source.root)!r})", argv[2])
+        self.assertEqual(["--config", str(config)], argv[-2:])
+        self.assertTrue(spawn.call_args.kwargs["close_fds"])
+        self.assertEqual("b" * 64, spawn.call_args.kwargs["env"]["OPENKAPSEL_CLIENT_CONFIG_SHA256"])
+        self.assertNotIn("OPENKAPSEL_CLIENT_CONFIG_FD", spawn.call_args.kwargs["env"])
+        execve.assert_not_called()
+
+    def test_windows_reload_spawn_failure_does_not_exit_parent(self):
+        source = LocalSource(Path("/trusted/OpenKapsel"), __version__, "L" * 44, MAPPING_HANDSHAKE_VERSION)
+        config = Path("/config/client.json")
+        with (
+            patch("openkapsel.client_runtime.client_reload.os.name", "nt"),
+            patch("openkapsel.client_runtime.client_reload.subprocess.Popen", side_effect=OSError("launch failed")),
+            self.assertRaisesRegex(OSError, "launch failed"),
+        ):
+            exec_local_source(source, config, config_sha256="c" * 64)
 
 
 class ServerFirstHandshakeTests(unittest.TestCase):

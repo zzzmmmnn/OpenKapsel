@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,26 @@ def _open_windows_exclusive(path: Path) -> int:
         raise
 
 
+# The Windows successor races the old Client's exclusive CreateFileW handle.
+# Only a digest-pinned automatic reload may briefly wait for the old owner.
+WINDOWS_REEXEC_LOCK_WAIT_SECONDS = 15.0
+WINDOWS_REEXEC_LOCK_POLL_SECONDS = 0.1
+
+
+def _open_windows_reexec_config(path: Path, expected_digest: str | None) -> int:
+    if expected_digest is None:
+        return _open_windows_exclusive(path)
+    deadline = time.monotonic() + WINDOWS_REEXEC_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            return _open_windows_exclusive(path)
+        except ClientConfigLockedError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(WINDOWS_REEXEC_LOCK_POLL_SECONDS, remaining))
+
+
 def _lock(fd: int) -> None:
     if os.name == "nt":
         # Windows exclusivity is established atomically by CreateFileW above.
@@ -149,6 +170,10 @@ class ClientConfigLock:
         fd: int | None = None
         locked_here = False
         try:
+            if expected is not None and not _SHA256.fullmatch(expected):
+                raise ClientConfigChangedError(
+                    "automatic reload supplied an invalid configuration digest"
+                )
             if inherited is not None and os.name != "nt":
                 if not inherited.isdecimal():
                     raise ClientConfigChangedError(
@@ -170,7 +195,7 @@ class ClientConfigLock:
                     )
             else:
                 if os.name == "nt":
-                    fd = _open_windows_exclusive(path)
+                    fd = _open_windows_reexec_config(path, expected)
                 else:
                     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
                     flags |= getattr(os, "O_NOFOLLOW", 0)

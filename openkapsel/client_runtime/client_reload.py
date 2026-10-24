@@ -283,4 +283,11 @@ def exec_local_source(
         "runpy.run_module('openkapsel.client',run_name='__main__')"
     )
     argv = [sys.executable, "-c", bootstrap, "--config", str(config_path)]
+    if os.name == "nt":
+        # Windows CRT execve spawns a different PID then exits this process.
+        # Use Popen so a launch failure leaves this Client running, and do not
+        # inherit its exclusive configuration handle. The digest-pinned child
+        # waits briefly for the predecessor's handle to close before re-locking.
+        subprocess.Popen(argv, env=env, close_fds=True)
+        raise SystemExit(0)
     os.execve(sys.executable, argv, env)

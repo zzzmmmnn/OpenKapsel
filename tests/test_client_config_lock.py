@@ -17,6 +17,7 @@ from openkapsel.client_runtime.client_config import (
     ClientConfigChangedError,
     ClientConfigLock,
     ClientConfigLockedError,
+    _open_windows_reexec_config,
 )
 from openkapsel.client_runtime.client_files import ClientFiles
 if os.name == "nt":
@@ -79,6 +80,67 @@ class ClientConfigLockTests(unittest.TestCase):
                 self.assertEqual(digest, restored.sha256)
             finally:
                 restored.close()
+
+    def test_windows_handoff_retries_only_for_digest_pinned_reload(self):
+        path = Path("client.json")
+        denied = ClientConfigLockedError("old client holds configuration")
+        with (
+            patch("openkapsel.client_runtime.client_config._open_windows_exclusive",
+                  side_effect=[denied, denied, 42]) as opener,
+            patch("openkapsel.client_runtime.client_config.time.sleep") as sleep,
+        ):
+            self.assertEqual(42, _open_windows_reexec_config(path, "a" * 64))
+        self.assertEqual(3, opener.call_count)
+        self.assertEqual(2, sleep.call_count)
+        with (
+            patch("openkapsel.client_runtime.client_config._open_windows_exclusive",
+                  side_effect=denied) as opener,
+            patch("openkapsel.client_runtime.client_config.time.sleep") as sleep,
+            self.assertRaises(ClientConfigLockedError),
+        ):
+            _open_windows_reexec_config(path, None)
+        opener.assert_called_once_with(path)
+        sleep.assert_not_called()
+
+    def test_windows_handoff_timeout_remains_locked_not_unbounded(self):
+        denied = ClientConfigLockedError("another process owns config")
+        with (
+            patch("openkapsel.client_runtime.client_config._open_windows_exclusive",
+                  side_effect=denied) as opener,
+            patch("openkapsel.client_runtime.client_config.time.monotonic",
+                  side_effect=[0.0, 16.0]),
+            patch("openkapsel.client_runtime.client_config.time.sleep") as sleep,
+            self.assertRaises(ClientConfigLockedError),
+        ):
+            _open_windows_reexec_config(Path("client.json"), "a" * 64)
+        opener.assert_called_once()
+        sleep.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "real Windows config lock handoff")
+    def test_real_windows_reexec_waits_for_old_config_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.make_config(directory)
+            old = ClientConfigLock.acquire(path)
+            env = dict(os.environ, **{REEXEC_CONFIG_SHA256_ENV: old.sha256})
+            child = subprocess.Popen([
+                sys.executable, "-c",
+                "from openkapsel.client_runtime.client_config import ClientConfigLock;"
+                "import sys;"
+                "lock=ClientConfigLock.acquire(sys.argv[1]);"
+                "print('SUCCESS',flush=True);lock.close()",
+                str(path),
+            ], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                # The successor must remain alive while the parent still owns
+                # the non-shareable Windows CreateFileW handle.
+                import time
+                time.sleep(0.3)
+                self.assertIsNone(child.poll())
+            finally:
+                old.close()
+            output, error = child.communicate(timeout=12)
+            self.assertEqual(0, child.returncode, error)
+            self.assertIn("SUCCESS", output)
 
     @unittest.skipUnless(os.name == "nt", "Windows sharing-denial semantics")
     def test_windows_lock_denies_other_process_read_access(self):

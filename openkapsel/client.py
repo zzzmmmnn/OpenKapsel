@@ -690,15 +690,30 @@ def main():
                         raise SystemExit(1) from None
                     if delay:
                         time.sleep(delay)
-                    runtime.close()
                     config_fd = config_lock.exec_descriptor()
                     try:
+                        # On Windows keep this runtime alive until the new
+                        # process has been spawned successfully. Otherwise a
+                        # failed CreateProcess would leave the mapping offline.
+                        if os.name != "nt":
+                            runtime.close()
                         exec_local_source(
                             exc.source,
                             options.config,
                             config_sha256=config_lock.sha256,
                             config_fd=config_fd,
                         )
+                    except OSError as launch_error:
+                        if os.name != "nt":
+                            raise
+                        LOG.warning(
+                            "Updated Windows Client launch failed (%s); "
+                            "keeping current Client running",
+                            type(launch_error).__name__,
+                        )
+                        runtime.pending_reload = False
+                        time.sleep(30)
+                        continue
                     finally:
                         config_lock.restore_noninheritable()
                 except ClientVersionRequired as exc:
