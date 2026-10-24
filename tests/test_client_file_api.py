@@ -3,6 +3,7 @@
 import errno
 import hashlib
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -115,6 +116,48 @@ class ClientFileAPITests(unittest.TestCase):
                 self.files.dispatch("api_fs_read_files", arguments)
             self.assertEqual(str(other), self.files.dispatch(
                 "resolve_path", {"path": str(alias), "directory": True}))
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and hasattr(os, "O_PATH"),
+        "Linux O_PATH is required for execute-only parent traversal",
+    )
+    def test_file_rpc_under_execute_only_ancestors(self):
+        # Android/Termux can search /data parents without permission to list
+        # them. The export itself must remain readable and O_NOFOLLOW guarded.
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses execute-only directory permissions")
+        with tempfile.TemporaryDirectory(prefix="kapsel-search-only-") as raw:
+            parent = Path(raw) / "search-only"
+            root = parent / "export"
+            intermediate = root / "nested-search-only"
+            intermediate.mkdir(parents=True)
+            (root / "visible.txt").write_text("TOP", encoding="utf-8")
+            (intermediate / "child.txt").write_text("CHILD", encoding="utf-8")
+            parent.chmod(0o111)
+            intermediate.chmod(0o111)
+            try:
+                with self.assertRaises(PermissionError):
+                    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                    os.close(descriptor)
+                files = ClientFiles(root, writable=True)
+                try:
+                    result = files.dispatch("api_fs_list", {
+                        "body": {}, "query": {"path": ["."]},
+                        "display_root": "/workspace/phone",
+                    })
+                    self.assertEqual(200, result["status"], result)
+                    self.assertIn("visible.txt", {row["name"] for row in result["body"]["entries"]})
+                    child = files.dispatch("api_fs_read_files", {
+                        "body": {"paths": ["nested-search-only/child.txt"]},
+                        "query": {}, "display_root": "/workspace/phone",
+                    })
+                    self.assertEqual(200, child["status"], child)
+                    self.assertIn("CHILD", str(child))
+                finally:
+                    files.close()
+            finally:
+                parent.chmod(0o700)
+                intermediate.chmod(0o700)
 
     @unittest.skipIf(os.name == "nt", "POSIX openat no-follow traversal")
     def test_descriptor_root_parent_symlink_swap_cannot_escape(self):

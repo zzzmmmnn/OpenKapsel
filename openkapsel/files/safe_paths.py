@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +23,15 @@ DIRECTORY_FLAGS = (
     | getattr(os, "O_NOFOLLOW", 0)
 )
 NOFOLLOW_FLAGS = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+# Linux/Android permits searching execute-only parent directories without
+# granting read access to those parents. Termux can reach its home directory
+# through /data while O_RDONLY directory opens on /data may return EACCES.
+# Preserve O_DIRECTORY and O_NOFOLLOW so ancestor symlinks still fail closed.
+TRAVERSE_DIRECTORY_FLAGS = (
+    (getattr(os, "O_PATH", os.O_RDONLY) if sys.platform.startswith("linux") else os.O_RDONLY)
+    | getattr(os, "O_DIRECTORY", 0)
+    | NOFOLLOW_FLAGS
+)
 
 
 class SafePathError(OSError):
@@ -175,11 +185,18 @@ class SafePathAccess:
             except OSError as exc:
                 raise SafePathAccess._safe_error(root, exc) from None
         path = target.absolute()
+        parts = path.parts[1:]
         descriptor = -1
         try:
-            descriptor = os.open(path.anchor, DIRECTORY_FLAGS)
-            for component in path.parts[1:]:
-                next_descriptor = os.open(component, DIRECTORY_FLAGS, dir_fd=descriptor)
+            # Ancestors need only search permission. The authorized root
+            # itself still needs a readable directory handle for listing and
+            # related File RPC operations (O_PATH cannot be scanned).
+            descriptor = os.open(
+                path.anchor, TRAVERSE_DIRECTORY_FLAGS if parts else DIRECTORY_FLAGS
+            )
+            for index, component in enumerate(parts):
+                flags = DIRECTORY_FLAGS if index == len(parts) - 1 else TRAVERSE_DIRECTORY_FLAGS
+                next_descriptor = os.open(component, flags, dir_fd=descriptor)
                 os.close(descriptor)
                 descriptor = next_descriptor
             return descriptor
@@ -190,7 +207,8 @@ class SafePathAccess:
 
     @staticmethod
     def _open_directory(name: str, parent_fd: int) -> int:
-        return os.open(name, DIRECTORY_FLAGS, dir_fd=parent_fd)
+        # Intermediate directories are traversal anchors, never scanned here.
+        return os.open(name, TRAVERSE_DIRECTORY_FLAGS, dir_fd=parent_fd)
 
     @staticmethod
     def _safe_error(path: Path, exc: OSError) -> SafePathError:
