@@ -139,15 +139,17 @@ class ClientFileAPITests(unittest.TestCase):
                     raise PermissionError(errno.EACCES, "parent directory access denied")
                 return original_open(path, flags, *args, **kwargs)
 
-            with patch.object(safe_paths.sys, "platform", "linux"), \
-                    patch.object(safe_paths.os, "open", side_effect=blocked_ancestor):
-                with os.fdopen(access.open(root / "ok.txt"), "r") as stream:
-                    self.assertEqual("PUBLIC", stream.read())
-                descriptor = access.open(root, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    self.assertIn("ok.txt", os.listdir(descriptor))
-                finally:
-                    os.close(descriptor)
+            for platform in ("linux", "android"):
+                with self.subTest(platform=platform):
+                    with patch.object(safe_paths.sys, "platform", platform), \
+                            patch.object(safe_paths.os, "open", side_effect=blocked_ancestor):
+                        with os.fdopen(access.open(root / "ok.txt"), "r") as stream:
+                            self.assertEqual("PUBLIC", stream.read())
+                        descriptor = access.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                        try:
+                            self.assertIn("ok.txt", os.listdir(descriptor))
+                        finally:
+                            os.close(descriptor)
 
             def changed_root(path, flags, *args, **kwargs):
                 if os.fspath(path) == os.path.sep and "dir_fd" not in kwargs:
@@ -156,14 +158,16 @@ class ClientFileAPITests(unittest.TestCase):
                     return original_open(other, flags, *args, **kwargs)
                 return original_open(path, flags, *args, **kwargs)
 
-            with patch.object(safe_paths.sys, "platform", "linux"), \
-                    patch.object(safe_paths.os, "open", side_effect=changed_root):
-                with self.assertRaises(SafePathError):
-                    descriptor = access.open(root / "secret.txt")
-                    os.close(descriptor)
+            for platform in ("linux", "android"):
+                with self.subTest(platform=platform):
+                    with patch.object(safe_paths.sys, "platform", platform), \
+                            patch.object(safe_paths.os, "open", side_effect=changed_root):
+                        with self.assertRaises(SafePathError):
+                            descriptor = access.open(root / "secret.txt")
+                            os.close(descriptor)
 
     @unittest.skipUnless(
-        sys.platform.startswith("linux") and hasattr(os, "O_PATH"),
+        sys.platform.startswith(("linux", "android")) and hasattr(os, "O_PATH"),
         "Linux O_PATH is required for execute-only parent traversal",
     )
     def test_file_rpc_under_execute_only_ancestors(self):

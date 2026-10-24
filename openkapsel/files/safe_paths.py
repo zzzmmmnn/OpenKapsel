@@ -28,7 +28,7 @@ NOFOLLOW_FLAGS = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 # through /data while O_RDONLY directory opens on /data may return EACCES.
 # Preserve O_DIRECTORY and O_NOFOLLOW so ancestor symlinks still fail closed.
 TRAVERSE_DIRECTORY_FLAGS = (
-    (getattr(os, "O_PATH", os.O_RDONLY) if sys.platform.startswith("linux") else os.O_RDONLY)
+    (getattr(os, "O_PATH", os.O_RDONLY) if sys.platform.startswith(("linux", "android")) else os.O_RDONLY)
     | getattr(os, "O_DIRECTORY", 0)
     | NOFOLLOW_FLAGS
 )
@@ -217,7 +217,7 @@ class SafePathAccess:
             # an arbitrary directory reached through an altered prefix: its
             # device/inode must match the root recorded at authorization time.
             expected = self._root_ids.get(root)
-            if (sys.platform.startswith("linux")
+            if (sys.platform.startswith(("linux", "android"))
                     and exc.errno in {errno.EACCES, errno.EPERM}
                     and expected is not None):
                 direct = -1
