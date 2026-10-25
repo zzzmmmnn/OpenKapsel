@@ -101,6 +101,118 @@ class SharedManagerTests(unittest.TestCase):
         proc.wait()
         self.fail("short-idle manager failed to start")
 
+    def test_background_windows_creationflags_never_allocate_console(self):
+        from openkapsel import job_manager as jm
+
+        # Simulate Windows creation flags on all test hosts, including macOS.
+        no_window = 0x08000000
+        new_group = 0x00000200
+        detached = 0x00000008
+        with (patch.object(jm.os, "name", "nt"),
+              patch.object(jm.subprocess, "CREATE_NO_WINDOW", no_window, create=True),
+              patch.object(jm.subprocess, "CREATE_NEW_PROCESS_GROUP", new_group, create=True),
+              patch.object(jm.subprocess, "DETACHED_PROCESS", detached, create=True)):
+            self.assertEqual(no_window, jm._windows_creationflags())
+            flags = jm._windows_creationflags(process_group=True)
+            self.assertEqual(no_window | new_group, flags)
+            self.assertFalse(flags & detached)
+        self.assertEqual(0 if os.name != "nt" else no_window,
+                         jm._windows_creationflags())
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows process creation")
+    def test_windows_native_background_job_has_no_console(self):
+        import subprocess
+        from openkapsel import job_manager as jm
+
+        child = subprocess.run(
+            [sys.executable, "-c",
+             "import ctypes; print(ctypes.windll.kernel32.GetConsoleWindow())"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=10, creationflags=jm._windows_creationflags(process_group=True),
+        )
+        self.assertEqual(0, child.returncode, child.stderr)
+        self.assertEqual("0", child.stdout.strip())
+
+    def test_windows_daemon_launch_uses_no_console_process_group(self):
+        from unittest.mock import Mock
+        from openkapsel import job_manager as jm
+
+        self.home.mkdir()
+        running = {"version": jm.PROTOCOL, "pid": 1234}
+        no_window = 0x08000000
+        new_group = 0x00000200
+        with (patch.object(jm.os, "name", "nt"),
+              patch.object(jm.subprocess, "CREATE_NO_WINDOW", no_window, create=True),
+              patch.object(jm.subprocess, "CREATE_NEW_PROCESS_GROUP", new_group, create=True),
+              patch.object(jm, "prepare_home", return_value=self.home),
+              patch.object(jm, "connect_once", side_effect=[OSError("no daemon"), running]),
+              patch.object(jm, "_upgrade_if_older", return_value=running),
+              patch.object(jm.subprocess, "Popen", return_value=Mock()) as launch):
+            self.assertEqual(running, jm.ensure_running(self.home))
+        launch.assert_called_once()
+        self.assertEqual(no_window | new_group,
+                         launch.call_args.kwargs["creationflags"])
+        self.assertFalse(launch.call_args.kwargs["start_new_session"])
+
+    def test_windows_job_spawn_uses_no_console_and_retains_process_group(self):
+        from openkapsel import job_manager as jm
+
+        home = jm.prepare_home(self.home)
+        manager = jm.Manager(home)
+        requested = {
+            "task_id": "&NoWn&", "argv": [sys.executable, "-c", "print(1)"],
+            "cwd": str(self.root), "env": {}, "interactive": False,
+            "timeout_seconds": 10,
+        }
+        try:
+            with (patch.object(jm, "_windows_creationflags", return_value=0x08000200) as flags,
+                  patch.object(manager, "_spawn", side_effect=RuntimeError("intercept")) as launch):
+                with self.assertRaisesRegex(RuntimeError, "intercept"):
+                    manager._start(self.MAPPING_A, requested)
+            flags.assert_called_once_with(process_group=True)
+            self.assertEqual(0x08000200, launch.call_args.kwargs["creationflags"])
+        finally:
+            manager.launch_queue.put(None)
+            manager.launcher.join(timeout=3)
+            manager.db.close()
+
+    def test_windows_no_console_job_cancel_falls_back_to_hidden_taskkill(self):
+        import signal
+        import subprocess
+        from unittest.mock import Mock
+        from openkapsel import job_manager as jm
+
+        manager = jm.Manager(jm.prepare_home(self.home))
+        tid = self.MAPPING_A + ".&NoWn&"
+        manager.db.execute(
+            "INSERT INTO jobs(id,mapping_id,kind,started_at,pid,interactive) VALUES (?,?,?,?,?,?)",
+            (tid, self.MAPPING_A, "shell", time.time(), 12345, 0),
+        )
+        manager.db.commit()
+        process = Mock()
+        process.pid = 12345
+        process.poll.return_value = None
+        process.wait.side_effect = subprocess.TimeoutExpired("job", .4)
+        manager.processes[tid] = process
+        try:
+            with (patch.object(jm.os, "name", "nt"),
+                  patch.object(signal, "CTRL_BREAK_EVENT", 1, create=True),
+                  patch.object(jm, "_windows_creationflags", return_value=0x08000000),
+                  patch.object(subprocess, "run") as run):
+                manager._signal(tid, force=False)
+            process.send_signal.assert_called_once_with(1)
+            process.wait.assert_called_once_with(timeout=.4)
+            self.assertEqual(["taskkill", "/PID", "12345", "/T", "/F"],
+                             run.call_args.args[0])
+            self.assertEqual(0x08000000, run.call_args.kwargs["creationflags"])
+            self.assertEqual(1, manager.db.execute(
+                "SELECT force_killed FROM jobs WHERE id=?", (tid,),
+            ).fetchone()[0])
+        finally:
+            manager.launch_queue.put(None)
+            manager.launcher.join(timeout=3)
+            manager.db.close()
+
     def test_idle_manager_self_exits_then_next_job_starts_new_manager(self):
         from openkapsel.job_manager import connect_once
         proc = self._start_short_idle_daemon()

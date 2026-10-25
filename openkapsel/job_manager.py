@@ -50,6 +50,19 @@ MAX_MESSAGE = 2 * 1024 * 1024
 _START_LOCK = threading.Lock()
 
 
+def _windows_creationflags(*, process_group=False):
+    """Run background Manager processes without allocating a Windows console.
+
+    CREATE_NO_WINDOW is ignored when combined with DETACHED_PROCESS, so use
+    CREATE_NO_WINDOW directly. Keep independent process groups for Job control.
+    """
+    if os.name != "nt":
+        return 0
+    flags = subprocess.CREATE_NO_WINDOW
+    if process_group:
+        flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    return flags
+
 
 @lru_cache(maxsize=1)
 def manager_identity():
@@ -593,7 +606,7 @@ class Manager:
                 stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 start_new_session=os.name != "nt",
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                creationflags=_windows_creationflags(process_group=True),
                 close_fds=True,
                 pass_fds=prepared.pass_fds if prepared is not None else (),
             )
@@ -647,16 +660,25 @@ class Manager:
                         ["podman", "kill", "--signal", "KILL" if force else "INT",
                          "--", container[0]],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        timeout=8,
+                        timeout=8, creationflags=_windows_creationflags(),
                     )
                 except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
                     pass
             if os.name == "nt":
-                if force:
-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-                else:
-                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                if not force:
+                    try:
+                        process.send_signal(signal.CTRL_BREAK_EVENT)
+                        # Console-less background jobs cannot receive console
+                        # control events. Do not leave such jobs running forever.
+                        process.wait(timeout=.4)
+                        return
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                    self.db.execute("UPDATE jobs SET force_killed=1 WHERE id=?", (tid,))
+                    self.db.commit()
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=8, creationflags=_windows_creationflags())
             else:
                 os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
         except (ProcessLookupError, OSError):
@@ -977,7 +999,8 @@ def _legacy_manager_interpreter(home):
                  "ForEach-Object { $owner=Invoke-CimMethod -InputObject $_ -MethodName GetOwner; "
                  "if ($owner.User -eq $env:USERNAME -and $owner.Domain -eq $env:USERDOMAIN) "
                  "{ $_ | Select-Object ExecutablePath,CommandLine } } | ConvertTo-Json -Compress"],
-                capture_output=True, text=True, timeout=10, check=True)
+                capture_output=True, text=True, timeout=10, check=True,
+                creationflags=_windows_creationflags())
             records = json.loads(listing.stdout or "[]")
         except (OSError, ValueError, subprocess.SubprocessError):
             return None
@@ -1004,7 +1027,8 @@ def _retire_legacy_manager(home):
     outcome = subprocess.run(
         [old_python, "-I", "-m", "openkapsel.job_manager",
          "--state", str(home), "--stop"],
-        cwd=str(Path(home).parent), capture_output=True, text=True, timeout=30)
+        cwd=str(Path(home).parent), capture_output=True, text=True,
+        timeout=30, creationflags=_windows_creationflags())
     if outcome.returncode:
         raise RuntimeError(
             "old Manager has active jobs or could not be retired: " +
@@ -1072,8 +1096,7 @@ def ensure_running(home, *, allow_stale=False):
                 [sys.executable, "-m", "openkapsel.job_manager", "--state", str(home)],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                 close_fds=True, start_new_session=os.name != "nt",
-                creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-                               if os.name == "nt" else 0),
+                creationflags=_windows_creationflags(process_group=True),
             )
             threading.Thread(target=daemon_process.wait, daemon=True).start()
         finally:
