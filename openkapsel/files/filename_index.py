@@ -237,6 +237,11 @@ class FilenameIndex:
         return self._ready.is_set() and not self._closed
 
     def start(self) -> bool:
+        # watchfiles keeps Windows directory handles open without guaranteed
+        # FILE_SHARE_DELETE; this prevents ordinary folder rename/removal.
+        # Windows uses Everything IPC or on-demand bounded traversal instead.
+        if os.name == "nt":
+            return False
         if not watcher_available() or self._worker is not None:
             return self.ready
         self._watcher = threading.Thread(target=self._watch_loop, daemon=True,

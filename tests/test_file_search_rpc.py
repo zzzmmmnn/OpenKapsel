@@ -95,8 +95,8 @@ class EverythingIpcProtocolTests(unittest.TestCase):
         self.assertEqual("test", _literal_run("test[0-9].py", True))
 
 
-class WindowsSqliteFallbackTests(unittest.TestCase):
-    def test_platform_chooses_everything_then_watchfiles_on_windows(self):
+class WindowsSearchFallbackTests(unittest.TestCase):
+    def test_platform_chooses_everything_then_recursive_on_windows(self):
         from types import SimpleNamespace
         from openkapsel.rpc_plugins.file_search import _platform_backend
         with patch("openkapsel.rpc_plugins.file_search.os",
@@ -111,11 +111,11 @@ class WindowsSqliteFallbackTests(unittest.TestCase):
             return_value={"running": False},
         ), patch(
             "openkapsel.files.filename_index.watcher_available",
-            return_value=True,
+            side_effect=AssertionError("Windows must not check watchfiles"),
         ):
-            self.assertEqual(("sqlite_watch", None), _platform_backend())
+            self.assertEqual(("recursive", None), _platform_backend())
 
-    def test_windows_without_everything_or_watchfiles_advertises_recursive_search(self):
+    def test_windows_without_everything_advertises_recursive_search(self):
         from types import SimpleNamespace
         from openkapsel.rpc_plugins.file_search import _platform_backend
         with patch("openkapsel.rpc_plugins.file_search.os",
@@ -124,13 +124,21 @@ class WindowsSqliteFallbackTests(unittest.TestCase):
             return_value={"running": False},
         ), patch(
             "openkapsel.files.filename_index.watcher_available",
-            return_value=False,
+            side_effect=AssertionError("Windows must not use watchfiles"),
         ):
             self.assertEqual(("recursive", None), _platform_backend())
             state, reason, details = plugin.probe({})
             self.assertEqual("available", state)
             self.assertIsNone(reason)
             self.assertEqual("recursive", details["backend"])
+            self.assertEqual("everything_ipc_unavailable", details["reason"])
+
+    def test_windows_never_starts_a_background_filename_index(self):
+        from openkapsel.client import _use_background_filename_index
+        self.assertFalse(_use_background_filename_index("win32", "nt"))
+        self.assertFalse(_use_background_filename_index("linux", "nt"))
+        self.assertTrue(_use_background_filename_index("linux", "posix"))
+        self.assertFalse(_use_background_filename_index("darwin", "posix"))
 
     def test_recursive_fallback_without_index_filters_protected_and_reparse_paths(self):
         with tempfile.TemporaryDirectory() as directory:

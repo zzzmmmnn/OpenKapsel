@@ -415,6 +415,27 @@ class SharedFilenameIndexTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             private_database(self.root, self.src / "bad.db")
 
+    def test_windows_never_opens_persistent_directory_watch_handles(self):
+        # Even a direct caller must not start watchfiles on Windows, where
+        # directory handles can prevent ordinary rename/removal operations.
+        from openkapsel.files.filename_index import FilenameIndex
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            export = base / "export"
+            export.mkdir()
+            index = FilenameIndex(export, base / "state" / "index.db")
+            try:
+                with patch("openkapsel.files.filename_index.os",
+                           SimpleNamespace(name="nt")), patch(
+                    "openkapsel.files.filename_index.watcher_available",
+                    side_effect=AssertionError("watchfiles must not run"),
+                ):
+                    self.assertFalse(index.start())
+                self.assertIsNone(index._watcher)
+                self.assertIsNone(index._worker)
+            finally:
+                index.close()
+
 
 if __name__ == "__main__":
     unittest.main()

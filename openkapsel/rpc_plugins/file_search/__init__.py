@@ -58,8 +58,8 @@ def _platform_backend() -> tuple[str | None, str | None]:
         from . import everything_ipc
         if everything_ipc.status()["running"]:
             return "everything_ipc", None
-        from openkapsel.files.filename_index import watcher_available
-        return ("sqlite_watch", None) if watcher_available() else ("recursive", None)
+        # Do not hold directory watcher handles or build a second huge index.
+        return "recursive", None
     if sys.platform == "darwin":
         executable = shutil.which("mdfind")
         return ("mdfind", executable) if executable else (None, None)
@@ -77,8 +77,10 @@ def _backend_status() -> dict[str, Any]:
         details = everything_ipc.status()
         return {"backend": backend, "available": bool(details["running"]), **details}
     if backend is not None:
+        reason = ("everything_ipc_unavailable" if os.name == "nt" else
+                  "index_dependency_missing") if backend == "recursive" else None
         return {"backend": backend, "available": True,
-                **({"reason": "index_dependency_missing"} if backend == "recursive" else {})}
+                **({"reason": reason} if reason else {})}
     if sys.platform == "darwin":
         return {"backend": "mdfind", "available": False, "reason": "dependency_missing"}
     if sys.platform.startswith("linux"):
@@ -512,8 +514,8 @@ def _search(files, args):
             "returned": len(indexed["results"]),
         }
 
-    # Everything is preferred when available. The background SQLite index
-    # remains ready to take over if the Everything service later goes away.
+    # Windows never starts its own background index: use Everything IPC if
+    # accessible, otherwise bounded recursive scanning on each request.
     if platform_backend != "everything_ipc":
         accelerated = indexed_fallback()
         if accelerated is not None:
@@ -637,7 +639,7 @@ class FileSearchRpcPlugin:
     default_enabled = True
     description = (
         "Read-only indexed filename search scoped to the selected export. "
-        "Uses Everything IPC on Windows when running, otherwise shared SQLite/watchfiles; "
+        "Uses Everything IPC on Windows when accessible, otherwise bounded recursive scanning; "
         "mdfind on macOS and SQLite/watchfiles on Linux. Bounded recursive "
         "search remains available during index warmup or without watchfiles."
     )

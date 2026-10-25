@@ -168,6 +168,13 @@ class ClientRuntime:
             self.files.close()
 
 
+def _use_background_filename_index(platform: str, os_name: str) -> bool:
+    # Windows watchfiles retains per-directory handles that interfere with
+    # renaming/deleting folders. Everything IPC or bounded recursive search
+    # needs no Client-managed index or persistent directory watchers.
+    return platform.startswith("linux") and os_name != "nt"
+
+
 def _create_resources(config, *, protected_paths=()):
     url = config["url"]
     parsed = urlsplit(url)
@@ -239,16 +246,12 @@ def _create_resources(config, *, protected_paths=()):
         rpc_registry=rpc_registry,
         protected_paths=protected_paths,
     )
-    if sys.platform.startswith("linux") or os.name == "nt":
+    if _use_background_filename_index(sys.platform, os.name):
         from openkapsel.files.filename_index import FilenameIndex
         from openkapsel.files.filename_index import watcher_available
-        canonical_root = str(export_root).casefold() if os.name == "nt" else str(export_root)
-        root_key = hashlib.sha256(canonical_root.encode("utf-8")).hexdigest()[:24]
+        root_key = hashlib.sha256(str(export_root).encode("utf-8")).hexdigest()[:24]
         if protected_paths:
             state_dir = Path(protected_paths[0]).expanduser().resolve().parent / ".openkapsel-client-state"
-        elif os.name == "nt":
-            # An exported workspace must not contain its private search cache.
-            state_dir = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "OpenKapsel" / "state"
         else:
             state_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "openkapsel"
         try:
