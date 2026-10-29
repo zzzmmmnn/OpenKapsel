@@ -26,15 +26,22 @@ class DependencyGroupsTests(unittest.TestCase):
         self.assertIn("client", self.extras)
         self.assertIn("server", self.extras)
 
-    def test_client_is_websocket_proxy_and_cross_platform_watch_only(self):
+    def test_client_is_websocket_proxy_watch_and_bundled_linux_sqlite(self):
         deps = self.extras["client"]
-        self.assertEqual(3, len(deps))
-        for name in ("websocket-client", "python-socks", "watchfiles"):
+        self.assertEqual(4, len(deps))
+        for name in ("websocket-client", "python-socks", "watchfiles",
+                     "pysqlite3-binary"):
             self.assertEqual(
                 1, sum(req.startswith(name + ">=") for req in deps), name
             )
         self.assertIn("sys_platform == 'linux'", deps[2])
         self.assertIn("sys_platform == 'win32'", deps[2])
+        sqlite_req = deps[3]
+        self.assertEqual(
+            "pysqlite3-binary>=0.5.4,<0.6; "
+            "sys_platform == 'linux' and platform_machine == 'x86_64'",
+            sqlite_req,
+        )
 
     def test_server_extra_preserves_old_server_dependencies(self):
         server_reqs = self.extras["server"]
@@ -42,7 +49,7 @@ class DependencyGroupsTests(unittest.TestCase):
             "beautifulsoup4", "cryptography", "fastapi", "httpx",
             "jinja2", "lxml", "matplotlib", "numba", "numpy", "pandas",
             "pillow", "python-multipart", "PyYAML", "scipy", "sqlalchemy",
-            "uvicorn", "wsproto", "fusepy", "watchfiles",
+            "uvicorn", "wsproto", "fusepy", "watchfiles", "pysqlite3-binary",
         )
         self.assertEqual(len(expected), len(server_reqs))
         self.assertEqual(
@@ -50,6 +57,13 @@ class DependencyGroupsTests(unittest.TestCase):
             {req.split(";", 1)[0].split(">=", 1)[0].lower()
              for req in server_reqs},
         )
+        # The same minimum supported bundled SQLite must be present in both
+        # Python environments; it must not be applied to unsupported platforms.
+        sqlite_client = next(req for req in self.extras["client"]
+                             if req.startswith("pysqlite3-binary>="))
+        sqlite_server = next(req for req in server_reqs
+                             if req.startswith("pysqlite3-binary>="))
+        self.assertEqual(sqlite_client, sqlite_server)
 
     def test_bootstrap_full_client_does_not_include_server_extra(self):
         actual = bootstrap.load_requirements(ROOT)
