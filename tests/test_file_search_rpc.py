@@ -278,10 +278,11 @@ class WindowsSearchFallbackTests(unittest.TestCase):
                     "case_sensitive": True,
                 })
                 self.assertEqual(["a/README.md"], [row["path"] for row in strict_glob["body"]["results"]])
-            folded = dict(index._db.execute(
-                "SELECT name, folded FROM entries WHERE kind='file'"
-            ))
-            self.assertEqual("strasse.txt", folded["Straße.TXT"])
+            columns = [row[1] for row in index._db.execute("PRAGMA table_info(entries)")]
+            self.assertNotIn("folded", columns)  # avoid duplicate folded filenames
+            names = [row[0] for row in index._db.execute(
+                "SELECT name FROM entries WHERE kind='file'")]
+            self.assertIn("Straße.TXT", names)
             # Older system SQLite builds (including AlmaLinux 8) do not
             # necessarily provide FTS5's trigram tokenizer. The index should
             # enable it whenever the SQLite library actually supports it.
@@ -298,9 +299,15 @@ class WindowsSearchFallbackTests(unittest.TestCase):
                     trigram_available = True
             self.assertEqual(trigram_available, index._fts)
             if trigram_available:
-                self.assertEqual(
-                    5, index._db.execute("SELECT COUNT(*) FROM entry_grams").fetchone()[0]
-                )
+                # Contentless FTS5 does not support a full-table scan.
+                self.assertEqual(1, len(index._db.execute(
+                    "SELECT rowid FROM entry_grams WHERE entry_grams MATCH 'str'"
+                ).fetchall()))
+                self.assertEqual(2, len(index._db.execute(
+                    "SELECT rowid FROM entry_grams WHERE entry_grams MATCH 'rea'"
+                ).fetchall()))
+                self.assertEqual(0, index._db.execute(
+                    "SELECT COUNT(*) FROM pending_index").fetchone()[0])
 
     def test_missing_trigram_tokenizer_still_searches_folded_names(self):
         import sqlite3

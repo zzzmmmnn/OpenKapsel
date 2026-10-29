@@ -1,7 +1,7 @@
-"""Shared, private SQLite filename index for Linux and Windows native roots.
+"""Versioned, private SQLite filename metadata and asynchronous trigram index.
 
-The index is a cache, never an authority for filesystem access.  Callers must
-continue to check access and lstat results when presenting a candidate.
+A cache, never a filesystem access authority. Callers must still validate
+access and lstat when presenting a candidate.
 """
 from __future__ import annotations
 
@@ -180,11 +180,14 @@ def _literal_run(pattern: str, glob: bool) -> str:
 
 
 class FilenameIndex:
-    """One index per native filesystem root, usable by both sides.
+    """Persistent Linux filename metadata and asynchronous contentless trigram index.
 
-    An initial scan is required on each process start; search falls back until
-    the watcher is registered and the snapshot (plus queued deltas) is ready.
+    Filesystem reconciliation changes only differing rows.  The pending table
+    preserves the old indexed text until the FTS transaction commits.  Readers
+    include pending names so async indexing never hides new/renamed files.
     """
+
+    SCHEMA_VERSION = 2
 
     def __init__(self, root: Path, db_path: Path):
         self.root = Path(root).resolve(strict=True)
@@ -194,52 +197,89 @@ class FilenameIndex:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._watch_ready = threading.Event()
+        self._pending_event = threading.Event()
         self._events = queue.Queue(maxsize=4096)
         self._overflow = threading.Event()
         self._worker = None
         self._watcher = None
+        self._indexer = None
         self._closed = False
+
+        # A version mismatch is the ONLY reason to discard a stored index.
+        # A new database has no schema, and is initialized without deletion.
+        existed = self.database.exists()
+        if existed:
+            try:
+                with closing(sqlite3.connect(
+                    self.database.as_uri() + "?mode=ro", uri=True
+                )) as old:
+                    version = old.execute("PRAGMA user_version").fetchone()[0]
+            except sqlite3.DatabaseError:
+                # A corrupt database is not a schema-version mismatch.
+                raise
+            if version != self.SCHEMA_VERSION:
+                for suffix in ("", "-wal", "-shm"):
+                    Path(str(self.database) + suffix).unlink(missing_ok=True)
+
         self._db = sqlite3.connect(self.database, timeout=10, check_same_thread=False)
         if os.name != "nt":
             os.chmod(self.database, 0o600)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
-        self._db.execute("""CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL, folded TEXT NOT NULL, kind TEXT NOT NULL,
-            created_utc_ns INTEGER, modified_utc_ns INTEGER, size_bytes INTEGER)""")
-        self._db.execute("CREATE INDEX IF NOT EXISTS entries_path ON entries(path)")
-        self._db.execute("CREATE INDEX IF NOT EXISTS entries_name_order ON entries(name,path)")
-        self._db.execute("CREATE INDEX IF NOT EXISTS entries_size_order ON entries(size_bytes,path)")
-        self._db.execute("CREATE INDEX IF NOT EXISTS entries_modified_order ON entries(modified_utc_ns,path)")
+        self._db.executescript("""
+            CREATE TABLE IF NOT EXISTS entries (
+                id INTEGER PRIMARY KEY,
+                path TEXT UNIQUE NOT NULL,
+                parent TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_utc_ns INTEGER,
+                modified_utc_ns INTEGER,
+                size_bytes INTEGER,
+                visible INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS entries_parent ON entries(parent,path);
+            CREATE INDEX IF NOT EXISTS entries_name_order ON entries(name,path);
+            CREATE INDEX IF NOT EXISTS entries_size_order ON entries(size_bytes,path);
+            CREATE INDEX IF NOT EXISTS entries_modified_order ON entries(modified_utc_ns,path);
+            CREATE TABLE IF NOT EXISTS pending_index (
+                entry_id INTEGER PRIMARY KEY REFERENCES entries(id),
+                old_folded TEXT
+            );
+        """)
+        had_fts = self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='entry_grams'"
+        ).fetchone() is not None
         self._fts = False
         try:
             self._db.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS entry_grams "
-                "USING fts5(folded, content='entries', content_rowid='id', tokenize='trigram')"
+                "USING fts5(folded, content='', tokenize='trigram', "
+                "detail='none', columnsize=0)"
             )
-            self._db.executescript("""
-                CREATE TRIGGER IF NOT EXISTS entry_insert AFTER INSERT ON entries BEGIN
-                    INSERT INTO entry_grams(rowid, folded) VALUES(new.id,new.folded);
-                END;
-                CREATE TRIGGER IF NOT EXISTS entry_delete AFTER DELETE ON entries BEGIN
-                    INSERT INTO entry_grams(entry_grams,rowid,folded)
-                    VALUES('delete',old.id,old.folded);
-                END;
-            """)
             self._fts = True
+            if not had_fts:
+                # The FTS table is newly empty; even existing pending records
+                # cannot refer to indexed old terms in this new table.
+                self._db.execute("UPDATE pending_index SET old_folded=NULL "
+                                 "WHERE old_folded IS NOT NULL")
+                self._db.execute(
+                    "INSERT OR IGNORE INTO pending_index(entry_id,old_folded) "
+                    "SELECT id,NULL FROM entries WHERE visible=1"
+                )
         except sqlite3.OperationalError:
             self._fts = False
+        self._db.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
         self._db.commit()
+        if self._db.execute("SELECT 1 FROM pending_index LIMIT 1").fetchone():
+            self._pending_event.set()
 
     @property
     def ready(self) -> bool:
         return self._ready.is_set() and not self._closed
 
     def start(self) -> bool:
-        # watchfiles keeps Windows directory handles open without guaranteed
-        # FILE_SHARE_DELETE; this prevents ordinary folder rename/removal.
-        # Windows uses Everything IPC or on-demand bounded traversal instead.
+        # Never retain Windows directory handles, even from a direct caller.
         if os.name == "nt":
             return False
         if not watcher_available() or self._worker is not None:
@@ -247,20 +287,24 @@ class FilenameIndex:
         self._watcher = threading.Thread(target=self._watch_loop, daemon=True,
                                          name="openkapsel-index-watch")
         self._worker = threading.Thread(target=self._worker_loop, daemon=True,
-                                        name="openkapsel-index-build")
+                                        name="openkapsel-index-scan")
+        self._indexer = threading.Thread(target=self._indexer_loop, daemon=True,
+                                         name="openkapsel-index-fts")
         self._watcher.start()
+        self._indexer.start()
         self._worker.start()
         return True
 
-    def _watch_directories(self):
-        """Watch only accessible native directories, never foreign mounts.
+    @staticmethod
+    def _ignored(name: str) -> bool:
+        protected_name = name.casefold()
+        return (protected_name == ".recycle" or is_private_name(name)
+                or FileOperationSupportMixin._is_internal_transfer_name(name))
 
-        Recursive OS watcher registration can abort on an unreadable folder
-        (e.g. a mounted filesystem's lost+found), leaving later siblings
-        unwatched. Register each traversable same-device directory instead.
-        """
+    def _watch_directories(self):
+        """Enumerate watchable same-device directories, excluding mounts."""
         paths = [self.root]
-        for relative, _name, _folded, kind, *_metadata in self._entries(self.root):
+        for relative, _name, _folded, kind, *_ in self._entries(self.root):
             if kind == "directory":
                 directory = self.root / relative
                 if os.access(directory, os.R_OK | os.X_OK):
@@ -287,9 +331,6 @@ class FilenameIndex:
                             except queue.Full:
                                 self._overflow.set()
                                 self._ready.clear()
-                            # New directories require their own non-recursive
-                            # watches. Re-register, and rebuild to close the
-                            # brief race while the watch set changes.
                             if any(
                                 change == Change.added
                                 and Path(path).is_dir()
@@ -317,17 +358,13 @@ class FilenameIndex:
 
     def _worker_loop(self):
         try:
-            # Watch registration enumerates every accessible directory and can
-            # take longer than five seconds on large roots. Never abandon the
-            # builder while the watcher is still starting: that leaves an empty
-            # SQLite database and permanent recursive-search fallback.
+            # Watcher must be registered before scanning so no updates are lost.
             while not self._watch_ready.wait(timeout=1):
                 if self._stop.is_set() or not self._watcher.is_alive():
                     return
             if self._stop.is_set():
                 return
-            self.rebuild()
-            # Apply modifications observed while the initial scan was running.
+            self.reconcile()
             while True:
                 try:
                     changes = self._events.get_nowait()
@@ -338,7 +375,7 @@ class FilenameIndex:
                 self.apply(changes)
             if self._overflow.is_set():
                 self._overflow.clear()
-                self.rebuild()
+                self.reconcile()
             self._ready.set()
             last_reconcile = time.monotonic()
             while not self._stop.is_set():
@@ -350,29 +387,40 @@ class FilenameIndex:
                     break
                 if changes:
                     self.apply(changes)
-                if self._overflow.is_set() or time.monotonic() - last_reconcile >= _RECONCILE_SECONDS:
+                if (self._overflow.is_set()
+                        or time.monotonic() - last_reconcile >= _RECONCILE_SECONDS):
                     self._ready.clear()
                     self._overflow.clear()
-                    self.rebuild()
+                    self.reconcile()
                     last_reconcile = time.monotonic()
                     if not self._overflow.is_set():
                         self._ready.set()
         except Exception as exc:
             logging.getLogger(__name__).warning(
-                "Filename index builder stopped for %s; using recursive search: %s",
+                "Filename index scan stopped for %s; using recursive search: %s",
                 self.root, exc,
             )
             self._ready.clear()
         finally:
             self._ready.clear()
 
-    @staticmethod
-    def _ignored(name: str) -> bool:
-        protected_name = name.casefold()
-        return (protected_name == ".recycle" or is_private_name(name)
-                or FileOperationSupportMixin._is_internal_transfer_name(name))
+    def _indexer_loop(self):
+        try:
+            while not self._stop.is_set():
+                self._pending_event.wait(timeout=1)
+                if self._stop.is_set():
+                    return
+                self._pending_event.clear()
+                while not self._stop.is_set() and self._flush_pending(limit=1000):
+                    pass
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Filename FTS worker stopped for %s: %s", self.root, exc,
+            )
+            self._ready.clear()
 
     def _entries(self, path: Path):
+        """Legacy iterator used to enumerate directories for watcher setup."""
         stack = [path]
         while stack and not self._stop.is_set():
             current = stack.pop()
@@ -385,8 +433,6 @@ class FilenameIndex:
             ):
                 continue
             if os.name == "nt":
-                # Junctions and other reparse-point directories must never
-                # be followed or indexed, even if they share the same device.
                 try:
                     if getattr(current.lstat(), "st_file_attributes", 0) & 0x400:
                         continue
@@ -408,47 +454,189 @@ class FilenameIndex:
                 except OSError:
                     continue
 
-    def rebuild(self):
-        """Reconcile the complete native tree; never cross symlinks/mounts."""
-        with self._lock:
-            with self._db:
-                self._db.execute("DELETE FROM entries")
-                batch = []
-                for item in self._entries(self.root):
-                    batch.append(item)
-                    if len(batch) >= 1000:
-                        self._db.executemany(
-                            "INSERT INTO entries(path,name,folded,kind,created_utc_ns,modified_utc_ns,size_bytes) VALUES(?,?,?,?,?,?,?)",
-                            batch,
-                        )
-                        batch.clear()
-                if batch:
-                    self._db.executemany(
-                        "INSERT INTO entries(path,name,folded,kind,created_utc_ns,modified_utc_ns,size_bytes) VALUES(?,?,?,?,?,?,?)",
-                        batch,
-                    )
+    def _queue_index(self, entry_id: int, old_name: str | None) -> None:
+        # Keep the OLD indexed text on repeated changes until it is removed.
+        self._db.execute(
+            "INSERT OR IGNORE INTO pending_index(entry_id,old_folded) VALUES(?,?)",
+            (entry_id, old_name.casefold() if old_name is not None else None),
+        )
+        self._pending_event.set()
 
-    def apply(self, changes):
-        """Apply watcher changes. Directory moves reindex their entire subtree."""
-        paths = {Path(raw).resolve(strict=False) for _change, raw in changes}
+    def _upsert(self, relative: str, kind: str, created: int | None,
+                modified: int, size: int) -> None:
+        name = relative.rsplit("/", 1)[-1]
+        parent = relative.rpartition("/")[0] or "."
+        old = self._db.execute(
+            "SELECT id,name,kind,created_utc_ns,modified_utc_ns,size_bytes,visible "
+            "FROM entries WHERE path=?", (relative,),
+        ).fetchone()
+        if old is None:
+            cursor = self._db.execute(
+                "INSERT INTO entries(path,parent,name,kind,created_utc_ns,"
+                "modified_utc_ns,size_bytes,visible) VALUES(?,?,?,?,?,?,?,1)",
+                (relative, parent, name, kind, created, modified, size),
+            )
+            self._queue_index(cursor.lastrowid, None)
+        elif (old[1], old[2], old[3], old[4], old[5], old[6]) != (
+                name, kind, created, modified, size, 1):
+            if old[1] != name or not old[6]:
+                self._queue_index(old[0], old[1])
+            if old[2] == "directory" and kind != "directory":
+                self._retire(relative, descendants_only=True)
+            self._db.execute(
+                "UPDATE entries SET name=?,kind=?,created_utc_ns=?,"
+                "modified_utc_ns=?,size_bytes=?,visible=1 WHERE id=?",
+                (name, kind, created, modified, size, old[0]),
+            )
+
+    def _retire(self, relative: str, *, descendants_only=False) -> None:
+        """Tombstone a deleted subtree without losing the old FTS term."""
+        prefix = relative + "/"
+        if descendants_only:
+            sql = ("SELECT id,name FROM entries WHERE visible=1 AND "
+                   "path>=? AND path<?")
+            params = (prefix, prefix + "\U0010ffff")
+        else:
+            sql = ("SELECT id,name FROM entries WHERE visible=1 AND "
+                   "(path=? OR (path>=? AND path<?))")
+            params = (relative, prefix, prefix + "\U0010ffff")
+        rows = self._db.execute(sql, params).fetchall()
+        for entry_id, name in rows:
+            self._queue_index(entry_id, name)
+            self._db.execute(
+                "UPDATE entries SET visible=0 WHERE id=?", (entry_id,),
+            )
+
+    def _reconcile_tree(self, start: Path):
+        """Compare direct children directory-by-directory; never erase unseen trees.
+
+        A failed scandir leaves all cached children untouched, avoiding false
+        deletions for temporarily unreadable directories.
+        """
+        stack = [start]
+        if start != self.root:
+            try:
+                device, mode, size, modified, created = _metadata(start)
+                if (device != self._device or
+                        not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)) or
+                        start.is_symlink()):
+                    raise OSError("unsupported filesystem entry")
+                if os.name == "nt" and getattr(start.lstat(), "st_file_attributes", 0) & 0x400:
+                    raise OSError("reparse point")
+            except OSError:
+                with self._lock, self._db:
+                    self._retire(start.relative_to(self.root).as_posix())
+                return
+            relative = start.relative_to(self.root).as_posix()
+            with self._lock, self._db:
+                self._upsert(relative, "directory" if stat.S_ISDIR(mode) else "file",
+                             created, modified, size)
+            if stat.S_ISREG(mode):
+                return
+        while stack and not self._stop.is_set():
+            current = stack.pop()
+            relative_dir = current.relative_to(self.root).as_posix()
+            found = []
+            descend = []
+            seen = set()
+            try:
+                with os.scandir(current) as iterator:
+                    for item in iterator:
+                        if self._ignored(item.name):
+                            continue
+                        child = Path(item.path)
+                        relative = child.relative_to(self.root).as_posix()
+                        try:
+                            if item.is_symlink():
+                                continue
+                            device, mode, size, modified, created = _metadata(child)
+                            if (device != self._device
+                                    or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
+                                continue
+                            if os.name == "nt" and getattr(child.lstat(), "st_file_attributes", 0) & 0x400:
+                                continue
+                        except OSError:
+                            # Cannot stat a child: do not treat it as deleted.
+                            seen.add(relative)
+                            continue
+                        seen.add(relative)
+                        kind = "directory" if stat.S_ISDIR(mode) else "file"
+                        found.append((relative, kind, created, modified, size))
+                        if kind == "directory":
+                            descend.append(child)
+            except OSError:
+                continue
+            with self._lock, self._db:
+                for relative, kind, created, modified, size in found:
+                    self._upsert(relative, kind, created, modified, size)
+                old_children = self._db.execute(
+                    "SELECT path FROM entries WHERE parent=? AND visible=1",
+                    (relative_dir,),
+                ).fetchall()
+                for (old_path,) in old_children:
+                    if old_path not in seen:
+                        self._retire(old_path)
+            stack.extend(descend)
+
+    def reconcile(self) -> None:
+        """Full filesystem check, but database and FTS updates are incremental."""
+        self._reconcile_tree(self.root)
+
+    def rebuild(self) -> None:
+        """Compatibility entrypoint; reconcile changes, never clear stored rows."""
+        self.reconcile()
+        # Explicit rebuild callers expect search results immediately.
+        while self._flush_pending(limit=1000):
+            pass
+
+    def apply(self, changes) -> None:
+        """Update only changed paths and affected directory subtrees."""
+        # Keep the lexical path: resolving symlinks could turn a deleted/changed
+        # symlink into a different path and leave a stale indexed entry behind.
+        paths = {Path(raw).parent.resolve(strict=False) / Path(raw).name
+                 for _change, raw in changes}
+        for path in paths:
+            if self._stop.is_set():
+                break
+            try:
+                relative = path.relative_to(self.root)
+            except ValueError:
+                continue
+            if not relative.parts or any(self._ignored(p) for p in relative.parts):
+                continue
+            self._reconcile_tree(path)
+
+    def _flush_pending(self, limit=1000) -> bool:
+        """Synchronize pending mutations and FTS atomically; safe after crashes."""
+        if not self._fts:
+            # Preserve pending changes until an FTS-capable SQLite is present.
+            return False
         with self._lock:
+            rows = self._db.execute(
+                "SELECT p.entry_id,p.old_folded,e.name,e.visible "
+                "FROM pending_index p JOIN entries e ON e.id=p.entry_id "
+                "ORDER BY p.entry_id LIMIT ?", (limit,),
+            ).fetchall()
+            if not rows:
+                return False
             with self._db:
-                for path in paths:
-                    try:
-                        relative = path.relative_to(self.root)
-                    except ValueError:
-                        continue
-                    if not relative.parts or any(self._ignored(p) for p in relative.parts):
-                        continue
-                    key = relative.as_posix()
+                for entry_id, old_folded, name, visible in rows:
+                    if old_folded is not None:
+                        self._db.execute(
+                            "INSERT INTO entry_grams(entry_grams,rowid,folded) "
+                            "VALUES('delete',?,?)", (entry_id, old_folded),
+                        )
+                    if visible:
+                        self._db.execute(
+                            "INSERT INTO entry_grams(rowid,folded) VALUES(?,?)",
+                            (entry_id, name.casefold()),
+                        )
+                    else:
+                        self._db.execute("DELETE FROM entries WHERE id=?", (entry_id,))
                     self._db.execute(
-                        "DELETE FROM entries WHERE path=? OR substr(path,1,?)=?",
-                        (key, len(key)+1, key+"/"),
+                        "DELETE FROM pending_index WHERE entry_id=?", (entry_id,),
                     )
-                    self._db.executemany(
-                        "INSERT INTO entries(path,name,folded,kind,created_utc_ns,modified_utc_ns,size_bytes) VALUES(?,?,?,?,?,?,?)",
-                        self._entries(path),
-                    )
+            return True
 
     def search(self, scope: Path, query: str, *, glob: bool = False,
                case_sensitive: bool = False, offset: int = 0, limit: int = 50,
@@ -466,33 +654,44 @@ class FilenameIndex:
         prefix = scope_rel.as_posix()
         pattern = query if case_sensitive else query.casefold()
         hint = _literal_run(pattern, glob).casefold()
-        # FTS5's trigram LIKE optimization needs >=3 literal chars and no
-        # ESCAPE clause. Percent/underscore hints use the safe full scan.
-        fast = self._fts and len(hint) >= 3 and not any(c in hint for c in "%_")
+        # The contentless FTS5 table cannot serve LIKE (its text is NULL).
+        # MATCH one complete trigram, and confirm the full name in Python.
+        fast = self._fts and len(hint) >= 3
         if sort_by not in {"name", "path", "size", "modified"} or sort_order not in {"asc", "desc"}:
             raise ValueError("invalid index sorting")
         if file_type not in {"all", "file", "directory"}:
             raise ValueError("invalid indexed file type")
-        base = ("SELECT e.path,e.name,e.folded,e.kind,e.created_utc_ns,e.modified_utc_ns,e.size_bytes FROM entries e "
-                "JOIN entry_grams f ON f.rowid=e.id WHERE f.folded LIKE ?"
-                if fast else "SELECT e.path,e.name,e.folded,e.kind,e.created_utc_ns,e.modified_utc_ns,e.size_bytes FROM entries e WHERE 1=1")
-        args = ["%" + hint + "%"] if fast else []
+        cols = "e.path,e.name,e.kind,e.created_utc_ns,e.modified_utc_ns,e.size_bytes"
+        if fast:
+            # Exclude pending rows from the old index, then add their current
+            # metadata directly, including new names awaiting indexing.
+            match = '"' + hint[:3].replace('"', '""') + '"'
+            base = (
+                f"SELECT * FROM (SELECT {cols} FROM entries e "
+                "JOIN entry_grams ON entry_grams.rowid=e.id "
+                "WHERE entry_grams MATCH ? AND e.visible=1 AND NOT EXISTS "
+                "(SELECT 1 FROM pending_index p WHERE p.entry_id=e.id) "
+                f"UNION ALL SELECT {cols} FROM entries e "
+                "JOIN pending_index p ON p.entry_id=e.id "
+                "WHERE e.visible=1) e WHERE 1=1"
+            )
+            args = [match]
+        else:
+            base = f"SELECT {cols} FROM entries e WHERE e.visible=1"
+            args = []
         if prefix != ".":
             base += " AND e.path >= ? AND e.path < ?"
             args.extend([prefix + "/", prefix + "/\U0010ffff"])
         if file_type != "all":
             base += " AND e.kind = ?"
             args.append(file_type)
-        # Mount roots, including unmounted registration placeholders, are
-        # excluded in SQL before sorting/limiting to preserve native Top N.
         for mount in excluded_roots:
             mount = Path(mount)
             try:
                 relative_mount = mount.relative_to(self.root).as_posix()
             except ValueError:
                 continue
-            base += (" AND e.path != ? AND NOT "
-                     "(e.path >= ? AND e.path < ?)")
+            base += " AND e.path != ? AND NOT (e.path >= ? AND e.path < ?)"
             args.extend([relative_mount, relative_mount + "/",
                          relative_mount + "/\U0010ffff"])
         order_col = {"name": "name", "path": "path", "size": "size_bytes",
@@ -506,11 +705,11 @@ class FilenameIndex:
         with self._lock:
             self._db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
             try:
-                for relative, name, folded, kind, created, modified, size in self._db.execute(base, args):
+                for relative, name, kind, created, modified, size in self._db.execute(base, args):
                     if time.monotonic() >= deadline:
                         timed_out = True
                         break
-                    text = name if case_sensitive else folded
+                    text = name if case_sensitive else name.casefold()
                     matched = (fnmatch.fnmatchcase(text, pattern) if glob
                                else pattern in text)
                     if not matched:
@@ -542,9 +741,12 @@ class FilenameIndex:
         self._closed = True
         self._ready.clear()
         self._stop.set()
+        self._pending_event.set()
         if self._worker is not None:
             self._worker.join(timeout=4)
         if self._watcher is not None:
             self._watcher.join(timeout=4)
+        if self._indexer is not None:
+            self._indexer.join(timeout=4)
         with self._lock:
             self._db.close()
