@@ -608,9 +608,9 @@ class FilenameIndex:
 
     def _flush_pending(self, limit=1000) -> bool:
         """Synchronize pending mutations and FTS atomically; safe after crashes."""
-        if not self._fts:
-            # Preserve pending changes until an FTS-capable SQLite is present.
-            return False
+        # On SQLite without a trigram tokenizer, the same durable queue
+        # still cleans up tombstones. Only FTS postings are omitted; searches
+        # use the metadata table and a future FTS installation backfills it.
         with self._lock:
             rows = self._db.execute(
                 "SELECT p.entry_id,p.old_folded,e.name,e.visible "
@@ -621,16 +621,17 @@ class FilenameIndex:
                 return False
             with self._db:
                 for entry_id, old_folded, name, visible in rows:
-                    if old_folded is not None:
+                    if self._fts and old_folded is not None:
                         self._db.execute(
                             "INSERT INTO entry_grams(entry_grams,rowid,folded) "
                             "VALUES('delete',?,?)", (entry_id, old_folded),
                         )
                     if visible:
-                        self._db.execute(
-                            "INSERT INTO entry_grams(rowid,folded) VALUES(?,?)",
-                            (entry_id, name.casefold()),
-                        )
+                        if self._fts:
+                            self._db.execute(
+                                "INSERT INTO entry_grams(rowid,folded) VALUES(?,?)",
+                                (entry_id, name.casefold()),
+                            )
                     else:
                         self._db.execute("DELETE FROM entries WHERE id=?", (entry_id,))
                     self._db.execute(

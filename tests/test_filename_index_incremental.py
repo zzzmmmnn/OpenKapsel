@@ -220,14 +220,15 @@ class IncrementalFilenameIndexTests(unittest.TestCase):
         try:
             self.assertFalse(previous._fts)
             previous.rebuild()
-            self.assertEqual(1, previous._db.execute(
+            self.assertEqual(0, previous._db.execute(
                 "SELECT COUNT(*) FROM pending_index"
-            ).fetchone()[0])
+            ).fetchone()[0])  # fallback worker drains tombstones safely
         finally:
             previous.close()
         current = self.open_index()
         try:
-            self.assertTrue(current._fts)
+            if not current._fts:
+                self.skipTest("SQLite FTS5 Trigram is unavailable on this host")
             self.assertTrue(current._flush_pending())
             current._ready.set()
             self.assertEqual(1, current.search(self.root, "recovered")["result_count"])
@@ -239,6 +240,8 @@ class IncrementalFilenameIndexTests(unittest.TestCase):
         file.write_text("data")
         old = self.open_index()
         try:
+            if not old._fts:
+                self.skipTest("SQLite FTS5 Trigram is unavailable on this host")
             old.rebuild()
             original_id = old._db.execute(
                 "SELECT id FROM entries WHERE path='restored-index.txt'"
@@ -269,6 +272,45 @@ class IncrementalFilenameIndexTests(unittest.TestCase):
             self.assertEqual(1, restored.search(self.root, "restored")["result_count"])
         finally:
             restored.close()
+
+    def test_no_trigram_fallback_drains_pending_and_preserves_live_entries(self):
+        class NoTrigram(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                if "USING fts5(" in sql:
+                    raise sqlite3.OperationalError("no such tokenizer: trigram")
+                return super().execute(sql, parameters)
+
+        real_connect = sqlite3.connect
+        path = self.root / "fallback-report.txt"
+        path.write_text("before")
+        with patch("openkapsel.files.filename_index.sqlite3.connect",
+                   side_effect=lambda *args, **kw: real_connect(
+                       *args, factory=NoTrigram, **kw)):
+            index = self.open_index()
+        try:
+            self.assertFalse(index._fts)
+            index.rebuild()
+            index._ready.set()
+            self.assertEqual(1, index.search(self.root, "report")["result_count"])
+            self.assertEqual(0, index._db.execute(
+                "SELECT COUNT(*) FROM pending_index"
+            ).fetchone()[0])
+            path.unlink()
+            index.reconcile()
+            self.assertEqual(0, index.search(self.root, "report")["result_count"])
+            self.assertEqual(1, index._db.execute(
+                "SELECT COUNT(*) FROM entries WHERE visible=0"
+            ).fetchone()[0])
+            self.assertTrue(index._flush_pending())
+            self.assertEqual(0, index._db.execute(
+                "SELECT COUNT(*) FROM pending_index"
+            ).fetchone()[0])
+            self.assertEqual(0, index._db.execute(
+                "SELECT COUNT(*) FROM entries"
+            ).fetchone()[0])
+        finally:
+            index.close()
+
 
 if __name__ == "__main__":
     unittest.main()
