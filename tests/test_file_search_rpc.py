@@ -310,7 +310,7 @@ class WindowsSearchFallbackTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM pending_index").fetchone()[0])
 
     def test_missing_trigram_tokenizer_still_searches_folded_names(self):
-        import sqlite3
+        from openkapsel.files.filename_index import sqlite3
         from openkapsel.files.filename_index import FilenameIndex
 
         class NoTrigramConnection(sqlite3.Connection):

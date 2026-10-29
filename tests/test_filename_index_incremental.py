@@ -1,6 +1,6 @@
 """Regression tests for durable, incremental filename index reconciliation."""
 import os
-import sqlite3
+from openkapsel.files.filename_index import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
