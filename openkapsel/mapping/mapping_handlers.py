@@ -761,6 +761,7 @@ class MappingHandlersMixin:
             "url": url + "/mapping-connect/" + row["id"], "token": secret,
             "root": "/path/to/export", "writable": row["writable"], "allow_exec": row["allow_exec"],
             "auto_reload": True, "job_sandbox": {},
+            "limits": {"max_tasks": 4, "max_seconds": 3600, "memory_mb": 1024, "cpus": 2},
             "transport_timeout_seconds": 60,
             "rpc": {"git": True, "archive": True},
             "rpc_plugins": {},

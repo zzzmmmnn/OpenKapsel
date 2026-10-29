@@ -63,6 +63,10 @@ class MappingHTTPTests(unittest.TestCase):
         self.assertNotIn("source_root", config)
         self.assertTrue(config["auto_reload"])
         self.assertEqual({}, config["job_sandbox"])
+        self.assertEqual(
+            {"max_tasks": 4, "max_seconds": 3600, "memory_mb": 1024, "cpus": 2},
+            config["limits"],
+        )
         self.assertEqual({"git": True, "archive": True}, config["rpc"])
         self.assertEqual({}, config["rpc_plugins"])
         self.assertNotIn(config["token"].encode(), self.request("GET", path, headers=auth)[2])
