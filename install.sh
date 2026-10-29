@@ -171,6 +171,22 @@ verify_installation() {
     systemd-analyze verify "/etc/systemd/system/${SERVICE_NAME}-images.service"
     (cd "$INSTALL_DIR" && "$INSTALL_DIR/venv/bin/python" -m compileall -q openkapsel openkapsel_runtime)
     "$INSTALL_DIR/venv/bin/python" -c 'import PIL, bs4, cryptography, fastapi, httpx, jinja2, lxml, matplotlib, multipart, numba, numpy, pandas, scipy, sqlalchemy, uvicorn, openkapsel_runtime, yaml; from matplotlib import font_manager; assert font_manager.findfont("DejaVu Sans")'
+    # Linux x86-64 uses bundled SQLite from the pinned server extra.
+    # Verify the tokenizer, not just system sqlite3 or package metadata.
+    if [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]]; then
+        "$INSTALL_DIR/venv/bin/python" - <<'PYSQLITE'
+from importlib.metadata import version
+from packaging.version import Version
+from openkapsel.files import filename_index
+
+assert Version(version("pysqlite3-binary")) >= Version("0.5.4")
+assert Version(filename_index.sqlite3.sqlite_version) >= Version("3.34.0")
+with filename_index.sqlite3.connect(":memory:") as db:
+    db.execute("CREATE VIRTUAL TABLE fts_probe USING fts5(name, tokenize='trigram')")
+    db.execute("INSERT INTO fts_probe(name) VALUES('filename-report.pdf')")
+    assert db.execute("SELECT count(*) FROM fts_probe WHERE name LIKE '%report%'").fetchone()[0] == 1
+PYSQLITE
+    fi
     fc-list ':family=DejaVu Sans' | grep -q . || { printf 'missing DejaVu Sans font\n' >&2; failed=1; }
     fc-list ':family=Noto Sans CJK SC' | grep -q . || { printf 'missing Noto Sans CJK SC font\n' >&2; failed=1; }
     if "$INSTALL_DIR/venv/bin/python" - "$CONFIG_FILE" <<'PY'

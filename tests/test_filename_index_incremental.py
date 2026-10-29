@@ -10,6 +10,24 @@ from openkapsel.files.filename_index import FilenameIndex
 
 
 class IncrementalFilenameIndexTests(unittest.TestCase):
+    def test_bundled_sqlite_is_used_when_installed(self):
+        import importlib.util
+        if importlib.util.find_spec("pysqlite3") is None:
+            self.skipTest("pysqlite3-binary not installed on this platform")
+        from openkapsel.files import filename_index
+        import pysqlite3
+        self.assertIs(filename_index.sqlite3, pysqlite3)
+        self.assertGreaterEqual(tuple(map(int, pysqlite3.sqlite_version.split(".")[:2])),
+                                (3, 34))
+        with filename_index.sqlite3.connect(":memory:") as db:
+            db.execute(
+                "CREATE VIRTUAL TABLE f USING fts5(name, tokenize='trigram')"
+            )
+            db.execute("INSERT INTO f(name) VALUES('report.filename')")
+            self.assertEqual(1, db.execute(
+                "SELECT count(*) FROM f WHERE name LIKE '%port%'"
+            ).fetchone()[0])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -496,6 +496,8 @@ Local resource limits can be set in `limits`: `memory_mb`, `processes`, and `cpu
 
 ## Indexed file search RPC
 
+On Linux x86-64, the Server and Client extras install `pysqlite3-binary>=0.5.4,<0.6` into the Python virtual environment. The filename index prefers its bundled SQLite (with FTS5 Trigram) without replacing system SQLite; other architectures or installations without it retain the metadata-search fallback. The installer uses project extras, so upgrades reinstall it.
+
 On Linux, the SQLite filename index uses a versioned, persistent database:
 `entries` holds file metadata, `pending_index` durably records outstanding
 changes, and contentless FTS5 Trigram stores only search postings. On startup

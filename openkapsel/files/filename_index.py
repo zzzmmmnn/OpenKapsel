@@ -15,7 +15,13 @@ from contextlib import closing
 import os
 import queue
 import re
-import sqlite3
+# Keep the newer SQLite isolated to the filename index. AlmaLinux 8 ships
+# SQLite 3.26 through Python's stdlib, which lacks FTS5's trigram tokenizer.
+# pysqlite3-binary bundles newer SQLite without replacing system libsqlite3.
+try:
+    import pysqlite3 as sqlite3
+except ImportError:
+    import sqlite3
 import stat
 import sys
 import threading

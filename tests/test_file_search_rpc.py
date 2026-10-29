@@ -286,14 +286,14 @@ class WindowsSearchFallbackTests(unittest.TestCase):
             # Older system SQLite builds (including AlmaLinux 8) do not
             # necessarily provide FTS5's trigram tokenizer. The index should
             # enable it whenever the SQLite library actually supports it.
-            import sqlite3
-            with sqlite3.connect(":memory:") as probe:
+            from openkapsel.files import filename_index as index_module
+            with index_module.sqlite3.connect(":memory:") as probe:
                 try:
                     probe.execute(
                         "CREATE VIRTUAL TABLE trigram_probe "
                         "USING fts5(folded, tokenize='trigram')"
                     )
-                except sqlite3.OperationalError:
+                except index_module.sqlite3.OperationalError:
                     trigram_available = False
                 else:
                     trigram_available = True
