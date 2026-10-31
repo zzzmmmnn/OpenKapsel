@@ -90,6 +90,229 @@ class JobSandboxTests(unittest.TestCase):
         finally:
             prepared.cleanup()
 
+    def test_seatbelt_uses_dynamic_named_filters_without_scanning_the_tree(self):
+        from openkapsel import job_sandbox
+        # Even a large tree must compile a constant-sized rule set.
+        for i in range(70):
+            repo = self.workspace / f"repo-{i}" / ".git"
+            repo.mkdir(parents=True)
+            (repo / "config").write_text("private")
+        with (
+            patch.object(job_sandbox.platform, "system", return_value="Darwin"),
+            patch.object(job_sandbox.shutil, "which", return_value=sys.executable),
+            patch.object(job_sandbox, "_macos_xcode_developer_dir", return_value=None),
+            patch("openkapsel.auth.path_access.existing_pattern_masks",
+                  side_effect=AssertionError("Seatbelt must not call os.walk")),
+        ):
+            prepared = prepare_job(
+                self._spec("seatbelt", writable=True),
+                ["/bin/true"], str(self.workspace), {}, self.state,
+            )
+        try:
+            profile = prepared.argv[prepared.argv.index("-p") + 1]
+            self.assertLess(len(profile), 8000)
+            self.assertIn('(regex ', profile)
+            self.assertNotIn('repo-69', profile)
+            self.assertEqual(2, profile.count('[.]openkapsel-'))
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin",
+                         "real sandbox-exec priority test requires macOS")
+    def test_real_macos_dynamic_protect_priority_and_new_paths(self):
+        from openkapsel import job_sandbox
+
+        def make_file(relative, value="PRIVATE"):
+            f = self.workspace / relative
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(value)
+            return f
+
+        plain = make_file("plain.txt", "VISIBLE")
+        git_secret = make_file("repo/.git/config")
+        git_exception = make_file("repo/.git/public/allowed.txt")
+        nested_sensitive = make_file("repo/.git/public/nested/.git/config")
+        mixedcase = make_file("repo/.GiT/config")
+        attributes = make_file("repo/.gitattributes")
+        absolute = make_file("hard/secret.txt")
+        hard_child = make_file("hard/child/secret.txt")
+        ro_file = make_file("read-only/item.txt")
+        rw_file = make_file("read-only/writable/item.txt")
+        internal = make_file(".openkapsel/secret")
+        staging = make_file(".openkapsel-transfer-probe/secret")
+        # The canonical destination must remain inaccessible via an alias.
+        alias = self.workspace / "git-alias"
+        alias.symlink_to(git_secret)
+        manager_key = self.state / "ipc.key"
+        manager_key.write_text("MANAGER_SECRET")
+
+        spec = self._spec("seatbelt", writable=True, network_mode="none",
+                          allowed_paths=[
+                              {"path": str(git_exception.parent), "access": "rw"},
+                              {"path": str(ro_file.parent), "access": "ro"},
+                              {"path": str(rw_file.parent), "access": "rw"},
+                              {"path": str(absolute.parent), "access": "deny"},
+                              {"path": str(hard_child.parent), "access": "rw"},
+                          ], hidden_paths=[str(internal)])
+        # We create this path *after* compiling the profile to verify that
+        # security no longer depends on one launch-time os.walk snapshot.
+        late = self.workspace / "later" / ".git" / "config"
+        probes = [
+            ("normal_read", plain, "read", "allow"),
+            ("git_read", git_secret, "read", "deny"),
+            ("git_exception_read", git_exception, "read", "allow"),
+            ("git_exception_write", git_exception, "write", "allow"),
+            ("git_nested_read", nested_sensitive, "read", "deny"),
+            ("mixedcase_read", mixedcase, "read", "deny"),
+            ("attributes_read", attributes, "read", "deny"),
+            ("hard_read", absolute, "read", "deny"),
+            ("hard_child_read", hard_child, "read", "deny"),
+            ("readonly_write", ro_file, "write", "deny"),
+            ("child_write", rw_file, "write", "allow"),
+            ("symlink_read", alias, "read", "deny"),
+            ("internal_read", internal, "read", "deny"),
+            ("staging_read", staging, "read", "deny"),
+            ("manager_key", manager_key, "read", "deny"),
+            ("late_git", late, "read", "deny"),
+            ("late_git_write", late, "write", "deny"),
+        ]
+        code = (
+            "from pathlib import Path\n"
+            + "checks = " + repr([(name, str(path), op) for name, path, op, _ in probes])
+            + "\nfor name, path, op in checks:\n"
+            + " try:\n"
+            + "  p = Path(path)\n"
+            + "  p.read_text() if op == 'read' else p.write_text('CHANGED')\n"
+            + "  print(name + '=allow')\n"
+            + " except OSError:\n"
+            + "  print(name + '=deny')\n"
+        )
+        prepared = prepare_job(
+            spec, [sys.executable, "-c", code],
+            str(self.workspace), dict(os.environ), self.state,
+        )
+        try:
+            profile = prepared.argv[prepared.argv.index("-p") + 1]
+            self.assertLess(len(profile), 12000)
+            late.parent.mkdir(parents=True)
+            late.write_text("LATE_SECRET")
+            result = subprocess.run(
+                prepared.argv, cwd=self.workspace, env=prepared.environment,
+                capture_output=True, text=True, timeout=25,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            actual = dict(row.split("=", 1) for row in result.stdout.splitlines()
+                          if "=" in row)
+            for name, _path, _op, expected in probes:
+                with self.subTest(name=name):
+                    self.assertEqual(expected, actual.get(name), result.stdout)
+            self.assertEqual("PRIVATE", git_secret.read_text())
+            self.assertEqual("LATE_SECRET", late.read_text())
+            self.assertEqual("MANAGER_SECRET", manager_key.read_text())
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin",
+                         "real sandbox-exec rename test requires macOS")
+    def test_real_macos_rename_cannot_expose_dynamic_protected_name(self):
+        source = self.workspace / "staging"
+        source.mkdir()
+        (source / "config").write_text("RENAME_SECRET")
+        target = self.workspace / ".git"
+        code = (
+            "from pathlib import Path\n"
+            + "src = Path(" + repr(str(source)) + ")\n"
+            + "dst = Path(" + repr(str(target)) + ")\n"
+            + "try:\n"
+            + " src.rename(dst)\n"
+            + " print('rename=allow')\n"
+            + "except OSError: print('rename=deny')\n"
+            + "if dst.exists():\n"
+            + " try: (dst / 'config').read_text(); print('read=allow')\n"
+            + " except OSError: print('read=deny')\n"
+        )
+        prepared = prepare_job(
+            self._spec("seatbelt", writable=True),
+            [sys.executable, "-c", code],
+            str(self.workspace), dict(os.environ), self.state,
+        )
+        try:
+            result = subprocess.run(
+                prepared.argv, cwd=self.workspace, env=prepared.environment,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            if "rename=allow" in result.stdout:
+                # A rename through file metadata must not bypass the
+                # dynamic file-read-data / file-write-data restrictions.
+                self.assertIn("read=deny", result.stdout)
+            self.assertNotIn("read=allow", result.stdout)
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin",
+                         "real sandbox-exec wildcard override requires macOS")
+    def test_real_macos_explicit_pattern_replaces_default_protect(self):
+        item = self.workspace / ".git" / "config"
+        item.parent.mkdir()
+        item.write_text("EXPLICIT_OK")
+        prepared = prepare_job(
+            self._spec("seatbelt", writable=True,
+                       pattern_rules=[{"path": "*/.git/", "access": "rw"}]),
+            ["/bin/cat", str(item)], str(self.workspace), dict(os.environ),
+            self.state,
+        )
+        try:
+            result = subprocess.run(
+                prepared.argv, cwd=self.workspace, env=prepared.environment,
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("EXPLICIT_OK", result.stdout)
+        finally:
+            prepared.cleanup()
+
+    @unittest.skipUnless(platform.system() == "Darwin",
+                         "real same-anchor priority test requires macOS")
+    def test_real_macos_explicit_pattern_and_literal_same_anchor_strictness(self):
+        target = self.workspace / ".git"
+        target.mkdir()
+        file = target / "config"
+        file.write_text("KEEP")
+        cases = [
+            ("ro", "read", True),
+            ("ro", "write", False),
+            ("protect", "read", False),
+            ("protect", "write", False),
+            ("deny", "read", False),
+            ("r", "write", False),
+        ]
+        for access, operation, expected in cases:
+            with self.subTest(access=access, operation=operation):
+                code = (
+                    "from pathlib import Path; p=Path(" + repr(str(file)) + "); "
+                    + ("print(p.read_text())" if operation == "read"
+                       else "p.write_text('BROKEN')")
+                )
+                prepared = prepare_job(
+                    self._spec("seatbelt", writable=True,
+                               pattern_rules=[{"path": "*/.git/", "access": access}],
+                               allowed_paths=[{"path": str(target), "access": "rw"}]),
+                    [sys.executable, "-c", code], str(self.workspace),
+                    dict(os.environ), self.state,
+                )
+                try:
+                    result = subprocess.run(
+                        prepared.argv, cwd=self.workspace,
+                        env=prepared.environment,
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    self.assertEqual(expected, result.returncode == 0,
+                                     result.stdout + result.stderr)
+                finally:
+                    prepared.cleanup()
+        self.assertEqual("KEEP", file.read_text())
+
     def test_invalid_grants_and_modes_rejected_before_launch(self):
         if platform.system() == "Windows":
             self.skipTest("Windows has no native Job Manager sandbox")

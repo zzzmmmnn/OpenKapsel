@@ -87,6 +87,90 @@ def _sb_quote(value: Path | str) -> str:
     return '"' + raw.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
+def _seatbelt_named_rules(root: Path, grants: list[PathGrant],
+                          patterns: list[PathGrant]) -> list[str]:
+    """Compile prefix-ignored rules to *dynamic* macOS path regexes.
+
+    A per-job os.walk is required for Bubblewrap bind masks, but creates
+    hundreds of redundant rules for Seatbelt and misses paths created after
+    launch. Positive pattern grants are scoped to already-authorized concrete
+    directories, so a suffix pattern cannot grant access to unrelated HOME.
+    """
+    from openkapsel.auth.path_access import (
+        DEFAULT_ACCESS_RULES, _FOLDED_PROTECTED_NAMES, _rule_parts,
+    )
+
+    scopes = [root, *(Path(item.path) for item in grants
+                       if item.access in {"rw", "ro"} and Path(item.path).is_dir())]
+    # An encompassing grant already covers all its nested roots.
+    scopes = [path for path in dict.fromkeys(scopes)
+              if not any(path != parent and _contains(parent, path)
+                         for parent in scopes)]
+    prefix = "^(" + "|".join(re.escape(str(path)) for path in scopes) + ")/(.*/)?"
+
+    explicit = {item.path: item.access for item in patterns}
+    effective = [(raw, access) for raw, access in DEFAULT_ACCESS_RULES
+                 if raw not in explicit]
+    effective += list(explicit.items())
+    # An allow must not accidentally cancel an unrelated protected suffix;
+    # caller-emitted concrete exceptions are handled after these regex rules.
+    priority = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
+    rules = []
+    for raw, access in sorted(effective, key=lambda x: priority[x[1]]):
+        _suffix, directory, name = _rule_parts(raw)
+        folded = name.casefold() in _FOLDED_PROTECTED_NAMES
+        name_regex = "".join(
+            "[" + c.lower() + c.upper() + "]"
+            if folded and c.isascii() and c.isalpha() else re.escape(c)
+            for c in name
+        )
+        expression = prefix + name_regex + ("(/.*)?$" if directory else "$")
+        scope = f"(regex {_sb_quote(expression)})"
+        if access in {"ro", "rw"}:
+            rules.append(f"(allow file-read* {scope})")
+            if access == "rw":
+                rules.append(f"(allow file-write* {scope})")
+            else:
+                rules.append(f"(deny file-write* {scope})")
+        else:
+            rules.append(f"(deny file-read* {scope})")
+            rules.append(f"(deny file-write* {scope})")
+    return rules
+
+
+def _seatbelt_inside_named_protection(path: Path,
+                                        patterns: list[PathGrant]) -> bool:
+    """Whether a concrete exception needs reapplying after named denies."""
+    from openkapsel.auth.path_access import DEFAULT_ACCESS_RULES, _rule_parts
+    overrides = {item.path: item.access for item in patterns}
+    effective = [(raw, access) for raw, access in DEFAULT_ACCESS_RULES
+                 if raw not in overrides] + list(overrides.items())
+    protected = {name.casefold() for raw, access in effective
+                 if access in {"protect", "deny", "ro"}
+                 for _suffix, _directory, name in (_rule_parts(raw),)}
+    return any(part.casefold() in protected for part in path.parts)
+
+
+
+def _seatbelt_same_anchor_access(directory: Path, access: str,
+                                 patterns: list[PathGrant]) -> str:
+    """Two explicit rules at the same anchor compete by strictness.
+
+    An explicit literal permit replaces a DEFAULT name rule, but does not
+    override a separately configured explicit */name rule at that anchor.
+    Deeper literal rules may still open an ordinary protect/ro ancestor.
+    """
+    from openkapsel.auth.path_access import _literal_name_matches, _rule_parts
+    strength = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
+    for pattern in patterns:
+        _suffix, is_directory, name = _rule_parts(pattern.path)
+        if is_directory == directory.is_dir() and _literal_name_matches(
+                directory.name, name):
+            if strength[pattern.access] > strength[access]:
+                access = pattern.access
+    return access
+
+
 def _trusted_macos_xcode_developer_dir(path: Path) -> bool:
     """Only a system-installed Xcode.app Developer root, not arbitrary apps.
 
@@ -195,7 +279,8 @@ def prepare_job(
         suffix, _directory, _name = _rule_parts(item["path"])
         if not suffix:
             raise ValueError("pattern rules must start with */")
-        pattern_grants.append(PathGrant(item["path"], access=item["access"]))
+        pattern_grants.append(PathGrant(
+            item["path"], access="ro" if item["access"] == "r" else item["access"]))
     grants: list[PathGrant] = []
     for item in extras:
         if not isinstance(item, dict) or set(item) != {"path", "access"}:
@@ -232,13 +317,17 @@ def prepare_job(
     # current named sensitive paths at launch, not merely at Client startup.
     # New paths created AFTER launch still require process isolation.
     try:
-        roots = [root, *(
-            Path(grant.path) for grant in grants
-            if grant.access in {"ro", "rw"} and Path(grant.path).is_dir())]
-        named_masks = tuple(
-            item for base in dict.fromkeys(roots)
-            for item in existing_pattern_masks(
-                base, writable, (*grants, *pattern_grants)))
+        if kind == "bubblewrap":
+            roots = [root, *(
+                Path(grant.path) for grant in grants
+                if grant.access in {"ro", "rw"} and Path(grant.path).is_dir())]
+            named_masks = tuple(
+                item for base in dict.fromkeys(roots)
+                for item in existing_pattern_masks(
+                    base, writable, (*grants, *pattern_grants)))
+        else:
+            # Seatbelt has dynamic regex filters; no filesystem walk needed.
+            named_masks = ()
     except (OSError, ValueError) as exc:
         raise ValueError("cannot apply named sandbox path protections") from exc
     for item in named_masks:
@@ -373,31 +462,60 @@ def prepare_job(
             # exception to the selected Xcode.app, never /Applications.
             xcode_app = developer.parent.parent
             profile.append(f"(allow file-read* (subpath {_sb_quote(xcode_app)}))")
-        # Seatbelt resolves overlaps in profile order: broad entries first,
-        # then deepest children. Restrictive modes win only at identical paths.
+        # 1. Baseline grants: parents first so a narrower concrete rule wins.
+        # 2. Dynamic name protections (including paths created after launch).
+        # 3. Deliberate concrete exceptions *inside* protected names.
+        # 4. Absolute denies and hard-private state masks, always last.
         entries = [(root, "rw" if writable else "ro"), *(
-            (Path(grant.path), grant.access) for grant in grants)]
+            (Path(grant.path), grant.access) for grant in grants
+            if grant.access != "deny")]
         strength = {"rw": 0, "ro": 1, "protect": 2, "deny": 3}
-        for directory, access in sorted(
-                entries, key=lambda entry: (len(entry[0].parts), strength[entry[1]])):
+
+        def append_concrete(directory: Path, access: str) -> None:
             scope = "subpath" if directory.is_dir() else "literal"
+            match = f"({scope} {_sb_quote(directory)})"
             if access in {"rw", "ro"}:
-                profile.append(f"(allow file-read* ({scope} {_sb_quote(directory)}))")
+                profile.append(f"(allow file-read* {match})")
             if access == "rw":
-                profile.append(f"(allow file-write* ({scope} {_sb_quote(directory)}))")
-            elif access == "ro":
-                profile.append(f"(deny file-write* ({scope} {_sb_quote(directory)}))")
-            else:
-                profile.append(f"(deny file-read* ({scope} {_sb_quote(directory)}))")
-                profile.append(f"(deny file-write* ({scope} {_sb_quote(directory)}))")
-        # Absolute deny must be applied AFTER narrower ordinary grants,
-        # independent of nesting depth or configuration order.
+                profile.append(f"(allow file-write* {match})")
+            elif access in {"ro", "protect", "deny"}:
+                profile.append(f"(deny file-write* {match})")
+            if access in {"protect", "deny"}:
+                profile.append(f"(deny file-read* {match})")
+
+        for directory, access in sorted(
+                entries, key=lambda entry: (len(entry[0].parts),
+                                            strength[entry[1]])):
+            append_concrete(directory, access)
+        profile.extend(_seatbelt_named_rules(root, grants, pattern_grants))
+        for directory, access in sorted(
+                entries[1:], key=lambda entry: (len(entry[0].parts),
+                                                strength[entry[1]])):
+            if _seatbelt_inside_named_protection(directory, pattern_grants):
+                access = _seatbelt_same_anchor_access(
+                    directory, access, pattern_grants)
+                append_concrete(directory, access)
+                if directory.is_dir() and access in {"rw", "ro"}:
+                    # Reopening .git/public must not also reopen a NEW
+                    # nested .git, .ssh or .openkapsel under that exception.
+                    # The next (deeper) concrete exception can still win.
+                    profile.extend(_seatbelt_named_rules(
+                        directory, [], pattern_grants))
+        # Private .openkapsel-* staging names are always hard-denied, even
+        # inside deliberately reopened protected directories.
+        scopes = [root, *(Path(g.path) for g in grants
+                          if g.access in {"rw", "ro"} and Path(g.path).is_dir())]
+        scopes = [path for path in dict.fromkeys(scopes)
+                  if not any(path != parent and _contains(parent, path)
+                             for parent in scopes)]
+        private = "^(" + "|".join(re.escape(str(path)) for path in scopes)
+        private += r")/(.*/)?[.]openkapsel-.*$"
+        profile.append(f"(deny file-read* (regex {_sb_quote(private)}))")
+        profile.append(f"(deny file-write* (regex {_sb_quote(private)}))")
+        # Explicit literal deny cannot be reopened by narrower grants.
         for grant in grants:
             if grant.access == "deny":
-                directory = Path(grant.path)
-                operation = "subpath" if directory.is_dir() else "literal"
-                profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")
-                profile.append(f"(deny file-write* ({operation} {_sb_quote(directory)}))")
+                append_concrete(Path(grant.path), "deny")
         for directory in excluded:
             operation = "subpath" if directory.is_dir() else "literal"
             profile.append(f"(deny file-read* ({operation} {_sb_quote(directory)}))")
